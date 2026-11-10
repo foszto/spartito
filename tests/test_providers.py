@@ -528,15 +528,56 @@ def test_claude_model_lookup_fails_on_an_error_exit_or_garbage(
     assert gone(out / "pid")
 
 
+def start_once_up(monkeypatch: pytest.MonkeyPatch, ready: Path) -> list[float]:
+    """Makes the lookup's `Popen` return only once the fake has written `ready`, so the
+    timeout starts once the fake is up: a new script takes ~0.25 s to start on macOS, and
+    a CLI killed before it did anything proves nothing. Returns [when it was up]."""
+    up: list[float] = []
+
+    class Started(subprocess.Popen):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            deadline = time.monotonic() + 10
+            while not (ready.exists() and ready.read_text().endswith("\n")):
+                assert time.monotonic() < deadline, "the fake CLI did not start"
+                time.sleep(0.005)
+            up.append(time.monotonic())
+
+    monkeypatch.setattr(claude.subprocess, "Popen", Started)
+    return up
+
+
 def test_claude_model_lookup_kills_a_cli_that_does_not_answer(
     fake_claude, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     out = fake_claude("sleep 30 &\necho $! > $OUT/child\nexec sleep 30")
     monkeypatch.setattr(claude, "MODEL_LIST_TIMEOUT", 0.3)
-    started = time.monotonic()
+    up = start_once_up(monkeypatch, out / "child")
 
     with pytest.raises(subprocess.TimeoutExpired):
         REAL_REQUEST_MODEL_LIST()
 
-    assert time.monotonic() - started < 1
+    assert time.monotonic() - up[0] < 1
     assert gone(out / "pid") and gone(out / "child")  # its children too
+
+
+def test_claude_model_lookup_survives_a_cli_that_exits_as_it_is_killed(
+    fake_claude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = fake_claude("read go < $OUT/go")  # exits only when the test lets it
+    os.mkfifo(out / "go")
+    monkeypatch.setattr(claude, "MODEL_LIST_TIMEOUT", 0.3)
+    start_once_up(monkeypatch, out / "pid")
+    killpg = os.killpg
+
+    def late_killpg(pgid: int, sig: int) -> None:  # the CLI exits just at the timeout
+        os.close(os.open(out / "go", os.O_WRONLY))  # EOF: the fake exits
+        os.waitid(os.P_PID, pgid, os.WEXITED | os.WNOWAIT)  # exited, not reaped
+        killpg(pgid, sig)  # macOS: PermissionError for a group of only unreaped processes
+
+    monkeypatch.setattr(claude.os, "killpg", late_killpg)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        REAL_REQUEST_MODEL_LIST()
+
+    assert gone(out / "pid")  # reaped
