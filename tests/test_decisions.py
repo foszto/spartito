@@ -369,7 +369,7 @@ def test_elsewhere_than_macos_nothing_is_shown(
 
 def test_the_texts_are_arguments_on_one_line_never_script() -> None:
     tricky = '-x" & (do shell script "touch /tmp/x") & "\nsecond\tline' + "z" * 400
-    argv = desktop.command("Kotta", tricky, "darwin", lambda name: f"/usr/bin/{name}")
+    argv = desktop.command("Spartito", tricky, "darwin", lambda name: f"/usr/bin/{name}")
 
     assert argv[:7] == [
         "/usr/bin/osascript",
@@ -381,7 +381,7 @@ def test_the_texts_are_arguments_on_one_line_never_script() -> None:
         "end run",
     ]
     title, body = argv[7:]
-    assert title == "Kotta"
+    assert title == "Spartito"
     assert body.startswith('-x" & (do shell script "touch /tmp/x") & " second linezz')
     assert len(body) == desktop.TEXT_CHARS and body.endswith("…")
 
