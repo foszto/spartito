@@ -95,6 +95,7 @@ class Usage:
     cost_usd: float | None = None
     model: str | None = None  # the model the CLI says it used
     cumulative: bool = False
+    session_id: str | None = None  # session/thread the run belonged to, when reported
 
     def __add__(self, other: Usage) -> Usage:
         def add(a: Any, b: Any) -> Any:
