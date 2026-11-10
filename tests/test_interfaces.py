@@ -61,7 +61,7 @@ def test_usage_keeps_the_default_view_small(orch: Orchestrator, busy_agent: str)
     # Everything else existed before usage: model/effort were there (as null) and cost_usd.
     assert len(json.dumps(view)) - len(json.dumps(without)) <= 120
     assert set(view["last_run"]) == {
-        "id", "status", "result", "structured", "error", "started_at", "ended_at"
+        "id", "status", "result", "error", "started_at", "ended_at"
     }  # fmt: skip
 
 

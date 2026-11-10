@@ -421,8 +421,8 @@ def get_agent(
     commits/changes in its worktree, the explicit model/effort overrides, and tokens,
     cost and model of its last 10 runs.
 
-    Result and error are cut to `result_chars` chars (0: all), the result from
-    `result_offset`; `run_id` shows that run as `run` instead of `last_run`. Git output
+    The answer is `structured` when the run has it, else `result`; it and the error are
+    cut to `result_chars` chars (0: all), the answer from `result_offset`; `run_id` shows that run as `run` instead of `last_run`. Git output
     is cut to `max_commits` commit and `max_status` status lines (0: all).
     """
     orch = _orch()
@@ -450,12 +450,15 @@ def get_agent(
             },
         )
     shown = view[key]
-    if shown and shown["result"] is not None:
-        shown["result"] = clip(shown["result"], result_chars, result_offset, shown["id"])
-    if shown and shown["structured"] is not None:
+    if shown and shown["structured"] is not None:  # the answer once, as wait_for_agents
+        del shown["result"]
         shown["structured"] = _structured(
             shown["structured"], result_chars, result_offset, shown["id"]
         )
+    elif shown:
+        del shown["structured"]
+        if shown["result"] is not None:
+            shown["result"] = clip(shown["result"], result_chars, result_offset, shown["id"])
     if shown and shown["error"]:
         shown["error"] = clip(shown["error"], result_chars)
     return {

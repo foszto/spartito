@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -300,7 +301,10 @@ class Orchestrator:
         `model`/`effort` are what the next turn runs with (explicit value, project setting,
         global setting, role); `cost_usd` and `tokens` (`in`, `out`, `cache_read`,
         `cache_write`; null when no run reported tokens) are the totals of all runs.
-        With `detail`: `model_override`/`effort_override` (the values set on the agent),
+        `last_run.result` is the answer once: structured output as compact JSON when the
+        run has it, else the text, cut at `result_limit` chars.
+        With `detail`: `last_run.structured` (the text stays in `result`),
+        `model_override`/`effort_override` (the values set on the agent),
         `last_run.usage` (that run's own tokens, cost and reported model) and
         `last_run.result_file` (the full final answer on disk).
         """
@@ -309,8 +313,11 @@ class Orchestrator:
         effective = self.effective(agent)
         status, active, shown = agent_state(runs)
         result = shown.result if shown else None
+        if shown and shown.structured is not None and not detail:
+            # The answer once: structured output as compact JSON instead of the text.
+            result = json.dumps(shown.structured, ensure_ascii=False, separators=(",", ":"))
         if result and result_limit and len(result) > result_limit:
-            result = result[:result_limit] + "… [truncated; use agent_log for more]"
+            result = result[:result_limit] + "… [truncated; get_agent gives all of it]"
         totals = running_total(runs, usage)
         view = {
             "id": agent.id,
@@ -334,7 +341,6 @@ class Orchestrator:
                 "id": shown.id,
                 "status": shown.status.value,
                 "result": result,
-                "structured": shown.structured,
                 "error": shown.error,
                 "started_at": shown.started_at,
                 "ended_at": shown.ended_at,
@@ -344,6 +350,7 @@ class Orchestrator:
             view["model_override"] = agent.model
             view["effort_override"] = agent.effort
             if shown:
+                view["last_run"]["structured"] = shown.structured
                 view["last_run"]["usage"] = run_usage(usage.get(shown.id))
                 view["last_run"]["result_file"] = result_file(shown.id)
         return view
