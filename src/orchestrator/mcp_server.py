@@ -202,7 +202,11 @@ async def wait_for_agents(agent_ids: list[str], timeout_seconds: int = 600) -> d
 
 @server.tool()
 def list_agents(project: str | None = None) -> list[dict[str, Any]]:
-    """List agents with status, hierarchy (parent_id), branch and a short last result."""
+    """List agents with status, hierarchy (parent_id), branch and a short last result.
+
+    `model`/`effort` are what the agent's next turn runs with (`*_override` when set
+    explicitly); `usage` holds its token and cost totals.
+    """
     orch = _orch()
     scope = _project(orch, project) if project or _scoped(orch) else None
     return orch.overview(scope)
@@ -210,11 +214,16 @@ def list_agents(project: str | None = None) -> list[dict[str, Any]]:
 
 @server.tool()
 def get_agent(agent_id: str) -> dict[str, Any]:
-    """Full status of one agent: last result, and the commits/changes in its worktree."""
+    """Full status of one agent: last result, the commits/changes in its worktree, and the
+    tokens, cost and model of its last 10 runs (`recent_runs`)."""
     orch = _orch()
     orch.store.reconcile()
-    view = orch.view(orch.agent(_own(orch, agent_id)))
-    return {**view, "changes": orch.changes(agent_id)}
+    agent = orch.agent(_own(orch, agent_id))
+    return {
+        **orch.view(agent),
+        "changes": orch.changes(agent_id),
+        "recent_runs": orch.run_history(agent, limit=10),
+    }
 
 
 @server.tool()

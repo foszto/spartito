@@ -124,6 +124,7 @@ def events(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
             **orch.view(agent),
             "changes": orch.changes(agent.id),
             "effective": orch.effective(agent),
+            "recent_runs": orch.run_history(agent, limit=10),
         },
         "events": [
             {"id": e.id, "run_id": e.run_id, "ts": e.ts, "kind": e.kind, "text": e.text}

@@ -39,6 +39,45 @@ def fail(message: object) -> typer.Exit:
     return typer.Exit(1)
 
 
+def count(n: int) -> str:
+    return str(n) if n < 1000 else f"{n / 1000:.1f}k" if n < 1_000_000 else f"{n / 1e6:.1f}M"
+
+
+def tokens(usage: dict | None) -> str:
+    """`<prompt>/<output> tok`, the prompt counting cache reads and writes."""
+    if not usage or usage.get("input_tokens") is None:
+        return ""
+    prompt = sum(
+        usage[key] or 0 for key in ("input_tokens", "cache_read_tokens", "cache_creation_tokens")
+    )
+    return f"{count(prompt)}/{count(usage['output_tokens'] or 0)} tok"
+
+
+def usage_line(usage: dict | None) -> str:
+    if not usage:
+        return "-"
+    parts = []
+    if usage.get("input_tokens") is not None:
+        parts += [
+            f"in {count(usage['input_tokens'])}",
+            f"cache read {count(usage['cache_read_tokens'] or 0)}",
+            f"cache write {count(usage['cache_creation_tokens'] or 0)}",
+            f"out {count(usage['output_tokens'] or 0)}",
+        ]
+    if usage.get("cost_usd"):
+        parts.append(f"${usage['cost_usd']:.4f}")
+    if usage.get("model"):
+        parts.append(usage["model"])
+    return " · ".join(parts) or "-"
+
+
+def setup(view: dict) -> str:
+    """Effective `model/effort`; `*` marks a value set explicitly on the agent."""
+    model = (view["model"] or "default") + ("*" if view["model_override"] else "")
+    effort = view["effort"] and view["effort"] + ("*" if view["effort_override"] else "")
+    return f"{model}/{effort}" if effort else model
+
+
 def mcp_config() -> str:
     import sys
 
@@ -64,11 +103,24 @@ def chat(
         bool,
         typer.Option(help="Run in the current directory instead of the orchestrator workspace."),
     ] = False,
-    model: Annotated[str | None, typer.Option(help="Model for the orchestrator session.")] = None,
+    model: Annotated[
+        str | None,
+        typer.Option(help="Model for the orchestrator session; default: the orchestrator tier's."),
+    ] = None,
+    effort: Annotated[
+        str | None,
+        typer.Option(help="Effort for the orchestrator session; default: the orchestrator tier's."),
+    ] = None,
 ) -> None:
     """Open the orchestrator: an interactive Claude Code session that steers all agents."""
     if not shutil.which("claude"):
         raise fail("the `claude` CLI is not on PATH")
+    tier = orch().settings().get("orchestrator", {}).get("claude", {})
+    model = model or tier.get("model")
+    effort = effort or tier.get("effort")
+    if effort and effort not in providers.get("claude").efforts:
+        allowed = ", ".join(providers.get("claude").efforts)
+        raise fail(f"claude has no effort '{effort}' (use: {allowed})")
     argv = [
         "claude",
         "--mcp-config", mcp_config(),
@@ -81,6 +133,8 @@ def chat(
         argv += ["--name", "orchestrator"]
     if model:
         argv += ["--model", model]
+    if effort:
+        argv += ["--effort", effort]
     if not here:
         os.chdir(config.workspace_dir())
     os.execvp("claude", argv)
@@ -296,14 +350,17 @@ def ps(project: Annotated[str | None, typer.Option("--project", "-p")] = None) -
             label = "  " * depth + view["id"]
             cost = f"${view['cost_usd']:.2f}" if view["cost_usd"] else ""
             typer.echo(
-                f"  {label:<34} {status} {view['role']:<9} {view['provider']:<7} {cost:<7} {view['branch'] or ''}"
+                f"  {label:<34} {status} {view['role']:<9} {view['provider']:<7}"
+                f" {setup(view):<18} {tokens(view['usage']):<15} {cost:<7} {view['branch'] or ''}"
             )
             show(project_name, view["id"], depth + 1)
 
     for view in views:
         if view["project"] is None and not project:
             status = typer.style(view["status"], fg=STATUS_COLORS.get(view["status"]))
-            typer.secho(f"{view['id']}  {status}", bold=True)
+            cost = f"${view['cost_usd']:.2f}" if view["cost_usd"] else ""
+            extra = "  ".join(filter(None, (setup(view), tokens(view["usage"]), cost)))
+            typer.secho(f"{view['id']}  {status}  {extra}", bold=True)
     for item in o.store.list_projects():
         if project and item.name != project:
             continue
@@ -322,11 +379,18 @@ def status(agent_id: str) -> None:
     except OrchestratorError as exc:
         raise fail(exc) from None
     last = view.pop("last_run")
+    usage = view.pop("usage")
+    for key in ("model", "effort"):
+        override = view.pop(f"{key}_override")
+        view[key] = f"{view[key] or 'default'}" + (" (set on the agent)" if override else "")
     for key, value in view.items():
         typer.echo(f"{key:<12} {value}")
+    typer.echo(f"{'usage':<12} {usage_line(usage)}")
     typer.echo(f"{'changes':<12} {changes.replace(chr(10), chr(10) + ' ' * 13)}")
     if last:
         typer.secho(f"\nlast run {last['id']}: {last['status']}", bold=True)
+        if last["usage"]:
+            typer.echo(usage_line(last["usage"]))
         typer.echo(
             last["error"] if last["status"] != "done" and last["error"] else last["result"] or ""
         )

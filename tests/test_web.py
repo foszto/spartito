@@ -165,3 +165,27 @@ def test_folder_picker_lists_folders_and_marks_repositories(
     assert listing["parent"] == str(repo.parent.parent)
     assert inside["git"] and inside["project"] == project
     assert missing.status_code == 400 and "not a directory" in missing.json()["error"]
+
+
+def test_agent_detail_lists_the_usage_of_recent_runs(
+    client: TestClient, orch: Orchestrator, project: str
+) -> None:
+    spawned = client.post(
+        "/api/agents",
+        json={"project": project, "task": "TOKENS 100", "worktree": False},
+        headers=ORIGIN,
+    ).json()
+    wait_idle(orch, spawned["agent_id"])
+
+    detail = client.get(f"/api/agents/{spawned['agent_id']}/events").json()["agent"]
+    (listed,) = client.get("/api/state").json()["projects"][0]["agents"]
+
+    (run,) = detail["recent_runs"]
+    assert (run["id"], run["status"], run["input_tokens"], run["model"]) == (
+        spawned["run_id"],
+        "done",
+        100,
+        "fake-model-1",
+    )
+    assert listed["usage"]["output_tokens"] == 10 and listed["cost_usd"] == 0.001
+    assert detail["effective"] == {"model": detail["model"], "effort": detail["effort"]}

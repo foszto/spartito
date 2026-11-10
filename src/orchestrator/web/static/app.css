@@ -111,6 +111,9 @@ code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, m
 #details { padding: 14px 24px; border-bottom: 1px solid var(--line); background: var(--surface); max-height: 40vh; overflow: auto; }
 #details dl { display: grid; grid-template-columns: max-content 1fr; gap: 3px 16px; margin: 0 0 10px; font-size: 13px; }
 #details dt { color: var(--muted); } #details dd { margin: 0; word-break: break-all; }
+#details table { border-collapse: collapse; margin: 0 0 10px; font-size: 12px; font-variant-numeric: tabular-nums; }
+#details th { color: var(--muted); font-weight: normal; text-align: left; }
+#details th, #details td { padding: 1px 14px 1px 0; }
 #details pre { margin: 0; padding: 10px 12px; background: var(--code); border-radius: 8px; white-space: pre-wrap; }
 
 #log { flex: 1; min-height: 0; overflow: auto; padding: 24px; }

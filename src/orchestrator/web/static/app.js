@@ -100,6 +100,21 @@ function select(id) {
 
 // -- markdown (builds DOM nodes; never parses agent text as HTML) -----------
 
+function count(n) {
+  return n < 1000 ? String(n) : n < 1e6 ? `${(n / 1000).toFixed(1)}k` : `${(n / 1e6).toFixed(1)}M`;
+}
+
+// Prompt tokens (fresh + cache reads + cache writes) and output tokens, or null when unknown.
+function tokens(usage) {
+  if (!usage || usage.input_tokens == null) return null;
+  return [usage.input_tokens + (usage.cache_read_tokens || 0) + (usage.cache_creation_tokens || 0), usage.output_tokens || 0];
+}
+
+function tokenText(usage) {
+  const t = tokens(usage);
+  return t ? `${count(t[0])} in · ${count(t[1])} out` : '';
+}
+
 function inline(text, parent) {
   const pattern = /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\))/g;
   let last = 0, match;
@@ -195,7 +210,8 @@ function renderNav() {
     nav.append(empty, button('primary', 'plus', 'Add project', openProjectDialog));
   }
 
-  let total = 0, busy = 0, cost = orch ? orch.cost_usd : 0;
+  let total = 0, busy = 0, cost = orch ? orch.cost_usd : 0, used = tokens(orch && orch.usage) || [0, 0];
+  const addTokens = usage => { const t = tokens(usage); if (t) used = [used[0] + t[0], used[1] + t[1]]; };
   for (const project of state.projects) {
     const box = el('div', `project${collapsed.includes(project.name) ? ' collapsed' : ''}`);
     const head = el('div', 'project-head'), toggle = el('button', 'toggle');
@@ -218,7 +234,7 @@ function renderNav() {
     const ids = new Set(project.agents.map(a => a.id));
     const add = (parent, depth) => {
       for (const agent of project.agents.filter(a => (ids.has(a.parent_id) ? a.parent_id : null) === parent)) {
-        total++; cost += agent.cost_usd;
+        total++; cost += agent.cost_usd; addTokens(agent.usage);
         if (isActive(agent)) busy++;
         agents.append(navItem(agent.id, agent.provider, agent.status, agent.id, `${agent.role} · ${agent.status}`, depth));
         add(agent.id, depth + 1);
@@ -229,7 +245,7 @@ function renderNav() {
     box.append(head, agents);
     nav.append(box);
   }
-  $('summary').textContent = `${total} agents · ${busy} active · $${cost.toFixed(2)} spent`;
+  $('summary').textContent = `${total} agents · ${busy} active · ${count(used[0] + used[1])} tokens · $${cost.toFixed(2)} spent`;
 }
 
 function navItem(id, providerName, status, name, sub, depth) {
@@ -262,7 +278,8 @@ function buildView() {
   const details = el('div'); details.id = 'details'; details.hidden = true;
   const facts = el('dl'); facts.id = 'facts';
   const changes = el('pre'); changes.id = 'changes';
-  details.append(facts, changes);
+  const runs = el('table'); runs.id = 'runs';
+  details.append(facts, runs, changes);
 
   const log = el('div'); log.id = 'log';
   const thread = el('div', 'thread'); thread.id = 'thread';
@@ -353,13 +370,22 @@ function renderHeader(agent) {
   chip(effective.model || 'default model');
   chip(effective.effort && `effort ${effective.effort}`);
   chip(agent.branch, 'branch');
+  chip(tokenText(agent.usage));
   chip(agent.cost_usd ? `$${agent.cost_usd.toFixed(2)}` : '');
 
   const facts = $('facts'); facts.replaceChildren();
   const fact = (key, value) => { if (value) facts.append(el('dt', '', key), el('dd', '', String(value))); };
   fact('Project', agent.project); fact('Started by', agent.parent_id); fact('Workspace', agent.cwd);
   fact('Session', agent.session_id); fact('Turns', `${agent.runs} (${agent.queued_runs} active)`);
+  fact('Last run model', agent.last_run && agent.last_run.usage && agent.last_run.usage.model);
   fact('Take over in a terminal', agent.session_id ? `orch attach ${agent.id}` : '');
+  const runs = $('runs'); runs.replaceChildren();
+  const row = (cells, tag) => { const tr = el('tr'); for (const c of cells) tr.append(el(tag, '', c)); runs.append(tr); };
+  if ((agent.recent_runs || []).length) row(['Run', 'Status', 'Ended', 'Tokens', 'Cost', 'Model'], 'th');
+  for (const run of agent.recent_runs || []) {
+    row([`#${run.id}`, run.status, (run.ended_at || '').slice(11, 19), tokenText(run) || '–',
+      run.cost_usd != null ? `$${run.cost_usd.toFixed(4)}` : '–', run.model || ''], 'td');
+  }
   $('changes').textContent = agent.changes || '';
   $('changes').hidden = !agent.changes;
 }
