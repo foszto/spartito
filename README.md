@@ -151,16 +151,23 @@ deklarálja, mit tölt be:
 | `setting_sources` | `project,local` = a user szint (user pluginek, skillek, parancsok, hookok) nélkül; a projekt `CLAUDE.md`-je és `.claude/` mappája betöltődik; `user,project,local` = minden | `--setting-sources` |
 | `slash_commands` | `false` = semmilyen skill és slash parancs (a projektéi sem) | `--disable-slash-commands` |
 | `codex_user_config` | `false` = a Codex nem olvassa a `$CODEX_HOME/config.toml`-t (a login megmarad) | `--ignore-user-config` |
+| `memory` | `true` = `Write` és `Edit` is, de csak a session saját memóriamappájába (`~/.claude/projects/<projekt>/memory/`); minden más célt egy hook elutasít. Hatástalan, ha a `tools` már ad író eszközt (`default` is), és Codexnél | `--settings` (PreToolUse hook) |
 
 Beépített alapértékek: minden szerep `mcp = strict`, `setting_sources = project,local`,
 `slash_commands = false`, `codex_user_config = false`; az eszközök:
 
 | szerep | `tools` |
 |---|---|
-| orchestrator, lead | `Bash,Read,Glob,Grep` (+ az `orch` MCP eszközök) |
+| orchestrator, lead | `Bash,Read,Glob,Grep` (+ az `orch` MCP eszközök), `memory = true` |
 | worker, tester | `Bash,Read,Edit,Write,Glob,Grep` |
 | reviewer | `Bash,Read,Glob,Grep` |
 | planner | `Bash,Read,Glob,Grep,WebSearch,WebFetch` |
+
+A `memory` a Claude Code memóriáját (egy fájl tényenként és a `MEMORY.md` index) tartja
+életben az orchestratornál és a leadeknél: a lead memóriája a projekt sajátja, közös a
+tulajdonos ott futó interaktív sessionjeivel. A korlát csak a `Write`/`Edit` eszközökre
+vonatkozik, a `Bash`-re nem; egy áthelyezett memóriamappát (`autoMemoryDirectory`) nem követ,
+oda is elutasít.
 
 A beépített szerepeknek nincs `Skill` eszközük, ezért a skillek és slash parancsok ki vannak
 kapcsolva. Projekt skillek/parancsok használatához az adott szerepnél `slash_commands = true`
@@ -288,6 +295,7 @@ src/orchestrator/
   roles.py         szerepek betöltése; roles/*.md a beépített szerepek
   settings.py      modell/effort szintenként: globális + projekt felülírás
   loadout.py       mit tölt be egy agent (eszközök, MCP, setting források); loadout.toml
+  memory_guard.py  PreToolUse hook: a `memory` kulcs Write/Edit-je csak a memóriamappába ír
   providers/       base.py: Provider protokoll · claude.py · codex.py
   runner.py        egy run végrehajtása saját, leválasztott folyamatban
   service.py       Orchestrator homlokzat – ezt használja a CLI, az MCP szerver és a web

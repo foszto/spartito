@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import shlex
+import sys
 import uuid
 
+from .. import memory_guard
 from ..loadout import Loadout
 from ..models import Agent, Event, Usage
 from .base import NOTIFICATION_RESULT, Invocation, RunContext, brief
@@ -30,11 +33,31 @@ DEFAULT_PERMISSION = "auto"
 NO_BACKGROUND_ENV = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}
 
 
+def memory_settings() -> dict:
+    """`--settings` that confine the file-writing tools to the session's memory directory.
+
+    Verified with Claude Code 2.1.322, on fresh and resumed turns: the hook loads with
+    `--setting-sources project,local`, runs although the project's settings set
+    `disableAllHooks: true` (this `false` wins), the CLI runs it through /bin/sh, and
+    `|| exit 2` refuses the write when the interpreter cannot start.
+    """
+    command = shlex.join([sys.executable, "-I", memory_guard.__file__]) + " || exit 2"
+    hook = {"matcher": memory_guard.MATCHER, "hooks": [{"type": "command", "command": command}]}
+    return {"disableAllHooks": False, "hooks": {"PreToolUse": [hook]}}
+
+
 def loadout_flags(loadout: Loadout) -> list[str]:
     """CLI flags for a loadout. Needed on every turn: `--resume` does not remember them."""
     flags = []
-    if loadout.tools is not None:
-        flags += ["--tools", ",".join(loadout.tools)]
+    tools = loadout.tools
+    # Only where the tools grant no writing of their own: confining a worker's Write would
+    # break it, and the CLI's default set writes anywhere already.
+    guard = loadout.memory and tools is not None and not set(tools) & set(memory_guard.PATH_FIELDS)
+    if guard:
+        tools = (*tools, "Write", "Edit")
+        flags += ["--settings", json.dumps(memory_settings())]
+    if tools is not None:
+        flags += ["--tools", ",".join(tools)]
     if loadout.strict_mcp:
         flags.append("--strict-mcp-config")
     if loadout.setting_sources is not None:

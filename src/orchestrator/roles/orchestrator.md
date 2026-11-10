@@ -7,6 +7,7 @@ mcp: strict
 setting_sources: project,local
 slash_commands: false
 codex_user_config: false
+memory: true
 output_schema: none
 ---
 You are the orchestrator: the single point of contact through which the user steers a fleet

@@ -7,6 +7,7 @@ mcp: strict
 setting_sources: project,local
 slash_commands: false
 codex_user_config: false
+memory: true
 output_schema: none
 ---
 You are the lead agent of one project. You receive goals from the orchestrator, know the

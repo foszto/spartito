@@ -157,10 +157,13 @@ def test_chat_loads_the_orchestrator_loadout_and_keeps_bash_for_orch(
 
     assert plain.exit_code == 0 and overridden.exit_code == 0
     (argv, custom) = exec_argv
-    assert option(argv, "--tools") == "Bash,Read,Glob,Grep"
+    # memory: Write/Edit for its memory directory only, behind the guard hook
+    assert option(argv, "--tools") == "Bash,Read,Glob,Grep,Write,Edit" and "--settings" in argv
     assert option(argv, "--setting-sources") == "project,local"
     assert "--strict-mcp-config" in argv and "Bash(orch *)" in argv and "--mcp-config" in argv
-    assert option(custom, "--tools") == "Read,Bash" and "--strict-mcp-config" not in custom
+    assert (
+        option(custom, "--tools") == "Read,Bash,Write,Edit" and "--strict-mcp-config" not in custom
+    )
     # The orchestrator role turns slash commands off; the interactive session keeps them.
     assert "--disable-slash-commands" not in argv and "--disable-slash-commands" not in custom
     assert broken.exit_code == 1 and "invalid TOML" in broken.output
@@ -174,7 +177,8 @@ def test_a_continued_chat_keeps_the_orchestrator_loadout(
     assert result.exit_code == 0
     (argv,) = exec_argv
     assert "--continue" in argv and "--name" not in argv
-    assert option(argv, "--tools") == "Bash,Read,Glob,Grep" and "--strict-mcp-config" in argv
+    assert option(argv, "--tools") == "Bash,Read,Glob,Grep,Write,Edit"
+    assert "--strict-mcp-config" in argv and "--settings" in argv
     assert option(argv, "--setting-sources") == "project,local"
     # Skills and commands stay on in the interactive session (/compact, /clear, ...).
     assert "--disable-slash-commands" not in argv
