@@ -58,25 +58,36 @@ QUIET_SECONDS = 20
 
 
 class Parallel(Smoke):
-    def dispatches(self, lead_id: str, runs: list[int]) -> list[dict[str, Any]]:
-        """The lead's orch tool calls in these runs, with their full arguments."""
+    @staticmethod
+    def dispatches(runs: list[int]) -> list[dict[str, Any]]:
+        """The lead's orch tool calls in these runs, with their full arguments and, from the
+        tool's reply, the id of the agent they went to (`agent`, None when unknown)."""
         from orchestrator import config
 
-        calls = []
+        calls, by_use = [], {}
         for run_id in runs:
             path = config.run_dir(run_id) / "stream.jsonl"
             if not path.exists():
                 continue
             for line in path.read_text(encoding="utf-8").splitlines():
-                with contextlib.suppress(ValueError):
+                with contextlib.suppress(ValueError, AttributeError, TypeError):
                     event = json.loads(line)
-                    if event.get("type") != "assistant":
-                        continue
                     for block in event.get("message", {}).get("content", []):
                         name = block.get("name", "")
                         if block.get("type") == "tool_use" and name.startswith("mcp__orch__"):
                             tool = name.removeprefix("mcp__orch__")
-                            calls.append({"run": run_id, "tool": tool, "input": block["input"]})
+                            call = {"run": run_id, "tool": tool, "input": block["input"]}
+                            call["agent"] = None
+                            calls.append(call)
+                            by_use[block.get("id")] = call
+                        elif block.get("type") == "tool_result" and (
+                            block.get("tool_use_id") in by_use
+                        ):
+                            content = block.get("content")
+                            if isinstance(content, list):
+                                content = "".join(part.get("text", "") for part in content)
+                            reply = json.loads(content)
+                            by_use[block["tool_use_id"]]["agent"] = reply.get("id")
         return calls
 
     def scenario(self, project: str, number: int, repo: Path) -> None:
@@ -113,7 +124,7 @@ class Parallel(Smoke):
         self.log(f"{tag}: run {run2.id} {r2.status.value} at {r2.ended_at}")
 
         def new_workers() -> list[Any]:
-            fresh = [a for a in self.workers(lead.id) if a.id not in known]
+            fresh = [a for a in self.workers(lead.id) if a.id not in known and a.role == "worker"]
             return sorted(fresh, key=lambda a: a.created_at)
 
         r2_end, w1_end = ts(r2.ended_at), ts(w1r.ended_at)
@@ -150,7 +161,7 @@ class Parallel(Smoke):
             }
             for r in lead_runs
         ]
-        facts["dispatches"] = self.dispatches(lead.id, [r.id for r in lead_runs])
+        facts["dispatches"] = self.dispatches([r.id for r in lead_runs])
         facts["workers"] = [
             {
                 "agent": a.id,
@@ -190,7 +201,8 @@ class Parallel(Smoke):
                     f"{agent and agent.id}: {[(r.id, r.status.value) for r in runs]}",
                 )
         else:
-            facts["verdict"] = self.judge(w1, fresh, facts["dispatches"], run2.id)
+            content = {w["agent"]: w[filename] for w in facts["workers"]}
+            facts["verdict"] = self.judge(w1, fresh, facts["dispatches"], run2.id, content)
             self.check(
                 f"{tag} overlapping work not run in parallel from different bases",
                 facts["verdict"].startswith("acceptable"),
@@ -215,25 +227,38 @@ class Parallel(Smoke):
         return out.stdout if out.returncode == 0 else None
 
     @staticmethod
-    def judge(w1: Any, fresh: list[Any], calls: list[dict[str, Any]], run2: int) -> str:
-        sent = [
-            c for c in calls if c["tool"] == "send_message" and c["input"].get("agent_id") == w1.id
-        ]
-        if not fresh and sent:
-            return f"acceptable: sent to worker 1 with send_message {sent[0]['input']}"
-        if not fresh:
-            return "other: no second worker and no message to worker 1"
-        w2 = fresh[0]
-        spawn = next((c for c in calls if c["tool"] == "spawn_agent" and c["run"] >= run2), None)
-        args = spawn["input"] if spawn else {}
-        after = args.get("after") or []
-        chained = w1.id in after
-        on_w1 = w2.base_ref == w1.branch
-        if chained and on_w1:
-            return f"acceptable: new worker {w2.id} after and based on worker 1: {args}"
-        if not chained and not on_w1:
-            return f"not acceptable: new worker {w2.id} at once from {w2.base_ref}: {args}"
-        return f"other: new worker {w2.id} after={after} base_ref={w2.base_ref}: {args}"
+    def judge(
+        w1: Any,
+        fresh: list[Any],
+        calls: list[dict[str, Any]],
+        run2: int,
+        content: dict[str, str | None],
+    ) -> str:
+        """Scenario 2: how the lead dispatched the second instruction (calls made in or
+        after lead run `run2`), and whether `shared.txt` on the final branch has `two`.
+        `content` maps agent ids to that file's content on their branch."""
+        later = [c for c in calls if c["run"] >= run2]
+        spawned = {c["agent"]: c for c in later if c["tool"] == "spawn_agent" and c["agent"]}
+        w2 = next((a for a in fresh if a.role == "worker" and a.id in spawned), None)
+        if w2 is not None:
+            final, args = w2, spawned[w2.id]["input"]
+            chained, on_w1 = w1.id in (args.get("after") or []), w2.base_ref == w1.branch
+            if chained and on_w1:
+                verdict = f"acceptable: new worker {w2.id} after and based on worker 1: {args}"
+            elif not chained and not on_w1:
+                return f"not acceptable: new worker {w2.id} at once from {w2.base_ref}: {args}"
+            else:
+                return f"other: new worker {w2.id} base_ref={w2.base_ref}: {args}"
+        else:
+            sent = [c for c in later if c["tool"] == "send_message" and c["agent"] == w1.id]
+            if not sent:
+                return f"other: no worker spawned and no message to worker 1 from run {run2} on"
+            final = w1
+            verdict = f"acceptable: sent to worker 1 with send_message {sent[0]['input']}"
+        text = content.get(final.id) or ""
+        if "two" not in (line.strip() for line in text.splitlines()):
+            return f"other: shared.txt on {final.branch} lacks the line two: {text!r}"
+        return verdict
 
 
 def print_report(info: dict[str, Any]) -> None:
