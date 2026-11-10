@@ -17,9 +17,11 @@ from mcp.server.mcpserver import MCPServer
 
 from . import roles
 from .models import Run, running_total
+from .replies import clip, run_reply, structured_page
 from .service import Orchestrator, OrchestratorError, agent_state, result_file, run_usage
 
 MAX_WAIT_SECONDS = 1800
+WAIT_SECONDS = 120  # default wait_for_agents timeout
 RESULT_CHARS = 4000  # result text (or structured output) per agent in one reply
 EVENT_CHARS = 300  # text of one agent_log line
 LOG_CHARS = 6000  # a whole agent_log reply
@@ -29,9 +31,10 @@ MAX_STATUS = 30
 server = MCPServer(
     "orch",
     instructions=(
-        "Tools to run coding agents (Claude Code, Codex) in git worktrees. Typical flow: "
-        "spawn_agent (returns at once) -> wait_for_agents -> read results -> send_message "
-        "for follow-ups. Use `after` to chain agents that depend on each other."
+        "Tools to run coding agents (Claude Code, Codex) in git worktrees. Flow: "
+        "spawn_agent / send_message (return at once) -> end your turn with a short status -> "
+        "an automatic `[orch notification]` turn brings the results when your agents are "
+        "done. Use `after` to chain agents that depend on each other."
     ),
 )
 
@@ -70,98 +73,23 @@ def _own(orch: Orchestrator, agent_id: str) -> str:
     return agent_id
 
 
-def _queued(orch: Orchestrator, agent_id: str, run_id: int) -> dict[str, Any]:
-    view = orch.view(orch.agent(agent_id))
+def _queued(
+    orch: Orchestrator, agent_id: str, run_id: int, notify: str | None = None
+) -> dict[str, Any]:
+    """The reply to a dispatch; `notify` only when the caller will really be woken (it is
+    an agent and the target's parent), so the interactive session sees that nothing will."""
+    agent = orch.agent(agent_id)
+    view = orch.view(agent)
     keys = ("id", "project", "role", "provider", "status", "branch", "cwd")
-    return {**{key: view[key] for key in keys}, "run_id": run_id}
+    reply = {**{key: view[key] for key in keys}, "run_id": run_id}
+    caller = os.environ.get("ORCH_AGENT_ID")
+    if notify and caller and agent.parent_id == caller:
+        reply["notify"] = notify
+    return reply
 
 
-def clip(
-    text: str, limit: int, offset: int = 0, run_id: int | None = None, paged: bool = True
-) -> str:
-    """`limit` chars of `text` from `offset` (limit <= 0: all), saying what was left out.
-
-    The note names the get_agent call for the rest: with `run_id` that run's, and with
-    `paged` the `result_offset` to continue from (errors are not paged).
-    """
-    total = len(text)
-    offset = max(0, offset)
-    end = total if limit <= 0 else min(total, offset + limit)
-    if offset == 0 and end == total:
-        return text
-    if offset >= total:
-        return f"[result_offset {offset} is past the end: {total} chars]"
-    part = text[offset:end]
-    if offset:
-        part = f"[chars {offset}-{end} of {total}] {part}"
-    if end < total:
-        call = f"get_agent run_id={run_id} " if run_id else ""
-        page = f"{call}result_offset={end}; " if paged and run_id else call
-        part += f"… [cut at {end} of {total} chars; {page}result_chars=0 for all]"
-    return part
-
-
-def _structured(data: Any, limit: int, offset: int = 0, run_id: int | None = None) -> Any:
-    """Structured output as is when its JSON fits in `limit` and no offset is asked for,
-    else a page of that JSON."""
-    text = json.dumps(data, ensure_ascii=False)
-    if offset <= 0 and (limit <= 0 or len(text) <= limit):
-        return data
-    return clip(text, limit, offset, run_id)
-
-
-def _run_reply(run: Run, budget: int | None, answer: bool = True) -> tuple[dict[str, Any], int]:
-    """A finished run for wait_for_agents: its error and its answer (structured output
-    when it has one, else its text), together cut to `budget` chars of JSON (None: no
-    limit).
-
-    Returns the reply and the budget left. A text that gets no room at all is left out
-    and the reply points to get_agent instead.
-    """
-    reply: dict[str, Any] = {"id": run.id, "status": run.status.value}
-    left = budget
-    texts: list[tuple[str, str, Any]] = []
-    if run.error:
-        texts.append(("error", run.error, None))
-    if answer and run.structured is not None:
-        texts.append(("structured", json.dumps(run.structured, ensure_ascii=False), run))
-    elif answer and run.result is not None:
-        texts.append(("result", run.result, None))
-    for key, text, structured in texts:
-        if left is not None and left <= 0:
-            reply["more"] = f"get_agent run_id={run.id}"
-            continue
-        size = len(json.dumps(structured.structured)) if structured else 0
-        if structured and (left is None or size <= left):
-            reply[key] = structured.structured
-            left = None if left is None else left - size
-        elif left is None:
-            reply[key] = text
-        elif chars := _fitting(text, left):
-            reply[key] = clip(text, chars, run_id=run.id, paged=key != "error")
-            left -= _json_len(text[:chars])
-        else:  # not even one char fits (clip would read a limit of 0 as "all")
-            reply["more"] = f"get_agent run_id={run.id}"
-            left = 0
-    return reply, (0 if left is None else left)
-
-
-def _json_len(text: str) -> int:
-    """Length of `text` once quoted in a JSON reply, without the quotes (escaping non-ASCII
-    too, the longer of the two ways to serialize it)."""
-    return len(json.dumps(text)) - 2
-
-
-def _fitting(text: str, budget: int) -> int:
-    """How many leading chars of `text` take at most `budget` chars of JSON."""
-    low, high = 0, len(text)
-    while low < high:
-        middle = (low + high + 1) // 2
-        if _json_len(text[:middle]) <= budget:
-            low = middle
-        else:
-            high = middle - 1
-    return low
+def _sender() -> str | None:
+    return os.environ.get("ORCH_AGENT_ID") or None
 
 
 EARLIER_WITH_TEXT = 2  # undelivered runs before the latest that wait_for_agents shows
@@ -182,7 +110,7 @@ def _agent_runs(shown: Run | None, claimed: list[Run], limit: int) -> dict[str, 
     last = None
     if shown:
         is_new = any(run.id == shown.id for run in claimed)
-        last, left = _run_reply(shown, budget, answer=is_new)
+        last, left = run_reply(shown, budget, answer=is_new)
         if not is_new:
             last["already_delivered"] = "get_agent result_chars=0 reads it again"
         budget = None if budget is None else left
@@ -190,7 +118,7 @@ def _agent_runs(shown: Run | None, claimed: list[Run], limit: int) -> dict[str, 
     with_text, listed = [], []
     for run in reversed(earlier):
         if len(with_text) < EARLIER_WITH_TEXT and (budget is None or budget > 0):
-            reply, left = _run_reply(run, budget)
+            reply, left = run_reply(run, budget)
             budget = None if budget is None else left
             with_text.append(reply)
         else:
@@ -229,16 +157,21 @@ def _wait(orch: Orchestrator, ids: list[str], timeout: float, limit: int) -> dic
     `finished` matches the statuses even when a run is queued after the idle check.
     """
     caller = os.environ.get("ORCH_AGENT_ID", "")
+
+    def message_waiting() -> bool:
+        return bool(caller and orch.store.waiting_messages(caller))
+
+    if message_waiting():
+        return _statuses(orch, ids, {aid: orch.store.runs_of(aid) for aid in ids}, MESSAGE_NOTE)
     floors = {agent_id: _delivery_floor(orch, caller, agent_id) for agent_id in ids}
-    orch.wait_idle(ids, timeout)
+    orch.wait_idle(ids, timeout, interrupt=message_waiting)
     runs = {agent_id: orch.store.runs_of(agent_id) for agent_id in ids}
+    if message_waiting():
+        return _statuses(orch, ids, runs, MESSAGE_NOTE)
     states = {agent_id: agent_state(runs[agent_id]) for agent_id in ids}
-    if any(active for _, active, _ in states.values()):
-        agents = [
-            {"id": agent_id, "status": status, "queued_runs": len(active)}
-            for agent_id, (status, active, _) in states.items()
-        ]
-        return {"finished": False, "agents": agents}
+    below = {agent_id: orch.store.active_descendants(agent_id) for agent_id in ids}
+    if any(active for _, active, _ in states.values()) or any(below.values()):
+        return _statuses(orch, ids, runs)
     outcomes = []
     for agent_id in ids:
         status, _, shown = states[agent_id]
@@ -255,6 +188,30 @@ def _wait(orch: Orchestrator, ids: list[str], timeout: float, limit: int) -> dic
         claimed_runs = [run for run in new if run.id in claimed]
         outcomes.append({**outcome, **_agent_runs(shown, claimed_runs, limit)})
     return {"finished": True, "agents": outcomes}
+
+
+MESSAGE_NOTE = "a message for you is waiting: end this turn now with a short status"
+
+
+def _statuses(
+    orch: Orchestrator, ids: list[str], runs: dict[str, list[Run]], note: str | None = None
+) -> dict[str, Any]:
+    """The reply of an unfinished wait: statuses only, nothing counts as delivered."""
+    agents = []
+    for agent_id in ids:
+        status, active, _ = agent_state(runs[agent_id])
+        agents.append(
+            {
+                "id": agent_id,
+                "status": status,
+                "queued_runs": len(active),
+                "children_running": orch.store.active_descendants(agent_id),
+            }
+        )
+    reply: dict[str, Any] = {"finished": False, "agents": agents}
+    if note:
+        reply["note"] = note
+    return reply
 
 
 @server.tool()
@@ -307,8 +264,9 @@ def spawn_agent(
     after: list[str] | None = None,
     output_schema: dict[str, Any] | None = None,
     freeform: bool = False,
+    notify: str = "each",
 ) -> dict[str, Any]:
-    """Start a new agent on a task. Returns immediately; use wait_for_agents for the outcome.
+    """Start a new agent on a task. Returns immediately; end your turn, you are notified.
 
     task: the full, self-contained brief. The agent knows nothing else. It may embed
       `{{result:<agent-id>}}`, replaced by that agent's final answer when this agent starts
@@ -326,6 +284,8 @@ def spawn_agent(
       agent is skipped.
     output_schema: JSON Schema; the final answer is then returned as `structured` data.
       Default: the role's compact schema, if it has one; `freeform` for a prose answer.
+    notify: `each` wakes you when this agent is done, `all` once all your agents are. The
+      reply has `notify` only if you will be woken; without it, use wait_for_agents.
     """
     orch = _orch()
     caller = _caller(orch)
@@ -344,22 +304,26 @@ def spawn_agent(
         output_schema=output_schema,
         role_schema=not freeform,
         parent_id=caller.id if caller else None,
+        sender=caller.id if caller else None,
+        notify=notify,
     )
-    return _queued(orch, agent.id, run.id)
+    return _queued(orch, agent.id, run.id, notify)
 
 
 @server.tool()
-def ask_project_lead(project: str, message: str) -> dict[str, Any]:
+def ask_project_lead(project: str, message: str, notify: str = "each") -> dict[str, Any]:
     """Send a message to a project's lead agent, creating it on first use.
 
     The lead works in the project's main checkout, keeps one long conversation about the
     project and can plan work and run its own worker agents. Returns immediately.
+    `notify` as in spawn_agent.
     """
     orch = _orch()
     if _scoped(orch):
         raise OrchestratorError("only the top-level orchestrator talks to project leads")
     lead = orch.lead(project)
-    return _queued(orch, lead.id, orch.send(lead.id, message).id)
+    run = orch.send(lead.id, message, sender=_sender(), notify=notify)
+    return _queued(orch, lead.id, run.id, notify)
 
 
 @server.tool()
@@ -369,26 +333,36 @@ def send_message(
     after: list[str] | None = None,
     output_schema: dict[str, Any] | None = None,
     freeform: bool = False,
+    notify: str = "each",
 ) -> dict[str, Any]:
     """Send a follow-up to an existing agent; it continues its conversation with full memory.
 
     Messages to a busy agent queue up and run in order. Returns immediately.
-    `output_schema`/`freeform` as in spawn_agent.
+    `output_schema`/`freeform`/`notify` as in spawn_agent.
     """
     orch = _orch()
-    run = orch.send(_own(orch, agent_id), message, after, output_schema, not freeform)
-    return _queued(orch, agent_id, run.id)
+    run = orch.send(
+        _own(orch, agent_id),
+        message,
+        after,
+        output_schema,
+        not freeform,
+        sender=_sender(),
+        notify=notify,
+    )
+    return _queued(orch, agent_id, run.id, notify)
 
 
 @server.tool()
 async def wait_for_agents(
-    agent_ids: list[str], timeout_seconds: int = 600, result_chars: int = RESULT_CHARS
+    agent_ids: list[str], timeout_seconds: int = WAIT_SECONDS, result_chars: int = RESULT_CHARS
 ) -> dict[str, Any]:
-    """Block until all the given agents are idle, then return their new results.
+    """Block until the agents and their sub-agents are idle, then return their new results.
 
-    If `finished` is false not all are idle yet: only statuses; call again. Each result
-    is returned once per caller, all texts of an agent together cut at `result_chars`
-    (0: no limit); later calls mark it `already_delivered`.
+    Only for a result needed in this turn within minutes; otherwise end the turn and get
+    notified. `finished: false`: statuses only (timeout, or a message waits for you: then
+    end the turn). Each result comes once per caller (notifications count; repeats are
+    `already_delivered`), an agent's texts cut at `result_chars` (0: no limit).
     """
     orch = _orch()
     ids = [_own(orch, agent_id) for agent_id in agent_ids]
@@ -452,7 +426,7 @@ def get_agent(
     shown = view[key]
     if shown and shown["structured"] is not None:  # the answer once, as wait_for_agents
         del shown["result"]
-        shown["structured"] = _structured(
+        shown["structured"] = structured_page(
             shown["structured"], result_chars, result_offset, shown["id"]
         )
     elif shown:
@@ -550,7 +524,10 @@ def _cut(line: str, budget: int) -> str | None:
 def stop_agent(agent_id: str) -> dict[str, Any]:
     """Stop an agent's running and queued turns. The agent and its worktree are kept."""
     orch = _orch()
-    return {"stopped_runs": orch.stop(_own(orch, agent_id))}
+    stopped = orch.stop_runs(_own(orch, agent_id))
+    # The caller knows these ended: no notification and no wait_for_agents repeats them.
+    orch.store.claim(os.environ.get("ORCH_AGENT_ID", ""), stopped)
+    return {"stopped_runs": len(stopped)}
 
 
 @server.tool()

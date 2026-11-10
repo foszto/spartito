@@ -12,16 +12,18 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from . import config, git, providers, roles, settings
+from . import config, git, notify, providers, roles, settings
 from .models import Agent, Project, Run, RunStatus, Usage, running_total
-from .store import Store
+from .store import MESSAGE, NOTIFICATION, NOTIFY_MODES, Store
 
 LEAD_ROLE = "lead"
 ORCHESTRATOR_ID = "orchestrator"
 STOP_GRACE_SECONDS = 8
+QUEUE_PREVIEW_CHARS = 120
 
 
 class OrchestratorError(Exception):
@@ -61,6 +63,7 @@ def agent_state(runs: list[Run]) -> tuple[str, list[Run], Run | None]:
 class Orchestrator:
     def __init__(self, store: Store | None = None) -> None:
         self.store = store or Store()
+        self.store.on_run_end = self.notify_parents
 
     # -- projects ---------------------------------------------------------
 
@@ -173,28 +176,52 @@ class Orchestrator:
         after: list[str | int] | None = None,
         output_schema: dict[str, Any] | None = None,
         role_schema: bool = False,
+        sender: str | None = None,
+        notify: str = "each",
     ) -> Run:
         """Queue a turn for an agent and start its runner. Returns immediately.
 
         With `role_schema` and no `output_schema` the agent's role default schema applies.
+        `sender` is the agent that sends it (None: the user); when that is the agent's
+        parent, `notify` says when it is woken: `each` once this agent is done, `all` once
+        all its agents are.
         """
         agent = self.agent(agent_id)
+        self._check_notify(notify)
         if output_schema is None and role_schema:
             project = self.store.get_project(agent.project) if agent.project else None
             output_schema = self.role_schema(agent.role, project.path if project else None)
-        run = self.store.add_run(agent.id, message, self._resolve_after(after), output_schema)
+        run = self.store.add_run(
+            agent.id,
+            message,
+            self._resolve_after(after),
+            output_schema,
+            kind=MESSAGE,
+            sender=sender,
+            notify=notify,
+        )
         self._launch(run)
         return run
+
+    @staticmethod
+    def _check_notify(notify: str) -> None:
+        if notify not in NOTIFY_MODES:
+            raise OrchestratorError(f"notify must be one of: {', '.join(NOTIFY_MODES)}")
 
     def spawn(self, project_name: str, task: str, **options: Any) -> tuple[Agent, Run]:
         after = options.pop("after", None)
         output_schema = options.pop("output_schema", None)
+        sender = options.pop("sender", None)
+        notify_mode = options.pop("notify", "each")
+        self._check_notify(notify_mode)
         if options.pop("role_schema", False) and output_schema is None:
             # Resolved before the agent exists, so a broken schema leaves no agent behind.
             path = self.project(project_name).path
             output_schema = self.role_schema(options.get("role") or "worker", path)
         agent = self.create_agent(project_name, **options)
-        return agent, self.send(agent.id, task, after, output_schema)
+        return agent, self.send(
+            agent.id, task, after, output_schema, sender=sender, notify=notify_mode
+        )
 
     @staticmethod
     def role_schema(role: str, project_path: str | None) -> dict[str, Any] | None:
@@ -244,9 +271,20 @@ class Orchestrator:
                     raise OrchestratorError(f"unknown run {ref}")
                 run_ids.append(int(ref))
             else:
-                last = self.store.last_run(self.agent(str(ref)).id)
-                if last:
-                    run_ids.append(last.id)
+                agent = self.agent(str(ref))
+                meta = self.store.meta_of(agent.id)
+                # Not a waiting notification: it is deleted when it has nothing to report.
+                runs = [
+                    run
+                    for run in self.store.runs_of(agent.id)
+                    if not (
+                        run.status is RunStatus.WAITING
+                        and run.id in meta
+                        and meta[run.id].kind == NOTIFICATION
+                    )
+                ]
+                if runs:
+                    run_ids.append(runs[-1].id)
         return run_ids
 
     def _launch(self, run: Run) -> None:
@@ -265,6 +303,14 @@ class Orchestrator:
         # Reap the runner if this process outlives it, so a dead runner is not a zombie
         # that still looks alive to Store.reconcile().
         threading.Thread(target=proc.wait, daemon=True).start()
+
+    def notify_parents(self, agent_id: str) -> None:
+        """A run of the agent ended: queue a notification on each ancestor that is due one.
+        Never raises: the caller is ending a run and must not fail because of this."""
+        try:
+            notify.notify_ancestors(self.store, agent_id, self._launch)
+        except Exception as exc:
+            print(f"notifying the parents of {agent_id} failed: {exc!r}", file=sys.stderr)
 
     # -- settings ---------------------------------------------------------
 
@@ -305,8 +351,10 @@ class Orchestrator:
         run has it, else the text, cut at `result_limit` chars.
         With `detail`: `last_run.structured` (the text stays in `result`),
         `model_override`/`effort_override` (the values set on the agent),
-        `last_run.usage` (that run's own tokens, cost and reported model) and
-        `last_run.result_file` (the full final answer on disk).
+        `last_run.usage` (that run's own tokens, cost and reported model),
+        `last_run.result_file` (the full final answer on disk) and `queue` (the waiting
+        runs: id, kind, sender, created_at, prompt preview).
+        `children_running` is how many descendants have a queued or running turn.
         """
         runs = self.store.runs_of(agent.id)
         usage = self.store.usage_of(agent.id)
@@ -333,6 +381,7 @@ class Orchestrator:
             "cwd": agent.cwd,
             "session_id": agent.session_id,
             "queued_runs": len(active),
+            "children_running": self.store.active_descendants(agent.id),
             "runs": len(runs),
             "cost_usd": totals.cost or 0,
             "tokens": totals.tokens(),
@@ -353,6 +402,18 @@ class Orchestrator:
                 view["last_run"]["structured"] = shown.structured
                 view["last_run"]["usage"] = run_usage(usage.get(shown.id))
                 view["last_run"]["result_file"] = result_file(shown.id)
+            meta = self.store.meta_of(agent.id)
+            view["queue"] = [
+                {
+                    "id": run.id,
+                    "kind": meta[run.id].kind if run.id in meta else MESSAGE,
+                    "sender": meta[run.id].sender if run.id in meta else None,
+                    "created_at": run.created_at,
+                    "prompt": run.prompt[:QUEUE_PREVIEW_CHARS],
+                }
+                for run in active
+                if run.status is RunStatus.WAITING
+            ]
         return view
 
     def run_history(self, agent: Agent, limit: int = 10) -> list[dict[str, Any]]:
@@ -374,17 +435,26 @@ class Orchestrator:
         self.store.reconcile()
         return [self.view(agent, result_limit=400) for agent in self.store.list_agents(project)]
 
-    def wait_idle(self, agent_ids: list[str], timeout: float = 600) -> bool:
-        """Block until none of the agents has a queued or running turn (True), or until
-        timeout (False)."""
+    def wait_idle(
+        self,
+        agent_ids: list[str],
+        timeout: float = 600,
+        interrupt: Callable[[], bool] | None = None,
+    ) -> bool:
+        """Block until the agents are settled: neither they nor any of their descendants
+        has a queued or running turn, and no notification inside is about to be queued
+        (True); or until timeout, or until `interrupt()` is true (False)."""
         agents = [self.agent(agent_id) for agent_id in agent_ids]
         deadline = time.monotonic() + timeout
         while True:
             self.store.reconcile()
-            idle = not any(self.store.active_runs(agent.id) for agent in agents)
-            if idle or time.monotonic() >= deadline:
+            idle = all(self.settled(agent.id) for agent in agents)
+            if idle or time.monotonic() >= deadline or (interrupt and interrupt()):
                 return idle
             time.sleep(1)
+
+    def settled(self, agent_id: str) -> bool:
+        return notify.settled(self.store, agent_id, self._launch)
 
     def wait(self, agent_ids: list[str], timeout: float = 600) -> tuple[bool, list[dict[str, Any]]]:
         """Block like wait_idle, then return whether they are idle and their detail views
@@ -408,6 +478,10 @@ class Orchestrator:
 
     def stop(self, agent_id: str) -> int:
         """Stop every queued and running turn of an agent. Returns how many were stopped."""
+        return len(self.stop_runs(agent_id))
+
+    def stop_runs(self, agent_id: str) -> list[int]:
+        """Stop every queued and running turn of an agent; returns their ids."""
         agent = self.agent(agent_id)
         # Newest first, so a queued turn cannot start while the running one is going down.
         active = sorted(self.store.active_runs(agent.id), key=lambda run: -run.id)
@@ -416,10 +490,16 @@ class Orchestrator:
         deadline = time.monotonic() + STOP_GRACE_SECONDS
         while self.store.active_runs(agent.id) and time.monotonic() < deadline:
             time.sleep(0.2)
-        for run in self.store.active_runs(agent.id):
+        killed = self.store.active_runs(agent.id)
+        for run in killed:
             self._kill(run, signal.SIGKILL)
-            self.store.finish_run(run.id, RunStatus.STOPPED, error="stopped")
-        return len(active)
+            if run.started_at is None and self.store.meta(run.id).kind == NOTIFICATION:
+                self.store.delete_run(run.id)  # never had a turn: leave no trace
+            else:
+                self.store.finish_run(run.id, RunStatus.STOPPED, error="stopped")
+        if killed:
+            self.notify_parents(agent.id)
+        return [run.id for run in active]
 
     @staticmethod
     def _kill(run: Run, sig: int) -> None:

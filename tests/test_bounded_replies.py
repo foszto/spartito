@@ -58,8 +58,8 @@ def test_an_unfinished_wait_returns_statuses_only(orch: Orchestrator, project: s
     assert reply == {
         "finished": False,
         "agents": [
-            {"id": done, "status": "done", "queued_runs": 0},
-            {"id": busy, "status": "waiting", "queued_runs": 1},
+            {"id": done, "status": "done", "queued_runs": 0, "children_running": 0},
+            {"id": busy, "status": "waiting", "queued_runs": 1, "children_running": 0},
         ],
     }
     orch.store.finish_run(pending.id, RunStatus.DONE, result="later")
@@ -213,9 +213,9 @@ def test_a_run_finishing_after_the_idle_check_is_delivered_too(
     waited_for = orch.store.add_run(agent_id, "running when the wait starts")
     idle = Orchestrator.wait_idle
 
-    def idle_then_another_run(self: Orchestrator, *args: Any) -> bool:
+    def idle_then_another_run(self: Orchestrator, *args: Any, **kw: Any) -> bool:
         self.store.finish_run(waited_for.id, RunStatus.DONE, result="first")
-        result = idle(self, *args)
+        result = idle(self, *args, **kw)
         finish(self, agent_id, "second")  # sent and finished before the reply is built
         return result
 
@@ -234,8 +234,8 @@ def test_a_run_queued_after_the_idle_check_means_not_finished(
     agent_id = worker(orch, project, "first")
     idle = Orchestrator.wait_idle
 
-    def idle_then_queued(self: Orchestrator, *args: Any) -> bool:
-        result = idle(self, *args)
+    def idle_then_queued(self: Orchestrator, *args: Any, **kw: Any) -> bool:
+        result = idle(self, *args, **kw)
         self.store.add_run(agent_id, "queued meanwhile")
         return result
 
@@ -244,7 +244,7 @@ def test_a_run_queued_after_the_idle_check_means_not_finished(
 
     assert reply == {
         "finished": False,
-        "agents": [{"id": agent_id, "status": "waiting", "queued_runs": 1}],
+        "agents": [{"id": agent_id, "status": "waiting", "queued_runs": 1, "children_running": 0}],
     }
 
 

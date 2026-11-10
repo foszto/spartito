@@ -1,9 +1,10 @@
 """Executes one run in its own detached process: `python -m orchestrator.runner <run_id>`.
 
-The runner waits for the run's turn (dependencies, then earlier runs of the same agent),
-prepares the workspace, launches the provider CLI and translates its output stream into
-events. Because every run has its own process there is no daemon to keep alive: whoever
-queued the run (CLI, MCP server) may exit immediately.
+The runner waits for the run's turn (dependencies, then the agent's turn order, see
+`Store.may_start`), prepares the workspace, launches the provider CLI and translates its
+output stream into events. Because every run has its own process there is no daemon to
+keep alive: whoever queued the run (CLI, MCP server) may exit immediately. When the run
+has ended, in whatever way, the runner checks whether a parent is due a notification.
 """
 
 from __future__ import annotations
@@ -18,10 +19,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import config, git, loadout, providers, roles, settings
+from . import config, git, loadout, notify, providers, roles, settings
 from .models import Agent, Event, Project, Run, RunStatus, Usage, running_total
 from .providers import McpServer, RunContext
-from .store import Store, now
+from .store import MESSAGE, NOTIFICATION, Store
 
 POLL_SECONDS = 0.5
 RECONCILE_EVERY = 10  # polls
@@ -38,7 +39,9 @@ def _raise_stopped(signum: int, frame: object) -> None:
 
 
 def wait_for_turn(store: Store, run: Run) -> str | None:
-    """Block until the run may start. Returns a reason when it must be skipped instead."""
+    """Block until the message run has taken its agent's turn (it is then marked running).
+    Returns a reason when it must be skipped instead; raises notify.Gone when the run was
+    removed or ended by someone else meanwhile."""
     polls = 0
     while True:
         blocked = False
@@ -50,9 +53,12 @@ def wait_for_turn(store: Store, run: Run) -> str | None:
                 blocked = True
             elif dep.status is not RunStatus.DONE:
                 return f"dependency run {dep_id} ({dep.agent_id}) ended as {dep.status.value}"
-        earlier = [other for other in store.active_runs(run.agent_id) if other.id < run.id]
-        if not blocked and not earlier:
-            return None
+        if not blocked:
+            started = store.take_turn(run, MESSAGE)
+            if started is None:
+                raise notify.Gone
+            if started:
+                return None
         polls += 1
         if polls % RECONCILE_EVERY == 0:
             store.reconcile()
@@ -284,27 +290,56 @@ def record_usage(
 
 
 def main(run_id: int) -> None:
+    from .service import Orchestrator  # the service launches runners; import it lazily
+
     store = Store()
+    orch = Orchestrator(store)
     run = store.get_run(run_id)
     if run is None or not run.status.active:
         return
+    kind = store.meta(run_id).kind
     store.update_run(run_id, pid=os.getpid())
     signal.signal(signal.SIGTERM, _raise_stopped)
     signal.signal(signal.SIGINT, _raise_stopped)
     try:
-        skip_reason = wait_for_turn(store, run)
-        if skip_reason:
-            store.add_event(run_id, run.agent_id, "error", f"skipped: {skip_reason}")
-            store.finish_run(run_id, RunStatus.SKIPPED, error=skip_reason)
-            return
+        take_turn(store, run, kind)
+    finally:
+        # Whatever happened, the run is over: maybe a parent is now due a notification.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        orch.notify_parents(run.agent_id)
+
+
+def take_turn(store: Store, run: Run, kind: str) -> None:
+    """Wait for the run's turn and execute it; record how it ended."""
+    run_id = run.id
+    try:
+        if kind == NOTIFICATION:
+            prepared = notify.start(store, run)
+            if prepared is None:
+                return  # nothing to report: the run was deleted without a turn
+            run = prepared
+        else:
+            skip_reason = wait_for_turn(store, run)
+            if skip_reason:
+                store.add_event(run_id, run.agent_id, "error", f"skipped: {skip_reason}")
+                store.finish_run(run_id, RunStatus.SKIPPED, error=skip_reason)
+                return
         agent = store.get_agent(run.agent_id)
         project = store.get_project(agent.project) if agent and agent.project else None
         if agent is None or (agent.project and project is None):
             raise RuntimeError("agent or project was removed")
-        store.update_run(run_id, status=RunStatus.RUNNING, started_at=now())
-        store.add_event(run_id, agent.id, "prompt", run.prompt)
+        store.add_event(
+            run_id, agent.id, "notification" if kind == NOTIFICATION else "prompt", run.prompt
+        )
         execute(store, run, agent, project)
+    except notify.Gone:
+        return
     except Stopped:
+        fresh = store.get_run(run_id)
+        if kind == NOTIFICATION and fresh and fresh.started_at is None:
+            store.delete_run(run_id)  # it never had a turn; do not leave it as the last run
+            return
         store.add_event(run_id, run.agent_id, "error", "stopped")
         store.finish_run(run_id, RunStatus.STOPPED, error="stopped")
     except Exception as exc:  # the run must never stay 'running' after its runner is gone
