@@ -1399,7 +1399,7 @@ function renderSettings() {
   box.append(row);
   rows.append(box);
   rows.append(compactAtBox(scope, data));
-  if (!scope) rows.append(desktopSwitch());
+  if (!scope) rows.append(...SWITCHES.map(switchBox));
 }
 
 function compactAtBox(scope, data) {
@@ -1418,13 +1418,18 @@ function compactAtBox(scope, data) {
   return box;
 }
 
-const DESKTOP_KEY = 'desktop_notifications';  // global only, on unless set to false
-function desktopSwitch() {
+// Global-only on/off settings, on unless set to false (settings.SWITCHES).
+const SWITCHES = [
+  { key: 'keep_awake', title: 'Keep awake', label: 'Keep the machine awake while agents work',
+    about: 'While an agent’s turn runs, this machine does not go to sleep on idle (the display may).' },
+  { key: 'desktop_notifications', title: 'Notifications', label: 'Show desktop notifications (macOS)',
+    about: 'On this machine: when an agent asks you for a decision, and when an agent you messaged directly has finished.' },
+];
+function switchBox({ key, title, label: text, about }) {
   const box = el('div', 'tier'), label = el('label', 'switch-row'), check = el('input');
-  check.type = 'checkbox'; check.name = DESKTOP_KEY; check.checked = state.settings.global?.[DESKTOP_KEY] !== false;
-  label.append(check, 'Show desktop notifications (macOS)');
-  box.append(el('h4', '', 'Notifications'), el('p', 'about',
-    'On this machine: when an agent asks you for a decision, and when an agent you messaged directly has finished.'), label);
+  check.type = 'checkbox'; check.name = key; check.checked = state.settings.global?.[key] !== false;
+  label.append(check, text);
+  box.append(el('h4', '', title), el('p', 'about', about), label);
   return box;
 }
 
@@ -1440,7 +1445,7 @@ function openSettings() {
       if (key) ((data[tier] ??= {})[providerName] ??= {})[key] = value;
       else if (name === state.archive_after_key || name === state.compact_at_key) data[name] = value;
     }
-    if (!form.get('scope')) data[DESKTOP_KEY] = form.get(DESKTOP_KEY) === 'on';
+    if (!form.get('scope')) for (const { key } of SWITCHES) data[key] = form.get(key) === 'on';
     await call('/api/settings', { project: form.get('scope') || null, data });
     toast('Settings saved'); await refresh();
   });

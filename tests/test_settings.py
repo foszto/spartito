@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from starlette.testclient import TestClient
 
-from orchestrator import providers
+from orchestrator import providers, settings
 from orchestrator.models import Agent
 from orchestrator.providers import RunContext, claude, codex, get
 from orchestrator.service import Orchestrator, OrchestratorError
@@ -180,3 +180,34 @@ def test_view_shows_the_effective_model_and_effort_and_keeps_overrides_apart(
     assert picked(explicit) == ("mine", "high", "mine", None)
     assert picked(lead) == (None, None, None, None)
     assert (orch.view(inherited)["tokens"], orch.view(inherited)["cost_usd"]) == (None, 0)
+
+
+def test_every_non_tier_key_is_validated_kept_when_not_named_and_in_the_dialog(
+    orch: Orchestrator, project: str
+) -> None:
+    keys = (settings.ARCHIVE_AFTER, settings.COMPACT_AT, *settings.SWITCHES)
+    dialog = {settings.ARCHIVE_AFTER: "12", settings.COMPACT_AT: "100k"}
+    dialog |= {key: False for key in settings.SWITCHES}  # unchecked boxes
+    orch.update_settings({"worker": {"fake": {"model": "m"}}, **dialog})
+    orch.update_settings({settings.ARCHIVE_AFTER: "2", settings.COMPACT_AT: "50k"}, project)
+    stored = {settings.ARCHIVE_AFTER: 12, settings.COMPACT_AT: 100_000}
+    stored |= {key: False for key in settings.SWITCHES}
+    assert {key: orch.settings()[key] for key in keys} == stored
+
+    orch.update_settings({"worker": {"fake": {"model": "n"}}})  # a page without those fields
+    orch.update_settings({"lead": {"fake": {"effort": "high"}}}, project)
+
+    assert orch.settings() == {"worker": {"fake": {"model": "n"}}, **stored}
+    assert orch.settings(project) == {
+        "lead": {"fake": {"effort": "high"}},
+        settings.ARCHIVE_AFTER: 2,
+        settings.COMPACT_AT: 50_000,
+    }
+    for key in keys:
+        with pytest.raises(OrchestratorError):
+            orch.update_settings({key: "maybe"})
+    for key in settings.SWITCHES:
+        with pytest.raises(OrchestratorError, match="only be set globally"):
+            orch.update_settings({key: True}, project)
+    script = (Path(settings.__file__).parent / "web" / "static" / "app.js").read_text()
+    assert all(f"key: '{key}'" in script for key in settings.SWITCHES)  # a box each
