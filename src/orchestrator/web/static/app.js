@@ -72,9 +72,9 @@ const store = (key, value) => { try { localStorage.setItem(key, JSON.stringify(v
 const clock = ts => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const basename = path => path.replace(/\/+$/, '').split('/').pop();
 
-async function call(path, body) {
+async function call(path, body, keepalive) {
   const init = body === undefined ? {} : {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), keepalive: Boolean(keepalive) };
   const response = await fetch(path, init);
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || response.statusText);
@@ -112,6 +112,7 @@ function stateOf(agent) {
 const senderOf = run => run.sender || (run.kind === 'notification' ? 'system' : 'user');
 
 function select(id) {
+  flushSetup();  // a choice still settling belongs to the agent that was shown
   selected = id; location.hash = encodeURIComponent(id); shown = null; refresh();
 }
 
@@ -290,7 +291,7 @@ function buildView() {
   const chips = el('div', 'chips'), lead = el('span', 'chip-group'), tail = el('span', 'chip-group');
   const setup = el('span', 'setup'), note = el('div', 'setup-note');
   lead.id = 'chips'; tail.id = 'chipsTail'; setup.id = 'setup'; note.id = 'setupNote'; note.hidden = true;
-  setup.addEventListener('focusout', () => setTimeout(() => { if (!editingSetup()) renderSetup(setupData); }));
+  setup.addEventListener('focusout', () => setTimeout(() => renderSetup(setupData)));
   chips.append(lead, setup, tail);
   who.append(title, chips, note);
   const detailsButton = button('ghost', 'info', 'Details', () => { $('details').hidden = !$('details').hidden; });
@@ -335,7 +336,7 @@ function buildView() {
     finally { send.disabled = false; input.focus(); }
   };
   view.append(top, details, log, queue, busy, form);
-  shown = selected; lastEvent = 0; toolGroup = null; setupData = null; setupKey = '';
+  shown = selected; lastEvent = 0; toolGroup = null; setupData = null;
   input.focus();
 }
 
@@ -363,7 +364,7 @@ function renderWelcome(agent, leadProject) {
   }
 }
 
-function renderHeader(agent) {
+function renderHeader(agent, setupFreshness = true) {
   const leadProject = selected.startsWith('lead:') ? selected.slice(5) : null;
   const title = $('title'), chips = $('chips');
   const name = agent ? (agent.id === ORCH ? 'Orchestrator' : agent.id) : leadProject ? `${leadProject} lead` : 'Orchestrator';
@@ -398,12 +399,12 @@ function renderHeader(agent) {
   renderSetup(agent ? {
     id: agent.id, provider: agent.provider, effective: agent.effective || {}, inherited: agent.inherited || {},
     own: { model: agent.model_override, effort: agent.effort_override },
-    session: Boolean(agent.session_id), running: agent.status === 'running', cacheKeys: agent.cache_keys || [],
+    session: Boolean(agent.session_id), running: agent.status === 'running', cacheHint: agent.cache_hint,
   } : draft && {
     id: ORCH, provider: draft.provider, effective: draft.effective, inherited: draft.inherited,
     own: { model: draft.model_override, effort: draft.effort_override }, session: false, running: false,
-    cacheKeys: draft.cache_keys,
-  });
+    cacheHint: draft.cache_hint,
+  }, setupFreshness);
   if (!agent) return;
   const chip = (text, iconName, parent) => {
     if (!text) return;
@@ -435,106 +436,164 @@ function renderHeader(agent) {
 
 // -- model and effort of the selected agent ---------------------------------
 
-let setupData = null, setupKey = '';
-const setupTimers = {};  // per control: model, effort
+let setupData = null;
 const OTHER = '\u0000other';
 // Arrow keys on a closed select fire `change` for every option passed (Windows, Linux): the
 // choice is saved once it rests for a moment, not each one on the way.
 const SETUP_SETTLE_MS = 350;
-const editingSetup = () => Boolean($('setup')?.contains(document.activeElement));
+// Choices waiting to settle, by agent and setting; flushed when the selection changes or the
+// page goes away, so none is dropped.
+const pendingSetup = new Map();
+const savingSetup = new Map();  // saves in flight, by agent and setting: count
+// A poll asked for while a save was in flight, or before one ended, may carry the old values:
+// such answers leave the controls alone (`setupFresh` false).
+let setupEpoch = 0;
+const setupTicket = () => ({ epoch: setupEpoch, saving: savingSetup.size > 0 });
+const setupFresh = ticket => !ticket.saving && ticket.epoch === setupEpoch;
+const setupSlot = (id, key) => `${id}\u0000${key}`;
+const setupBusy = (id, key) => pendingSetup.has(setupSlot(id, key)) || savingSetup.has(setupSlot(id, key));
+const inherits = value => value || 'CLI default';
+const settingLabel = key => (key === 'model' ? 'Model' : 'Effort');
 
-// The header's model and effort controls. A poll does not rebuild them while one has the focus
-// (an open list, a half-typed name); they catch up when the focus leaves.
-function renderSetup(data, force) {
-  const box = $('setup'), note = $('setupNote');
-  if (!box) return;
-  setupData = data;
-  const key = JSON.stringify([data, data && provider(data.provider)]);
-  if (!force && (key === setupKey || editingSetup())) return;
-  const focused = document.activeElement?.dataset?.setup;
-  setupKey = key;
-  box.replaceChildren();
-  note.textContent = ''; note.hidden = true;
-  if (!data) return;
-  const chosen = provider(data.provider);
-  const fallback = value => value || 'CLI default';
-  const notes = [];
-  if (data.running) notes.push('A change applies from the next turn; the running one is not changed.');
-  if (data.session && data.cacheKeys.length) {
-    notes.push(data.cacheKeys.includes('effort')
-      ? 'Switching model or effort starts a fresh prompt cache: the next turn re-reads the whole conversation at full price.'
-      : 'Switching the model starts a fresh prompt cache: the next turn re-reads the whole conversation at full price; effort keeps it.');
-  }
-  note.textContent = notes.join(' ');
-  note.hidden = !notes.length;
-
-  const control = (key, items) => {
-    const own = data.own[key], wrap = el('label', `setting${own ? ' own' : ''}`);
-    const select = el('select', 'input compact');
-    const label = key === 'model' ? 'Model' : 'Effort', inherit = fallback(data.inherited[key]);
-    select.dataset.setup = key;
-    select.setAttribute('aria-label', `${label} of ${data.id}, ${own ? 'set on the agent' : 'inherited'}`);
-    if (notes.length) select.setAttribute('aria-describedby', 'setupNote');
-    const list = [...items];
-    if (own && !list.includes(own)) list.push(own);
-    options(select, [['', `inherit (${inherit})`], ...list.map(v => [v, v]),
-      ...(key === 'model' ? [[OTHER, 'other…']] : [])], own || '');
-    select.title = own ? `${label} set on this agent; “inherit” falls back to ${inherit}`
-      : `${label} inherited from the settings; pick one to set it on this agent`;
-    select.onchange = () => {
-      clearTimeout(setupTimers[key]);
-      if (select.value === OTHER) { editModel(select, own); return; }
-      const value = select.value || null;
-      setupTimers[key] = setTimeout(() => saveSetup(data.id, key, value), SETUP_SETTLE_MS);
-    };
-    wrap.append(el('span', 'key', key), select);
-    if (own) wrap.append(el('span', 'mark', 'own'));
-    return wrap;
-  };
-  box.append(control('model', chosen.models), control('effort', chosen.efforts));
-  if (focused) box.querySelector(`[data-setup=${focused}]`)?.focus();
+function flushSetup(keepalive) {
+  for (const entry of [...pendingSetup.values()]) { clearTimeout(entry.timer); entry.save(keepalive); }
 }
 
-// "other…": an input for any model name (the providers accept names they do not list).
-function editModel(select, own) {
-  const id = setupData.id, input = el('input', 'input compact mono'), list = el('datalist');
+// The header's model and effort controls. A control the user is using (focused: an open list,
+// a half-typed name) is never rebuilt; it is updated in place and rebuilt once the focus leaves.
+function renderSetup(data, fresh = true) {
+  const box = $('setup'), note = $('setupNote');
+  if (!box || !fresh) return;
+  setupData = data;
+  if (!data) { box.replaceChildren(); note.textContent = ''; note.hidden = true; return; }
+  const notes = [];
+  if (data.running) notes.push('A change applies from the next turn; the running one is not changed.');
+  if (data.session && data.cacheHint) notes.push(data.cacheHint);
+  note.textContent = notes.join(' ');
+  note.hidden = !notes.length;
+  for (const key of ['model', 'effort']) {
+    const items = provider(data.provider)[key === 'model' ? 'models' : 'efforts'];
+    const built = JSON.stringify([data.id, data.own[key], data.inherited[key], items, notes.length > 0]);
+    const current = box.querySelector(`[data-control=${key}]`);
+    if (current && current.contains(document.activeElement)) { syncControl(current, data, key); continue; }
+    if (current && (current.dataset.built === built || setupBusy(data.id, key))) continue;  // keep a pick on its way
+    const control = buildControl(data, key, items, notes.length > 0);
+    control.dataset.built = built;
+    if (current) current.replaceWith(control); else box.append(control);
+  }
+}
+
+function describe(select, data, key) {
+  const own = data.own[key], label = settingLabel(key), inherit = inherits(data.inherited[key]);
+  select.setAttribute('aria-label', `${label} of ${data.id}, ${own ? 'set on the agent' : 'inherited'}`);
+  select.title = own ? `${label} set on this agent; “inherit” falls back to ${inherit}`
+    : `${label} inherited from the settings; pick one to set it on this agent`;
+  select.options[0].textContent = `inherit (${inherit})`;
+}
+
+function markOwn(wrap, own) {
+  wrap.classList.toggle('own', Boolean(own));
+  wrap.querySelector('.mark')?.remove();
+  if (own) wrap.append(el('span', 'mark', 'own'));
+}
+
+function buildControl(data, key, items, described) {
+  const own = data.own[key], wrap = el('label', 'setting'), select = el('select', 'input compact');
+  wrap.dataset.control = key;
+  select.dataset.setup = key;
+  if (described) select.setAttribute('aria-describedby', 'setupNote');
+  const list = [...items];
+  if (own && !list.includes(own)) list.push(own);
+  options(select, [['', ''], ...list.map(v => [v, v]), ...(key === 'model' ? [[OTHER, 'other…']] : [])], own || '');
+  describe(select, data, key);
+  select.onchange = () => {
+    const id = data.id, slot = setupSlot(id, key);
+    clearTimeout(pendingSetup.get(slot)?.timer);
+    pendingSetup.delete(slot);
+    if (select.value === OTHER) { editModel(select, data); return; }
+    const value = select.value || null;
+    const save = keepalive => { pendingSetup.delete(slot); saveSetup(id, key, value, keepalive); };
+    pendingSetup.set(slot, { timer: setTimeout(save, SETUP_SETTLE_MS), save });
+  };
+  wrap.append(el('span', 'key', key), select);
+  markOwn(wrap, own);
+  return wrap;
+}
+
+// Brings a focused control up to date without replacing it (that would close an open list).
+function syncControl(wrap, data, key) {
+  const select = wrap.querySelector('select');
+  if (!select || !select.isConnected) return;  // a name is being typed: leave it alone
+  const own = data.own[key];
+  describe(select, data, key);
+  markOwn(wrap, own);
+  if (setupBusy(data.id, key)) return;  // the user's own pick is on its way
+  if (own && ![...select.options].some(o => o.value === own)) {
+    select.add(new Option(own, own), key === 'model' ? select.options[select.length - 1] : null);
+  }
+  select.value = own || '';
+}
+
+// "other…": an input for any model name (the providers accept names they do not list). Only
+// Enter sets it; Escape or leaving the field cancels, so a half-typed name is never stored.
+function editModel(select, data) {
+  const id = data.id, own = data.own.model, input = el('input', 'input compact mono'), list = el('datalist');
   list.id = 'setupModels';
-  list.append(...provider(setupData.provider).models.map(name => { const o = el('option'); o.value = name; return o; }));
+  list.append(...provider(data.provider).models.map(name => { const o = el('option'); o.value = name; return o; }));
   input.setAttribute('list', list.id); input.autocomplete = 'off'; input.spellcheck = false;
   input.dataset.setup = 'model'; input.value = own || ''; input.placeholder = 'model name';
   input.setAttribute('aria-label', `Model of ${id}: type a name, Enter sets it, Escape cancels`);
   let done = false;
-  const finish = save => {
+  const finish = (save, refocus) => {
     if (done) return;
     done = true;
     const value = input.value.trim();
-    if (save && value && value !== own) saveSetup(id, 'model', value);
-    else if (setupData?.id === id) renderSetup(setupData, true);
+    if (save && value && value !== own) {
+      if (![...select.options].some(o => o.value === value)) select.add(new Option(value, value), select.options[select.length - 1]);
+      select.value = value;
+      saveSetup(id, 'model', value);
+    } else {
+      select.value = own || '';
+    }
+    if (input.isConnected) { input.replaceWith(select); list.remove(); }
+    if (refocus) select.focus();
+    // a refresh that came in meanwhile may have left the control behind
+    else if (setupData?.id === id) setTimeout(() => renderSetup(setupData));
   };
   input.onkeydown = event => {
-    if (event.key === 'Enter') { event.preventDefault(); finish(true); }
-    if (event.key === 'Escape') { event.preventDefault(); finish(false); }
+    if (event.key === 'Enter') { event.preventDefault(); finish(true, true); }
+    if (event.key === 'Escape') { event.preventDefault(); finish(false, true); }
   };
-  input.onblur = () => finish(true);
+  input.onblur = () => finish(false, false);
   select.replaceWith(input, list);
   input.focus(); input.select();
 }
 
-async function saveSetup(id, key, value) {
-  const label = key === 'model' ? 'Model' : 'Effort';
+async function saveSetup(id, key, value, keepalive) {
+  const slot = setupSlot(id, key);
+  savingSetup.set(slot, (savingSetup.get(slot) || 0) + 1);
+  setupEpoch++;
+  let failed = false;
   try {
-    const result = await call(`/api/agents/${encodeURIComponent(id)}/model`, { [key]: value });
+    const result = await call(`/api/agents/${encodeURIComponent(id)}/model`, { [key]: value }, keepalive);
     const now = result.effective[key] || 'CLI default';
-    toast(value ? `${label} of ${id}: ${now}, from its next turn` : `${label} of ${id} inherited again: ${now}`);
+    toast(value ? `${settingLabel(key)} of ${id}: ${now}, from its next turn` : `${settingLabel(key)} of ${id} inherited again: ${now}`);
     if (setupData?.id === id) {
       setupData = { ...setupData, effective: result.effective, inherited: result.inherited,
         own: { model: result.model_override, effort: result.effort_override } };
     }
   } catch (error) {
+    failed = true;
     toast(error.message, true);
+  } finally {
+    const left = savingSetup.get(slot) - 1;
+    if (left > 0) savingSetup.set(slot, left); else savingSetup.delete(slot);
+    setupEpoch++;
   }
   if (setupData?.id !== id) return;
-  renderSetup(setupData, true);  // the stored values (also after an error), focus kept
+  const control = $('setup')?.querySelector(`[data-control=${key}]`);
+  if (failed && control) delete control.dataset.built;  // show the stored value again
+  renderSetup(setupData);
   refresh();
 }
 
@@ -867,6 +926,7 @@ function applyTheme(theme) {
 async function refresh() {
   if (refreshing) { again = true; return; }  // rerun once the current pass is done
   refreshing = true;
+  const ticket = setupTicket();  // answers older than a save do not touch the model controls
   try {
     state = await call('/api/state');
     if (selected.startsWith('lead:')) {
@@ -883,10 +943,10 @@ async function refresh() {
       $('view').replaceChildren(gone); shown = null; return;
     }
     if (shown !== target) buildView();
-    if (virtual) { renderHeader(null); return; }
+    if (virtual) { renderHeader(null, setupFresh(ticket)); return; }
     const data = await call(`/api/agents/${encodeURIComponent(target)}/events?after=${lastEvent}`);
     if (target !== selected || shown !== target) return;  // the selection changed meanwhile
-    renderHeader(data.agent);
+    renderHeader(data.agent, setupFresh(ticket));
     appendEvents(data.events);
   } catch (error) {
     $('summary').textContent = `Disconnected: ${error.message}`;
@@ -904,6 +964,7 @@ $('themeButton').onclick = () => {
   applyTheme(theme);
 };
 $('settingsButton').onclick = openSettings;
+window.addEventListener('pagehide', () => flushSetup(true));
 window.addEventListener('hashchange', () => {
   const id = decodeURIComponent(location.hash.slice(1)) || ORCH;
   if (id !== selected) select(id);
