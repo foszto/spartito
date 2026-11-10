@@ -28,7 +28,8 @@ def run_dir(run_id: int) -> Path:
 
 
 def result_file(run_id: int) -> Path:
-    """The run's full final answer, written by the runner when the run ends."""
+    """The run's full final answer (a failed run: its last text, else the error), written
+    by the runner when the run ends; stopped runs and runner crashes leave none."""
     return run_dir(run_id) / "result.md"
 
 

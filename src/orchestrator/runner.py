@@ -76,8 +76,10 @@ def prepare_workspace(agent: Agent, project: Project | None) -> list[str]:
 
 def render_prompt(store: Store, prompt: str) -> str:
     """Replace {{result:<agent-id>}} with the last successful result of that agent:
-    structured output as compact JSON, text cut at RESULT_CHARS with a note naming the
-    result file. {{result:<agent-id>:full}} is never cut."""
+    structured output whole as compact JSON (never cut: cut JSON is useless), text cut at
+    RESULT_CHARS with a line naming its length and the result file.
+    {{result:<agent-id>:full}} injects the text uncut. Unknown or unfinished agents are
+    left as they are."""
 
     def substitute(match: re.Match[str]) -> str:
         done = [r for r in store.runs_of(match.group(1)) if r.status is RunStatus.DONE]
@@ -205,8 +207,8 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
                 structured = None
         if text != last_text:  # otherwise the activity log already ends with it
             store.add_event(run.id, agent.id, "result", text)
-        write_result(scratch, text, structured)
         store.finish_run(run.id, RunStatus.DONE, result=text, structured=structured, cost_usd=cost)
+        write_result(store, run, scratch, text, structured)
         return
     stderr_tail = stderr_path.read_text(encoding="utf-8", errors="replace").strip()[-1500:]
     error = (
@@ -216,18 +218,27 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
         or f"{invocation.argv[0]} exited with code {code} without a result"
     )
     store.add_event(run.id, agent.id, "error", error)
-    write_result(scratch, last_text or error, None)
     store.finish_run(run.id, RunStatus.FAILED, error=error, result=last_text or None, cost_usd=cost)
+    write_result(store, run, scratch, last_text or error, None)
 
 
-def write_result(scratch: Path, text: str, structured: Any) -> None:
-    """The full final answer (and structured output) beside the run's other files, written
-    before the run is marked finished so a caller that sees it finished finds the file."""
-    (scratch / "result.md").write_text(text, encoding="utf-8")
+def write_result(store: Store, run: Run, scratch: Path, text: str, structured: Any) -> None:
+    """Write the full final answer to result.md (a failed run: its last text, else the
+    error) and structured output to result.json, each atomically.
+
+    A side channel: the run's outcome is already stored, so a failed write only adds an
+    event and leaves the run's status alone.
+    """
+    files = [("result.md", text)]
     if structured is not None:
-        (scratch / "result.json").write_text(
-            json.dumps(structured, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        files.append(("result.json", json.dumps(structured, ensure_ascii=False, indent=2)))
+    try:
+        for name, content in files:
+            partial = scratch / f".{name}.tmp"
+            partial.write_text(content, encoding="utf-8")
+            os.replace(partial, scratch / name)
+    except OSError as exc:
+        store.add_event(run.id, run.agent_id, "error", f"could not write the result file: {exc}")
 
 
 def record_usage(

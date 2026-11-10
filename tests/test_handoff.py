@@ -80,10 +80,15 @@ def test_a_run_without_a_result_file_reports_none(orch: Orchestrator, project: s
     assert mcp_server.get_agent(agent_id)["last_run"]["result_file"] is None
 
 
-def test_structured_output_is_written_beside_the_result_file(tmp_path: Path) -> None:
+def test_structured_output_is_written_beside_the_result_file(
+    orch: Orchestrator, project: str, tmp_path: Path
+) -> None:
     from orchestrator.runner import write_result
 
-    write_result(tmp_path, '{"ok":true}', {"ok": True})
+    agent = orch.create_agent(project, name="w", worktree=False)
+    write_result(
+        orch.store, orch.store.add_run(agent.id, "x"), tmp_path, '{"ok":true}', {"ok": True}
+    )
 
     assert json.loads((tmp_path / "result.json").read_text()) == {"ok": True}
     assert (tmp_path / "result.md").read_text() == '{"ok":true}'
@@ -324,3 +329,152 @@ def test_cli_and_web_spawn_keep_free_text(orch: Orchestrator, project: str) -> N
 
     runs = [run for agent_id in agents for run in orch.store.runs_of(agent_id)]
     assert len(runs) == 3 and all(run.output_schema is None for run in runs)
+
+
+# -- review follow-ups ------------------------------------------------------
+
+
+def refs(*agent_ids: str, full: bool = False) -> str:
+    suffix = ":full" if full else ""
+    return " | ".join(f"{{{{result:{agent_id}{suffix}}}}}" for agent_id in agent_ids)
+
+
+def test_several_references_in_one_brief_are_each_replaced(
+    orch: Orchestrator, project: str
+) -> None:
+    text = finished_agent(orch, project, "plain")
+    data = finished_agent(orch, project, "x", structured={"a": 1})
+
+    assert render_prompt(orch.store, refs(text, data, text)) == 'plain | {"a":1} | plain'
+
+
+@pytest.mark.parametrize(("length", "cut"), ((RESULT_CHARS, False), (RESULT_CHARS + 1, True)))
+def test_text_is_cut_only_beyond_the_limit(
+    orch: Orchestrator, project: str, length: int, cut: bool
+) -> None:
+    text = "z" * length
+    agent_id = finished_agent(orch, project, text)
+
+    rendered = render_prompt(orch.store, refs(agent_id))
+
+    assert (rendered != text) is cut
+    if cut:
+        assert rendered.startswith("z" * RESULT_CHARS + "\n[cut at")
+
+
+def test_the_cut_note_without_a_result_file_names_only_the_length(
+    orch: Orchestrator, project: str
+) -> None:
+    agent_id = finished_agent(orch, project, "q" * (RESULT_CHARS + 7))
+
+    note = render_prompt(orch.store, refs(agent_id)).split("\n")[-1]
+
+    assert note == f"[cut at {RESULT_CHARS} of {RESULT_CHARS + 7} chars]"
+
+
+def test_multibyte_text_is_cut_by_characters(orch: Orchestrator, project: str) -> None:
+    agent_id = finished_agent(orch, project, "é🙂" * RESULT_CHARS)
+
+    body = render_prompt(orch.store, refs(agent_id)).split("\n")[0]
+
+    assert body == ("é🙂" * RESULT_CHARS)[:RESULT_CHARS]
+
+
+def test_send_message_to_an_agent_with_a_broken_role_schema_queues_nothing(
+    orch: Orchestrator, project: str
+) -> None:
+    write_role(config.user_roles_dir(), "broken", "output_schema: gone.json")
+    agent = orch.create_agent(project, name="b", role="broken", worktree=False)
+
+    with pytest.raises(OrchestratorError, match="gone.json"):
+        mcp_server.send_message(agent.id, "hello")
+    assert orch.store.runs_of(agent.id) == []
+
+
+def big_plan(n: int) -> dict:
+    return {
+        "summary": f"plan {n}",
+        "tasks": [{"id": str(i), "title": "t" * 100} for i in range(50)],
+    }
+
+
+def test_list_view_gives_structured_output_once_and_bounded(
+    orch: Orchestrator, project: str
+) -> None:
+    for n in range(8):
+        finished_agent(orch, project, json.dumps(big_plan(n)), structured=big_plan(n))
+
+    listed = mcp_server.list_agents()
+
+    assert len(json.dumps(big_plan(0))) > 5000
+    assert len(json.dumps(listed)) < 8 * 1500
+    for view in listed:
+        assert "structured" not in view["last_run"]
+        assert view["last_run"]["result"].startswith('{"summary":"plan ')
+        assert view["last_run"]["result"].endswith("[truncated; get_agent gives all of it]")
+
+
+def test_get_agent_gives_the_answer_once(orch: Orchestrator, project: str) -> None:
+    structured = finished_agent(orch, project, json.dumps(big_plan(1)), structured=big_plan(1))
+    text = finished_agent(orch, project, "prose")
+
+    cut = mcp_server.get_agent(structured, result_chars=1000)["last_run"]
+    whole = mcp_server.get_agent(structured, result_chars=0)["last_run"]
+    plain = mcp_server.get_agent(text)["last_run"]
+
+    assert "result" not in cut and isinstance(cut["structured"], str)
+    assert len(cut["structured"]) < 1200 and "result_offset=1000" in cut["structured"]
+    assert whole["structured"] == big_plan(1) and "result" not in whole
+    assert plain["result"] == "prose" and "structured" not in plain
+
+
+def test_a_failing_result_write_keeps_the_run_outcome(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from orchestrator import runner
+
+    def unwritable(*args: Any) -> None:
+        raise OSError(28, "No space left on device")
+
+    agent = orch.create_agent(project, name="w", worktree=False)
+    run = orch.store.add_run(agent.id, "hello")
+    monkeypatch.setattr(runner.os, "replace", unwritable)
+    runner.main(run.id)
+
+    stored = orch.store.get_run(run.id)
+    events = orch.store.events(agent.id, tail=None)
+    assert (stored.status, stored.result) == (RunStatus.DONE, "echo[new]: hello")
+    assert events[-1].kind == "error" and "No space left" in events[-1].text
+    assert not config.result_file(run.id).exists()
+
+
+def test_the_result_file_is_written_without_leftovers(orch: Orchestrator, project: str) -> None:
+    agent, run = orch.spawn(project, "hello", worktree=False)
+    idle(orch, agent.id)
+
+    assert sorted(p.name for p in config.run_dir(run.id).glob("*result*")) == ["result.md"]
+
+
+def test_a_stopped_run_has_no_result_file(orch: Orchestrator, project: str) -> None:
+    import time
+
+    agent, run = orch.spawn(project, "SLEEP 30", worktree=False)
+    deadline = time.monotonic() + 20
+    while orch.store.get_run(run.id).status is not RunStatus.RUNNING:
+        assert time.monotonic() < deadline
+        time.sleep(0.1)
+    orch.stop(agent.id)
+
+    detail = mcp_server.get_agent(agent.id)["last_run"]
+    assert (detail["status"], detail["result_file"]) == ("stopped", None)
+
+
+def test_a_runner_error_leaves_no_result_file(orch: Orchestrator, project: str, repo: Path) -> None:
+    (repo / ".orch").mkdir()
+    (repo / ".orch" / "loadout.toml").write_text('[default]\nmcp = "sometimes"\n')
+    agent, _ = orch.spawn(project, "hello", worktree=False)
+    idle(orch, agent.id)
+
+    detail = mcp_server.get_agent(agent.id)["last_run"]
+    assert detail["status"] == "failed" and "LoadoutError" in detail["error"]
+    assert detail["result_file"] is None
