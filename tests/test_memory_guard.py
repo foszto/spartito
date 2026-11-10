@@ -244,3 +244,13 @@ def test_the_hook_command_exits_0_inside_and_2_otherwise(env: dict[str, str]) ->
     assert garbage.returncode == 2 and "failed" in garbage.stderr
     assert no_project.returncode == 2
     assert no_python.returncode == 2  # fails closed when the guard cannot even start
+
+
+@pytest.mark.parametrize("value", ["", "relative/cfg", "~/.claude"])
+def test_a_config_dir_that_is_set_but_not_absolute_refuses_everything(
+    env: dict[str, str], value: str
+) -> None:
+    inside = memory(env)
+
+    with pytest.raises(ValueError, match="CLAUDE_CONFIG_DIR"):
+        refusal(call(str(inside / "f.md")), {**env, "CLAUDE_CONFIG_DIR": value})

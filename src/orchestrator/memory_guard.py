@@ -140,9 +140,12 @@ def memory_dir(env: Mapping[str, str]) -> str:
     if not os.path.isabs(project):
         raise ValueError("CLAUDE_PROJECT_DIR is not set to an absolute path")
     project = unicodedata.normalize("NFC", os.path.normpath(project))
-    config = env.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+    # Present but empty or relative: the CLI keeps it (`??`), relative to its cwd. Refuse.
+    config = env.get("CLAUDE_CONFIG_DIR")
+    if config is None:
+        config = os.path.join(os.path.expanduser("~"), ".claude")
     if not os.path.isabs(config):
-        raise ValueError("cannot place the Claude config directory")
+        raise ValueError(f"CLAUDE_CONFIG_DIR={config!r} is not an absolute path")
     path = os.path.join(config, "projects", project_key(canonical_root(project)), "memory")
     return unicodedata.normalize("NFC", path)
 
