@@ -142,6 +142,25 @@ CREATE TABLE IF NOT EXISTS archived_agents (
     how TEXT NOT NULL,
     restored_at TEXT
 );
+-- Decisions an agent asks the owner for (decisions.py); a table of its own, unknown to older
+-- code. project: NULL for the orchestrator; options: JSON list of short strings;
+-- state: 'open' | 'answered' | 'withdrawn'; run_id: the message that delivered the answer;
+-- note: why it was closed without an answer (e.g. the agent was removed).
+CREATE TABLE IF NOT EXISTS decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL,
+    project TEXT,
+    question TEXT NOT NULL,
+    options TEXT NOT NULL DEFAULT '[]',
+    recommendation TEXT,
+    state TEXT NOT NULL DEFAULT 'open',
+    answer TEXT,
+    created_at TEXT NOT NULL,
+    closed_at TEXT,
+    run_id INTEGER,
+    note TEXT
+);
+CREATE INDEX IF NOT EXISTS decisions_state ON decisions(state, id);
 CREATE INDEX IF NOT EXISTS runs_agent ON runs(agent_id, id);
 CREATE INDEX IF NOT EXISTS events_agent ON events(agent_id, id);
 """

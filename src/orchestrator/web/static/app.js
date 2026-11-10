@@ -23,6 +23,7 @@ const ICONS = {
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
   sliders: '<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>',
   moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
+  ask: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.4 2.3c-.6.3-.9.8-.9 1.4v.6M12 16.8v.4"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5"/>',
 };
 const TIER_INFO = {
@@ -946,6 +947,108 @@ async function renderArchive() {
   }
 }
 
+// -- list dialogs ------------------------------------------------------------
+// A header button with a count opens a dialog that lists items from `state`; every refresh
+// updates the count and, while the dialog is open, the list. One entry per list:
+//   button, dialog: element ids (index.html: a .count-button with a .badge; a .list-dialog with
+//   [data-list] and a [data-close] button); items(): the entries; key(item): a stable id;
+//   build(item): its node, built once (what is typed in it survives refreshes); empty: text.
+const LIST_DIALOGS = {
+  decisions: { button: 'decisionsButton', dialog: 'decisionsDialog', items: () => state.decisions || [],
+    key: d => String(d.id), build: decisionItem, empty: 'No decision is waiting for you.' },
+};
+function renderListDialogs() { for (const spec of Object.values(LIST_DIALOGS)) renderListDialog(spec); }
+function renderListDialog(spec) {
+  const items = spec.items(), button = $(spec.button), badge = button.querySelector('.badge');
+  badge.textContent = String(items.length); badge.hidden = !items.length;
+  button.classList.toggle('has-items', items.length > 0);
+  const dialog = $(spec.dialog);
+  if (!dialog.open) return;
+  syncList(dialog.querySelector('[data-list]'), items, spec.key, spec.build, spec.empty);
+  for (const node of dialog.querySelectorAll('[data-since]')) node.textContent = ago(node.dataset.since);
+}
+function setupListDialog(spec) {
+  const dialog = $(spec.dialog);
+  $(spec.button).onclick = () => { dialog.showModal(); renderListDialog(spec); };
+  dialog.querySelector('[data-close]').onclick = () => dialog.close();
+}
+// Keeps the nodes of items still listed in place (focus and typed text survive), inserts new
+// ones in order and removes the rest.
+function syncList(container, items, keyOf, build, empty) {
+  const old = new Map();
+  for (const node of [...container.children]) {
+    if (node.dataset.key) old.set(node.dataset.key, node); else node.remove();
+  }
+  let at = container.firstChild;
+  for (const item of items) {
+    const key = keyOf(item);
+    let node = old.get(key);
+    old.delete(key);
+    if (!node) { node = build(item); node.dataset.key = key; }
+    if (node === at) at = at.nextSibling; else container.insertBefore(node, at);
+  }
+  for (const node of old.values()) node.remove();
+  if (!items.length) container.append(el('div', 'empty-note', empty));
+}
+function ago(ts) {
+  const minutes = Math.max(0, Math.floor((Date.now() - new Date(ts)) / 60000));
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  return minutes < 2880 ? `${Math.floor(minutes / 60)} h ago` : `${Math.floor(minutes / 1440)} days ago`;
+}
+
+// -- decisions ---------------------------------------------------------------
+
+const AGENT_NOTES = {
+  archived: 'The agent is archived; your answer restores it.',
+  gone: 'The agent no longer exists; answering closes this decision.',
+};
+function decisionItem(d) {
+  const item = el('div', 'list-item decision'), head = el('div', 'item-head');
+  const agent = el('button', 'link', d.agent_name);
+  agent.type = 'button'; agent.title = 'Open its conversation';
+  agent.onclick = () => { $('decisionsDialog').close(); select(d.agent_id); };
+  const since = el('span', 'since', ago(d.created_at)); since.dataset.since = d.created_at;
+  since.title = new Date(d.created_at).toLocaleString();
+  head.append(el('span', 'chip', d.project || 'no project'), agent, el('span', '', `#${d.id}`), since);
+  item.append(head, el('p', 'question', d.question));
+  if (AGENT_NOTES[d.agent_state]) item.append(el('p', 'note', AGENT_NOTES[d.agent_state]));
+  if (d.recommendation) item.append(el('p', 'recommendation', `Recommends: ${d.recommendation}`));
+  const form = el('form', 'answer'), input = el('input', 'input'), send = el('button', 'btn primary', 'Answer');
+  const controls = [input, send];
+  if (d.options.length) {
+    const list = el('div', 'options');
+    d.options.forEach((option, index) => {
+      const choice = button('', '', `${index + 1}. ${option}`, () => answerDecision(d, option, controls));
+      choice.title = 'Answer with this option';
+      controls.push(choice); list.append(choice);
+    });
+    item.append(list);
+  }
+  input.placeholder = d.options.length ? 'Or answer in your own words…' : 'Your answer…';
+  input.setAttribute('aria-label', `Answer to decision ${d.id}`);
+  input.autocomplete = 'off';
+  form.onsubmit = event => {
+    event.preventDefault();
+    if (input.value.trim()) answerDecision(d, input.value.trim(), controls);
+  };
+  form.append(input, send);
+  item.append(form);
+  return item;
+}
+async function answerDecision(d, answer, controls) {
+  for (const control of controls) control.disabled = true;
+  try {
+    await call(`/api/decisions/${d.id}/answer`, { answer });
+    toast(`Answer sent to ${d.agent_name}`);
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    for (const control of controls) control.disabled = false;
+    await refresh();
+  }
+}
+
 // -- dialogs -----------------------------------------------------------------
 
 function openDialog(dialog, submit) {
@@ -1167,6 +1270,7 @@ function renderSettings() {
   box.append(row);
   rows.append(box);
   rows.append(compactAtBox(scope, data));
+  if (!scope) rows.append(desktopSwitch());
 }
 
 function compactAtBox(scope, data) {
@@ -1185,6 +1289,16 @@ function compactAtBox(scope, data) {
   return box;
 }
 
+const DESKTOP_KEY = 'desktop_notifications';  // global only, on unless set to false
+function desktopSwitch() {
+  const box = el('div', 'tier'), label = el('label', 'switch-row'), check = el('input');
+  check.type = 'checkbox'; check.name = DESKTOP_KEY; check.checked = state.settings.global?.[DESKTOP_KEY] !== false;
+  label.append(check, 'Show desktop notifications (macOS)');
+  box.append(el('h4', '', 'Notifications'), el('p', 'about',
+    'On this machine: when an agent asks you for a decision, and when an agent you messaged directly has finished.'), label);
+  return box;
+}
+
 function openSettings() {
   const dialog = $('settingsDialog'), scope = dialog.querySelector('[name=scope]');
   options(scope, [['', 'All projects (global defaults)'], ...state.projects.map(p => [p.name, `Project: ${p.name}`])], '');
@@ -1197,6 +1311,7 @@ function openSettings() {
       if (key) ((data[tier] ??= {})[providerName] ??= {})[key] = value;
       else if (name === state.archive_after_key || name === state.compact_at_key) data[name] = value;
     }
+    if (!form.get('scope')) data[DESKTOP_KEY] = form.get(DESKTOP_KEY) === 'on';
     await call('/api/settings', { project: form.get('scope') || null, data });
     toast('Settings saved'); await refresh();
   });
@@ -1223,6 +1338,7 @@ async function refresh() {
       if (lead) { selected = lead.id; location.hash = encodeURIComponent(selected); shown = null; }
     }
     renderNav();
+    renderListDialogs();
     const target = selected;
     if (target === ARCHIVE) { await renderArchive(); return; }
     const exists = Boolean(findAgent(target)) || isArchived(target);
@@ -1254,6 +1370,7 @@ $('themeButton').onclick = () => {
   applyTheme(theme);
 };
 $('settingsButton').onclick = openSettings;
+for (const spec of Object.values(LIST_DIALOGS)) setupListDialog(spec);
 window.addEventListener('pagehide', () => flushSetup(true));
 window.addEventListener('hashchange', () => {
   const id = decodeURIComponent(location.hash.slice(1)) || ORCH;

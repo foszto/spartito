@@ -594,6 +594,35 @@ def archive_agent(agent_id: str, confirm: bool = False, restore: bool = False) -
     return orch.restore(agent_id) if restore else orch.archive(agent_id, confirm)
 
 
+DECISION_NEXT = (
+    "the owner's answer arrives as a user message; continue with whatever does not depend"
+    " on it (withdraw_decision if it is no longer needed)"
+)
+
+
+@server.tool()
+def request_decision(
+    question: str, options: list[str] | None = None, recommendation: str | None = None
+) -> dict[str, Any]:
+    """Ask the owner for a decision only they can make; it waits in their decisions list.
+    `question` at most 500 chars; `options` up to 6 short choices (they may also answer
+    freely); `recommendation`: what you would choose and why, in a sentence."""
+    orch = _orch()
+    caller = _caller(orch)
+    if caller is None:
+        raise OrchestratorError("this session talks to the user directly: ask them here")
+    decision = orch.request_decision(caller.id, question, options, recommendation)
+    return {"decision_id": decision.id, "next": DECISION_NEXT}
+
+
+@server.tool()
+def withdraw_decision(decision_id: int) -> dict[str, Any]:
+    """Withdraw one of your open decisions that is no longer needed."""
+    orch = _orch()
+    caller = os.environ.get("ORCH_AGENT_ID") or ""
+    return {"withdrawn": orch.withdraw_decision(decision_id, caller).id}
+
+
 def main() -> None:
     server.run("stdio")
 

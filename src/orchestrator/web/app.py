@@ -128,6 +128,8 @@ def state(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
             for r in roles.available()
             if r.name != ORCHESTRATOR_ID
         ],
+        # The open ones, oldest first: the header count and the decisions dialog.
+        "decisions": orch.list_decisions(),
     }
 
 
@@ -311,6 +313,16 @@ def remove_agent(orch: Orchestrator, request: Request, body: dict) -> dict[str, 
     return {"removed": agent_id}
 
 
+def list_decisions(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """Open decisions; `?all=1` includes the closed ones."""
+    return {"decisions": orch.list_decisions(closed=bool(request.query_params.get("all")))}
+
+
+def answer_decision(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """Answer a decision with `answer` (an option's text, its number or free text)."""
+    return orch.answer_decision(request.path_params["decision_id"], body.get("answer"))
+
+
 app = Starlette(
     routes=[
         Route("/", index),
@@ -336,6 +348,8 @@ app = Starlette(
         Route("/api/runs/{run_id:int}", api(get_run)),
         Route("/api/runs/{run_id:int}/withdraw", api(withdraw_run), methods=["POST"]),
         Route("/api/runs/{run_id:int}/edit", api(edit_run), methods=["POST"]),
+        Route("/api/decisions", api(list_decisions)),
+        Route("/api/decisions/{decision_id:int}/answer", api(answer_decision), methods=["POST"]),
     ],
     middleware=[Middleware(LocalOnly)],
 )

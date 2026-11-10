@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from . import config, git, notify, providers, roles, settings
+from . import config, decisions, desktop, git, notify, providers, roles, settings
 from .models import (
     Agent,
     Project,
@@ -618,6 +618,53 @@ class Orchestrator:
             notify.run_ended(self.store, run_id, agent_id, self._launch, recheck)
         except Exception as exc:
             print(f"notifying the parents of {agent_id} failed: {exc!r}", file=sys.stderr)
+        desktop.turn_ended(self.store, run_id, agent_id)  # never raises
+
+    # -- decisions (decisions.py) -----------------------------------------
+
+    def request_decision(
+        self, agent_id: str, question: Any, options: Any = None, recommendation: Any = None
+    ) -> decisions.Decision:
+        try:
+            return decisions.record(
+                self.store, self.agent(agent_id), question, options, recommendation
+            )
+        except ValueError as exc:
+            raise OrchestratorError(str(exc)) from None
+
+    def withdraw_decision(self, decision_id: int, agent_id: str) -> decisions.Decision:
+        try:
+            return decisions.withdraw(self.store, decision_id, agent_id)
+        except ValueError as exc:
+            raise OrchestratorError(str(exc)) from None
+
+    def list_decisions(self, closed: bool = False) -> list[dict[str, Any]]:
+        """Open decisions (with `closed` all), each with the requesting agent's display
+        name and whether it is archived (an answer restores it) or gone."""
+        archived = self.store.archived()
+        listed = []
+        for decision in decisions.listing(self.store, closed):
+            agent = self.store.get_agent(decision.agent_id)
+            state = "gone" if agent is None else "archived" if agent.id in archived else None
+            listed.append(
+                {
+                    **decision.to_dict(),
+                    "agent_name": desktop.display_name(self.store, decision.agent_id),
+                    "agent_state": state,
+                }
+            )
+        return listed
+
+    def answer_decision(self, decision_id: int, answer: Any) -> dict[str, Any]:
+        """Answer an open decision (an option number picks that option); the answer goes
+        to the agent as a user message."""
+        try:
+            decision, run_id = decisions.answer(
+                self.store, decision_id, answer, lambda agent_id, text: self.send(agent_id, text).id
+            )
+        except ValueError as exc:
+            raise OrchestratorError(str(exc)) from None
+        return {"decision": decision.to_dict(), "agent_id": decision.agent_id, "run_id": run_id}
 
     # -- settings ---------------------------------------------------------
 
@@ -632,13 +679,14 @@ class Orchestrator:
             raise OrchestratorError(str(exc)) from None
         if project and "orchestrator" in cleaned:
             raise OrchestratorError("the orchestrator tier can only be set globally")
-        if project and settings.KEEP_AWAKE in cleaned:
-            raise OrchestratorError(f"{settings.KEEP_AWAKE} can only be set globally")
+        for key in settings.SWITCHES:
+            if project and key in cleaned:
+                raise OrchestratorError(f"{key} can only be set globally")
         scope = self.project(project).name if project else settings.GLOBAL
         # Kept when not named (the settings dialog sends only its own fields; a page from
-        # before compact_at_tokens existed does not send that).
-        kept = (settings.COMPACT_AT,) if project else (settings.KEEP_AWAKE, settings.COMPACT_AT)
-        for key in kept:
+        # before a key existed does not send that one).
+        kept = (settings.ARCHIVE_AFTER, settings.COMPACT_AT)
+        for key in kept if project else kept + settings.SWITCHES:
             if isinstance(data, dict) and key not in data:
                 stored = self.store.get_settings(scope).get(key)
                 cleaned.update({} if stored is None else {key: stored})
@@ -1190,4 +1238,5 @@ class Orchestrator:
                 )
             except git.GitError as exc:
                 raise OrchestratorError(str(exc)) from None
+        decisions.withdraw_all(self.store, agent.id, decisions.REMOVED)
         self.store.delete_agent(agent.id)

@@ -292,6 +292,7 @@ dialog form { display: flex; flex-direction: column; max-height: calc(100vh - 50
 .tier .about { color: var(--muted); font-size: 12px; margin: 0 0 8px; }
 .tier-row { display: grid; grid-template-columns: 64px 1fr 130px; gap: 8px; align-items: center; margin-top: 6px; }
 .tier-row .who { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; }
+.switch-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .tier-row .avatar { width: 20px; height: 20px; font-size: 10px; border-radius: 6px; }
 
 /* folder rows are a row of two buttons */
@@ -311,3 +312,24 @@ div.folder > button.folder:hover { background: none; }
 .archived-row .label { flex: 1; min-width: 0; text-align: left; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; padding: 0; }
 .archived-row .name { display: block; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .archived-row .sub { display: block; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+
+/* list dialogs (decisions): a header button with a count, a dialog of items */
+.count-button { position: relative; }
+.count-button .badge { position: absolute; top: -3px; right: -4px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px;
+  background: var(--waiting); color: var(--surface); font-size: 10.5px; font-weight: 700; line-height: 16px; text-align: center; }
+.count-button.has-items { color: var(--waiting); }
+.list-dialog .shell { display: flex; flex-direction: column; max-height: calc(100vh - 50px); }
+.list-dialog .dialog-body { padding-bottom: 16px; }
+.list-dialog .about { color: var(--muted); font-size: 12.5px; margin: 0 0 12px; }
+.list-item { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+.list-item .item-head { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.list-item .item-head .link { border: 0; background: none; padding: 0; color: var(--accent); font-weight: 500; }
+.list-item .item-head .link:hover { text-decoration: underline; }
+.list-item .item-head .since { margin-left: auto; }
+.list-item .question { margin: 6px 0; font-weight: 500; white-space: pre-wrap; overflow-wrap: anywhere; }
+.list-item .note { margin: 0 0 6px; color: var(--muted); font-size: 12px; }
+.list-item .recommendation { margin: 0 0 8px; color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
+.list-item .options { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.list-item .options .btn { white-space: normal; height: auto; min-height: 30px; padding: 4px 10px; text-align: left; }
+.list-item form.answer { display: flex; flex-direction: row; gap: 8px; max-height: none; }
+.list-item .answer .input { flex: 1; padding: 6px 10px; }

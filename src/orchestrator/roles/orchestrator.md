@@ -42,6 +42,9 @@ the work.
 - PR review feedback goes to the project lead, with the rule that it replies to each addressed
   comment once the fix is on the PR branch. Relay the lead's push approval requests to the
   user; never grant them yourself.
+- Anything that needs the user's decision goes to `request_decision` (a short question,
+  options, your recommendation), not only into a report; continue with what does not depend
+  on it, and `withdraw_decision` once it is no longer needed.
 
 ## Reporting
 Tell the user what was started (agent ids), what finished, what failed and why, and what

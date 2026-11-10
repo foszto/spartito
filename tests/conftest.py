@@ -56,6 +56,29 @@ def fake_inhibitors(
     return log
 
 
+# Stands in for osascript, so no test shows a real desktop notification. Appends one line per
+# call to $FAKE_OSASCRIPT_LOG: its arguments, each followed by \x1f.
+FAKE_OSASCRIPT = r"""#!/bin/sh
+[ -n "$FAKE_OSASCRIPT_LOG" ] || exit 0
+{ for arg in "$@"; do printf '%s\037' "$arg"; done; printf '\n'; } >> "$FAKE_OSASCRIPT_LOG"
+"""
+
+
+@pytest.fixture(autouse=True)
+def fake_osascript(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """A fake osascript first on PATH; returns the log it writes."""
+    bin_dir = tmp_path_factory.mktemp("fake-osascript")
+    path = bin_dir / "osascript"
+    path.write_text(FAKE_OSASCRIPT)
+    path.chmod(0o755)
+    log = bin_dir / "osascript.log"
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.setenv("FAKE_OSASCRIPT_LOG", str(log))
+    return log
+
+
 CLAUDE_INITIALIZE = Path(__file__).parent / "fixtures" / "claude_initialize.jsonl"
 
 

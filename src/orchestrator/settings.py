@@ -18,7 +18,8 @@ agent whose work is safe is archived automatically (0: never). A project's value
 the global one; without either it is ARCHIVE_AFTER_DEFAULT.
 
 And `keep_awake`, global only: whether a turn keeps the machine from sleeping on idle
-(keep_awake.py); on unless set to false.
+(keep_awake.py); on unless set to false. Likewise `desktop_notifications`, global only:
+whether this machine shows desktop notifications (desktop.py).
 
 And `compact_at_tokens`: when a turn ends with the agent's context above this many tokens,
 an automatic compaction is queued (Orchestrator.auto_compact; 0: never). A project's value
@@ -42,6 +43,8 @@ ARCHIVE_AFTER_DEFAULT = 24.0
 KEEP_AWAKE = "keep_awake"
 COMPACT_AT = "compact_at_tokens"
 COMPACT_AT_DEFAULT = 256_000
+DESKTOP_NOTIFICATIONS = "desktop_notifications"
+SWITCHES = (KEEP_AWAKE, DESKTOP_NOTIFICATIONS)  # global on/off keys, on unless set to false
 
 
 MODEL_MAX_CHARS = 200
@@ -98,8 +101,8 @@ def archive_after(store: Store, project: str | None) -> float:
     return ARCHIVE_AFTER_DEFAULT
 
 
-def on_off(value: Any) -> bool | None:
-    """A `keep_awake` value: true/false (also on/off, yes/no, 1/0), None for empty
+def on_off(value: Any, key: str = KEEP_AWAKE) -> bool | None:
+    """A value of a switch (`key`): true/false (also on/off, yes/no, 1/0), None for empty
     (the default: on). Raises ValueError."""
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
@@ -110,14 +113,23 @@ def on_off(value: Any) -> bool | None:
         return True
     if word in ("off", "false", "no", "0"):
         return False
-    raise ValueError(f"{KEEP_AWAKE} must be on or off")
+    raise ValueError(f"{key} must be on or off")
 
 
 def keep_awake(store: Store) -> bool:
     """Whether turns keep the machine awake; an unreadable value counts as the default."""
+    return switch(store, KEEP_AWAKE)
+
+
+def desktop_notifications(store: Store) -> bool:
+    """Whether desktop notifications are shown; an unreadable value counts as the default."""
+    return switch(store, DESKTOP_NOTIFICATIONS)
+
+
+def switch(store: Store, key: str) -> bool:
     data = store.get_settings(GLOBAL)
     try:
-        return on_off(data.get(KEEP_AWAKE) if isinstance(data, dict) else None) is not False
+        return on_off(data.get(key) if isinstance(data, dict) else None, key) is not False
     except ValueError:
         return True
 
@@ -170,10 +182,10 @@ def clean(data: Any) -> dict[str, Any]:
             if tokens is not None:
                 result[COMPACT_AT] = tokens
             continue
-        if tier == KEEP_AWAKE:
-            on = on_off(per_provider)
+        if tier in SWITCHES:
+            on = on_off(per_provider, tier)
             if on is not None:
-                result[KEEP_AWAKE] = on
+                result[tier] = on
             continue
         if tier not in TIERS:
             raise ValueError(f"unknown tier '{tier}' (use: {', '.join(TIERS)})")
