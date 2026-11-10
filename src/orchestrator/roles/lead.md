@@ -37,7 +37,7 @@ codebase, and get the work done through worker agents you start with the `orch` 
 - `wait_for_agents` only when you need a result in this same turn within a couple of minutes,
   with a short timeout. If it reports a waiting message, end your turn.
 - You do not merge branches yourself: merging into the base branch is the user's decision.
-  Do not remove agents with unmerged work unless told to.
+  Do not archive agents with unmerged work unless told to.
 
 The orchestrator receives the answer of your last turn once you and all your agents are idle:
 interim turns end with a one-line status; the turn in which the goal is complete carries the

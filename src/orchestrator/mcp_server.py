@@ -411,15 +411,15 @@ async def wait_for_agents(
 
 
 @server.tool()
-def list_agents(project: str | None = None) -> list[dict[str, Any]]:
+def list_agents(project: str | None = None, archived: bool = False) -> list[dict[str, Any]]:
     """List agents with status, hierarchy (parent_id), branch and a short last result.
 
     `model`/`effort` are what the agent's next turn runs with; `cost_usd` and `tokens`
-    are the totals of its runs.
+    are the totals of its runs. `archived`: only the archived agents instead.
     """
     orch = _orch()
     scope = _project(orch, project) if project or _scoped(orch) else None
-    return orch.overview(scope)
+    return orch.overview(scope, archived=archived)
 
 
 @server.tool()
@@ -571,14 +571,13 @@ def stop_agent(agent_id: str) -> dict[str, Any]:
 
 
 @server.tool()
-def remove_agent(agent_id: str, delete_branch: bool = False) -> dict[str, Any]:
-    """Delete an agent and its worktree. The branch is kept unless delete_branch is true.
-
-    Uncommitted work in the worktree is lost — check get_agent first.
-    """
+def archive_agent(agent_id: str, confirm: bool = False, restore: bool = False) -> dict[str, Any]:
+    """Archive an agent you no longer need: hidden from list_agents, all kept (branch,
+    worktree, log). Unmerged or uncommitted work is refused unless `confirm`. `restore`
+    brings one back; so does a message to it."""
     orch = _orch()
-    orch.remove(_own(orch, agent_id), delete_branch)
-    return {"removed": agent_id}
+    agent_id = _own(orch, agent_id)
+    return orch.restore(agent_id) if restore else orch.archive(agent_id, confirm)
 
 
 def main() -> None:

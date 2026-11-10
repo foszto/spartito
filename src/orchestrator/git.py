@@ -11,8 +11,13 @@ class GitError(RuntimeError):
     pass
 
 
-def git(repo: str | Path, *args: str) -> str:
-    proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+def git(repo: str | Path, *args: str, timeout: float | None = None) -> str:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        raise GitError(f"git {' '.join(args)}: no answer within {timeout:g} s") from None
     if proc.returncode != 0:
         raise GitError(f"git {' '.join(args)}: {proc.stderr.strip() or proc.stdout.strip()}")
     return proc.stdout.strip()
@@ -78,6 +83,29 @@ def remove_worktree(repo: str | Path, path: str | Path, branch: str | None = Non
     git(repo, "worktree", "prune")
     if branch and branch_exists(repo, branch):
         git(repo, "branch", "-D", branch)
+
+
+CHECK_TIMEOUT = 20.0  # seconds for one git command of `unsaved_work`
+
+
+def unsaved_work(repo: str | Path, path: str | Path, branch: str, base: str) -> tuple[int, int]:
+    """What would be lost without the branch and the worktree at `path`: the number of
+    commits on `branch` not in `base`, and of uncommitted changes (untracked files count)
+    in the worktree. A branch or worktree that no longer exists has none. Raises GitError,
+    also when `path` exists but is not that worktree."""
+    commits = 0
+    if branch_exists(repo, branch):
+        counted = git(
+            repo, "rev-list", "--count", f"{base}..refs/heads/{branch}", timeout=CHECK_TIMEOUT
+        )
+        commits = int(counted)
+    changes = 0
+    if Path(path).exists():
+        top = git(path, "rev-parse", "--show-toplevel", timeout=CHECK_TIMEOUT)
+        if Path(top).resolve() != Path(path).resolve():
+            raise GitError(f"{path} is not a git worktree")
+        changes = len(git(path, "status", "--porcelain", timeout=CHECK_TIMEOUT).splitlines())
+    return commits, changes
 
 
 def _cap(text: str, limit: int | None) -> str:

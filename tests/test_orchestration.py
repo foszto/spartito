@@ -110,6 +110,7 @@ def test_reviewer_can_share_the_implementers_worktree(orch: Orchestrator, projec
 
     assert reviewer.cwd == worker.cwd and reviewer.branch is None
     assert (Path(worker.cwd) / "review.txt").exists()
+    orch.archive(worker.id, confirm=True)
     with pytest.raises(OrchestratorError, match="shared with"):
         orch.remove(worker.id)
 
@@ -142,6 +143,7 @@ def test_remove_deletes_the_worktree_and_optionally_the_branch(
 ) -> None:
     agent, _ = orch.spawn(project, "TOUCH x.txt")
     finished(orch, agent.id)
+    orch.archive(agent.id, confirm=True)
 
     orch.remove(agent.id, delete_branch=True)
 
