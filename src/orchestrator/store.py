@@ -118,7 +118,9 @@ CREATE TABLE IF NOT EXISTS deliveries (
 -- the work it reports was done for that parent); cause_run: the run of the parent during
 -- whose turn this one was queued (a notification: that of the work it reports);
 -- claimed: JSON list of the runs a notification reported (released if its turn fails);
--- checked: 1 once the run has ended and its parents were checked for a notification.
+-- checked: 1 once the run has ended and its parents were checked for a notification;
+-- auto: 1 for a compaction queued automatically (Orchestrator.auto_compact), which goes
+-- ahead of the agent's queued messages (older code ignores it and keeps queue order).
 CREATE TABLE IF NOT EXISTS run_meta (
     run_id INTEGER PRIMARY KEY,
     agent_id TEXT NOT NULL,
@@ -128,7 +130,8 @@ CREATE TABLE IF NOT EXISTS run_meta (
     origin TEXT,
     cause_run INTEGER,
     claimed TEXT,
-    checked INTEGER NOT NULL DEFAULT 0
+    checked INTEGER NOT NULL DEFAULT 0,
+    auto INTEGER NOT NULL DEFAULT 0
 );
 -- Archived agents: hidden from the default listings, everything else kept. Its own table
 -- for the same reasons as run_usage. A row whose restored_at is set is no longer archived
@@ -156,6 +159,7 @@ RUN_META_ADDED = (
     ("cause_run", "INTEGER"),
     ("claimed", "TEXT"),
     ("checked", "INTEGER NOT NULL DEFAULT 0"),
+    ("auto", "INTEGER NOT NULL DEFAULT 0"),
 )
 # run_usage columns added after its first version.
 RUN_USAGE_ADDED = (
@@ -165,6 +169,7 @@ RUN_USAGE_ADDED = (
     ("compact_trigger", "TEXT"),
     ("compact_pre_tokens", "INTEGER"),
     ("compact_post_tokens", "INTEGER"),
+    ("first_context_tokens", "INTEGER"),
 )
 ARCHIVE_MANUAL, ARCHIVE_AUTO = "manual", "auto"
 RESTORE_SQL = (
@@ -217,6 +222,7 @@ class RunMeta:
     cause_run: int | None = None
     claimed: str | None = None  # JSON list of run ids
     checked: int = 0
+    auto: int = 0  # 1: an automatic compaction
     known: bool = True  # False: queued by code from before run metadata
 
     @classmethod
@@ -591,9 +597,11 @@ class Store:
         sender: str | None = None,
         notify: str = "each",
         cause_run: int | None = None,
+        auto: bool = False,
     ) -> int:
         """Insert a waiting run and its metadata on `conn`; returns the run id. A message's
-        origin is its sender; a notification's is set when it starts."""
+        origin is its sender; a notification's is set when it starts. `auto`: an automatic
+        compaction (see may_start)."""
         if notify not in NOTIFY_MODES:
             raise ValueError(f"notify must be one of {', '.join(NOTIFY_MODES)}")
         cursor = conn.execute(
@@ -610,8 +618,8 @@ class Store:
         )
         run_id = cursor.lastrowid
         conn.execute(
-            "INSERT INTO run_meta (run_id, agent_id, kind, sender, notify, origin, cause_run)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO run_meta (run_id, agent_id, kind, sender, notify, origin, cause_run, auto)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 run_id,
                 agent_id,
@@ -620,6 +628,7 @@ class Store:
                 notify,
                 sender if kind == MESSAGE else None,
                 cause_run,
+                int(auto),
             ),
         )
         if kind == MESSAGE:  # a message to an archived agent restores it
@@ -698,6 +707,20 @@ class Store:
             ).fetchall()
         return {row["run_id"] for row in rows}
 
+    def add_auto_compaction(self, agent_id: str, prompt: str) -> Run | None:
+        """Queue an automatic compaction of the agent unless a compaction of it is queued
+        or running already (atomic); None then."""
+        with self.transaction() as conn:
+            pending = conn.execute(
+                "SELECT 1 FROM runs r JOIN run_meta m ON m.run_id = r.id WHERE r.agent_id = ?"
+                f" AND m.kind = ? AND r.status IN ('{ACTIVE[0]}', '{ACTIVE[1]}') LIMIT 1",
+                (agent_id, COMPACT),
+            ).fetchone()
+            if pending:
+                return None
+            run_id = self.insert_run(conn, agent_id, prompt, kind=COMPACT, auto=True)
+        return self.get_run(run_id)
+
     def ready_messages(self, agent_id: str) -> list[int]:
         """Ids of the agent's waiting message and compaction runs (not notifications) that
         could start once the agent's turn is free: none of their dependencies is still
@@ -760,7 +783,10 @@ class Store:
     # -- turn order -------------------------------------------------------
     #
     # At most one run of an agent runs at a time. Message runs (and compaction runs, which
-    # are scheduled like them) keep their order among themselves; a waiting notification never holds a message back and starts only when
+    # are scheduled like them) keep their order among themselves, except that an automatic
+    # compaction goes ahead of them (a queued message would otherwise pay for the whole
+    # context; it still runs after the compaction, however that ends); a waiting
+    # notification never holds a message back and starts only when
     # no message is ready to. Runs queued by older code (no metadata) are treated with
     # care because their runner may be old code too, which waits for every earlier
     # active run and starts without checking: a notification lets an earlier one go first
@@ -769,17 +795,26 @@ class Store:
     def may_start(self, conn: sqlite3.Connection, run_id: int, agent_id: str, kind: str) -> bool:
         """Whether the run may take the agent's turn now (dependencies aside for messages)."""
         rows = conn.execute(
-            "SELECT r.id, r.status, r.depends_on, m.kind FROM runs r"
+            "SELECT r.id, r.status, r.depends_on, m.kind, m.auto FROM runs r"
             " LEFT JOIN run_meta m ON m.run_id = r.id"
-            f" WHERE r.agent_id = ? AND r.id != ? AND r.status IN ('{ACTIVE[0]}', '{ACTIVE[1]}')"
+            f" WHERE r.agent_id = ? AND r.status IN ('{ACTIVE[0]}', '{ACTIVE[1]}')"
             " ORDER BY r.id",
-            (agent_id, run_id),
+            (agent_id,),
         ).fetchall()
+        own = next((row for row in rows if row["id"] == run_id), None)
+        rows = [row for row in rows if row["id"] != run_id]
         if any(row["status"] == RunStatus.RUNNING.value for row in rows):
             return False
-        messages = [row for row in rows if (row["kind"] or MESSAGE) in IN_ORDER]
+
+        def place(row: sqlite3.Row) -> tuple[int, int]:  # queue order: automatic ones first
+            return (0 if row["auto"] else 1, row["id"])
+
+        messages = sorted((row for row in rows if (row["kind"] or MESSAGE) in IN_ORDER), key=place)
         if kind in IN_ORDER:
-            return not any(row["id"] < run_id for row in messages)
+            mine = place(own) if own is not None else (1, run_id)
+            # Never ahead of a run queued by older code: its runner would not wait for it.
+            older = any(row["kind"] is None and row["id"] < run_id for row in messages)
+            return not older and not any(place(row) < mine for row in messages)
         if any(row["kind"] == NOTIFICATION and row["id"] < run_id for row in rows):
             return False
         for position, row in enumerate(messages):

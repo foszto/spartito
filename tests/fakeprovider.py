@@ -19,7 +19,7 @@ A prompt that starts with `/compact` (FakeProvider.compact_prompt) compacts: a m
 compaction (48450 -> 901 tokens) and an empty result, like Claude Code; with `NOOP` in it,
 it answers like Claude with `--disable-slash-commands` instead (with `CODEX` as well: like a
 Codex model, `compacted`). FAKE_NEEDS_SIZE=1 makes the provider ask for the context size
-before a compaction, like Codex. `invocation` writes what the
+before a compaction, like Codex; FAKE_COMPACT_NOOP=1 adds `NOOP` to every compaction. `invocation` writes what the
 runner passed it (prompt, slash_commands, output_schema, compact_below) to `ctx.json` in
 the run's scratch directory.
 
@@ -190,6 +190,8 @@ class FakeProvider:
 
     @staticmethod
     def compact_prompt(instructions: str | None) -> str:
+        if os.environ.get("FAKE_COMPACT_NOOP") == "1":  # every compaction fails
+            instructions = f"{instructions or ''} NOOP".strip()
         return f"/compact {instructions}" if instructions else "/compact"
 
     def parse(self, line: str) -> list[Event]:

@@ -83,6 +83,7 @@ CONTEXT_FIELDS = (
     "compact_trigger",
     "compact_pre_tokens",
     "compact_post_tokens",
+    "first_context_tokens",
 )
 
 
@@ -115,6 +116,9 @@ class Usage:
     compact_trigger: str | None = None
     compact_pre_tokens: int | None = None
     compact_post_tokens: int | None = None
+    # The conversation's size at the run's first model request (Claude): after a compaction,
+    # what it really left, system prompt and tools included. Unknown for Codex.
+    first_context_tokens: int | None = None
 
     def __add__(self, other: Usage) -> Usage:
         def add(a: Any, b: Any) -> Any:
@@ -180,16 +184,24 @@ def answers(runs: Iterable[Run], compactions: Collection[int]) -> list[Run]:
     return [run for run in runs if run.id not in compactions]
 
 
+def turn_order(run: Run) -> tuple[str, int]:
+    """Sort key for the order in which runs took their turns: an automatic compaction runs
+    ahead of messages queued before it (lower ids). By start time, then id (a tie within
+    one second is taken in id order)."""
+    return (run.started_at or "", run.id)
+
+
 def context_now(
     runs: Iterable[Run], usage: dict[int, Usage], session_id: str | None
 ) -> Usage | None:
     """The usage record that tells how full the agent's conversation is now: that of its
-    latest run in the current session with a size or a compaction. A compaction that no
-    request followed leaves the size unknown (context_tokens None, compact_trigger set):
-    an older figure would be stale. None when no run in the session reported either."""
+    latest run (in the order they ran, see turn_order) in the current session with a size
+    or a compaction. A compaction that no request followed leaves the size unknown
+    (context_tokens None, compact_trigger set): an older figure would be stale. None when
+    no run in the session reported either."""
     if not session_id:
         return None
-    for run in sorted(runs, key=lambda run: run.id, reverse=True):
+    for run in sorted(runs, key=turn_order, reverse=True):
         record = usage.get(run.id)
         if record is None or record.session_id != session_id:
             continue

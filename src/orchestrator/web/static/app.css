@@ -112,6 +112,7 @@ code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, m
 .chip.context .bar i { display: block; height: 100%; background: var(--done); }
 .chip.context.warn { color: var(--waiting); }
 .chip.context.warn .bar i { background: var(--waiting); }
+.chip.context .threshold { color: var(--faint); }
 .chip.compact-failed { color: var(--failed); background: var(--failed-soft); }
 .nav-item .sub .ctx { font-variant-numeric: tabular-nums; }
 .nav-item .sub .ctx.warn { color: var(--waiting); font-weight: 600; }

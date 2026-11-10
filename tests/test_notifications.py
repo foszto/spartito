@@ -1002,5 +1002,5 @@ def test_a_first_version_run_meta_is_completed_without_waking_anyone(tmp_path: P
         names = [row[1] for row in conn.execute("PRAGMA table_info(run_meta)")]
         indexes = [row[1] for row in conn.execute("PRAGMA index_list(run_meta)")]
     conn.close()
-    assert names[-4:] == ["origin", "cause_run", "claimed", "checked"]
+    assert names[-5:] == ["origin", "cause_run", "claimed", "checked", "auto"]
     assert "run_meta_unchecked" in indexes

@@ -199,7 +199,8 @@ mert a kör összes kérését összeadja. Codex: a thread rollout fájljának
 (`$CODEX_HOME/sessions/…/rollout-…-<thread>.jsonl`) utolsó `token_count` eseménye (csak
 olvasva; hiányzó fájl vagy ismeretlen formátum esetén nincs adat). Az `orch ps`/`orch status`,
 a `list_agents`/`get_agent` (`context` mező) és a webes felület (fejléc: sáv és
-`780k/1M 78%`; agentlista: `ctx 78%`) mutatja; 80%-tól figyelmeztető színnel. Tömörítés után,
+`780k/1M 78%` és az automatikus tömörítés küszöbe; agentlista: `ctx 78%`) mutatja; a küszöb
+fölött (ha az automatikus tömörítés ki van kapcsolva: 80%-tól) figyelmeztető színnel. Tömörítés után,
 amíg nem volt újabb kérés, a méret ismeretlen: ilyenkor `compacted` látszik.
 
 ```sh
@@ -223,6 +224,50 @@ egy kifejezett „nincs teendő” prompttal; utasítás nem adható, és csak i
 indítható. A Claude Code magától is tömörít (akár kör közben), amikor a beszélgetés eléri az
 ablak − 33k tokent (1M ablaknál 967k); ezt a run `info` eseménye és a `compact_*` mezők
 rögzítik.
+
+Lead szerepnél (`lead: true`: az orchestrator és a projekt leadek) az utasítás nélküli
+tömörítés (az automatikus és az `orch compact <lead>` is) egy rövid alapértelmezett utasítást
+kap (`service.LEAD_KEEP`): maradjanak meg a tulajdonos állandó szabályai, az aktuális állapot,
+a nyitott döntések és teendők, és a folyamatban lévő munka agent-azonosítókkal és branchekkel.
+A többi szerep a CLI alapértelmezett összefoglalóját kapja. Codex nem fogad utasítást: ott
+utasítás nélkül fut.
+
+#### Automatikus tömörítés
+
+```sh
+orch config compact-at 256k [-p valami]   # alapból 256000; 0 vagy off: soha; "" törli (örököl)
+```
+
+Ha egy agent köre sikeresen véget ér, és a kontextusa a küszöb fölött van, a runner még a kör
+lezárása előtt (a prompt cache ilyenkor még meleg) sorba állít egy tömörítést, így az az agent
+következő köre előtt fut, sosem kör közben. Egy már sorban álló üzenetet is megelőz (az
+különben a teljes kontextust fizetné), az üzenet utána rendesen lefut, akkor is, ha a
+tömörítés nem sikerül, visszavonják vagy leállítják. Nem kerül sorba tömörítés után, sikertelen
+vagy leállított kör után, ha már áll vagy fut egy tömörítés, vagy ha az agent nem tömöríthető
+(ilyenkor csendben elmarad). A napló `info` eseménye jelzi (`automatic compaction: context
+301k is above the threshold of 256k`), a `get_agent`/`orch status` `last_compaction` mezője
+`automatic: true`. Az agent addig dolgozónak számít: a szülő értesítése és a
+`wait_for_agents` a tömörítés végét is megvárja, és a gyerek valódi válaszát adja, nem a
+tömörítését.
+
+Egymás után kétszer nem: azt, hogy a legutóbbi tömörítés (amely elindult; a sosem indult,
+leállított vagy visszavont nem számít, akárcsak a CLI saját, kör közbeni tömörítése) mekkora
+kontextust hagyott, a ténylegesen mért méret dönti el, nem a CLI tömörítés utáni számja (a
+Claude `post_tokens` értéke a rendszerpromptot és az eszközöket nem tartalmazza, a Codex nem
+ad ilyet): ha maga a tömörítő kör mért méretet utána, az; különben a következő kör első
+modellkérésének mérete (`run_usage.first_context_tokens`, Claude), vagy ahol ez nincs (Codex),
+óvatosan annak a körnek a végén mért méret. Ha ez a küszöb fölött van, az automatikus tömörítés
+az agentnél szünetel: a mérő kör egyszer `info` eseményt ír (`automatic compaction paused: …`),
+és a `context.compact_paused` mező, az `orch status` és a felület kontextus-jelzése mutatja.
+Egy olyan tömörítés, amely után a mért méret a küszöb alatt van, vagy a mért méretnél magasabb
+küszöb feloldja. Amíg a legutóbbi tömörítés óta semmi nem mért méretet, nem kerül sorba
+automatikus tömörítés. Ha a kör leállítása (`orch stop`) a tömörítés sorba állítása közben vagy
+után érkezik, a kör `stopped` lesz, és a sorba állított tömörítést visszavonja.
+
+A küszöb globálisan és projektenként állítható (a projekt felülírja), a felület beállítási
+ablakában is; az érték a következő kör végén érvényesül. Codexnél ugyanúgy működik, mint a kézi
+tömörítés (csak ismert méret mellett, a „nincs teendő” körrel); ha a modell nem tömörít, a
+tömörítés sikertelen, és az automatikus tömörítés szünetel.
 
 ### Mit tölt be egy agent (loadout)
 

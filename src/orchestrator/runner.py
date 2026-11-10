@@ -206,6 +206,7 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
     # The size after the last model request (None after a compaction no request followed),
     # a compaction seen, and the context window per model from the results.
     context: Usage | None = None
+    first_context: Usage | None = None  # the run's first model request
     compaction: Usage | None = None
     windows: dict[str, int] = {}
     answered = False  # a result answering the prompt (not a background-task notification)
@@ -274,6 +275,7 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
                         continue
                     if event.kind == "context":
                         context = event.usage
+                        first_context = first_context or event.usage
                         continue
                     if event.kind == "compact":
                         compaction, context = event.usage, None
@@ -314,7 +316,7 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
     result = combine_results(results)
     # A run without a result (the CLI died) reports no window: the model's known one.
     known = {u.model: u.context_window for u in recorded.values() if u.model and u.context_window}
-    measured = measured_context(context, compaction, {**known, **windows})
+    measured = measured_context(context, compaction, {**known, **windows}, first_context)
     context_after = getattr(provider, "context_after", None)
     if context_after and session_id:
         read = context_after(session_id, began)
@@ -342,6 +344,8 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
         if text != last_text:  # otherwise the activity log already ends with it
             store.add_event(run.id, agent.id, "result", text)
         write_result(store, run, scratch, text, structured)
+        if not compact:  # queued while this turn still holds the agent: nothing comes first
+            queue_auto_compaction(store, run.id)
         store.finish_run(run.id, RunStatus.DONE, result=text, structured=structured, cost_usd=cost)
         return
     stderr_tail = stderr_path.read_text(encoding="utf-8", errors="replace").strip()[-1500:]
@@ -664,10 +668,16 @@ def combine_results(results: list[Event]) -> Event | None:
 
 
 def measured_context(
-    context: Usage | None, compaction: Usage | None, windows: dict[str, int]
+    context: Usage | None,
+    compaction: Usage | None,
+    windows: dict[str, int],
+    first: Usage | None = None,
 ) -> Usage:
-    """The context fields of a run's usage from what its stream reported."""
+    """The context fields of a run's usage from what its stream reported (`first`: its
+    first model request)."""
     measured = Usage()
+    if first is not None:
+        measured.first_context_tokens = first.context_tokens
     if compaction is not None:
         for key in ("compact_trigger", "compact_pre_tokens", "compact_post_tokens"):
             setattr(measured, key, getattr(compaction, key))
@@ -772,7 +782,13 @@ def record_usage(
             other_session = recorded[other.id].session_id if other.id in recorded else None
             return not session_id or other_session in (None, session_id)
 
-        earlier = [o for o in store.runs_of(agent.id) if o.id < run.id and same_session(o)]
+        # The runs that took their turn before this one: those that have ended (one run of
+        # an agent at a time; an automatic compaction runs ahead of lower ids).
+        earlier = [
+            o
+            for o in store.runs_of(agent.id)
+            if o.id != run.id and not o.status.active and same_session(o)
+        ]
         usage = usage.since(running_total(earlier, recorded))
     usage.model = model or usage.model
     usage.session_id = session_id
@@ -800,6 +816,11 @@ def main(run_id: int) -> None:
         # Whatever happened, the run is over: maybe a parent is now due a notification.
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         signal.signal(signal.SIGINT, signal.SIG_IGN)
+        if kind == COMPACT:
+            try:
+                orch.compaction_ended(run_id)
+            except Exception as exc:
+                print(f"checking the compaction's outcome failed: {exc!r}", file=sys.stderr)
         orch.run_ended(run_id, run.agent_id)
 
 
@@ -835,6 +856,7 @@ def take_turn(store: Store, run: Run, kind: str) -> None:
     except notify.Gone:
         return
     except Stopped:
+        withdraw_auto_queued(store)
         if not _drop_unstarted(store, run_id, kind):
             store.add_event(run_id, run.agent_id, "error", "stopped")
             store.finish_run(run_id, RunStatus.STOPPED, error="stopped")
@@ -845,6 +867,33 @@ def take_turn(store: Store, run: Run, kind: str) -> None:
             store.finish_run(run_id, RunStatus.FAILED, error=message)
     finally:
         keep_awake.release(inhibitor, store, run_id, run.agent_id)
+
+
+auto_queued: list[int] = []  # the automatic compaction this runner's turn queued
+
+
+def queue_auto_compaction(store: Store, run_id: int) -> None:
+    """Orchestrator.auto_compact, which must never fail the turn whose end calls it; only a
+    stop goes through (take_turn then withdraws what was queued)."""
+    from .service import Orchestrator  # the service launches runners; import it lazily
+
+    try:
+        queued = Orchestrator(store).auto_compact(run_id)
+    except Stopped:
+        raise
+    except Exception as exc:
+        print(f"queueing an automatic compaction failed: {exc!r}", file=sys.stderr)
+    else:
+        if queued is not None:
+            auto_queued.append(queued.id)
+
+
+def withdraw_auto_queued(store: Store) -> None:
+    """A stopped turn leaves no automatic compaction queued behind it."""
+    for run_id in auto_queued:
+        with contextlib.suppress(ValueError):  # it started (the stop reaches it) or is gone
+            store.withdraw_queued(run_id)
+    auto_queued.clear()
 
 
 def hold_awake(store: Store, run_id: int, agent_id: str) -> Any:

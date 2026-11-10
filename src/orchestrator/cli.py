@@ -21,7 +21,14 @@ from .service import (
     OrchestratorError,
     cache_hint,
 )
-from .settings import ARCHIVE_AFTER, ARCHIVE_AFTER_DEFAULT, KEEP_AWAKE, TIERS
+from .settings import (
+    ARCHIVE_AFTER,
+    ARCHIVE_AFTER_DEFAULT,
+    COMPACT_AT,
+    COMPACT_AT_DEFAULT,
+    KEEP_AWAKE,
+    TIERS,
+)
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help=__doc__)
 project_app = typer.Typer(no_args_is_help=True, help="Manage projects (git repositories).")
@@ -62,6 +69,7 @@ def tokens(counts: dict | None) -> str:
 
 
 CONTEXT_WARN = 80  # percent of the window from which the context is shown in a warning colour
+# (or, with automatic compaction on, once it is above the threshold)
 
 
 def short(n: int) -> str:
@@ -85,13 +93,36 @@ def context_text(context: dict | None) -> str:
     return f"{short(context['tokens'])}/{short(context['window'])} {context['percent']}%"
 
 
+def context_warn(context: dict | None) -> bool:
+    """Above the automatic compaction threshold (when it is on), else CONTEXT_WARN."""
+    if not context:
+        return False
+    if context.get("compact_at"):
+        return (context["tokens"] or 0) > context["compact_at"] or bool(context["compact_paused"])
+    return (context["percent"] or 0) >= CONTEXT_WARN
+
+
 def context_styled(context: dict | None, width: int = 0) -> str:
     text = f"{context_text(context):<{width}}"
-    if context and (context["percent"] or 0) >= CONTEXT_WARN:
-        return typer.style(
-            text, fg=typer.colors.RED if context["percent"] >= 95 else typer.colors.YELLOW
-        )
+    if context_warn(context):
+        red = (context["percent"] or 0) >= 95
+        return typer.style(text, fg=typer.colors.RED if red else typer.colors.YELLOW)
     return text
+
+
+def compact_at_text(context: dict | None) -> str:
+    """How automatic compaction stands for the agent, for `orch status`."""
+    if not context or "compact_at" not in context:
+        return ""
+    if not context["compact_at"]:
+        return "automatic compaction off"
+    if context["compact_paused"]:
+        return typer.style(
+            f"automatic compaction paused: the last compaction left {short(context['compact_paused'])},"
+            f" above the threshold of {short(context['compact_at'])}",
+            fg=typer.colors.YELLOW,
+        )
+    return f"automatic compaction above {short(context['compact_at'])}"
 
 
 def usage_line(counts: dict | None, cost: float | None, model: str | None = None) -> str:
@@ -341,6 +372,14 @@ def config_show(project: Annotated[str | None, typer.Option("--project", "-p")] 
         on = data.get(KEEP_AWAKE, True) is not False
         default = "" if KEEP_AWAKE in data else " (default)"
         typer.echo(f"  keep awake while agents work: {'on' if on else 'off'}{default}")
+    if COMPACT_AT in data:
+        typer.echo(f"  compact automatically {compact_text(data[COMPACT_AT])}")
+    elif not project:
+        typer.echo(f"  compact automatically {compact_text(COMPACT_AT_DEFAULT)} (default)")
+
+
+def compact_text(tokens: int) -> str:
+    return "off (never)" if not tokens else f"above {tokens:,} tokens of context"
 
 
 def hours_text(hours: float) -> str:
@@ -417,6 +456,33 @@ def config_keep_awake(
     except OrchestratorError as exc:
         raise fail(exc) from None
     config_show(None)
+
+
+@config_app.command("compact-at")
+def config_compact_at(
+    tokens: Annotated[
+        str, typer.Argument(help='Tokens (e.g. 256000 or 256k); 0 or "off": never; "" clears.')
+    ],
+    project: Annotated[
+        str | None,
+        typer.Option("--project", "-p", help="For one project instead of the global default."),
+    ] = None,
+) -> None:
+    """Compact an agent's conversation automatically once a turn ends with its context
+    above this many tokens (default 256k).
+
+    The compaction runs before the agent's next turn (ahead of a queued message). Not again
+    while the agent's last compaction left the context above the threshold: that is shown
+    in its log and `orch status`. Leads keep their rules, state and open work.
+    """
+    o = orch()
+    try:
+        data = o.settings(project)
+        data[COMPACT_AT] = tokens
+        o.update_settings(data, project)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    config_show(project)
 
 
 # -- agents -----------------------------------------------------------------
@@ -603,6 +669,8 @@ def status(agent_id: str) -> None:
         typer.echo(f"{'context':<12} {context_styled(context)}  ({hint})")
     else:
         typer.echo(f"{'context':<12} unknown  ({hint})")
+    if automatic := compact_at_text(context):
+        typer.echo(f"{'':<12} {automatic}")
     if compaction:  # never the agent's last run or status: shown here
         outcome = compaction["result"] if compaction["status"] == "done" else compaction["error"]
         text = f"#{compaction['id']} {compaction['status']}: {one_line(outcome or '')}"
