@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shlex
@@ -80,7 +81,10 @@ def request_model_list() -> str:
         try:
             out, err = proc.communicate(json.dumps(request) + "\n", timeout=MODEL_LIST_TIMEOUT)
         except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
+            # A group that has just exited is not an error (macOS answers EPERM while the
+            # CLI is still unreaped); the CLI must be reaped either way.
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(proc.pid, signal.SIGKILL)
             proc.communicate()
             raise
     if proc.returncode:
