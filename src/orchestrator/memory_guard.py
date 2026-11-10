@@ -11,9 +11,14 @@ The memory directory is derived the way Claude Code derives its default (read fr
 verified with 2.1.322): <config dir>/projects/<key>/memory/, where the config dir is
 $CLAUDE_CONFIG_DIR or ~/.claude and <key> is the sanitized main checkout of the git
 repository holding $CLAUDE_PROJECT_DIR (the CLI sets it for hooks to the session's launch
-directory; a later `cd` does not move it), or of that directory itself outside git. A memory
-directory moved elsewhere (`autoMemoryDirectory`, environment overrides) is not followed:
-writes there are refused, never allowed somewhere else.
+directory; a later `cd` does not move it), or of that directory itself outside git. Where the
+CLI could place it differently, the guard refuses every write instead of guessing: a symlinked
+`.git`, a worktree whose bare common directory holds a `.git`, and the environment overrides
+in OVERRIDES. A directory moved with `autoMemoryDirectory` is not followed: writes there are
+refused, and only the default directory stays writable.
+
+Paths are taken only as the CLI would certainly take them: absolute, without surrounding
+whitespace; `~`, relative paths and anything else are refused.
 
 Standard library only, and no imports from the package: it runs as a script in isolated mode.
 """
@@ -36,6 +41,12 @@ PATH_FIELDS = {
 }
 MATCHER = "|".join(PATH_FIELDS)
 KEY_LIMIT = 200  # longer keys are cut and get a hash suffix, as in the CLI
+# Move the memory directory or rename the project's key in ways the guard does not follow.
+OVERRIDES = (
+    "CLAUDE_CODE_PROJECT_DIR_NAME",
+    "CLAUDE_CODE_REMOTE_MEMORY_DIR",
+    "CLAUDE_COWORK_MEMORY_PATH_OVERRIDE",
+)
 
 
 def _utf16_units(text: str) -> list[int]:
@@ -80,7 +91,7 @@ def _read(path: str) -> str | None:
 
 def _main_checkout(root: str) -> str:
     """The main checkout of a linked worktree at `root`; `root` itself otherwise."""
-    if os.path.islink(os.path.join(root, ".git")) or not os.path.isfile(os.path.join(root, ".git")):
+    if not os.path.isfile(os.path.join(root, ".git")):
         return root
     text = _read(os.path.join(root, ".git"))
     if not text or not text.startswith("gitdir:"):
@@ -97,7 +108,12 @@ def _main_checkout(root: str) -> str:
         os.path.join(root, ".git")
     ):
         return root
-    return os.path.dirname(common) if os.path.basename(common) == ".git" else common
+    if os.path.basename(common) == ".git":
+        return os.path.dirname(common)
+    inner = os.path.join(common, ".git")  # a bare common directory
+    if os.path.lexists(inner):
+        raise ValueError(f"{inner} exists: the CLI may key the memory by another directory")
+    return common
 
 
 def canonical_root(project_dir: str) -> str:
@@ -105,7 +121,9 @@ def canonical_root(project_dir: str) -> str:
     current = project_dir
     while True:
         marker = os.path.join(current, ".git")
-        if not os.path.islink(marker) and (os.path.isdir(marker) or os.path.isfile(marker)):
+        if os.path.islink(marker):
+            raise ValueError(f"{marker} is a symbolic link: not followed")
+        if os.path.isdir(marker) or os.path.isfile(marker):
             return _main_checkout(current)
         parent = os.path.dirname(current)
         if parent == current:
@@ -115,6 +133,9 @@ def canonical_root(project_dir: str) -> str:
 
 def memory_dir(env: Mapping[str, str]) -> str:
     """The session's default memory directory. Raises ValueError when it cannot be placed."""
+    moved = [name for name in OVERRIDES if env.get(name)]
+    if moved:
+        raise ValueError(f"{', '.join(moved)} set: the memory directory may lie elsewhere")
     project = env.get("CLAUDE_PROJECT_DIR", "")
     if not os.path.isabs(project):
         raise ValueError("CLAUDE_PROJECT_DIR is not set to an absolute path")
@@ -135,14 +156,11 @@ def refusal(call: Any, env: Mapping[str, str]) -> str | None:
         return f"unknown tool {tool!r}"
     tool_input = call.get("tool_input")
     target = tool_input.get(PATH_FIELDS[tool]) if isinstance(tool_input, dict) else None
-    if not isinstance(target, str) or not target.strip() or "\0" in target:
+    if not isinstance(target, str) or "\0" in target:
         return f"{tool} names no usable file path"
-    target = os.path.expanduser(target)
-    if not os.path.isabs(target):
-        cwd = call.get("cwd")
-        if not isinstance(cwd, str) or not os.path.isabs(cwd):
-            return f"relative path {target!r} without a working directory"
-        target = os.path.join(cwd, target)
+    # The CLI trims whitespace and expands `~`; only plain absolute paths map with certainty.
+    if target != target.strip() or not os.path.isabs(target):
+        return f"{tool} needs a plain absolute path, not {target!r}"
     allowed = memory_dir(env)
     root = os.path.realpath(allowed)
     resolved = os.path.realpath(target)  # `..`, and symlinks along the way, resolved

@@ -52,7 +52,6 @@ def test_writes_inside_the_memory_directory_pass(env: dict[str, str]) -> None:
     for tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
         assert refusal(call(str(inside / "MEMORY.md"), tool), env) is None
     assert refusal(call(str(inside / "new" / "fact.md")), env) is None
-    assert refusal(call("fact.md", cwd=str(inside)), env) is None  # relative to the cwd
 
 
 @pytest.mark.parametrize(
@@ -65,7 +64,9 @@ def test_writes_inside_the_memory_directory_pass(env: dict[str, str]) -> None:
         "{memory}",  # the directory itself
         "{config}/projects/-other-project/memory/fact.md",
         "{config}/settings.json",
-        "~/.claude/settings.json",
+        "{memory}-evil/x.md",  # a sibling sharing the prefix
+        "{memory}X",
+        "{memory}X/x.md",
     ],
 )
 def test_writes_anywhere_else_are_refused(env: dict[str, str], target: str) -> None:
@@ -80,11 +81,33 @@ def test_writes_anywhere_else_are_refused(env: dict[str, str], target: str) -> N
     assert refusal(call(path, "Edit"), env)
 
 
-def test_a_relative_path_outside_is_refused(env: dict[str, str]) -> None:
-    memory(env)
+@pytest.mark.parametrize(
+    "target",
+    [
+        " {memory}/x.md",  # the CLI trims: it would write elsewhere than a join with the cwd
+        "{memory}/x.md ",
+        "\t{memory}/x.md",
+        "fact.md",  # relative: refused even with the cwd inside the memory directory
+        "./fact.md",
+        "~/x.md",
+        "~",
+        "~root/x.md",
+    ],
+)
+def test_paths_the_cli_may_map_differently_are_refused(env: dict[str, str], target: str) -> None:
+    inside = memory(env)
 
-    assert refusal(call("code.py", cwd=env["CLAUDE_PROJECT_DIR"]), env)
-    assert refusal(call("../../x.md", cwd=str(memory(env))), env)
+    reason = refusal(call(target.format(memory=inside), cwd=str(inside)), env)
+
+    assert reason and "plain absolute path" in reason
+
+
+def test_a_leading_space_does_not_let_a_path_outside_through(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    inside = memory(env)
+
+    assert refusal(call(f" {tmp_path}/out/x", cwd=str(inside)), env)
 
 
 def test_links_out_of_the_memory_directory_are_refused(env: dict[str, str], tmp_path: Path) -> None:
@@ -143,6 +166,52 @@ def test_without_a_project_directory_nothing_is_allowed(env: dict[str, str]) -> 
 
     with pytest.raises(ValueError):
         refusal(call(str(inside / "f.md")), {"CLAUDE_CONFIG_DIR": env["CLAUDE_CONFIG_DIR"]})
+
+
+@pytest.mark.parametrize("name", memory_guard.OVERRIDES)
+def test_an_override_of_the_memory_location_refuses_everything(
+    env: dict[str, str], name: str
+) -> None:
+    inside = memory(env)
+
+    with pytest.raises(ValueError, match=name):
+        refusal(call(str(inside / "f.md")), {**env, name: "/elsewhere"})
+
+
+def test_a_symlinked_git_marker_is_not_guessed(tmp_path: Path) -> None:
+    outer = tmp_path / "outer"
+    inner = outer / "inner"
+    (outer / ".git").mkdir(parents=True)
+    (tmp_path / "real-git").mkdir()
+    inner.mkdir()
+    (inner / ".git").symlink_to(tmp_path / "real-git")
+    config = str(tmp_path / "cfg")
+
+    with pytest.raises(ValueError, match="symbolic link"):
+        memory_dir({"CLAUDE_PROJECT_DIR": str(inner), "CLAUDE_CONFIG_DIR": config})
+    outer_memory = memory_dir({"CLAUDE_PROJECT_DIR": str(outer), "CLAUDE_CONFIG_DIR": config})
+    with pytest.raises(ValueError):  # not OUTER's memory
+        refusal(
+            call(f"{outer_memory}/x.md"),
+            {"CLAUDE_PROJECT_DIR": str(inner), "CLAUDE_CONFIG_DIR": config},
+        )
+
+
+def test_a_worktree_of_a_bare_repository(tmp_path: Path) -> None:
+    git = ["git", "-c", "user.email=t@t", "-c", "user.name=t"]
+    seed = tmp_path / "seed"
+    subprocess.run([*git, "init", "-q", str(seed)], check=True)
+    subprocess.run([*git, "-C", str(seed), "commit", "-q", "--allow-empty", "-m", "i"], check=True)
+    bare = tmp_path / "repo.git"
+    subprocess.run([*git, "clone", "-q", "--bare", str(seed), str(bare)], check=True)
+    worktree = tmp_path / "wt"
+    subprocess.run([*git, "-C", str(bare), "worktree", "add", "-q", str(worktree)], check=True)
+    env = {"CLAUDE_PROJECT_DIR": str(worktree), "CLAUDE_CONFIG_DIR": str(tmp_path / "cfg")}
+
+    assert memory_dir(env).endswith(project_key(str(bare)) + "/memory")
+    (bare / ".git").mkdir()  # the CLI would then key by the worktree itself: refuse instead
+    with pytest.raises(ValueError, match="may key the memory by another directory"):
+        memory_dir(env)
 
 
 def run_hook(
