@@ -200,7 +200,11 @@ fajtájú run), és a CLI saját tömörítését futtatja ugyanabban a sessionb
 `/compact [utasítás]` parancsot pontosan így adja át (`{{result:…}}` behelyettesítés és
 output schema nélkül, `--disable-slash-commands` nélkül, egyébként az agent szokásos
 loadoutjával). Az eredménye egy rövid összegzés (`compacted 91k -> 1k tokens`); a szülőnek
-nem kerül kézbesítésre és senkit nem ébreszt. A tömörítés részleteket veszíthet el a
+nem kerül kézbesítésre (értesítés és `wait_for_agents` sem), senkit nem ébreszt, és nem az
+agent válasza: az agent státusza, `last_run`-ja és a `{{result:<agent>}}` hivatkozás az
+utolsó valódi körét mutatja, a tömörítés kimenete külön látszik (`orch status` `compaction`
+sora, `get_agent` `last_compaction`, a felületen a sikertelen tömörítés jelzése). Egy sorban
+álló tömörítés visszavonható (`orch withdraw <run>`), de nem szerkeszthető. A tömörítés részleteket veszíthet el a
 beszélgetés korábbi részéből. Codexnél a `/compact` nem működik `exec resume`-ban: helyette
 egy kör fut alacsonyabb `model_auto_compact_token_limit` értékkel (az aktuális méret fele) és
 egy kifejezett „nincs teendő” prompttal; utasítás nem adható, és csak ismert méret mellett

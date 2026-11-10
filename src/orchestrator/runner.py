@@ -33,6 +33,7 @@ from .models import (
     Run,
     RunStatus,
     Usage,
+    answers,
     context_now,
     running_total,
 )
@@ -100,14 +101,17 @@ def prepare_workspace(agent: Agent, project: Project | None) -> list[str]:
 
 
 def render_prompt(store: Store, prompt: str) -> str:
-    """Replace {{result:<agent-id>}} with the last successful result of that agent:
+    """Replace {{result:<agent-id>}} with the last successful result of that agent (not a
+    compaction):
     structured output whole as compact JSON (never cut: cut JSON is useless), text cut at
     RESULT_CHARS with a line naming its length and the result file.
     {{result:<agent-id>:full}} injects the text uncut. Unknown or unfinished agents are
     left as they are."""
 
     def substitute(match: re.Match[str]) -> str:
-        done = [r for r in store.runs_of(match.group(1)) if r.status is RunStatus.DONE]
+        agent_id = match.group(1)
+        runs = answers(store.runs_of(agent_id), store.compactions(agent_id))
+        done = [r for r in runs if r.status is RunStatus.DONE]
         if not done:
             return match.group(0)
         last = done[-1]

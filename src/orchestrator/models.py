@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field, fields
 from enum import StrEnum
 from typing import Any
@@ -171,6 +171,13 @@ def running_total(runs: Iterable[Run], usage: dict[int, Usage]) -> Usage:
         elif run.cost_usd:
             total.cost_usd = max(total.cost_usd or 0, run.cost_usd)
     return total
+
+
+def answers(runs: Iterable[Run], compactions: Collection[int]) -> list[Run]:
+    """The runs that answer something: all but compaction runs (`compactions`, from
+    Store.compactions, read after the runs). A compaction is housekeeping: it is never an
+    agent's answer, last run or status, nor the result a `{{result:…}}` reference means."""
+    return [run for run in runs if run.id not in compactions]
 
 
 def context_now(

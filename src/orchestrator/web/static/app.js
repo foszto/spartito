@@ -487,6 +487,13 @@ function renderHeader(agent, setupFreshness = true) {
     node.title = contextTitle(context);
     tail.append(node);
   }
+  // A compaction is never the agent's status or last run: a failed one is shown here.
+  const compaction = agent.last_compaction;
+  if (compaction && compaction.status !== 'done') {
+    const node = el('span', 'chip compact-failed', `compact ${compaction.status}`);
+    node.title = `Compaction #${compaction.id}: ${compaction.error || compaction.status}`;
+    tail.append(node);
+  }
   chip(agent.branch, 'branch', tail);
   chip(tokenText(agent.tokens), null, tail);
   chip(agent.cost_usd ? `$${agent.cost_usd.toFixed(2)}` : '', null, tail);

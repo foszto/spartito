@@ -542,6 +542,7 @@ def status(agent_id: str) -> None:
     last = view.pop("last_run")
     counts, cost = view.pop("tokens"), view.pop("cost_usd")
     context, refusal = view.pop("context"), view.pop("compact_refusal")
+    compaction = view.pop("last_compaction")
     queue, working = view.pop("queue"), view.pop("children_running")
     if mark := view.pop("archived", None):
         view["archived"] = f"{mark['archived_at']} ({mark['how']}; orch restore {agent_id})"
@@ -563,6 +564,13 @@ def status(agent_id: str) -> None:
         typer.echo(f"{'context':<12} {context_styled(context)}  ({hint})")
     else:
         typer.echo(f"{'context':<12} unknown  ({hint})")
+    if compaction:  # never the agent's last run or status: shown here
+        outcome = compaction["result"] if compaction["status"] == "done" else compaction["error"]
+        text = f"#{compaction['id']} {compaction['status']}: {one_line(outcome or '')}"
+        typer.secho(
+            f"{'compaction':<12} {text}",
+            fg=None if compaction["status"] == "done" else typer.colors.RED,
+        )
     if queue:
         waiting = max(waiting_turns(view), len(queue))
         typer.echo(f"{'queue':<12} {waiting} waiting")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -11,14 +12,20 @@ import pytest
 from starlette.testclient import TestClient
 from typer.testing import CliRunner
 
-from orchestrator import cli, config, notify
+from orchestrator import cli, config, mcp_server, notify
 from orchestrator.loadout import Loadout
 from orchestrator.models import Agent, Event, Run, RunStatus, Usage, context_now
 from orchestrator.providers.base import NOTIFICATION_RESULT, RunContext
 from orchestrator.providers.claude import ClaudeProvider
 from orchestrator.providers.codex import COMPACT_PROMPT, CodexProvider
-from orchestrator.runner import compact_limit, compact_summary, measured_context, record_usage
-from orchestrator.service import Orchestrator, OrchestratorError
+from orchestrator.runner import (
+    compact_limit,
+    compact_summary,
+    measured_context,
+    record_usage,
+    render_prompt,
+)
+from orchestrator.service import Orchestrator, OrchestratorError, agent_state
 from orchestrator.store import COMPACT, Store
 from orchestrator.web.app import app
 
@@ -81,7 +88,9 @@ def test_a_compaction_queues_the_clis_own_command_verbatim_and_stores_a_summary(
     infos = [e.text for e in orch.store.events(agent.id) if e.kind == "info"]
     assert infos == ["compacted (manual)"]
     detail = orch.view(orch.agent(agent.id), detail=True)
-    assert detail["last_run"]["kind"] == COMPACT
+    assert detail["last_run"]["kind"] == "message" and detail["last_run"]["id"] != run.id
+    assert detail["last_compaction"]["id"] == run.id
+    assert detail["last_compaction"]["result"] == "compacted 48k -> 901 tokens"
     assert orch.agent(agent.id).session_id == "fake-session"  # the same session goes on
 
     orch.send(agent.id, "CONTEXT 300")
@@ -99,6 +108,85 @@ def test_a_compaction_the_cli_does_not_perform_fails(orch: Orchestrator, project
     assert failed.status is RunStatus.FAILED
     assert failed.error == "/compact isn't available in this environment."
     assert orch.view(orch.agent(agent.id))["context"]["tokens"] == 780  # nothing changed
+
+
+def test_a_failed_compaction_leaves_the_agents_status_and_answer_alone(
+    orch: Orchestrator, project: str
+) -> None:
+    agent, work = orch.spawn(project, "CONTEXT 780", worktree=False)
+    finished(orch, agent.id)
+
+    run = orch.compact(agent.id, "NOOP")
+    view = finished(orch, agent.id)
+    (listed,) = orch.overview(project)
+    detail = orch.view(orch.agent(agent.id), detail=True)
+    shown = CliRunner().invoke(cli.app, ["status", agent.id]).output
+
+    assert orch.store.get_run(run.id).status is RunStatus.FAILED
+    for one in (view, listed, detail):
+        assert one["status"] == "done" and one["last_run"]["id"] == work.id
+        assert one["last_run"]["result"] == "echo[new]: CONTEXT 780"
+    assert detail["last_compaction"]["status"] == "failed"
+    assert f"compaction   #{run.id} failed: " in shown
+    assert "done" in CliRunner().invoke(cli.app, ["ps"]).output.split(agent.id)[1].split()[0]
+
+
+def test_a_running_compaction_keeps_the_agent_busy(orch: Orchestrator, project: str) -> None:
+    agent, _ = orch.spawn(project, "CONTEXT 10", worktree=False)
+    finished(orch, agent.id)
+    first = orch.store.runs_of(agent.id)[0]
+    compaction = orch.store.add_run(agent.id, "/compact", kind=COMPACT)
+
+    status, active, shown = agent_state(orch.store.runs_of(agent.id), {compaction.id})
+    assert (status, [r.id for r in active], shown.id) == ("waiting", [compaction.id], first.id)
+    orch.store.finish_run(compaction.id, RunStatus.FAILED, error="x")
+    status, active, shown = agent_state(orch.store.runs_of(agent.id), {compaction.id})
+    assert (status, active, shown.id) == ("done", [], first.id)
+    assert agent_state(orch.store.runs_of(agent.id), {compaction.id, first.id})[0] == "new"
+
+
+def test_a_result_reference_skips_compactions(orch: Orchestrator, project: str) -> None:
+    analyst, _ = orch.spawn(project, "analysis", worktree=False)
+    finished(orch, analyst.id)
+    orch.compact(analyst.id)
+    finished(orch, analyst.id)
+
+    builder, run = orch.spawn(
+        project, "implement {{result:" + analyst.id + "}}", worktree=False, after=[analyst.id]
+    )
+    finished(orch, builder.id)
+
+    assert orch.store.get_run(run.id).result == "echo[new]: implement echo[new]: analysis"
+    assert render_prompt(orch.store, "{{result:" + analyst.id + "}}") == "echo[new]: analysis"
+
+
+def test_wait_for_agents_never_delivers_a_compaction(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lead = orch.create_agent(project, name="boss", role="lead", worktree=False)
+    child, first = orch.spawn(project, "CONTEXT 10", worktree=False, parent_id=lead.id)
+    finished(orch, child.id)
+    finished(orch, lead.id)  # the notification of the first answer
+    turn = orch.send(lead.id, "SLEEP 4")  # the lead's turn, in which it waits
+    while orch.store.get_run(turn.id).status is not RunStatus.RUNNING:
+        time.sleep(0.05)
+    monkeypatch.setenv("ORCH_AGENT_ID", lead.id)
+    second = orch.send(child.id, "SLEEP 1 second", sender=lead.id)
+    compaction = orch.compact(child.id)  # by the user, while the child works
+
+    reply = mcp_server._wait(orch, [child.id], timeout=30, limit=4000)
+
+    (outcome,) = reply["agents"]
+    assert reply["finished"] and outcome["status"] == "done"
+    assert outcome["last_run"]["id"] == second.id
+    assert outcome["last_run"]["result"] == "echo[resumed]: SLEEP 1 second"
+    assert "earlier_runs" not in outcome and "other_runs" not in outcome
+    assert orch.store.get_run(compaction.id).status is RunStatus.DONE
+    assert orch.store.claim(lead.id, [compaction.id]) == {compaction.id}  # never claimed
+    assert first.id not in [r["id"] for r in outcome.get("earlier_runs", [])]
+    again = mcp_server._wait(orch, [child.id], timeout=5, limit=4000)
+    assert again["agents"][0]["last_run"]["already_delivered"]
+    finished(orch, lead.id)
 
 
 def test_a_leads_compaction_ends_with_its_empty_result(orch: Orchestrator, project: str) -> None:
@@ -266,7 +354,8 @@ def test_the_cli_shows_the_context_and_compacts(orch: Orchestrator, project: str
     finished(orch, agent.id)
     after = runner.invoke(cli.app, ["status", agent.id])
     assert "compacted; its size is known after the next turn" in after.output
-    assert "(compact): done" in after.output and "compacted 48k -> 901 tokens" in after.output
+    assert "compaction   #2 done: compacted 48k -> 901 tokens" in after.output
+    assert "last run 1: done" in after.output  # its last real turn
     assert "compacted" in runner.invoke(cli.app, ["ps"]).output
 
     never = orch.create_agent(project, worktree=False)

@@ -13,14 +13,14 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from . import config, git, notify, providers, roles, settings
-from .models import Agent, Project, Run, RunStatus, Usage, context_now, running_total
+from .models import Agent, Project, Run, RunStatus, Usage, answers, context_now, running_total
 from .store import (
     ANYONE,
     ARCHIVE_AUTO,
@@ -112,16 +112,21 @@ def result_file(run_id: int) -> str | None:
     return str(path) if path.is_file() else None
 
 
-def agent_state(runs: list[Run]) -> tuple[str, list[Run], Run | None]:
-    """An agent's status from its runs, its queued/running runs and its latest finished run."""
+def agent_state(
+    runs: list[Run], compactions: Collection[int] = ()
+) -> tuple[str, list[Run], Run | None]:
+    """An agent's status from its runs, its queued/running runs and its latest finished run.
+
+    Compaction runs (`compactions`) count as work while they are queued or running, but
+    never as the latest finished run nor for the status after it (models.answers)."""
     active = [run for run in runs if run.status.active]
-    finished = [run for run in runs if not run.status.active]
+    finished = [run for run in answers(runs, compactions) if not run.status.active]
     if any(run.status is RunStatus.RUNNING for run in active):
         status = "running"
     elif active:
         status = "waiting"
     else:
-        status = runs[-1].status.value if runs else "new"
+        status = finished[-1].status.value if finished else "new"
     return status, active, finished[-1] if finished else None
 
 
@@ -397,9 +402,12 @@ class Orchestrator:
                 agent = self.agent(str(ref))
                 meta = self.store.meta_of(agent.id)
                 # Not a waiting notification: it is deleted when it has nothing to report.
+                # Not a compaction either: it is no work of the agent's.
                 runs = [
                     run
-                    for run in self.store.runs_of(agent.id)
+                    for run in answers(
+                        self.store.runs_of(agent.id), self.store.compactions(agent.id)
+                    )
                     if not (
                         run.status is RunStatus.WAITING
                         and run.id in meta
@@ -548,14 +556,16 @@ class Orchestrator:
         runs: id, kind, sender, created_at, prompt preview).
         `children_running` is how many descendants have a queued or running turn.
         `context`: how full the conversation is (see context_view), null when unknown.
-        With `detail` also `last_run.kind` (`message`, `notification` or `compact`, a
-        compaction turn) and `compact_refusal`: why `compact` is not possible now (null: it
-        is).
+        A compaction run is never `last_run` nor the status (see agent_state); with
+        `detail`, `last_compaction` is the latest one that ended (id, status, result, error,
+        ended_at), `last_run.kind` is `message` or `notification`, and `compact_refusal`
+        says why `compact` is not possible now (null: it is).
         """
         runs = self.store.runs_of(agent.id)
+        compactions = self.store.compactions(agent.id)
         usage = self.store.usage_of(agent.id)
         effective = self.effective(agent)
-        status, active, shown = agent_state(runs)
+        status, active, shown = agent_state(runs, compactions)
         result = shown.result if shown else None
         if shown and shown.structured is not None and not detail:
             # The answer once: structured output as compact JSON instead of the text.
@@ -594,6 +604,17 @@ class Orchestrator:
         }
         if detail:
             view["compact_refusal"] = self.compact_refusal(agent)
+            ended = [r for r in runs if r.id in compactions and not r.status.active]
+            view["last_compaction"] = None
+            if ended:
+                last = ended[-1]
+                view["last_compaction"] = {
+                    "id": last.id,
+                    "status": last.status.value,
+                    "result": last.result,
+                    "error": last.error,
+                    "ended_at": last.ended_at,
+                }
             view["model_override"] = agent.model
             view["effort_override"] = agent.effort
             if mark := self.store.archived(agent.project).get(agent.id):

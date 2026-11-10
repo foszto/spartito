@@ -687,6 +687,14 @@ class Store:
             ).fetchall()
         return {row["run_id"]: from_row(RunMeta, row) for row in rows}
 
+    def compactions(self, agent_id: str) -> set[int]:
+        """Ids of the agent's compaction runs (see models.answers)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT run_id FROM run_meta WHERE agent_id = ? AND kind = ?", (agent_id, COMPACT)
+            ).fetchall()
+        return {row["run_id"] for row in rows}
+
     def ready_messages(self, agent_id: str) -> list[int]:
         """Ids of the agent's waiting message and compaction runs (not notifications) that
         could start once the agent's turn is free: none of their dependencies is still

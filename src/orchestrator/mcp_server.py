@@ -16,7 +16,7 @@ import anyio
 from mcp.server.mcpserver import MCPServer
 
 from . import roles
-from .models import Run, running_total
+from .models import Run, answers, running_total
 from .replies import clip, run_reply, structured_page
 from .service import Orchestrator, OrchestratorError, agent_state, result_file, run_usage
 from .store import ANYONE
@@ -154,7 +154,8 @@ def _delivery_floor(orch: Orchestrator, caller: str, agent_id: str) -> int:
     last = orch.store.last_delivered(caller, agent_id)
     if last is not None:
         return last + 1
-    _, active, shown = agent_state(orch.store.runs_of(agent_id))
+    runs = orch.store.runs_of(agent_id)
+    _, active, shown = agent_state(runs, orch.store.compactions(agent_id))
     if active:
         return active[0].id
     return shown.id if shown else 0
@@ -176,16 +177,22 @@ def _wait(orch: Orchestrator, ids: list[str], timeout: float, limit: int) -> dic
     floors = {agent_id: _delivery_floor(orch, caller, agent_id) for agent_id in ids}
     orch.wait_idle(ids, timeout, interrupt=message_waiting)
     runs = {agent_id: orch.store.runs_of(agent_id) for agent_id in ids}
+    # Read after the runs, so no compaction among them is missing: they are never results.
+    compactions = {agent_id: orch.store.compactions(agent_id) for agent_id in ids}
     if message_waiting():
         return _statuses(orch, ids, runs, MESSAGE_NOTE)
-    states = {agent_id: agent_state(runs[agent_id]) for agent_id in ids}
+    states = {agent_id: agent_state(runs[agent_id], compactions[agent_id]) for agent_id in ids}
     below = {agent_id: orch.store.active_descendants(agent_id) for agent_id in ids}
     if any(active for _, active, _ in states.values()) or any(below.values()):
         return _statuses(orch, ids, runs)
     outcomes = []
     for agent_id in ids:
         status, _, shown = states[agent_id]
-        new = [run for run in runs[agent_id] if run.id >= floors[agent_id]]
+        new = [
+            run
+            for run in answers(runs[agent_id], compactions[agent_id])
+            if run.id >= floors[agent_id]
+        ]
         claimed = orch.store.claim(caller, [run.id for run in new])
         totals = running_total(runs[agent_id], orch.store.usage_of(agent_id))
         outcome = {
@@ -219,7 +226,7 @@ def _statuses(
     """The reply of an unfinished wait: statuses only, nothing counts as delivered."""
     agents = []
     for agent_id in ids:
-        status, active, _ = agent_state(runs[agent_id])
+        status, active, _ = agent_state(runs[agent_id], orch.store.compactions(agent_id))
         agents.append(
             {
                 "id": agent_id,
