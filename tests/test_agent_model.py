@@ -9,7 +9,7 @@ from starlette.testclient import TestClient
 from typer.testing import CliRunner
 
 from orchestrator import cli, config
-from orchestrator.service import ORCHESTRATOR_ID, Orchestrator, OrchestratorError
+from orchestrator.service import ORCHESTRATOR_ID, Orchestrator, OrchestratorError, cache_hint
 from orchestrator.web.app import app
 
 ORIGIN = {"origin": "http://localhost"}
@@ -150,12 +150,52 @@ def test_an_invalid_change_does_not_create_the_orchestrator(
     assert orch.store.get_agent(ORCHESTRATOR_ID) is None
 
 
-def test_cache_keys_name_what_restarts_the_prompt_cache(orch: Orchestrator, project: str) -> None:
-    fake = orch.create_agent(project, worktree=False)
+def test_the_cache_hint_says_what_was_measured(orch: Orchestrator, project: str) -> None:
+    claude = orch.create_agent(project, worktree=False, provider="claude")
     codex = orch.create_agent(project, worktree=False, provider="codex")
 
-    assert orch.setup(fake.id)["cache_keys"] == ["model", "effort"]
-    assert orch.setup(codex.id)["cache_keys"] == ["model"]
+    assert orch.setup(claude.id)["cache_effect"] == {"model": "restarts", "effort": "may restart"}
+    assert orch.setup(codex.id)["cache_effect"] == {"model": "restarts", "effort": "keeps"}
+    assert orch.setup(codex.id)["cache_hint"] == (
+        "Switching the model starts a fresh prompt cache; switching the effort keeps the"
+        " prompt cache. With a fresh cache the next turn re-reads the whole conversation at"
+        " full price."
+    )
+    assert cache_hint("codex", ("effort",)) == "Switching the effort keeps the prompt cache."
+    assert "may start a fresh prompt cache" in cache_hint("claude", ("effort",))
+
+
+@pytest.mark.parametrize("model", ["-x", "two words", "bad\x00", "m" * 201])
+def test_new_agents_and_tier_settings_refuse_unsafe_models(
+    orch: Orchestrator, project: str, model: str
+) -> None:
+    with pytest.raises(OrchestratorError, match="model"):
+        orch.create_agent(project, worktree=False, model=model)
+    with pytest.raises(OrchestratorError, match="model"):
+        orch.spawn(project, "task", worktree=False, model=model)
+    with pytest.raises(OrchestratorError, match="model"):
+        orch.update_settings({"worker": {"fake": {"model": model}}})
+    assert orch.store.list_agents() == [] and orch.settings() == {}
+
+
+def test_values_stored_before_the_check_still_open_and_resolve(
+    orch: Orchestrator, project: str
+) -> None:
+    """The check is on write only: an old unsafe value must not break reading."""
+    agent = orch.create_agent(project, worktree=False)
+    orch.store.set_overrides(agent.id, {"model": "-old"})
+    orch.store.set_settings("", {"worker": {"fake": {"model": "old one"}}})
+
+    assert orch.setup(agent.id)["effective"]["model"] == "-old"
+    assert orch.setup(agent.id)["inherited"]["model"] == "old one"
+    assert orch.view(orch.agent(agent.id), detail=True)["model"] == "-old"
+    assert orch.settings() == {"worker": {"fake": {"model": "old one"}}}
+    orch.set_overrides(agent.id, {"effort": "high"})  # changing the other one still works
+
+
+def test_an_empty_model_on_spawn_still_means_the_default(orch: Orchestrator, project: str) -> None:
+    agent = orch.create_agent(project, worktree=False, model="")
+    assert orch.agent(agent.id).model is None
 
 
 # -- API ------------------------------------------------------------------------
@@ -221,6 +261,20 @@ def test_the_api_creates_the_orchestrator_and_state_shows_it_before(
     assert after["orchestrator_setup"] is None
 
 
+def test_polling_the_state_before_the_orchestrator_exists_creates_nothing(
+    client: TestClient, orch: Orchestrator, fake_orchestrator_role: None
+) -> None:
+    workspace = config.home() / "workspace"
+    for _ in range(2):
+        assert client.get("/api/state").json()["orchestrator_setup"]["exists"] is False
+    assert orch.setup(ORCHESTRATOR_ID)["exists"] is False
+
+    assert not workspace.exists() and orch.store.get_agent(ORCHESTRATOR_ID) is None
+    created = orch.set_overrides(ORCHESTRATOR_ID, {"effort": "high"})
+    assert created["exists"] and orch.agent(ORCHESTRATOR_ID).cwd == str(workspace)
+    assert workspace.is_dir()
+
+
 # -- CLI ------------------------------------------------------------------------
 
 
@@ -261,7 +315,7 @@ def test_cli_model_notes_the_running_turn_and_the_cache(orch: Orchestrator, proj
 
     assert result.exit_code == 0, result.output
     assert "applies from the next one" in result.output
-    assert "fresh prompt cache" in result.output
+    assert "switching the effort may start a fresh prompt cache" in result.output.lower()
     orch.stop(agent.id)
 
 

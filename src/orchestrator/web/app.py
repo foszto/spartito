@@ -128,10 +128,11 @@ def events(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
             **orch.view(agent, detail=True),
             "changes": orch.changes(agent.id),
             # model/effort: in effect, inherited without the agent's own values (those are
-            # model_override/effort_override) and which of them restart the prompt cache
+            # model_override/effort_override) and what switching them does to the cache
             "effective": setup["effective"],
             "inherited": setup["inherited"],
-            "cache_keys": setup["cache_keys"],
+            "cache_effect": setup["cache_effect"],
+            "cache_hint": setup["cache_hint"],
             "recent_runs": orch.run_history(agent, limit=10),
         },
         "events": [

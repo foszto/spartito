@@ -72,6 +72,8 @@ def clean(data: Any) -> dict[str, dict[str, dict[str, str]]]:
                 for key in FIELDS
                 if str((values or {}).get(key) or "").strip()
             }
+            if "model" in kept:
+                check_model(kept["model"])
             effort = kept.get("effort")
             if effort and effort not in provider.efforts:
                 raise ValueError(

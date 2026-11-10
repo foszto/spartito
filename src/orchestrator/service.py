@@ -27,14 +27,35 @@ STOP_GRACE_SECONDS = 8
 QUEUE_PREVIEW_CHARS = 120
 QUEUE_LISTED = 20  # waiting runs in the detail view's `queue`; `queued_runs` has the count
 WAIT_POLL_SECONDS = 1.0
-# What starts a fresh prompt cache when it changes in a resumed session (the next turn
-# re-reads the whole conversation uncached). Checked with real turns: Claude 2.x re-wrote
-# the cache after a model switch on --resume; codex-cli 0.155.1 read 0 cached tokens after
-# `-m` changed on `exec resume` but kept the cache (12k of 14k cached) when only
-# model_reasoning_effort did. Claude's effort is assumed to reset it (thinking settings
-# are part of the cached request).
-CACHE_KEYS = {"codex": ("model",)}
-CACHE_KEYS_DEFAULT = ("model", "effort")
+# What a model or effort switch in a resumed session does to the prompt cache. Measured
+# with real turns: a model switch re-wrote Claude's cache on --resume, and codex-cli
+# 0.155.1 read 0 cached tokens after `-m` changed on `exec resume`; an effort switch alone
+# kept Codex's cache (12k of 14k tokens cached). Claude's effort switch was not measured.
+RESTARTS, MAY_RESTART, KEEPS = "restarts", "may restart", "keeps"
+CACHE_EFFECT = {
+    "claude": {"model": RESTARTS, "effort": MAY_RESTART},
+    "codex": {"model": RESTARTS, "effort": KEEPS},
+}
+CACHE_EFFECT_UNKNOWN = {"model": MAY_RESTART, "effort": MAY_RESTART}
+CACHE_WORDS = {
+    RESTARTS: "starts a fresh prompt cache",
+    MAY_RESTART: "may start a fresh prompt cache",
+    KEEPS: "keeps the prompt cache",
+}
+
+
+def cache_effect(provider: str) -> dict[str, str]:
+    return CACHE_EFFECT.get(provider, CACHE_EFFECT_UNKNOWN)
+
+
+def cache_hint(provider: str, keys: tuple[str, ...] = ("model", "effort")) -> str:
+    """What switching these settings in an existing session does to the prompt cache."""
+    effect = cache_effect(provider)
+    text = "; ".join(f"switching the {key} {CACHE_WORDS[effect[key]]}" for key in keys)
+    text = text[0].upper() + text[1:] + "."
+    if any(effect[key] != KEEPS for key in keys):
+        text += " With a fresh cache the next turn re-reads the whole conversation at full price."
+    return text
 
 
 class OrchestratorError(Exception):
@@ -146,6 +167,11 @@ class Orchestrator:
             providers.get(provider_name)
         except KeyError as exc:
             raise OrchestratorError(str(exc.args[0])) from None
+        if model:
+            try:
+                settings.check_model(model)
+            except ValueError as exc:
+                raise OrchestratorError(str(exc)) from None
         if effort and effort not in providers.get(provider_name).efforts:
             allowed = ", ".join(providers.get(provider_name).efforts)
             raise OrchestratorError(f"{provider_name} has no effort '{effort}' (use: {allowed})")
@@ -172,7 +198,7 @@ class Orchestrator:
                 provider=provider_name,
                 cwd=cwd,
                 parent_id=parent_id,
-                model=model,
+                model=model or None,
                 effort=effort,
                 branch=branch,
                 base_ref=base_ref,
@@ -271,12 +297,13 @@ class Orchestrator:
         project through the MCP tools. `orch chat` is a separate, interactive session.
         """
         return self.store.get_agent(ORCHESTRATOR_ID) or self.store.add_agent(
-            self._orchestrator_draft()
+            replace(self._orchestrator_draft(), cwd=str(config.workspace_dir()))
         )
 
     @staticmethod
     def _orchestrator_draft() -> Agent:
-        """The orchestrator agent as it is created on first use (not stored)."""
+        """The orchestrator agent as it is created on first use, without creating anything
+        (not stored; its workspace is made when it is created)."""
         role = roles.load(ORCHESTRATOR_ID)
         return Agent(
             id=ORCHESTRATOR_ID,
@@ -284,7 +311,7 @@ class Orchestrator:
             name=ORCHESTRATOR_ID,
             role=ORCHESTRATOR_ID,
             provider=role.provider or "claude",
-            cwd=str(config.workspace_dir()),
+            cwd="",
         )
 
     def _resolve_after(self, after: list[str | int] | None) -> list[int]:
@@ -371,9 +398,10 @@ class Orchestrator:
         """An agent's model and effort: what its next turn uses (`effective`), the values
         set on the agent itself (`model_override`/`effort_override`; null: inherited) and
         what applies without them (`inherited`); `running`: a turn is running (a change
-        applies from the next one); `cache_keys`: which of the two start a fresh prompt cache
-        when changed in an existing session. The orchestrator is shown before its first use
-        too (`exists` false)."""
+        applies from the next one); `cache_effect`: per setting, what switching it in an
+        existing session does to the prompt cache (`restarts`, `may restart`, `keeps`) and
+        `cache_hint` says it in words. The orchestrator is shown before its first use too
+        (`exists` false), without creating anything."""
         agent = self._agent_or_orchestrator_draft(agent_id)
         return {
             "agent_id": agent.id,
@@ -385,7 +413,8 @@ class Orchestrator:
             "inherited": self.inherited(agent),
             "session_id": agent.session_id,
             "running": self.store.running_run(agent.id) is not None,
-            "cache_keys": list(CACHE_KEYS.get(agent.provider, CACHE_KEYS_DEFAULT)),
+            "cache_effect": cache_effect(agent.provider),
+            "cache_hint": cache_hint(agent.provider),
         }
 
     def set_overrides(self, agent_id: str, changes: dict[str, Any]) -> dict[str, Any]:

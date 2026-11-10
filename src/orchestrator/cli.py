@@ -14,7 +14,7 @@ import typer
 from . import config, loadout, providers, roles
 from .models import Agent
 from .providers.claude import loadout_flags
-from .service import Orchestrator, OrchestratorError
+from .service import Orchestrator, OrchestratorError, cache_hint
 from .settings import TIERS
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help=__doc__)
@@ -540,8 +540,9 @@ def model_command(
 
     Without options it shows them. A cleared value falls back to the tier default
     (`orch config`). A change applies from the agent's next turn; a running one keeps its
-    model. In an existing session it starts a fresh prompt cache, so the next turn reads
-    the whole conversation again at full price.
+    model. In an existing session a model switch starts a fresh prompt cache (the next
+    turn re-reads the whole conversation at full price); an effort switch keeps the cache
+    with Codex and may start a fresh one with Claude.
     """
     changes = {
         key: value or None
@@ -564,8 +565,8 @@ def model_command(
     notes = []
     if setup["running"]:
         notes.append("a turn is running: it keeps its model; the change applies from the next one")
-    if setup["session_id"] and set(changes) & set(setup["cache_keys"]):
-        notes.append("the next turn starts a fresh prompt cache and reads the whole conversation")
+    if setup["session_id"]:
+        notes.append(cache_hint(setup["provider"], tuple(sorted(changes, reverse=True))))
     for note in notes:
         typer.echo(f"note: {note}")
 
