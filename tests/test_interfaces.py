@@ -158,6 +158,8 @@ def test_chat_loads_the_orchestrator_loadout_and_keeps_bash_for_orch(
     assert plain.exit_code == 0 and overridden.exit_code == 0
     (argv, custom) = exec_argv
     assert option(argv, "--tools") == "Bash,Read,Glob,Grep"
+    # No memory: nothing can hold an interactive session until its hooks are proven to run.
+    assert "--settings" not in argv and "--settings" not in custom
     assert option(argv, "--setting-sources") == "project,local"
     assert "--strict-mcp-config" in argv and "Bash(orch *)" in argv and "--mcp-config" in argv
     assert option(custom, "--tools") == "Read,Bash" and "--strict-mcp-config" not in custom

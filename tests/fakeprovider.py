@@ -1,7 +1,12 @@
 """A provider that runs a tiny script instead of a real coding agent.
 
 The prompt drives it: `FAIL` ends with an error result, `SLEEP <s>` delays, `TOUCH <name>`
-creates a file in the working directory, `WHOAMI` answers with `<model>/<effort>`. The answer echoes the prompt and whether the turn
+creates a file in the working directory, `WHOAMI` answers with `<model>/<effort>`, `LOADOUT`
+with `memory` or `plain`. With `memory` in the loadout it behaves like Claude with
+`--input-format stream-json`: starts a child, creates the canary (FAKE_HOOKS=off: none, it
+waits for input; FAKE_HOOKS=slow: only when it is sent SIGTERM; FAKE_HOOKS=exit: fails
+with `Not logged in` first), then accepts exactly one
+stream-json user message up to EOF. Each launch appends its mode to `.fake-launches`. The answer echoes the prompt and whether the turn
 resumed an existing session.
 
 `TOKENS <n>` makes the result report usage for the turn (n input tokens, n // 10 output,
@@ -30,6 +35,7 @@ import sys
 
 from orchestrator.models import Agent, Event, Usage
 from orchestrator.providers.base import NOTIFICATION_RESULT, Invocation, RunContext
+from orchestrator.providers.claude import stream_json_prompt
 
 SCRIPT = r"""
 import json, os, pathlib, signal, subprocess, sys, time
@@ -38,7 +44,38 @@ def note(pid):
         pids.write(f"{pid}\n")
 note(os.getpid())
 resumed = sys.argv[1]
-prompt = sys.stdin.read()
+with open(".fake-launches", "a") as launches:
+    launches.write(sys.argv[3] + "\n")
+server = None
+if sys.argv[3] == "memory":  # like Claude with --input-format stream-json
+    server = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3600)"])
+    note(server.pid)  # a child it starts at once (an MCP server)
+    hooks = os.environ.get("FAKE_HOOKS")
+    if hooks == "exit":  # fails before its hooks, e.g. an expired login
+        server.kill()
+        print("Not logged in", file=sys.stderr)
+        sys.exit(1)
+    if hooks == "slow":  # the canary comes only as it is being ended
+        def late(signum, frame):
+            pathlib.Path(sys.argv[4]).touch()
+            server.kill()
+            sys.exit(0)
+        signal.signal(signal.SIGTERM, late)
+    elif hooks != "off":
+        pathlib.Path(sys.argv[4]).touch()  # the SessionStart canary, before any input
+    raw = sys.stdin.read()  # hooks off: waits here, like the real CLI, until it is ended
+    try:
+        (line,) = raw.splitlines()
+        data = json.loads(line)
+        assert data["type"] == "user" and data["message"]["role"] == "user"
+        ((block,),) = [data["message"]["content"]]
+        prompt = block["text"]
+    except Exception:
+        server.kill()
+        print(json.dumps({"result": f"not one stream-json message: {raw!r}", "error": True}))
+        sys.exit(1)
+else:
+    prompt = sys.stdin.read()
 print(json.dumps({"session": "fake-session", "model": "fake-model-1"}), flush=True)
 words = prompt.split()
 usage = None
@@ -76,6 +113,8 @@ for flag, value in zip(words, words[1:]):
         subprocess.run([sys.executable, "-c", helper], **apart)
 if "WHOAMI" in words:
     print(json.dumps({"result": sys.argv[2], **extra}), flush=True)
+elif "LOADOUT" in words:
+    print(json.dumps({"result": sys.argv[3], **extra}), flush=True)
 elif "FAIL" in words:
     print(json.dumps({"result": "boom", "error": True, **extra}), flush=True)
 else:
@@ -90,6 +129,8 @@ for flag, value in zip(words, words[1:]):
         code = ("STUBBORN" in words) * ignore + f"import time; time.sleep({value})"
         note(subprocess.Popen([sys.executable, "-c", code], start_new_session=True).pid)
         time.sleep(float(value))
+if server:
+    server.kill()
 """
 
 
@@ -103,7 +144,11 @@ class FakeProvider:
     def invocation(self, ctx: RunContext) -> Invocation:
         resumed = "resumed" if ctx.agent.session_id else "new"
         config = f"{ctx.model}/{ctx.effort}"
-        return Invocation(argv=[sys.executable, "-c", SCRIPT, resumed, config], stdin=ctx.prompt)
+        canary = ctx.scratch / "canary" if ctx.loadout.memory else None
+        mode = ["memory", str(canary)] if canary else ["plain"]
+        argv = [sys.executable, "-c", SCRIPT, resumed, config, *mode]
+        stdin = stream_json_prompt(ctx.prompt) if canary else ctx.prompt
+        return Invocation(argv=argv, stdin=stdin, canary=canary)
 
     def parse(self, line: str) -> list[Event]:
         data = json.loads(line)

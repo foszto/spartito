@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,7 @@ import pytest
 from orchestrator.loadout import Loadout
 from orchestrator.models import Agent, Event, Usage
 from orchestrator.providers import McpServer, RunContext, claude, get
+from orchestrator.providers.claude import loadout_flags
 
 # The real lookup; conftest replaces the module attribute with a recorded answer.
 REAL_REQUEST_MODEL_LIST = claude.request_model_list
@@ -280,6 +283,70 @@ def test_codex_puts_the_loadout_options_after_the_resumed_thread(tmp_path: Path)
     assert argv[thread] == "tid"
     assert argv.index("--ignore-user-config") > thread
     assert argv.index('mcp_servers.orch.default_tools_approval_mode="approve"') > thread
+
+
+@pytest.mark.parametrize("session_id", [None, "sid"])
+def test_claude_memory_adds_write_and_edit_behind_the_guard_on_every_turn(
+    tmp_path: Path, session_id: str | None
+) -> None:
+    claude = get("claude")
+    keeper = replace(LEAD_LOADOUT, memory=True)
+
+    guarded = claude.invocation(loadout_context(tmp_path, keeper, True, session_id=session_id))
+    plain = claude.invocation(loadout_context(tmp_path, LEAD_LOADOUT, True, session_id=session_id))
+    argv = guarded.argv
+
+    assert ("--resume" in argv) == bool(session_id)
+    assert argv[argv.index("--tools") + 1] == "Bash,Read,Glob,Grep,Write,Edit"
+    settings = json.loads(argv[argv.index("--settings") + 1])
+    assert "disableAllHooks" not in settings  # a user's or project's kill switch is respected
+    (entry,) = settings["hooks"]["PreToolUse"]
+    assert entry["matcher"] == "Write|Edit|MultiEdit|NotebookEdit"
+    command = entry["hooks"][0]["command"]
+    assert command.startswith(sys.executable) and command.endswith("memory_guard.py || exit 2")
+    # The canary: created by a SessionStart hook in the same settings, before any input.
+    assert guarded.canary is not None and guarded.canary.parent == tmp_path
+    (start,) = settings["hooks"]["SessionStart"]
+    assert start["hooks"][0]["command"] == f"touch {guarded.canary}"
+    assert argv[argv.index("--input-format") + 1] == "stream-json"
+    message = json.loads(guarded.stdin)
+    assert message["type"] == "user" and guarded.stdin.endswith("\n")
+    assert message["message"]["content"] == [{"type": "text", "text": "do it"}]
+    # Without memory: as before, nothing waits for a canary.
+    assert plain.canary is None and plain.stdin == "do it"
+    assert "--settings" not in plain.argv and "--input-format" not in plain.argv
+    assert plain.argv[plain.argv.index("--tools") + 1] == "Bash,Read,Glob,Grep"
+
+
+def test_claude_memory_needs_a_canary(tmp_path: Path) -> None:
+    keeper = replace(LEAD_LOADOUT, memory=True)
+
+    assert loadout_flags(keeper) == loadout_flags(LEAD_LOADOUT)  # orch chat: no Write/Edit
+    assert "--settings" in loadout_flags(keeper, tmp_path / "canary")
+
+
+def test_claude_memory_leaves_tools_that_already_write_alone(tmp_path: Path) -> None:
+    claude = get("claude")
+
+    worker = claude.invocation(
+        loadout_context(tmp_path, replace(WORKER_LOADOUT, memory=True), False)
+    ).argv
+    default = claude.invocation(loadout_context(tmp_path, Loadout(memory=True), False)).argv
+
+    assert "--settings" not in worker and "--settings" not in default
+    assert worker[worker.index("--tools") + 1] == "Bash,Read,Edit,Write,Glob,Grep"
+    assert "--tools" not in default
+
+
+@pytest.mark.parametrize("session_id", [None, "tid"])
+def test_codex_ignores_memory(tmp_path: Path, session_id: str | None) -> None:
+    codex = get("codex")
+    keeper = replace(LEAD_LOADOUT, memory=True)
+
+    with_memory = codex.invocation(loadout_context(tmp_path, keeper, True, session_id=session_id))
+    without = codex.invocation(loadout_context(tmp_path, LEAD_LOADOUT, True, session_id=session_id))
+
+    assert with_memory.argv == without.argv
 
 
 def test_claude_models_are_what_its_cli_offers_with_versions_in_the_labels() -> None:

@@ -27,7 +27,7 @@ from typing import Any
 from . import config, git, loadout, notify, providers, roles, settings
 from .models import Agent, Event, Project, Run, RunStatus, Usage, running_total
 from .providers import McpServer, RunContext
-from .providers.base import NOTIFICATION_RESULT
+from .providers.base import NOTIFICATION_RESULT, Invocation
 from .store import MESSAGE, NOTIFICATION, Store
 
 POLL_SECONDS = 0.5
@@ -144,33 +144,31 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
     writable = prepare_workspace(agent, project)
     scratch = config.run_dir(run.id)
     scratch.mkdir(exist_ok=True)
-    invocation = provider.invocation(
-        RunContext(
-            agent=agent,
-            # A notification carries child output: data, never {{result:…}} references.
-            prompt=run.prompt
-            if store.meta(run.id).kind == NOTIFICATION
-            else render_prompt(store, run.prompt),
-            system_prompt=system_prompt(agent, project, role),
-            scratch=scratch,
-            mcp=mcp_server(agent) if role.lead else None,
-            lead=role.lead,
-            output_schema=run.output_schema,
-            writable_dirs=writable,
-            loadout=loadout.resolve(
-                role,
-                project.path if project else None,
-                warn=lambda text: store.add_event(run.id, agent.id, "info", text),
-            ),
-            **settings.resolve(store, agent, role),
-        )
+    ctx = RunContext(
+        agent=agent,
+        # A notification carries child output: data, never {{result:…}} references.
+        prompt=run.prompt
+        if store.meta(run.id).kind == NOTIFICATION
+        else render_prompt(store, run.prompt),
+        system_prompt=system_prompt(agent, project, role),
+        scratch=scratch,
+        mcp=mcp_server(agent) if role.lead else None,
+        lead=role.lead,
+        output_schema=run.output_schema,
+        writable_dirs=writable,
+        loadout=loadout.resolve(
+            role,
+            project.path if project else None,
+            warn=lambda text: store.add_event(run.id, agent.id, "info", text),
+        ),
+        **settings.resolve(store, agent, role),
     )
-    env = {k: v for k, v in os.environ.items() if k not in invocation.unset_env}
-    env.update(invocation.env)
-
+    invocation = provider.invocation(ctx)
+    plain_ctx = dataclasses.replace(ctx, loadout=dataclasses.replace(ctx.loadout, memory=False))
+    if invocation.canary is not None and hooks_known_off(agent):
+        invocation = _plain(provider, plain_ctx)
     # Every process the CLI starts inherits this mark, also those that leave its session.
     token = f"{run.id}-{uuid.uuid4().hex}"
-    env[TURN_ENV] = token
     mark = f"{TURN_ENV}={token}"
 
     stderr_path = scratch / "stderr.log"
@@ -180,25 +178,39 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
         open(scratch / "stream.jsonl", "w", encoding="utf-8") as raw,
         open(stderr_path, "w", encoding="utf-8") as stderr,
     ):
-        # In the runner's process group (the runner leads its own session and group, see
-        # Orchestrator._launch), so a stop that kills the group ends the CLI as well.
-        child = subprocess.Popen(
-            invocation.argv,
-            cwd=agent.cwd,
-            env=env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=stderr,
-            text=True,
-        )
+        child = _start(invocation, agent.cwd, token, stderr)
+        if invocation.canary is not None:
+            try:
+                outcome = wait_for_canary(child, invocation.canary)
+                if outcome == HOOKS_OFF:  # it has read no prompt yet: nothing ran unguarded
+                    end_turn(child, mark)
+            except BaseException:
+                end_turn(child, mark)
+                raise
+            # EXITED: no relaunch; the turn fails below with the CLI's own error.
+            if outcome == HOOKS_RAN:
+                note_hooks(store, run.id, agent.id, off=False)
+            elif outcome == HOOKS_OFF and invocation.canary.exists():
+                # It came while the CLI was being ended: a slow start, not hooks being off.
+                # This turn goes on without memory; the next one tries again.
+                store.add_event(run.id, agent.id, "info", MEMORY_SLOW)
+            elif outcome == HOOKS_OFF:
+                note_hooks(store, run.id, agent.id, off=True)
+            if outcome == HOOKS_OFF:
+                for pipe in (child.stdin, child.stdout):
+                    if pipe:
+                        pipe.close()
+                invocation = _plain(provider, plain_ctx)
+                child = _start(invocation, agent.cwd, token, stderr)
         assert child.stdin and child.stdout
         lines: queue.Queue[str | None] = queue.Queue()
         reader = threading.Thread(target=_pump, args=(child.stdout, lines), daemon=True)
         reader.start()
         known: dict[int, tuple[int, int]] = {}
         try:
-            child.stdin.write(invocation.stdin)
-            child.stdin.close()
+            with contextlib.suppress(BrokenPipeError):  # a CLI that exited unasked
+                child.stdin.write(invocation.stdin)
+                child.stdin.close()
             eof, exited_at = False, None
             while True:
                 try:
@@ -282,6 +294,99 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
     store.add_event(run.id, agent.id, "error", error)
     write_result(store, run, scratch, last_text or error, None)
     store.finish_run(run.id, RunStatus.FAILED, error=error, result=last_text or None, cost_usd=cost)
+
+
+CANARY_SECONDS = 15.0  # the CLI's SessionStart hooks run within about 0.2 s of its start
+CANARY_ENV = "ORCH_CANARY_SECONDS"  # overrides CANARY_SECONDS (tests)
+HOOKS_RAN, HOOKS_OFF, EXITED = "ran", "off", "exited"
+RECHECK_SECONDS = 24 * 3600  # a record of hooks being off is trusted this long
+MEMORY_OFF = (
+    "memory writes are off: hooks are disabled by settings or policy, so the guard that "
+    "keeps Write/Edit inside the memory directory cannot run; turns run without them and "
+    "check again in a new session or after a day"
+)
+MEMORY_ON = "memory writes are on again: hooks run in this session"
+MEMORY_SLOW = (
+    "memory writes are off for this turn: the CLI started too slowly to prove that its hooks "
+    "run; the next turn tries again"
+)
+
+
+def _plain(provider: Any, ctx: RunContext) -> Invocation:
+    invocation = provider.invocation(ctx)
+    if invocation.canary is not None:
+        raise RuntimeError(f"{provider.name} keeps memory on without hooks")
+    return invocation
+
+
+def hooks_record(agent_id: str) -> Path:
+    """Where the runner notes that an agent's hooks were off (absent: not known to be)."""
+    return config.home() / "hooks-off" / f"{re.sub(r'[^\w.-]', '_', agent_id)}.json"
+
+
+def hooks_known_off(agent: Agent) -> bool:
+    """A fresh record says this agent's hooks are off: launch without memory, no canary.
+    A new session, or a record older than RECHECK_SECONDS, tries the canary again."""
+    if agent.session_id is None:
+        return False
+    try:
+        checked = float(json.loads(hooks_record(agent.id).read_text(encoding="utf-8"))["checked"])
+    except OSError, ValueError, KeyError, TypeError:
+        return False
+    return 0 <= time.time() - checked < RECHECK_SECONDS
+
+
+def note_hooks(store: Store, run_id: int, agent_id: str, off: bool) -> None:
+    """Keep the record of the canary's outcome; the info event only when it changes.
+    Advisory only: a record that cannot be written or removed never fails the turn."""
+    path = hooks_record(agent_id)
+    was_off = path.exists()
+    with contextlib.suppress(OSError):
+        if off:
+            path.parent.mkdir(exist_ok=True)
+            path.write_text(json.dumps({"checked": time.time()}), encoding="utf-8")
+        else:
+            path.unlink(missing_ok=True)
+    if off != was_off:
+        store.add_event(run_id, agent_id, "info", MEMORY_OFF if off else MEMORY_ON)
+
+
+def _start(invocation: Invocation, cwd: str, token: str, stderr: Any) -> subprocess.Popen[str]:
+    env = {k: v for k, v in os.environ.items() if k not in invocation.unset_env}
+    env.update(invocation.env)
+    env[TURN_ENV] = token
+    if invocation.canary is not None:
+        invocation.canary.unlink(missing_ok=True)
+    # In the runner's process group (the runner leads its own session and group, see
+    # Orchestrator._launch), so a stop that kills the group ends the CLI as well.
+    return subprocess.Popen(
+        invocation.argv,
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=stderr,
+        text=True,
+    )
+
+
+def wait_for_canary(
+    child: subprocess.Popen[str], canary: Path, timeout: float | None = None
+) -> str:
+    """HOOKS_RAN once the CLI has created `canary` (its SessionStart hook) before it was sent
+    anything; HOOKS_OFF when it is still waiting for input after the time: its hooks, the
+    guard among them, do not run in this session; EXITED when it ended first (a failure of
+    its own: login, flags, a missing session), which says nothing about hooks."""
+    if timeout is None:
+        timeout = float(os.environ.get(CANARY_ENV) or CANARY_SECONDS)
+    deadline = time.monotonic() + timeout
+    while not canary.exists():
+        if child.poll() is not None:
+            return HOOKS_RAN if canary.exists() else EXITED
+        if time.monotonic() >= deadline:
+            return HOOKS_RAN if canary.exists() else HOOKS_OFF
+        time.sleep(0.05)
+    return HOOKS_RAN
 
 
 LEAD_EXIT_GRACE_SECONDS = 5.0  # a lead's CLI may exit on its own after its answer

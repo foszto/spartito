@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -11,7 +12,9 @@ import tempfile
 import threading
 import time
 import uuid
+from pathlib import Path
 
+from .. import memory_guard
 from ..loadout import Loadout
 from ..models import Agent, Event, Usage
 from .base import NOTIFICATION_RESULT, Invocation, RunContext, brief
@@ -149,11 +152,59 @@ def _model_choice(entry: dict) -> tuple[str, str]:
     return value, label
 
 
-def loadout_flags(loadout: Loadout) -> list[str]:
-    """CLI flags for a loadout. Needed on every turn: `--resume` does not remember them."""
+def memory_guarded(loadout: Loadout) -> bool:
+    """Whether `memory` adds Write/Edit behind the guard: only where the tools grant no
+    writing of their own (confining a worker's Write would break it, and the CLI's default
+    set writes anywhere already)."""
+    tools = loadout.tools
+    return loadout.memory and tools is not None and not set(tools) & set(memory_guard.PATH_FIELDS)
+
+
+def memory_settings(canary: Path) -> dict:
+    """`--settings` that confine the file-writing tools to the session's memory directory,
+    with a SessionStart hook that creates `canary` as proof that this session runs them.
+
+    Hooks may be off in a session (`disableAllHooks` at any level, a policy's
+    `allowManagedHooksOnly`), and that is respected: the runner sends the prompt only once
+    `canary` exists, otherwise it relaunches the turn without `memory` (runner.py).
+    Verified with Claude Code 2.1.322: with `--input-format stream-json` SessionStart hooks
+    run before the CLI reads any input, on fresh and resumed turns; hooks from `--settings`
+    load with `--setting-sources project,local`; the CLI runs commands through /bin/sh, and
+    `|| exit 2` refuses the write when the guard's interpreter cannot start.
+    """
+    guard = shlex.join([sys.executable, "-I", memory_guard.__file__]) + " || exit 2"
+    return {
+        "hooks": {
+            "SessionStart": [
+                {"hooks": [{"type": "command", "command": shlex.join(["touch", str(canary)])}]}
+            ],
+            "PreToolUse": [
+                {"matcher": memory_guard.MATCHER, "hooks": [{"type": "command", "command": guard}]}
+            ],
+        }
+    }
+
+
+def stream_json_prompt(prompt: str) -> str:
+    """The prompt as the single user message of `--input-format stream-json`."""
+    message = {"role": "user", "content": [{"type": "text", "text": prompt}]}
+    line = {"type": "user", "session_id": "", "message": message, "parent_tool_use_id": None}
+    return json.dumps(line) + "\n"
+
+
+def loadout_flags(loadout: Loadout, canary: Path | None = None) -> list[str]:
+    """CLI flags for a loadout. Needed on every turn: `--resume` does not remember them.
+
+    `memory` takes effect only with a `canary` (see memory_settings) and a caller that
+    waits for it before the prompt; `orch chat` passes none, so it gets no Write/Edit.
+    """
     flags = []
-    if loadout.tools is not None:
-        flags += ["--tools", ",".join(loadout.tools)]
+    tools = loadout.tools
+    if canary is not None and memory_guarded(loadout):
+        tools = (*tools, "Write", "Edit")
+        flags += ["--settings", json.dumps(memory_settings(canary))]
+    if tools is not None:
+        flags += ["--tools", ",".join(tools)]
     if loadout.strict_mcp:
         flags.append("--strict-mcp-config")
     if loadout.setting_sources is not None:
@@ -203,7 +254,11 @@ class ClaudeProvider:
         else:
             argv += ["--session-id", str(uuid.uuid4()), "--name", agent.id]
         argv += ["--permission-mode", agent.permission or DEFAULT_PERMISSION]
-        argv += loadout_flags(ctx.loadout)
+        # Named at random: nothing else in the session can know it in advance.
+        canary = (
+            ctx.scratch / f"hooks-ran-{uuid.uuid4().hex}" if memory_guarded(ctx.loadout) else None
+        )
+        argv += loadout_flags(ctx.loadout, canary)
         if ctx.model:
             argv += ["--model", ctx.model]
         if ctx.effort:
@@ -218,9 +273,14 @@ class ClaudeProvider:
             argv += ["--allowedTools", "mcp__orch"]
         if ctx.output_schema:
             argv += ["--json-schema", json.dumps(ctx.output_schema)]
+        stdin = ctx.prompt
+        if canary:  # read only once the runner has seen the canary
+            argv += ["--input-format", "stream-json"]
+            stdin = stream_json_prompt(ctx.prompt)
         return Invocation(
             argv=argv,
-            stdin=ctx.prompt,
+            stdin=stdin,
+            canary=canary,
             env=dict(NO_BACKGROUND_ENV) if ctx.lead else {},
             unset_env=PARENT_SESSION_ENV,
         )

@@ -75,6 +75,11 @@ def test_packaged_roles_load_only_what_their_job_needs(home: Path) -> None:
         assert {"Edit", "Write"} <= set(loadouts[name].tools)
     for name in ("reviewer", "planner", "lead", "orchestrator"):
         assert not {"Edit", "Write"} & set(loadouts[name].tools), name
+    # Write/Edit for their own memory directory only (see test_memory_guard.py)
+    assert {name for name, loadout in loadouts.items() if loadout.memory} == {
+        "orchestrator",
+        "lead",
+    }
     assert {"WebSearch", "WebFetch"} <= set(loadouts["planner"].tools)
     assert roles.load("lead").lead and roles.load("orchestrator").lead
 
@@ -124,6 +129,8 @@ def roles_tools(name: str) -> tuple[str, ...]:
         ("[default]\nslash_commands = 1", "must be true or false"),
         ("[default]\ntools = 1", "`tools` must be a comma-separated string or a list"),
         ("[default]\nmcp = true", "`mcp` must be `strict` or `inherit`, not True"),
+        ('[worker]\nmemory = "yes"', "`memory` must be true or false, not 'yes'"),
+        ("[worker]\nmemory = 1", "`memory` must be true or false, not 1"),
     ],
 )
 def test_a_malformed_loadout_file_is_an_error_naming_the_file(
@@ -178,6 +185,7 @@ def test_an_unreadable_loadout_file_is_an_error(home: Path) -> None:
         ("tools:", "`tools` is empty"),
         ("mcp: maybe", "`mcp` must be"),
         ("slash_commands: yes", "true or false"),
+        ("memory: on", "`memory` must be true or false"),
     ],
 )
 def test_an_invalid_frontmatter_value_names_the_role_file(
@@ -214,3 +222,29 @@ def test_a_run_reports_an_unknown_role_table_and_still_runs(
     assert done and view["status"] == "done"
     info = [event.text for event in orch.store.events(agent.id) if event.kind == "info"]
     assert any("ignoring [Worker]: no such role here" in text for text in info)
+
+
+def test_memory_is_set_in_frontmatter_or_loadout_toml(home: Path, tmp_path: Path) -> None:
+    write_role(home / "roles", "keeper", "---\ntools: Read\nmemory: true\n---\nKeep.\n")
+    project = tmp_path / "repo"
+    (project / ".orch").mkdir(parents=True)
+    (project / ".orch" / "loadout.toml").write_text("[lead]\nmemory = false\n")
+    (home / "loadout.toml").write_text("[worker]\nmemory = true\n")
+
+    assert resolve(roles.load("keeper")).memory
+    assert resolve(roles.load("worker")).memory
+    assert resolve(roles.load("lead")).memory and not resolve(roles.load("lead"), project).memory
+    assert not resolve(roles.load("reviewer")).memory
+
+
+def test_packaged_lead_and_orchestrator_carry_the_pr_review_rule(home: Path) -> None:
+    lead = " ".join(roles.load("lead").prompt.split())
+    orchestrator = " ".join(roles.load("orchestrator").prompt.split())
+
+    assert "PR review feedback" in lead and "in which commit" in lead
+    assert "once a fix is on the PR branch" in lead
+    assert (
+        "Every push needs the user's approval" in lead and "do not resolve review threads" in lead
+    )
+    assert "PR review feedback goes to the project lead" in orchestrator
+    assert "push approval requests to the user; never grant them yourself" in orchestrator

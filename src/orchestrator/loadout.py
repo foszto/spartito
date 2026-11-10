@@ -13,6 +13,12 @@ every request. Keys, in a role's frontmatter or a loadout.toml table:
                      project's CLAUDE.md and .claude/; `user,project,local` = inherit
   slash_commands     `false` disables every skill and slash command (`--disable-slash-commands`)
   codex_user_config  `false` = Codex ignores $CODEX_HOME/config.toml (`--ignore-user-config`)
+  memory             `true` = Claude also gets Write and Edit, but only for its own memory
+                     directory (~/.claude/projects/<project>/memory/); a hook refuses every
+                     other target (memory_guard.py). Only for headless turns whose hooks
+                     are proven to run (runner.py); otherwise the turn runs without it.
+                     No effect when `tools` already grants a file-writing tool (`default`
+                     does), in `orch chat`, or for Codex. Bash is not confined.
 
 Resolved per key, first hit wins:
   <project>/.orch/loadout.toml [<role>] -> [default] -> $ORCH_HOME/loadout.toml [<role>]
@@ -37,7 +43,7 @@ from . import config
 if TYPE_CHECKING:
     from .roles import Role
 
-KEYS = ("tools", "mcp", "setting_sources", "slash_commands", "codex_user_config")
+KEYS = ("tools", "mcp", "setting_sources", "slash_commands", "codex_user_config", "memory")
 SOURCES = ("user", "project", "local")
 FILENAME = "loadout.toml"
 DEFAULT_TABLE = "default"
@@ -49,6 +55,7 @@ FALLBACK: dict[str, Any] = {
     "setting_sources": "project,local",
     "slash_commands": True,
     "codex_user_config": False,
+    "memory": False,
 }
 TOOL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -66,6 +73,7 @@ class Loadout:
     setting_sources: tuple[str, ...] | None = None  # None: every source
     slash_commands: bool = True
     codex_user_config: bool = True
+    memory: bool = False  # Write/Edit confined to the memory directory
 
 
 def _items(value: Any, key: str) -> list[str]:
@@ -110,7 +118,7 @@ def _value(key: str, value: Any) -> Any:
                 f"`setting_sources` takes a non-empty list of {', '.join(SOURCES)}, not {value!r}"
             )
         return None if set(sources) == set(SOURCES) else tuple(dict.fromkeys(sources))
-    if key in ("slash_commands", "codex_user_config"):
+    if key in ("slash_commands", "codex_user_config", "memory"):
         return _flag(value, key)
     raise LoadoutError(f"unknown loadout key `{key}` (use: {', '.join(KEYS)})")
 
@@ -189,4 +197,5 @@ def resolve(
         setting_sources=values["setting_sources"],
         slash_commands=values["slash_commands"],
         codex_user_config=values["codex_user_config"],
+        memory=values["memory"],
     )
