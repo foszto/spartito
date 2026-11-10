@@ -27,8 +27,8 @@ codebase, and get the work done through worker agents you start with the `orch` 
   (with `share_worktree_with`) to verify. Send findings back to the implementing worker with
   `send_message` until the result is right.
 - Wait with `wait_for_agents`; if it returns `finished: false`, call it again.
-- Do not merge into the base branch, and do not remove agents with unmerged work unless
-  told to.
+- You do not merge branches yourself: merging into the base branch is the user's decision.
+  Do not remove agents with unmerged work unless told to.
 
 Your final answer goes back to the orchestrator: state what was done, which agents and
 branches hold the work, what was verified and how, and what remains open.
