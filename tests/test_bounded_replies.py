@@ -267,9 +267,44 @@ def test_many_undelivered_runs_stay_within_one_budget(orch: Orchestrator, projec
     assert outcome["last_run"]["more"] == f"get_agent run_id={runs[-1]}"
     assert "earlier_runs" not in outcome
     assert [run["id"] for run in outcome["other_runs"]] == runs[-21:-1]
-    assert "9 older runs not listed" in outcome["other_runs_note"]
+    assert outcome["older_run_ids"] == runs[:9]
+    assert "older_run_ids" in outcome["other_runs_note"]
     assert "other_runs" not in again["agents"][0]  # listed runs count as delivered
     assert "already_delivered" in again["agents"][0]["last_run"]
+
+
+def test_structured_output_counts_against_the_budget(orch: Orchestrator, project: str) -> None:
+    agent_id = worker(orch, project, "first")
+    wait(agent_id)
+    data = {"items": [LONG[:3880]]}  # about 3,900 chars of JSON
+    runs = [finish(orch, agent_id, "x", structured=data) for _ in range(3)]
+
+    reply = wait(agent_id)
+
+    (outcome,) = reply["agents"]
+    assert outcome["last_run"]["structured"] == data
+    (earlier,) = outcome["earlier_runs"]  # only what the latest left over: a short cut
+    assert earlier["id"] == runs[1] and isinstance(earlier["structured"], str)
+    assert len(earlier["structured"].split("…")[0]) < 150
+    assert outcome["other_runs"] == [{"id": runs[0], "status": "done"}]
+    assert len(json.dumps(reply)) < 2 * 4000
+
+
+def test_more_than_200_older_runs_are_given_by_id_up_to_a_cap(
+    orch: Orchestrator, project: str
+) -> None:
+    agent_id = worker(orch, project, "first")
+    wait(agent_id)
+    runs = [finish(orch, agent_id, "r") for _ in range(250)]
+
+    (outcome,) = wait(agent_id)["agents"]
+
+    shown = [run["id"] for run in outcome.get("earlier_runs", [])]
+    listed = [run["id"] for run in outcome["other_runs"]]
+    assert outcome["older_run_ids"] == runs[-1 - len(shown) - 20 - 200 : -1 - len(shown) - 20]
+    assert listed == runs[-1 - len(shown) - 20 : -1 - len(shown)]
+    skipped = 250 - 1 - len(shown) - 20 - 200
+    assert f"newest 200; {skipped} before not listed" in outcome["other_runs_note"]
 
 
 def test_earlier_runs_share_the_budget_newest_first(orch: Orchestrator, project: str) -> None:
