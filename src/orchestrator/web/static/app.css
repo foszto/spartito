@@ -57,7 +57,9 @@ code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, m
 .nav-item.selected { background: var(--accent-soft); }
 .nav-item .label { flex: 1; min-width: 0; }
 .nav-item .name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-.nav-item .sub { display: block; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* the state may be long ("running · 2 agents working · +3 queued"): up to two lines, not cut off */
+.nav-item .sub { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; color: var(--muted); font-size: 12px;
+  overflow: hidden; overflow-wrap: anywhere; }
 .nav-item.orchestrator { padding: 10px; margin-bottom: 4px; border: 1px solid var(--line); background: var(--raised); }
 .nav-item.orchestrator.selected { border-color: var(--accent); background: var(--accent-soft); }
 .avatar { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; flex: none;
@@ -104,6 +106,16 @@ code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, m
 .chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px; background: var(--sunken);
   color: var(--muted); font-size: 12px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip svg { width: 12px; height: 12px; }
+.chip-group, .setup { display: contents; }
+/* model and effort of the agent: compact selects in the chip row; the agent's own value is accented */
+.setting { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--faint); }
+.input.compact { width: auto; field-sizing: content; max-width: 240px; height: 22px; padding: 0 6px; border-radius: 999px; font-size: 12px;
+  background: var(--sunken); color: var(--muted); text-overflow: ellipsis; }
+input.input.compact { width: 170px; background: var(--bg); color: var(--text); }
+.setting.own .input.compact { border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: var(--accent-soft); color: var(--text); }
+.setting .mark { font-size: 10.5px; font-weight: 600; color: var(--accent); }
+.setup-note { margin-top: 4px; color: var(--muted); font-size: 11.5px; line-height: 1.4; }
 .pill { padding: 1px 9px; border-radius: 999px; font-size: 12px; font-weight: 500; background: var(--sunken); color: var(--muted); }
 .pill.running { color: var(--running); background: color-mix(in srgb, var(--running) 14%, transparent); }
 .pill.waiting { color: var(--waiting); background: color-mix(in srgb, var(--waiting) 16%, transparent); }
@@ -164,7 +176,10 @@ code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, m
 .suggestion { text-align: left; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--text); }
 .suggestion:hover { border-color: var(--accent); }
 
-.queue { max-width: 908px; width: 100%; margin: 0 auto; padding: 6px 24px 2px; font-size: 12.5px; }
+/* a long queue scrolls on its own and never pushes the composer out of view */
+.queue { max-width: 908px; width: 100%; margin: 0 auto; padding: 6px 24px 2px; font-size: 12.5px; flex: none;
+  max-height: min(30vh, 190px); overflow: auto; }
+.queue-head { position: sticky; top: 0; background: var(--bg); }
 .queue-head { color: var(--faint); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 3px; }
 .queued { display: flex; gap: 10px; align-items: baseline; padding: 3px 10px; margin-bottom: 3px; border-radius: 8px;
   background: var(--surface); border: 1px solid var(--line); color: var(--muted); }

@@ -272,6 +272,7 @@ function navItem(id, providerName, status, name, sub, depth) {
   const label = el('span', 'label');
   label.append(el('span', 'name', name), el('span', 'sub', sub));
   row.append(avatar(providerName, status), label);
+  row.title = `${name}\n${sub}`;
   row.onclick = () => select(id);
   return row;
 }
@@ -284,8 +285,14 @@ function buildView() {
   const top = el('div', 'top-bar'), who = el('div', 'who');
   const face = el('span'); face.id = 'face';
   const title = el('h2'); title.id = 'title';
-  const chips = el('div', 'chips'); chips.id = 'chips';
-  who.append(title, chips);
+  // The model/effort controls live in their own slot, so rebuilding the chips around them
+  // never takes away a control the user is using.
+  const chips = el('div', 'chips'), lead = el('span', 'chip-group'), tail = el('span', 'chip-group');
+  const setup = el('span', 'setup'), note = el('div', 'setup-note');
+  lead.id = 'chips'; tail.id = 'chipsTail'; setup.id = 'setup'; note.id = 'setupNote'; note.hidden = true;
+  setup.addEventListener('focusout', () => setTimeout(() => { if (!editingSetup()) renderSetup(setupData); }));
+  chips.append(lead, setup, tail);
+  who.append(title, chips, note);
   const detailsButton = button('ghost', 'info', 'Details', () => { $('details').hidden = !$('details').hidden; });
   const stop = button('danger', 'stop', 'Stop', stopAgent);
   const remove = button('ghost icon', 'trash', '', removeAgent, 'Remove agent');
@@ -328,7 +335,7 @@ function buildView() {
     finally { send.disabled = false; input.focus(); }
   };
   view.append(top, details, log, queue, busy, form);
-  shown = selected; lastEvent = 0; toolGroup = null;
+  shown = selected; lastEvent = 0; toolGroup = null; setupData = null; setupKey = '';
   input.focus();
 }
 
@@ -384,19 +391,29 @@ function renderHeader(agent) {
   }
   renderQueue(agent);
 
-  chips.replaceChildren();
+  const tail = $('chipsTail');
+  chips.replaceChildren(); tail.replaceChildren();
+  // Before its first message the orchestrator does not exist yet; its model can be chosen anyway.
+  const draft = !agent && selected === ORCH ? state.orchestrator_setup : null;
+  renderSetup(agent ? {
+    id: agent.id, provider: agent.provider, effective: agent.effective || {}, inherited: agent.inherited || {},
+    own: { model: agent.model_override, effort: agent.effort_override },
+    session: Boolean(agent.session_id), running: agent.status === 'running', cacheKeys: agent.cache_keys || [],
+  } : draft && {
+    id: ORCH, provider: draft.provider, effective: draft.effective, inherited: draft.inherited,
+    own: { model: draft.model_override, effort: draft.effort_override }, session: false, running: false,
+    cacheKeys: draft.cache_keys,
+  });
   if (!agent) return;
-  const chip = (text, iconName) => {
+  const chip = (text, iconName, parent) => {
     if (!text) return;
-    const node = el('span', 'chip'); if (iconName) node.append(icon(iconName)); node.append(text); chips.append(node);
+    const node = el('span', 'chip'); if (iconName) node.append(icon(iconName)); node.append(text);
+    (parent || chips).append(node);
   };
-  const effective = agent.effective || {};
   chip(agent.role); chip(agent.provider);
-  chip(effective.model || 'default model');
-  chip(effective.effort && `effort ${effective.effort}`);
-  chip(agent.branch, 'branch');
-  chip(tokenText(agent.tokens));
-  chip(agent.cost_usd ? `$${agent.cost_usd.toFixed(2)}` : '');
+  chip(agent.branch, 'branch', tail);
+  chip(tokenText(agent.tokens), null, tail);
+  chip(agent.cost_usd ? `$${agent.cost_usd.toFixed(2)}` : '', null, tail);
 
   const facts = $('facts'); facts.replaceChildren();
   const fact = (key, value) => { if (value) facts.append(el('dt', '', key), el('dd', '', String(value))); };
@@ -414,6 +431,111 @@ function renderHeader(agent) {
   }
   $('changes').textContent = agent.changes || '';
   $('changes').hidden = !agent.changes;
+}
+
+// -- model and effort of the selected agent ---------------------------------
+
+let setupData = null, setupKey = '';
+const setupTimers = {};  // per control: model, effort
+const OTHER = '\u0000other';
+// Arrow keys on a closed select fire `change` for every option passed (Windows, Linux): the
+// choice is saved once it rests for a moment, not each one on the way.
+const SETUP_SETTLE_MS = 350;
+const editingSetup = () => Boolean($('setup')?.contains(document.activeElement));
+
+// The header's model and effort controls. A poll does not rebuild them while one has the focus
+// (an open list, a half-typed name); they catch up when the focus leaves.
+function renderSetup(data, force) {
+  const box = $('setup'), note = $('setupNote');
+  if (!box) return;
+  setupData = data;
+  const key = JSON.stringify([data, data && provider(data.provider)]);
+  if (!force && (key === setupKey || editingSetup())) return;
+  const focused = document.activeElement?.dataset?.setup;
+  setupKey = key;
+  box.replaceChildren();
+  note.textContent = ''; note.hidden = true;
+  if (!data) return;
+  const chosen = provider(data.provider);
+  const fallback = value => value || 'CLI default';
+  const notes = [];
+  if (data.running) notes.push('A change applies from the next turn; the running one is not changed.');
+  if (data.session && data.cacheKeys.length) {
+    notes.push(data.cacheKeys.includes('effort')
+      ? 'Switching model or effort starts a fresh prompt cache: the next turn re-reads the whole conversation at full price.'
+      : 'Switching the model starts a fresh prompt cache: the next turn re-reads the whole conversation at full price; effort keeps it.');
+  }
+  note.textContent = notes.join(' ');
+  note.hidden = !notes.length;
+
+  const control = (key, items) => {
+    const own = data.own[key], wrap = el('label', `setting${own ? ' own' : ''}`);
+    const select = el('select', 'input compact');
+    const label = key === 'model' ? 'Model' : 'Effort', inherit = fallback(data.inherited[key]);
+    select.dataset.setup = key;
+    select.setAttribute('aria-label', `${label} of ${data.id}, ${own ? 'set on the agent' : 'inherited'}`);
+    if (notes.length) select.setAttribute('aria-describedby', 'setupNote');
+    const list = [...items];
+    if (own && !list.includes(own)) list.push(own);
+    options(select, [['', `inherit (${inherit})`], ...list.map(v => [v, v]),
+      ...(key === 'model' ? [[OTHER, 'other…']] : [])], own || '');
+    select.title = own ? `${label} set on this agent; “inherit” falls back to ${inherit}`
+      : `${label} inherited from the settings; pick one to set it on this agent`;
+    select.onchange = () => {
+      clearTimeout(setupTimers[key]);
+      if (select.value === OTHER) { editModel(select, own); return; }
+      const value = select.value || null;
+      setupTimers[key] = setTimeout(() => saveSetup(data.id, key, value), SETUP_SETTLE_MS);
+    };
+    wrap.append(el('span', 'key', key), select);
+    if (own) wrap.append(el('span', 'mark', 'own'));
+    return wrap;
+  };
+  box.append(control('model', chosen.models), control('effort', chosen.efforts));
+  if (focused) box.querySelector(`[data-setup=${focused}]`)?.focus();
+}
+
+// "other…": an input for any model name (the providers accept names they do not list).
+function editModel(select, own) {
+  const id = setupData.id, input = el('input', 'input compact mono'), list = el('datalist');
+  list.id = 'setupModels';
+  list.append(...provider(setupData.provider).models.map(name => { const o = el('option'); o.value = name; return o; }));
+  input.setAttribute('list', list.id); input.autocomplete = 'off'; input.spellcheck = false;
+  input.dataset.setup = 'model'; input.value = own || ''; input.placeholder = 'model name';
+  input.setAttribute('aria-label', `Model of ${id}: type a name, Enter sets it, Escape cancels`);
+  let done = false;
+  const finish = save => {
+    if (done) return;
+    done = true;
+    const value = input.value.trim();
+    if (save && value && value !== own) saveSetup(id, 'model', value);
+    else if (setupData?.id === id) renderSetup(setupData, true);
+  };
+  input.onkeydown = event => {
+    if (event.key === 'Enter') { event.preventDefault(); finish(true); }
+    if (event.key === 'Escape') { event.preventDefault(); finish(false); }
+  };
+  input.onblur = () => finish(true);
+  select.replaceWith(input, list);
+  input.focus(); input.select();
+}
+
+async function saveSetup(id, key, value) {
+  const label = key === 'model' ? 'Model' : 'Effort';
+  try {
+    const result = await call(`/api/agents/${encodeURIComponent(id)}/model`, { [key]: value });
+    const now = result.effective[key] || 'CLI default';
+    toast(value ? `${label} of ${id}: ${now}, from its next turn` : `${label} of ${id} inherited again: ${now}`);
+    if (setupData?.id === id) {
+      setupData = { ...setupData, effective: result.effective, inherited: result.inherited,
+        own: { model: result.model_override, effort: result.effort_override } };
+    }
+  } catch (error) {
+    toast(error.message, true);
+  }
+  if (setupData?.id !== id) return;
+  renderSetup(setupData, true);  // the stored values (also after an error), focus kept
+  refresh();
 }
 
 function renderQueue(agent) {

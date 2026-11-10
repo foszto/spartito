@@ -122,12 +122,16 @@ def events(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
     agent = orch.agent(request.path_params["agent_id"])
     after = int(request.query_params.get("after", 0))
     rows = orch.store.events(agent.id, after=after, tail=None if after else 400)
+    setup = orch.setup(agent.id)
     return {
         "agent": {
             **orch.view(agent, detail=True),
             "changes": orch.changes(agent.id),
-            "effective": orch.effective(agent),
-            "inherited": orch.inherited(agent),
+            # model/effort: in effect, inherited without the agent's own values (those are
+            # model_override/effort_override) and which of them restart the prompt cache
+            "effective": setup["effective"],
+            "inherited": setup["inherited"],
+            "cache_keys": setup["cache_keys"],
             "recent_runs": orch.run_history(agent, limit=10),
         },
         "events": [
