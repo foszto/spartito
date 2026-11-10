@@ -236,3 +236,15 @@ def test_memory_is_set_in_frontmatter_or_loadout_toml(home: Path, tmp_path: Path
     assert resolve(roles.load("lead")).memory and not resolve(roles.load("lead"), project).memory
     assert not resolve(roles.load("reviewer")).memory
 
+
+def test_packaged_lead_and_orchestrator_carry_the_pr_review_rule(home: Path) -> None:
+    lead = " ".join(roles.load("lead").prompt.split())
+    orchestrator = " ".join(roles.load("orchestrator").prompt.split())
+
+    assert "PR review feedback" in lead and "in which commit" in lead
+    assert "once a fix is on the PR branch" in lead
+    assert (
+        "Every push needs the user's approval" in lead and "do not resolve review threads" in lead
+    )
+    assert "PR review feedback goes to the project lead" in orchestrator
+    assert "push approval requests to the user; never grant them yourself" in orchestrator
