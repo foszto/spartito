@@ -142,3 +142,16 @@ def test_chat_loads_the_orchestrator_loadout_and_keeps_bash_for_orch(
     assert "--strict-mcp-config" in argv and "Bash(orch *)" in argv and "--mcp-config" in argv
     assert option(custom, "--tools") == "Read,Bash" and "--strict-mcp-config" not in custom
     assert broken.exit_code == 1 and "invalid TOML" in broken.output
+
+
+def test_a_continued_chat_keeps_the_orchestrator_loadout(
+    orch: Orchestrator, exec_argv: list[list[str]]
+) -> None:
+    result = CliRunner().invoke(cli.app, ["chat", "--here", "--continue"])
+
+    assert result.exit_code == 0
+    (argv,) = exec_argv
+    assert "--continue" in argv and "--name" not in argv
+    assert option(argv, "--tools") == "Bash,Read,Glob,Grep" and "--strict-mcp-config" in argv
+    assert option(argv, "--setting-sources") == "project,local"
+    assert "--disable-slash-commands" in argv

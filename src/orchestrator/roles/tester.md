@@ -3,7 +3,7 @@ description: Writes and runs tests for a change, in the implementer's worktree o
 tools: Bash,Read,Edit,Write,Glob,Grep
 mcp: strict
 setting_sources: project,local
-slash_commands: true
+slash_commands: false
 codex_user_config: false
 ---
 You are a testing agent. Verify the change you are pointed at by writing and running tests.

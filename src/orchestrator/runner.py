@@ -127,7 +127,11 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
             mcp=mcp_server(agent) if role.lead else None,
             output_schema=run.output_schema,
             writable_dirs=writable,
-            loadout=loadout.resolve(role, project.path if project else None),
+            loadout=loadout.resolve(
+                role,
+                project.path if project else None,
+                warn=lambda text: store.add_event(run.id, agent.id, "info", text),
+            ),
             **settings.resolve(store, agent, role),
         )
     )

@@ -125,7 +125,10 @@ def chat(
         raise fail(f"claude has no effort '{effort}' (use: {allowed})")
     role = roles.load("orchestrator")
     try:
-        chosen = loadout.resolve(role)  # no project: only $ORCH_HOME/loadout.toml applies
+        # No project: only $ORCH_HOME/loadout.toml applies.
+        chosen = loadout.resolve(
+            role, warn=lambda text: typer.secho(f"warning: {text}", fg="yellow", err=True)
+        )
     except loadout.LoadoutError as exc:
         raise fail(str(exc)) from None
     if chosen.tools is not None and "Bash" not in chosen.tools:

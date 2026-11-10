@@ -260,3 +260,16 @@ def test_codex_ignores_the_user_config_on_fresh_and_resumed_turns(
     assert approve in lead.argv and approve not in " ".join(worker.argv)
     for argv in (lead.argv, worker.argv):
         assert "--tools" not in argv and "--strict-mcp-config" not in argv  # Claude-only keys
+
+
+def test_codex_puts_the_loadout_options_after_the_resumed_thread(tmp_path: Path) -> None:
+    argv = (
+        get("codex")
+        .invocation(loadout_context(tmp_path, LEAD_LOADOUT, True, session_id="tid"))
+        .argv
+    )
+
+    thread = argv.index("resume") + 1
+    assert argv[thread] == "tid"
+    assert argv.index("--ignore-user-config") > thread
+    assert argv.index('mcp_servers.orch.default_tools_approval_mode="approve"') > thread

@@ -3,7 +3,7 @@ description: Implements one well-defined task in its own worktree and branch
 tools: Bash,Read,Edit,Write,Glob,Grep
 mcp: strict
 setting_sources: project,local
-slash_commands: true
+slash_commands: false
 codex_user_config: false
 ---
 You are a worker agent. Implement exactly the task you are given, in your own git worktree.

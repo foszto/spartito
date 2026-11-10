@@ -119,7 +119,7 @@ deklarálja, mit tölt be:
 | `codex_user_config` | `false` = a Codex nem olvassa a `$CODEX_HOME/config.toml`-t (a login megmarad) | `--ignore-user-config` |
 
 Beépített alapértékek: minden szerep `mcp = strict`, `setting_sources = project,local`,
-`slash_commands = true`, `codex_user_config = false`; az eszközök:
+`slash_commands = false`, `codex_user_config = false`; az eszközök:
 
 | szerep | `tools` |
 |---|---|
@@ -128,23 +128,56 @@ Beépített alapértékek: minden szerep `mcp = strict`, `setting_sources = proj
 | reviewer | `Bash,Read,Glob,Grep` |
 | planner | `Bash,Read,Glob,Grep,WebSearch,WebFetch` |
 
+A beépített szerepeknek nincs `Skill` eszközük, ezért a skillek és slash parancsok ki vannak
+kapcsolva. Projekt skillek/parancsok használatához az adott szerepnél `slash_commands = true`
+és a `tools` közé a `Skill` kell. (A `scripts/loadout-after.json` mérés még
+`slash_commands = true` mellett készült; a különbség kb. 30 token.)
+
 Saját szerepfájl, amely egyik kulcsot sem adja meg: `mcp = strict`,
-`setting_sources = project,local`, `tools = default`, `codex_user_config = false`.
+`setting_sources = project,local`, `tools = default` (a `Skill`-lel együtt),
+`slash_commands = true`, `codex_user_config = false`. Üres érték (`tools:`) hiba.
 
 Felülírás szerepfájl másolása nélkül: `<projekt>/.orch/loadout.toml` és
 `~/.orchestrator/loadout.toml`, `[default]` (minden szerep) és `[<szerep>]` táblákkal, ugyanezekkel a
 kulcsokkal. Kulcsonként az első találat nyer: projekt `[szerep]` → projekt `[default]` →
 home `[szerep]` → home `[default]` → a szerep frontmattere → a fenti alapérték. Hibás fájl
-esetén a run a fájl nevét és a hibát megadva elbukik. Például egy projekt, amely a user szintű
-pluginekre/skillekre támaszkodik:
+vagy érték esetén a run a fájl nevét és a hibát megadva elbukik; ismeretlen szerep nevű
+táblát (pl. elírt `[wroker]`) figyelmen kívül hagy, és `info` eseményként jelez.
+
+**Ki érintett, és mi a teendő.** A `user` forrás elhagyása a teljes
+`~/.claude/settings.json`-t kihagyja, nem csak a plugineket: az `env` blokkot (pl.
+Bedrock/Vertex/proxy útválasztás), az `apiKeyHelper`-t, a `model`-t, a jogosultságokat és a
+hookokat is. Aki így hitelesít, annak az agentjei a frissítés után nem jutnak el a modellig;
+akinek ott van a `model` és nincs orch szint-beállítása, csendben a CLI alapmodelljét kapja.
+Codexnél a `--ignore-user-config` a `config.toml` `model`, `model_provider` és profil
+beállításait is elhagyja (a login megmarad). Ilyenkor a `~/.orchestrator/loadout.toml`-ba:
+
+```toml
+[default]
+setting_sources = "user,project,local"   # Claude: a ~/.claude/settings.json újra él
+codex_user_config = true                 # Codex: a ~/.codex/config.toml újra él
+```
+
+(A modell az `orch config set` szint-beállításával is megadható.) Egy projekt, amely a user
+szintű pluginekre, skillekre és plugin MCP szerverekre támaszkodik, mindhárom réteget
+visszakapcsolja. A `tools` szerepenként adott, ezért a `Skill`-t minden szerephez külön kell
+hozzáadni, amelyiknek kell:
 
 ```toml
 # <projekt>/.orch/loadout.toml
 [default]
-setting_sources = "user,project,local"
+setting_sources = "user,project,local"   # user pluginek, skillek, parancsok
+mcp = "inherit"                          # plugin, user és connector MCP szerverek
+slash_commands = true
 
 [worker]
 tools = "Bash,Read,Edit,Write,Glob,Grep,Skill"
+
+[tester]
+tools = "Bash,Read,Edit,Write,Glob,Grep,Skill"
+
+[lead]
+tools = "Bash,Read,Glob,Grep,Skill"
 ```
 
 A zászlókat minden kör megkapja, a `--resume`/`exec resume` körök is. Az `orch chat` az

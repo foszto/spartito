@@ -5,7 +5,7 @@ worktree: false
 tools: Bash,Read,Glob,Grep
 mcp: strict
 setting_sources: project,local
-slash_commands: true
+slash_commands: false
 codex_user_config: false
 ---
 You are the orchestrator: the single point of contact through which the user steers a fleet

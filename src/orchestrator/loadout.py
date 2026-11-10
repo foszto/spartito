@@ -17,12 +17,17 @@ every request. Keys, in a role's frontmatter or a loadout.toml table:
 Resolved per key, first hit wins:
   <project>/.orch/loadout.toml [<role>] -> [default] -> $ORCH_HOME/loadout.toml [<role>]
   -> [default] -> the role's frontmatter -> FALLBACK
+
+Dropping the `user` setting source drops all of ~/.claude/settings.json (env, apiKeyHelper,
+model, ...), and `codex_user_config = false` drops model_provider and profiles too; users
+who rely on those set `setting_sources = "user,project,local"` / `codex_user_config = true`.
 """
 
 from __future__ import annotations
 
 import re
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -36,7 +41,8 @@ KEYS = ("tools", "mcp", "setting_sources", "slash_commands", "codex_user_config"
 SOURCES = ("user", "project", "local")
 FILENAME = "loadout.toml"
 DEFAULT_TABLE = "default"
-# For a role that declares nothing: strip the user's global extras, keep the CLI's tools.
+# For a role that declares nothing: strip the user's global extras, keep the CLI's tools
+# (including Skill, so the project's skills and commands stay usable).
 FALLBACK: dict[str, Any] = {
     "tools": "default",
     "mcp": "strict",
@@ -120,11 +126,15 @@ def _check(table: dict[str, Any], where: str) -> dict[str, Any]:
 
 def load_file(path: Path) -> dict[str, dict[str, Any]]:
     """Tables of one loadout.toml, every value validated; {} when the file does not exist."""
-    if not path.is_file():
+    if not path.exists():
         return {}
     try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise LoadoutError(f"{path}: cannot read: {exc}") from None
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
         raise LoadoutError(f"{path}: invalid TOML: {exc}") from None
     for name, table in data.items():
         if not isinstance(table, dict):
@@ -135,18 +145,36 @@ def load_file(path: Path) -> dict[str, dict[str, Any]]:
     return data
 
 
-def resolve(role: Role, project_path: str | Path | None = None) -> Loadout:
-    """The loadout an agent with this role runs with. Raises LoadoutError."""
+def resolve(
+    role: Role,
+    project_path: str | Path | None = None,
+    warn: Callable[[str], None] | None = None,
+) -> Loadout:
+    """The loadout an agent with this role runs with. Raises LoadoutError.
+
+    Tables naming no known role are ignored (a home-level file may name a role that exists
+    only in another project) and reported through `warn`.
+    """
+    from . import roles  # roles imports KEYS from here
+
     files = []
     if project_path:
         files.append(Path(project_path) / ".orch" / FILENAME)
     files.append(config.home() / FILENAME)
     layers: list[tuple[str, dict[str, Any]]] = []
+    known: set[str] | None = None
     for path in files:
         tables = load_file(path)
+        if warn and set(tables) - {DEFAULT_TABLE, role.name}:
+            if known is None:
+                known = {other.name for other in roles.available(project_path)}
+            unknown = sorted(set(tables) - {DEFAULT_TABLE} - known)
+            if unknown:
+                names = ", ".join(f"[{name}]" for name in unknown)
+                warn(f"{path}: ignoring {names}: no such role here")
         for name in (role.name, DEFAULT_TABLE):
             layers.append((f"{path} [{name}]", tables.get(name, {})))
-    layers.append((f"role '{role.name}' frontmatter", role.loadout))
+    layers.append((f"{role.source} (frontmatter)", role.loadout))
     layers.append(("fallback", FALLBACK))
     values: dict[str, Any] = {}
     for key in KEYS:

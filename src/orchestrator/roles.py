@@ -35,9 +35,10 @@ class Role:
     provider: str | None = None
     model: str | None = None
     loadout: dict[str, str] = field(default_factory=dict)  # declared loadout keys only
+    source: str = ""  # the role file, for error messages
 
 
-def _parse(name: str, text: str) -> Role:
+def _parse(name: str, text: str, source: str) -> Role:
     meta: dict[str, str] = {}
     body = text
     if text.startswith("---"):
@@ -53,7 +54,9 @@ def _parse(name: str, text: str) -> Role:
         worktree=meta.get("worktree", "true").lower() != "false",
         provider=meta.get("provider") or None,
         model=meta.get("model") or None,
-        loadout={key: meta[key] for key in LOADOUT_KEYS if meta.get(key)},
+        # An empty value is kept so that it is reported, not read as "unrestricted".
+        loadout={key: meta[key] for key in LOADOUT_KEYS if key in meta},
+        source=source,
     )
 
 
@@ -73,11 +76,11 @@ def load(name: str, project_path: str | Path | None = None) -> Role:
     candidates.append(config.user_roles_dir() / f"{name}.md")
     for path in candidates:
         if path.is_file():
-            return _parse(name, path.read_text(encoding="utf-8"))
+            return _parse(name, path.read_text(encoding="utf-8"), str(path))
     packaged = _packaged()
     if name not in packaged:
         raise KeyError(f"unknown role '{name}' (available: {', '.join(sorted(packaged))})")
-    return _parse(name, packaged[name])
+    return _parse(name, packaged[name], f"packaged role '{name}'")
 
 
 def available(project_path: str | Path | None = None) -> list[Role]:
