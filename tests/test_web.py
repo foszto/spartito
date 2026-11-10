@@ -8,7 +8,7 @@ from starlette.testclient import TestClient
 
 from orchestrator import config, notify
 from orchestrator.models import RunStatus
-from orchestrator.service import ORCHESTRATOR_ID, Orchestrator
+from orchestrator.service import ORCHESTRATOR_ID, QUEUE_LISTED, Orchestrator
 from orchestrator.store import NOTIFICATION, Store
 from orchestrator.web.app import app
 
@@ -219,3 +219,16 @@ def test_idle_parents_queue_and_notifications_reach_the_dashboard(
     assert (event["kind"], event["text"]) == ("notification", "[orch notification] kid finished")
     child_detail = client.get(f"/api/agents/{child.id}/events").json()["agent"]
     assert child_detail["queue"][0]["kind"] == "message" and child_detail["children_running"] == 0
+
+
+def test_the_listed_queue_is_capped_but_queued_runs_counts_all(
+    client: TestClient, orch: Orchestrator, project: str
+) -> None:
+    agent = orch.create_agent(project, name="busy", worktree=False)
+    for n in range(QUEUE_LISTED + 3):
+        orch.store.add_run(agent.id, f"message {n}")
+
+    detail = client.get(f"/api/agents/{agent.id}/events").json()["agent"]
+
+    # The dashboard shows `+N more` for queued_runs beyond the listed queue.
+    assert (len(detail["queue"]), detail["queued_runs"]) == (QUEUE_LISTED, QUEUE_LISTED + 3)

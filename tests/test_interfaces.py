@@ -14,7 +14,7 @@ from typer.testing import CliRunner
 
 from orchestrator import cli, mcp_server
 from orchestrator.models import RunStatus, Usage
-from orchestrator.service import Orchestrator
+from orchestrator.service import QUEUE_LISTED, Orchestrator
 from orchestrator.store import NOTIFICATION
 
 
@@ -311,21 +311,16 @@ def test_status_of_a_parent_that_never_ran_has_no_last_run(
     assert " idle·1↓ " in ps_line(lead.id)
 
 
-def test_status_counts_queued_runs_beyond_a_capped_queue(
-    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+def test_status_counts_queued_runs_beyond_the_listed_queue(
+    orch: Orchestrator, project: str
 ) -> None:
     agent = orch.create_agent(project, name="busy", worktree=False)
-    for n in range(3):
-        orch.store.add_run(agent.id, f"message {n}")
-    full_view = Orchestrator.view
+    runs = [orch.store.add_run(agent.id, f"message {n}") for n in range(QUEUE_LISTED + 3)]
 
-    def capped(self: Orchestrator, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        view = full_view(self, *args, **kwargs)
-        if "queue" in view:
-            view["queue"] = view["queue"][:1]
-        return view
-
-    monkeypatch.setattr(Orchestrator, "view", capped)
     result = CliRunner().invoke(cli.app, ["status", agent.id])
 
-    assert "queue        3 waiting" in result.output and "\n  +2 more\n" in result.output
+    assert result.exit_code == 0, result.output
+    assert f"queue        {QUEUE_LISTED + 3} waiting" in result.output
+    assert f"#{runs[QUEUE_LISTED - 1].id} " in result.output
+    assert f"#{runs[QUEUE_LISTED].id} " not in result.output
+    assert "\n  +3 more\n" in result.output
