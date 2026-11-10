@@ -1,0 +1,61 @@
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "done",
+        "partial",
+        "blocked"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "description": "A few sentences."
+    },
+    "branch": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "commits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "hash": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "hash",
+          "subject"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "tests": {
+      "type": "string",
+      "description": "One line: command and outcome."
+    },
+    "open": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "status",
+    "summary",
+    "branch",
+    "commits",
+    "tests",
+    "open"
+  ],
+  "additionalProperties": false
+}

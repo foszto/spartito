@@ -1,0 +1,64 @@
+{
+  "type": "object",
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "APPROVE",
+        "CHANGES_REQUESTED"
+      ]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "problem": {
+            "type": "string"
+          },
+          "scenario": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "severity",
+          "file",
+          "line",
+          "problem",
+          "scenario"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "tests": {
+      "type": "string",
+      "description": "One line: command and outcome."
+    }
+  },
+  "required": [
+    "verdict",
+    "findings",
+    "tests"
+  ],
+  "additionalProperties": false
+}

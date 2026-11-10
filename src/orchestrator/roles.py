@@ -9,6 +9,9 @@ Frontmatter keys (all optional):
   worktree     "false" makes the agent work in the project checkout by default
   provider     default provider for the role
   model        default model for the role
+  output_schema  a JSON Schema file for the final answer when an agent hands off to another
+               (MCP spawn_agent/send_message); looked up like roles, first hit wins.
+               `none` or absent: free text
 
 Loadout keys (`tools`, `mcp`, `setting_sources`, `slash_commands`, `codex_user_config`)
 declare what the agent loads besides this prompt; see loadout.py. A role that declares none
@@ -17,6 +20,7 @@ gets the fallback there: no user-level settings, plugins, skills or MCP servers.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
@@ -36,6 +40,11 @@ class Role:
     model: str | None = None
     loadout: dict[str, str] = field(default_factory=dict)  # declared loadout keys only
     source: str = ""  # the role file, for error messages
+    output_schema: str | None = None  # schema file name; None: free text
+
+
+class SchemaError(Exception):
+    """A role's output schema that cannot be used; the message names the role and file."""
 
 
 def _parse(name: str, text: str, source: str) -> Role:
@@ -57,24 +66,55 @@ def _parse(name: str, text: str, source: str) -> Role:
         # An empty value is kept so that it is reported, not read as "unrestricted".
         loadout={key: meta[key] for key in LOADOUT_KEYS if key in meta},
         source=source,
+        output_schema=None
+        if meta.get("output_schema", "none").lower() in ("", "none")
+        else meta["output_schema"],
     )
 
 
+def _packaged_root():
+    return resources.files("orchestrator") / "roles"
+
+
 def _packaged() -> dict[str, str]:
-    root = resources.files("orchestrator") / "roles"
     return {
         entry.name.removesuffix(".md"): entry.read_text(encoding="utf-8")
-        for entry in root.iterdir()
+        for entry in _packaged_root().iterdir()
         if entry.name.endswith(".md")
     }
 
 
-def load(name: str, project_path: str | Path | None = None) -> Role:
+def _user_files(filename: str, project_path: str | Path | None) -> list[Path]:
     candidates = []
     if project_path:
-        candidates.append(Path(project_path) / ".orch" / "roles" / f"{name}.md")
-    candidates.append(config.user_roles_dir() / f"{name}.md")
-    for path in candidates:
+        candidates.append(Path(project_path) / ".orch" / "roles" / filename)
+    candidates.append(config.user_roles_dir() / filename)
+    return candidates
+
+
+def output_schema(role: Role, project_path: str | Path | None = None) -> dict | None:
+    """The role's default output schema, or None for free text. Raises SchemaError."""
+    if role.output_schema is None:
+        return None
+    filename = role.output_schema
+    where = f"role '{role.name}' ({role.source}): output_schema `{filename}`"
+    if Path(filename).name != filename:
+        raise SchemaError(f"{where} must be a file name next to the role file, not a path")
+    found = [path for path in _user_files(filename, project_path) if path.is_file()]
+    entry = found[0] if found else _packaged_root() / filename
+    if not entry.is_file():
+        raise SchemaError(f"{where} not found in .orch/roles, $ORCH_HOME/roles or the package")
+    try:
+        schema = json.loads(entry.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SchemaError(f"{where}: cannot read {entry}: {exc}") from None
+    if not isinstance(schema, dict):
+        raise SchemaError(f"{where}: {entry} must hold a JSON object")
+    return schema
+
+
+def load(name: str, project_path: str | Path | None = None) -> Role:
+    for path in _user_files(f"{name}.md", project_path):
         if path.is_file():
             return _parse(name, path.read_text(encoding="utf-8"), str(path))
     packaged = _packaged()
