@@ -25,10 +25,20 @@ from pathlib import Path
 from typing import Any
 
 from . import config, git, loadout, notify, providers, roles, settings
-from .models import Agent, Event, Project, Run, RunStatus, Usage, running_total
+from .models import (
+    CONTEXT_FIELDS,
+    Agent,
+    Event,
+    Project,
+    Run,
+    RunStatus,
+    Usage,
+    context_now,
+    running_total,
+)
 from .providers import McpServer, RunContext
 from .providers.base import NOTIFICATION_RESULT, Invocation
-from .store import MESSAGE, NOTIFICATION, Store
+from .store import COMPACT, MESSAGE, NOTIFICATION, Store, now
 
 POLL_SECONDS = 0.5
 RECONCILE_EVERY = 10  # polls
@@ -138,29 +148,36 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
     os.environ.pop(TURN_ENV, None)
     role = roles.load(agent.role, project.path if project else None)
     provider = providers.get(agent.provider)
+    kind = store.meta(run.id).kind
+    compact = kind == COMPACT
+    began = now()
+    before = context_now(store.runs_of(agent.id), store.usage_of(agent.id), agent.session_id)
     if project and agent.owns_worktree and git.ensure_initial_commit(project.path):
         note = "the repository had no commits: created an empty initial commit to branch from"
         store.add_event(run.id, agent.id, "info", note)
     writable = prepare_workspace(agent, project)
     scratch = config.run_dir(run.id)
     scratch.mkdir(exist_ok=True)
+    resolved = loadout.resolve(
+        role,
+        project.path if project else None,
+        warn=lambda text: store.add_event(run.id, agent.id, "info", text),
+    )
+    if compact:  # the CLI's own `/compact` is a slash command; the rest of the loadout stays
+        resolved = dataclasses.replace(resolved, slash_commands=True)
     ctx = RunContext(
         agent=agent,
-        # A notification carries child output: data, never {{result:…}} references.
-        prompt=run.prompt
-        if store.meta(run.id).kind == NOTIFICATION
-        else render_prompt(store, run.prompt),
+        # A notification carries child output: data, never {{result:…}} references. A
+        # compaction's prompt must reach the CLI exactly as it is (`/compact …`).
+        prompt=run.prompt if kind in (NOTIFICATION, COMPACT) else render_prompt(store, run.prompt),
         system_prompt=system_prompt(agent, project, role),
         scratch=scratch,
         mcp=mcp_server(agent) if role.lead else None,
         lead=role.lead,
-        output_schema=run.output_schema,
+        output_schema=None if compact else run.output_schema,
         writable_dirs=writable,
-        loadout=loadout.resolve(
-            role,
-            project.path if project else None,
-            warn=lambda text: store.add_event(run.id, agent.id, "info", text),
-        ),
+        loadout=resolved,
+        compact_below=compact_limit(before) if compact else None,
         **settings.resolve(store, agent, role),
     )
     invocation = provider.invocation(ctx)
@@ -173,6 +190,11 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
 
     stderr_path = scratch / "stderr.log"
     last_text, results, errors, reported_model, session_id = "", [], [], None, None
+    # The size after the last model request (None after a compaction no request followed),
+    # a compaction seen, and the context window per model from the results.
+    context: Usage | None = None
+    compaction: Usage | None = None
+    windows: dict[str, int] = {}
     answered = False  # a result answering the prompt (not a background-task notification)
     with (
         open(scratch / "stream.jsonl", "w", encoding="utf-8") as raw,
@@ -237,7 +259,15 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
                     if event.kind == "session":
                         reported_model = event.model or reported_model
                         continue
+                    if event.kind == "context":
+                        context = event.usage
+                        continue
+                    if event.kind == "compact":
+                        compaction, context = event.usage, None
+                        store.add_event(run.id, agent.id, "info", event.text)
+                        continue
                     if event.kind in ("result", NOTIFICATION_RESULT):
+                        windows.update(event.windows or {})
                         results.append(event)
                         answered = answered or event.kind == "result"
                         continue
@@ -269,10 +299,23 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
                 child.stdout.close()
 
     result = combine_results(results)
-    usage = record_usage(store, run, agent, result, reported_model, session_id)
+    measured = measured_context(context, compaction, windows)
+    context_after = getattr(provider, "context_after", None)
+    if context_after and session_id:
+        read = context_after(session_id, began)
+        if read and read.compact_trigger and compaction is None:
+            read.compact_pre_tokens = before.context_tokens if before else None
+            read.compact_post_tokens = read.context_tokens
+            store.add_event(run.id, agent.id, "info", compaction_note(read))
+        measured = read or measured
+    usage = record_usage(store, run, agent, result, reported_model, session_id, measured)
     cost = usage.cost_usd if usage else None
+    if compact and result and not result.is_error and code == 0 and not measured.compact_trigger:
+        # Nothing was compacted, e.g. "/compact isn't available in this environment."
+        failure = result.text or last_text or "the CLI did not compact the conversation"
+        result = dataclasses.replace(result, text=failure, is_error=True)
     if result and not result.is_error and code == 0:
-        text = result.text or last_text
+        text = compact_summary(measured) if compact else result.text or last_text
         structured = result.structured
         if structured is None and run.output_schema:
             try:
@@ -595,6 +638,47 @@ def combine_results(results: list[Event]) -> Event | None:
     return dataclasses.replace(last, usage=usage, cost_usd=usage.cost_usd)
 
 
+def measured_context(
+    context: Usage | None, compaction: Usage | None, windows: dict[str, int]
+) -> Usage:
+    """The context fields of a run's usage from what its stream reported."""
+    measured = Usage()
+    if compaction is not None:
+        for key in ("compact_trigger", "compact_pre_tokens", "compact_post_tokens"):
+            setattr(measured, key, getattr(compaction, key))
+    if context is not None:
+        measured.context_tokens = context.context_tokens
+        window = windows.get(context.model or "")
+        if window is None and len(set(windows.values())) == 1:
+            window = next(iter(windows.values()))
+        measured.context_window = window
+    return measured
+
+
+def compact_limit(before: Usage | None) -> int | None:
+    """A compaction turn's token limit for a CLI that compacts above it: half the size."""
+    if before is None or not before.context_tokens:
+        return None
+    return max(1, before.context_tokens // 2)
+
+
+def kilo(tokens: int | None) -> str:
+    if tokens is None:
+        return "?"
+    return f"{tokens / 1000:.0f}k" if tokens >= 1000 else str(tokens)
+
+
+def compact_summary(usage: Usage) -> str:
+    """The stored result of a compaction run, e.g. `compacted 48k -> 1k tokens`."""
+    return f"compacted {kilo(usage.compact_pre_tokens)} -> {kilo(usage.compact_post_tokens)} tokens"
+
+
+def compaction_note(usage: Usage) -> str:
+    """The info event of a compaction the provider reported outside its stream."""
+    sizes = f"{usage.compact_pre_tokens or '?'} -> {usage.compact_post_tokens or '?'} tokens"
+    return f"context compacted ({usage.compact_trigger}): {sizes}"
+
+
 def write_result(store: Store, run: Run, scratch: Path, text: str, structured: Any) -> None:
     """Write the full final answer to result.md (a failed run: its last text, else the
     error) and structured output to result.json, each atomically.
@@ -622,16 +706,19 @@ def record_usage(
     result: Event | None,
     model: str | None,
     session_id: str | None = None,
+    measured: Usage | None = None,
 ) -> Usage | None:
-    """Store the run's own tokens and cost; providers may report session totals instead."""
-    if result is None:
-        return None
-    usage = result.usage
-    if usage is None and result.cost_usd is not None:
+    """Store the run's own tokens and cost; providers may report session totals instead.
+    The context fields come from `measured` (see measured_context), also without a result."""
+    usage = result.usage if result else None
+    if usage is None and result and result.cost_usd is not None:
         usage = Usage(cost_usd=result.cost_usd)
-    if usage is None:
+    has_context = measured is not None and any(getattr(measured, k) for k in CONTEXT_FIELDS)
+    if usage is None and not has_context:
         return None
-    if usage.cumulative:
+    if usage is None:
+        usage = Usage()
+    elif usage.cumulative:
         # The CLI reported totals for the whole session/thread (Codex always; Claude without
         # model_usage_since_last_result): this run's share is what exceeds the running total
         # of the agent's earlier runs in the same session. Runs recorded under another
@@ -652,6 +739,8 @@ def record_usage(
         usage = usage.since(running_total(earlier, recorded))
     usage.model = model or usage.model
     usage.session_id = session_id
+    for key in CONTEXT_FIELDS:
+        setattr(usage, key, getattr(measured, key) if measured else None)
     store.set_usage(run.id, agent.id, usage)
     return usage
 

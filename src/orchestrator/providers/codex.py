@@ -8,12 +8,22 @@ from __future__ import annotations
 
 import functools
 import json
+import os
 import subprocess
+from datetime import UTC, datetime
+from pathlib import Path
 
 from ..models import Agent, Event, Usage
 from .base import Invocation, RunContext, brief
 
 DEFAULT_SANDBOX = "workspace-write"
+ROLLOUT_TAIL_BYTES = 2 << 20  # where the last token_count of a rollout file is looked for
+# `/compact` does not work in `codex exec resume` (the model only reads it); a turn with a
+# lower model_auto_compact_token_limit compacts at its start. The model sees this prompt.
+COMPACT_PROMPT = (
+    "[orch] This turn only compacts the conversation; there is nothing to do."
+    " Reply with the single word: compacted"
+)
 
 
 def _toml(value: object) -> str:
@@ -26,6 +36,7 @@ def _toml(value: object) -> str:
 class CodexProvider:
     name = "codex"
     efforts = ("low", "medium", "high", "xhigh")
+    compact_needs_size = True  # compaction lowers model_auto_compact_token_limit below it
 
     @functools.cache  # noqa: B019 - one provider instance per process
     def models(self) -> list[str]:
@@ -63,6 +74,8 @@ class CodexProvider:
             argv += ["-c", "mcp_servers.orch.tool_timeout_sec=3600"]
             # Without the user's approvals_reviewer, exec rejects MCP calls that need approval.
             argv += ["-c", 'mcp_servers.orch.default_tools_approval_mode="approve"']
+        if ctx.compact_below:
+            argv += ["-c", f"model_auto_compact_token_limit={int(ctx.compact_below)}"]
         if ctx.output_schema:
             schema_file = ctx.scratch / "output-schema.json"
             schema_file.write_text(json.dumps(ctx.output_schema), encoding="utf-8")
@@ -141,3 +154,89 @@ class CodexProvider:
 
     def attach_command(self, agent: Agent) -> list[str]:
         return ["codex", "resume", agent.session_id or ""]
+
+    @staticmethod
+    def compact_prompt(instructions: str | None) -> str:
+        if instructions:
+            raise ValueError("Codex compacts on its own terms: instructions are not supported")
+        return COMPACT_PROMPT
+
+    @staticmethod
+    def context_after(session_id: str, since: str) -> Usage | None:
+        """The conversation's size from the thread's rollout file (the `--json` stream has
+        no window, and its usage is the thread total): the last `token_count` event's
+        `last_token_usage.input_tokens` (cached tokens included) and
+        `model_context_window` (the model's window less Codex's reserve, e.g. 95% of
+        272000); a `compacted` entry after it leaves the size unknown (the `token_count`
+        a compaction writes has `input_tokens` 0 and is no measure). Compactions written
+        at or after `since` are reported too. The file format is not documented (seen with
+        codex-cli 0.155.1): anything unexpected gives None."""
+        path = rollout_file(session_id)
+        if path is None:
+            return None
+        try:
+            with path.open("rb") as file:
+                file.seek(0, os.SEEK_END)
+                file.seek(max(0, file.tell() - ROLLOUT_TAIL_BYTES))
+                lines = file.read().splitlines()
+        except OSError:
+            return None
+        start = _when(since)
+        usage, compactions, sized = Usage(), 0, False
+        for line in reversed(lines):
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            payload = entry.get("payload")
+            payload = payload if isinstance(payload, dict) else {}
+            when = _when(entry.get("timestamp"))
+            recent = start is not None and when is not None and when >= start
+            if entry.get("type") == "compacted":
+                if recent:
+                    compactions += 1
+                sized = True  # the size before this compaction is no longer the size
+            elif not sized and payload.get("type") == "token_count":
+                info = payload.get("info")
+                info = info if isinstance(info, dict) else {}
+                last = info.get("last_token_usage")
+                tokens = last.get("input_tokens") if isinstance(last, dict) else None
+                window = info.get("model_context_window")
+                if isinstance(tokens, int) and tokens > 0:  # 0: written by a compaction
+                    usage.context_tokens = tokens
+                    usage.context_window = window if isinstance(window, int) else None
+                    sized = True
+            if sized and not recent:
+                break
+        if compactions:
+            usage.compact_trigger = "auto"
+        if usage.context_tokens is None and not compactions:
+            return None
+        return usage
+
+
+def _when(stamp: object) -> datetime | None:
+    if not isinstance(stamp, str):
+        return None
+    try:
+        when = datetime.fromisoformat(stamp)
+    except ValueError:
+        return None
+    return when if when.tzinfo else when.replace(tzinfo=UTC)
+
+
+def codex_home() -> Path:
+    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+
+
+def rollout_file(thread_id: str) -> Path | None:
+    """`$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<time>-<thread id>.jsonl`, if it exists."""
+    if not thread_id or "/" in thread_id or "*" in thread_id:
+        return None
+    try:
+        found = sorted((codex_home() / "sessions").glob(f"*/*/*/rollout-*-{thread_id}.jsonl"))
+    except OSError:
+        return None
+    return found[-1] if found else None

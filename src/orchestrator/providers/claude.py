@@ -152,6 +152,16 @@ def _model_choice(entry: dict) -> tuple[str, str]:
     return value, label
 
 
+def compaction_text(usage: Usage) -> str:
+    """`context compacted (manual): 48450 -> 901 tokens` for a compaction's usage."""
+
+    def size(value: int | None) -> str:
+        return "?" if value is None else str(value)
+
+    sizes = f"{size(usage.compact_pre_tokens)} -> {size(usage.compact_post_tokens)} tokens"
+    return f"context compacted ({usage.compact_trigger}): {sizes}"
+
+
 def memory_guarded(loadout: Loadout) -> bool:
     """Whether `memory` adds Write/Edit behind the guard: only where the tools grant no
     writing of their own (confining a worker's Write would break it, and the CLI's default
@@ -293,8 +303,10 @@ class ClaudeProvider:
         kind = data.get("type")
         if kind == "system" and data.get("subtype") == "init":
             return [Event("session", session_id=data.get("session_id"), model=data.get("model"))]
+        if kind == "system" and data.get("subtype") == "compact_boundary":
+            return self._compaction(data)
         if kind == "assistant":
-            return self._content(data)
+            return [*self._context(data), *self._content(data)]
         if kind == "user":
             return self._tool_results(data)
         if kind == "result":
@@ -316,9 +328,57 @@ class ClaudeProvider:
                     is_error=failed,
                     structured=data.get("structured_output"),
                     usage=usage,
+                    windows=self._windows(data),
                 )
             ]
         return []
+
+    @staticmethod
+    def _context(data: dict) -> list[Event]:
+        """The conversation's size as of one model request: what the request sent (input,
+        cache read, cache write) by the main chain. A subagent's messages (with a
+        `parent_tool_use_id`) and the CLI's synthetic ones (all-zero usage) say nothing
+        about it. `result.usage` is no measure: it sums every request of the turn.
+        Verified with Claude Code 2.1.322 against its own `/context`."""
+        message = data.get("message")
+        if data.get("parent_tool_use_id") or not isinstance(message, dict):
+            return []
+        usage, model = message.get("usage"), message.get("model")
+        if not isinstance(usage, dict) or model == "<synthetic>":
+            return []
+        keys = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+        tokens = sum(int(usage.get(key) or 0) for key in keys)
+        if not tokens:
+            return []
+        return [Event("context", usage=Usage(context_tokens=tokens, model=model))]
+
+    @staticmethod
+    def _compaction(data: dict) -> list[Event]:
+        """`compact_boundary`: the conversation was replaced by a summary, by `/compact`
+        (trigger `manual`) or by the CLI on its own (`auto`, possibly in mid-turn)."""
+        meta = data.get("compact_metadata")
+        meta = meta if isinstance(meta, dict) else {}
+        trigger = meta.get("trigger") if isinstance(meta.get("trigger"), str) else None
+        pre, post = meta.get("pre_tokens"), meta.get("post_tokens")
+        pre = pre if isinstance(pre, int) else None
+        post = post if isinstance(post, int) else None
+        usage = Usage(
+            compact_trigger=trigger or "unknown", compact_pre_tokens=pre, compact_post_tokens=post
+        )
+        return [Event("compact", compaction_text(usage), usage=usage)]
+
+    @staticmethod
+    def _windows(data: dict) -> dict[str, int]:
+        """The context window per model (`contextWindow`); the same for every Claude model
+        so far (1M), and not the auto-compaction point, which lies 33k below it."""
+        windows = {}
+        for key in ("modelUsage", "model_usage_since_last_result"):
+            per_model = data.get(key)
+            for model, entry in per_model.items() if isinstance(per_model, dict) else ():
+                window = entry.get("contextWindow") if isinstance(entry, dict) else None
+                if isinstance(window, int) and window > 0:
+                    windows[model] = window
+        return windows
 
     @staticmethod
     def _usage(data: dict) -> Usage | None:
@@ -378,3 +438,12 @@ class ClaudeProvider:
 
     def attach_command(self, agent: Agent) -> list[str]:
         return ["claude", "--resume", agent.session_id or ""]
+
+    @staticmethod
+    def compact_prompt(instructions: str | None) -> str:
+        """The CLI's own `/compact [instructions]`, on one line. It works only without
+        `--disable-slash-commands` (with it the CLI answers "/compact isn't available in
+        this environment." without compacting) and keeps the session id; its result is
+        empty, with `num_turns: 0` (verified with Claude Code 2.1.322)."""
+        words = " ".join((instructions or "").split())
+        return f"/compact {words}" if words else "/compact"

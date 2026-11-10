@@ -21,7 +21,18 @@ from pathlib import Path
 from typing import Any
 
 from . import config
-from .models import ACTIVE, TOKEN_FIELDS, Agent, Event, Project, Run, RunStatus, Usage, from_row
+from .models import (
+    ACTIVE,
+    CONTEXT_FIELDS,
+    TOKEN_FIELDS,
+    Agent,
+    Event,
+    Project,
+    Run,
+    RunStatus,
+    Usage,
+    from_row,
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -100,7 +111,8 @@ CREATE TABLE IF NOT EXISTS deliveries (
 );
 -- What kind of turn a run is and who queued it; its own table for the same reasons as
 -- run_usage. Runs without a row (queued by older code) are messages of unknown sender.
--- kind: 'message' | 'notification'; sender: the agent whose MCP server queued the run
+-- kind: 'message' | 'notification' | 'compact' (a compaction turn, see Orchestrator.compact,
+-- queued in order with messages but never an answer to anyone); sender: the agent whose MCP server queued the run
 -- (NULL: user, CLI, dashboard); notify: 'each' | 'all', how the sender wants to be woken;
 -- origin: whom the turn answers (a message: its sender; a notification: the parent, when
 -- the work it reports was done for that parent); cause_run: the run of the parent during
@@ -133,6 +145,8 @@ CREATE INDEX IF NOT EXISTS events_agent ON events(agent_id, id);
 
 MESSAGE = "message"
 NOTIFICATION = "notification"
+COMPACT = "compact"  # a turn that compacts the agent's conversation (Orchestrator.compact)
+IN_ORDER = (MESSAGE, COMPACT)  # kinds that keep their queue order among themselves
 NOTIFY_MODES = ("each", "all")
 ANYONE = object()  # withdraw_queued/replace_queued: whoever queued the run
 
@@ -142,6 +156,15 @@ RUN_META_ADDED = (
     ("cause_run", "INTEGER"),
     ("claimed", "TEXT"),
     ("checked", "INTEGER NOT NULL DEFAULT 0"),
+)
+# run_usage columns added after its first version.
+RUN_USAGE_ADDED = (
+    ("session_id", "TEXT"),
+    ("context_tokens", "INTEGER"),
+    ("context_window", "INTEGER"),
+    ("compact_trigger", "TEXT"),
+    ("compact_pre_tokens", "INTEGER"),
+    ("compact_post_tokens", "INTEGER"),
 )
 ARCHIVE_MANUAL, ARCHIVE_AUTO = "manual", "auto"
 RESTORE_SQL = (
@@ -224,10 +247,12 @@ class Store:
             columns = conn.execute("PRAGMA table_info(agents)").fetchall()
             if not any(column["name"] == "effort" for column in columns):
                 conn.execute("ALTER TABLE agents ADD COLUMN effort TEXT")
-            usage_columns = conn.execute("PRAGMA table_info(run_usage)").fetchall()
-            if not any(column["name"] == "session_id" for column in usage_columns):
-                try:  # run_usage tables from before session ids were recorded
-                    conn.execute("ALTER TABLE run_usage ADD COLUMN session_id TEXT")
+            present = {row["name"] for row in conn.execute("PRAGMA table_info(run_usage)")}
+            for name, ddl in RUN_USAGE_ADDED:
+                if name in present:
+                    continue
+                try:  # run_usage tables from before the column was recorded
+                    conn.execute(f"ALTER TABLE run_usage ADD COLUMN {name} {ddl}")
                 except sqlite3.OperationalError as exc:  # another process was quicker
                     if "duplicate column" not in str(exc):
                         raise
@@ -632,6 +657,8 @@ class Store:
         ).fetchone()
         if row is None or (sender is not ANYONE and row["meta_sender"] != sender):
             raise ValueError(f"no run {run_id}" + ("" if sender is ANYONE else " sent by you"))
+        if row["meta_kind"] == COMPACT:
+            raise ValueError(f"run {run_id} is a compaction, not a message (orch stop ends it)")
         if (row["meta_kind"] or MESSAGE) != MESSAGE:
             raise ValueError(f"run {run_id} is a notification (written when it starts)")
         if row["status"] == RunStatus.RUNNING.value:
@@ -654,14 +681,15 @@ class Store:
         return {row["run_id"]: from_row(RunMeta, row) for row in rows}
 
     def ready_messages(self, agent_id: str) -> list[int]:
-        """Ids of the agent's waiting message runs (not notifications) that could start once
-        the agent's turn is free: none of their dependencies is still active."""
+        """Ids of the agent's waiting message and compaction runs (not notifications) that
+        could start once the agent's turn is free: none of their dependencies is still
+        active."""
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT r.id, r.depends_on FROM runs r LEFT JOIN run_meta m ON m.run_id = r.id"
-                " WHERE r.agent_id = ? AND r.status = ? AND COALESCE(m.kind, ?) = ?"
+                " WHERE r.agent_id = ? AND r.status = ? AND COALESCE(m.kind, ?) IN (?, ?)"
                 " ORDER BY r.id",
-                (agent_id, RunStatus.WAITING.value, MESSAGE, MESSAGE),
+                (agent_id, RunStatus.WAITING.value, MESSAGE, *IN_ORDER),
             ).fetchall()
             return [
                 row["id"] for row in rows if not self._blocked(conn, json.loads(row["depends_on"]))
@@ -713,8 +741,8 @@ class Store:
 
     # -- turn order -------------------------------------------------------
     #
-    # At most one run of an agent runs at a time. Message runs keep their order among
-    # themselves; a waiting notification never holds a message back and starts only when
+    # At most one run of an agent runs at a time. Message runs (and compaction runs, which
+    # are scheduled like them) keep their order among themselves; a waiting notification never holds a message back and starts only when
     # no message is ready to. Runs queued by older code (no metadata) are treated with
     # care because their runner may be old code too, which waits for every earlier
     # active run and starts without checking: a notification lets an earlier one go first
@@ -731,8 +759,8 @@ class Store:
         ).fetchall()
         if any(row["status"] == RunStatus.RUNNING.value for row in rows):
             return False
-        messages = [row for row in rows if (row["kind"] or MESSAGE) == MESSAGE]
-        if kind == MESSAGE:
+        messages = [row for row in rows if (row["kind"] or MESSAGE) in IN_ORDER]
+        if kind in IN_ORDER:
             return not any(row["id"] < run_id for row in messages)
         if any(row["kind"] == NOTIFICATION and row["id"] < run_id for row in rows):
             return False
@@ -870,7 +898,8 @@ class Store:
             conn.execute(
                 "INSERT OR REPLACE INTO run_usage (run_id, agent_id, input_tokens, output_tokens,"
                 " cache_read_tokens, cache_creation_tokens, cost_usd, model, created_at,"
-                " session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                f" session_id, {', '.join(CONTEXT_FIELDS)})"
+                f" VALUES ({', '.join('?' * (10 + len(CONTEXT_FIELDS)))})",
                 (
                     run_id,
                     agent_id,
@@ -879,6 +908,7 @@ class Store:
                     usage.model,
                     now(),
                     usage.session_id,
+                    *(getattr(usage, key) for key in CONTEXT_FIELDS),
                 ),
             )
 

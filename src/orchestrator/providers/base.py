@@ -44,6 +44,9 @@ class RunContext:
     effort: str | None = None
     writable_dirs: list[str] = field(default_factory=list)  # beyond the cwd, e.g. the shared .git
     loadout: Loadout = field(default_factory=Loadout)  # the default restricts nothing
+    # A compaction turn (Codex): have the CLI compact once the conversation exceeds this
+    # many tokens, which is below its current size.
+    compact_below: int | None = None
 
 
 @dataclass
@@ -80,6 +83,18 @@ class Provider(Protocol):
     def attach_command(self, agent: Agent) -> list[str]:
         """Interactive command a person can run to take over the agent's conversation."""
         ...
+
+    # Optional, looked up with getattr:
+    #   compact_prompt(instructions: str | None) -> str
+    #       The prompt of a turn that compacts the conversation (Orchestrator.compact); the
+    #       runner passes it as is. Raises ValueError for instructions it cannot take.
+    #       A provider without it cannot compact.
+    #   compact_needs_size: bool
+    #       True: a compaction turn needs the conversation's current size (compact_below).
+    #   context_after(session_id: str, since: str) -> Usage | None
+    #       The conversation's size (Usage.context_*) and a compaction since `since` (an
+    #       ISO time; Usage.compact_*) when the output stream does not report them; read
+    #       after the turn, best effort.
 
 
 def model_choices(provider: Provider) -> dict[str, Any]:

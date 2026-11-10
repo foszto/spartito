@@ -13,6 +13,14 @@ resumed an existing session.
 2n cache reads, n // 2 cache writes, n / 100000 USD). With `CUMULATIVE` it reports the
 running total of the session instead, like `codex exec resume` does.
 
+`CONTEXT <n>` reports a model request with an n-token prompt (the context size) and a
+1000-token window for the model; `AUTOCOMPACT` reports an automatic compaction before it.
+A prompt that starts with `/compact` (FakeProvider.compact_prompt) compacts: a manual
+compaction (48450 -> 901 tokens) and an empty result, like Claude Code; with `NOOP` in it,
+it answers like Claude with `--disable-slash-commands` instead. `invocation` writes what the
+runner passed it (prompt, slash_commands, output_schema, compact_below) to `ctx.json` in
+the run's scratch directory.
+
 `STALE` first reports a result of its own for a background task (like Claude on resume
 after its previous process was ended with a background command running). `TWICE` reports
 a second result after the answer (like Claude when a background command ends), with the
@@ -95,6 +103,21 @@ if cumulative:
     usage = {key: before.get(key, 0) + value for key, value in usage.items()}
     totals.write_text(json.dumps(usage))
 extra = {"usage": usage, "cumulative": cumulative} if usage else {}
+if "AUTOCOMPACT" in words:
+    print(json.dumps({"compact": ["auto", 900, 300]}), flush=True)
+for flag, value in zip(words, words[1:]):
+    if flag == "CONTEXT":
+        print(json.dumps({"context": int(value), "model": "fake-model-1"}), flush=True)
+        extra["windows"] = {"fake-model-1": 1000}
+if prompt.startswith("/compact"):
+    if "NOOP" in words:
+        print(json.dumps({"result": "/compact isn't available in this environment.", **extra}))
+    else:
+        print(json.dumps({"compact": ["manual", 48450, 901]}), flush=True)
+        print(json.dumps({"result": "", **extra}), flush=True)
+    if server:
+        server.kill()
+    sys.exit(0)
 if "STALE" in words:
     print(json.dumps({"result": "", "notification": True, **extra}), flush=True)
 print(json.dumps({"text": "working"}), flush=True)
@@ -148,7 +171,18 @@ class FakeProvider:
         mode = ["memory", str(canary)] if canary else ["plain"]
         argv = [sys.executable, "-c", SCRIPT, resumed, config, *mode]
         stdin = stream_json_prompt(ctx.prompt) if canary else ctx.prompt
+        seen = {
+            "prompt": ctx.prompt,
+            "slash_commands": ctx.loadout.slash_commands,
+            "output_schema": ctx.output_schema,
+            "compact_below": ctx.compact_below,
+        }
+        (ctx.scratch / "ctx.json").write_text(json.dumps(seen))
         return Invocation(argv=argv, stdin=stdin, canary=canary)
+
+    @staticmethod
+    def compact_prompt(instructions: str | None) -> str:
+        return f"/compact {instructions}" if instructions else "/compact"
 
     def parse(self, line: str) -> list[Event]:
         data = json.loads(line)
@@ -156,6 +190,14 @@ class FakeProvider:
             return [Event("session", session_id=data["session"], model=data.get("model"))]
         if "text" in data:
             return [Event("text", data["text"])]
+        if "context" in data:
+            return [
+                Event("context", usage=Usage(context_tokens=data["context"], model=data["model"]))
+            ]
+        if "compact" in data:
+            trigger, pre, post = data["compact"]
+            usage = Usage(compact_trigger=trigger, compact_pre_tokens=pre, compact_post_tokens=post)
+            return [Event("compact", f"compacted ({trigger})", usage=usage)]
         usage = data.get("usage")
         return [
             Event(
@@ -163,6 +205,7 @@ class FakeProvider:
                 data["result"],
                 is_error=data.get("error", False),
                 usage=usage and Usage(**usage, cumulative=data["cumulative"]),
+                windows=data.get("windows"),
             )
         ]
 

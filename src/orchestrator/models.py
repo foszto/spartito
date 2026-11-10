@@ -76,6 +76,14 @@ class Run:
 
 
 TOKEN_FIELDS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens")
+# How full the conversation was after the run, and a compaction the run saw (see Usage).
+CONTEXT_FIELDS = (
+    "context_tokens",
+    "context_window",
+    "compact_trigger",
+    "compact_pre_tokens",
+    "compact_post_tokens",
+)
 
 
 @dataclass
@@ -96,6 +104,17 @@ class Usage:
     model: str | None = None  # the model the CLI says it used
     cumulative: bool = False
     session_id: str | None = None  # session/thread the run belonged to, when reported
+    # The conversation's size after the run: the prompt of its last model request (Claude:
+    # input + cache read + cache write of the last main-chain message; Codex: the input of
+    # the last request), and the model's context window. Unknown (None) after a compaction
+    # that no request followed. Not summed: a property of the session at the run's end.
+    context_tokens: int | None = None
+    context_window: int | None = None
+    # A compaction seen in the run: 'manual' | 'auto', with the sizes the CLI reported
+    # (Claude's post_tokens counts the conversation only, not system prompt and tools).
+    compact_trigger: str | None = None
+    compact_pre_tokens: int | None = None
+    compact_post_tokens: int | None = None
 
     def __add__(self, other: Usage) -> Usage:
         def add(a: Any, b: Any) -> Any:
@@ -154,6 +173,24 @@ def running_total(runs: Iterable[Run], usage: dict[int, Usage]) -> Usage:
     return total
 
 
+def context_now(
+    runs: Iterable[Run], usage: dict[int, Usage], session_id: str | None
+) -> Usage | None:
+    """The usage record that tells how full the agent's conversation is now: that of its
+    latest run in the current session with a size or a compaction. A compaction that no
+    request followed leaves the size unknown (context_tokens None, compact_trigger set):
+    an older figure would be stale. None when no run in the session reported either."""
+    if not session_id:
+        return None
+    for run in sorted(runs, key=lambda run: run.id, reverse=True):
+        record = usage.get(run.id)
+        if record is None or record.session_id != session_id:
+            continue
+        if record.context_tokens is not None or record.compact_trigger:
+            return record
+    return None
+
+
 def from_row[T](cls: type[T], row: Any) -> T:
     """Build a record from a database row, ignoring columns a newer version added."""
     names = {f.name for f in fields(cls)}
@@ -164,14 +201,18 @@ def from_row[T](cls: type[T], row: Any) -> T:
 class Event:
     """A normalised, provider-independent line of agent activity."""
 
-    kind: str  # session | text | tool | tool_result | result | error | info
+    # session | text | tool | tool_result | result | error | info; parsers also yield
+    # `context` (usage.context_tokens/model of a model request) and `compact` (a compaction,
+    # text and usage.compact_*), which the runner keeps on the run's usage, not as events.
+    kind: str
     text: str = ""
     session_id: str | None = None
     cost_usd: float | None = None
     is_error: bool = False
     structured: Any = None
     model: str | None = None  # the model the CLI reports, when it does (session events)
-    usage: Usage | None = None  # on result events
+    usage: Usage | None = None  # on result, context and compact events
+    windows: dict[str, int] | None = None  # on result events: context window per model
     id: int = 0
     run_id: int = 0
     agent_id: str = ""
