@@ -22,6 +22,16 @@ def logs_dir() -> Path:
     return path
 
 
+def run_dir(run_id: int) -> Path:
+    """Per-run files: the CLI's raw output stream, stderr, schemas, the final answer."""
+    return logs_dir() / f"run-{run_id}"
+
+
+def result_file(run_id: int) -> Path:
+    """The run's full final answer, written by the runner when the run ends."""
+    return run_dir(run_id) / "result.md"
+
+
 def worktrees_dir(project: str) -> Path:
     return home() / "worktrees" / project
 

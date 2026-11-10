@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from . import config, git, loadout, providers, roles, settings
 from .models import Agent, Event, Project, Run, RunStatus, Usage, running_total
@@ -24,7 +25,8 @@ from .store import Store, now
 
 POLL_SECONDS = 0.5
 RECONCILE_EVERY = 10  # polls
-RESULT_REF = re.compile(r"\{\{result:([\w.-]+)\}\}")
+RESULT_REF = re.compile(r"\{\{result:([\w.-]+)(:full)?\}\}")
+RESULT_CHARS = 4000  # text of a {{result:<agent-id>}} reference without :full
 
 
 class Stopped(Exception):
@@ -73,7 +75,9 @@ def prepare_workspace(agent: Agent, project: Project | None) -> list[str]:
 
 
 def render_prompt(store: Store, prompt: str) -> str:
-    """Replace {{result:<agent-id>}} with the last successful result of that agent."""
+    """Replace {{result:<agent-id>}} with the last successful result of that agent:
+    structured output as compact JSON, text cut at RESULT_CHARS with a note naming the
+    result file. {{result:<agent-id>:full}} is never cut."""
 
     def substitute(match: re.Match[str]) -> str:
         done = [r for r in store.runs_of(match.group(1)) if r.status is RunStatus.DONE]
@@ -81,8 +85,13 @@ def render_prompt(store: Store, prompt: str) -> str:
             return match.group(0)
         last = done[-1]
         if last.structured is not None:
-            return json.dumps(last.structured, ensure_ascii=False, indent=2)
-        return last.result or ""
+            return json.dumps(last.structured, ensure_ascii=False, separators=(",", ":"))
+        text = last.result or ""
+        if match.group(2) or len(text) <= RESULT_CHARS:
+            return text
+        path = config.result_file(last.id)
+        where = f"; full text in {path}" if path.is_file() else ""
+        return f"{text[:RESULT_CHARS]}\n[cut at {RESULT_CHARS} of {len(text)} chars{where}]"
 
     return RESULT_REF.sub(substitute, prompt)
 
@@ -116,7 +125,7 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
         note = "the repository had no commits: created an empty initial commit to branch from"
         store.add_event(run.id, agent.id, "info", note)
     writable = prepare_workspace(agent, project)
-    scratch = config.logs_dir() / f"run-{run.id}"
+    scratch = config.run_dir(run.id)
     scratch.mkdir(exist_ok=True)
     invocation = provider.invocation(
         RunContext(
@@ -196,6 +205,7 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
                 structured = None
         if text != last_text:  # otherwise the activity log already ends with it
             store.add_event(run.id, agent.id, "result", text)
+        write_result(scratch, text, structured)
         store.finish_run(run.id, RunStatus.DONE, result=text, structured=structured, cost_usd=cost)
         return
     stderr_tail = stderr_path.read_text(encoding="utf-8", errors="replace").strip()[-1500:]
@@ -206,7 +216,18 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
         or f"{invocation.argv[0]} exited with code {code} without a result"
     )
     store.add_event(run.id, agent.id, "error", error)
+    write_result(scratch, last_text or error, None)
     store.finish_run(run.id, RunStatus.FAILED, error=error, result=last_text or None, cost_usd=cost)
+
+
+def write_result(scratch: Path, text: str, structured: Any) -> None:
+    """The full final answer (and structured output) beside the run's other files, written
+    before the run is marked finished so a caller that sees it finished finds the file."""
+    (scratch / "result.md").write_text(text, encoding="utf-8")
+    if structured is not None:
+        (scratch / "result.json").write_text(
+            json.dumps(structured, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
 
 def record_usage(
