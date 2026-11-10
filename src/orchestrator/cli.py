@@ -251,7 +251,7 @@ def project_list() -> None:
     """List projects."""
     o = orch()
     for project in o.store.list_projects():
-        count = len(o.store.list_agents(project.name))
+        count = len(o.store.list_agents(project.name)) - len(o.store.archived(project.name))
         typer.echo(
             f"{project.name:<20} {project.default_provider:<7} {count:>3} agents  {project.path}"
         )

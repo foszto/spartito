@@ -3,9 +3,12 @@ deleted for good only from the archive, and archived automatically when idle and
 
 from __future__ import annotations
 
+import importlib.util
+import os
 import re
 import sqlite3
 import subprocess
+import sys
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,7 +18,7 @@ import pytest
 from starlette.testclient import TestClient
 from typer.testing import CliRunner
 
-from orchestrator import cli, config, git, mcp_server, service
+from orchestrator import cli, config, git, mcp_server, notify, service
 from orchestrator.models import Agent, RunStatus
 from orchestrator.service import NeedsConfirmation, Orchestrator, OrchestratorError
 from orchestrator.store import SCHEMA, Store
@@ -221,7 +224,7 @@ def test_unmerged_work_is_archived_by_hand_only_after_a_confirmation(
 
     with pytest.raises(NeedsConfirmation) as refused:
         orch.archive(agents[0].id)
-    assert f"1 commit on {agents[0].branch} not merged into main" in str(refused.value)
+    assert f"1 commit not merged into main (on {agents[0].branch}" in str(refused.value)
     assert "1 uncommitted change" in str(refused.value)
     assert orch.archive(agents[0].id, confirm=True)["unsaved"]
 
@@ -476,4 +479,193 @@ def test_a_database_without_the_archive_table_opens(tmp_path: Path) -> None:
     store = Store(path)
 
     assert store.archived() == {}
-    assert store.archive("a-1") and set(store.archived()) == {"a-1"}
+    assert store.archive("a-1") is None and set(store.archived()) == {"a-1"}
+
+
+# -- review fixes ----------------------------------------------------------------
+
+
+def test_commits_at_the_worktree_head_count_as_unmerged(
+    orch: Orchestrator, project: str, repo: Path
+) -> None:
+    switched = with_worktree(orch, project, repo, name="switched")
+    run_git(switched.cwd, "switch", "-q", "-c", "elsewhere")
+    commit(switched.cwd)
+    detached = with_worktree(orch, project, repo, name="detached")
+    run_git(detached.cwd, "checkout", "-q", "--detach")
+    commit(detached.cwd)
+    for agent in (switched, detached):
+        finished_turn(orch, agent.id)
+
+    assert git.unsaved_work(repo, switched.cwd, switched.branch, "main") == (1, 0)
+    assert git.unsaved_work(repo, detached.cwd, detached.branch, "main") == (1, 0)
+    assert orch.auto_archive() == []
+    assert orch.archive_safe(project)["archived"] == []
+    with pytest.raises(NeedsConfirmation, match="1 commit not merged into main"):
+        orch.archive(detached.id)
+
+
+def test_a_squash_merged_branch_counts_as_unmerged(
+    orch: Orchestrator, project: str, repo: Path
+) -> None:
+    agent = with_worktree(orch, project, repo)
+    commit(agent.cwd, "feature.txt")
+    run_git(repo, "merge", "-q", "--squash", agent.branch)
+    run_git(repo, "commit", "-q", "-m", "squashed")
+    finished_turn(orch, agent.id)
+
+    assert (repo / "feature.txt").exists()  # the work is in main, the commit is not
+    assert git.unsaved_work(repo, agent.cwd, agent.branch, "main") == (1, 0)
+    assert orch.auto_archive() == []
+
+
+def test_an_agent_whose_parent_has_not_received_its_result_stays(
+    orch: Orchestrator, project: str
+) -> None:
+    lead = orch.create_agent(project, name="boss", role="lead", worktree=False)
+    child = orch.create_agent(project, name="child", worktree=False, parent_id=lead.id)
+    run = orch.store.add_run(child.id, "work", sender=lead.id)
+    orch.store.finish_run(run.id, RunStatus.DONE, result="done")
+    orch.store.mark_checked(run.id)
+    age(orch, child.id, 48)
+    with orch.store.connection() as conn:
+        (kid,) = notify.children(conn, lead.id)
+    assert kid.deliverable == [run.id]
+
+    assert orch.auto_archive() == []
+    kept = orch.archive_safe(project)
+    assert kept["archived"] == [] and "has not received its result" in kept["kept"][child.id]
+
+    orch.store.claim(lead.id, [run.id])  # delivered (a notification or wait_for_agents)
+    assert orch.auto_archive() == [child.id]
+    orch.restore(child.id)
+    age(orch, child.id, 48)
+    with orch.store.connection() as conn:  # the notification turn failed: released again
+        conn.execute("DELETE FROM deliveries WHERE run_id = ?", (run.id,))
+    with orch.store.connection() as conn:
+        conn.execute(
+            "UPDATE archived_agents SET restored_at = created_at FROM agents"
+            " WHERE agents.id = archived_agents.agent_id"
+        )
+    assert orch.auto_archive() == []
+    orch.store.claim(lead.id, [run.id])
+    assert orch.auto_archive() == [child.id]
+
+
+def test_an_owner_whose_worktree_another_agent_works_in_stays(
+    orch: Orchestrator, project: str, repo: Path
+) -> None:
+    owner = with_worktree(orch, project, repo, name="owner")
+    finished_turn(orch, owner.id)
+    sharer = orch.create_agent(project, name="sharer", role="reviewer", share_with=owner.id)
+    working = orch.store.add_run(sharer.id, "review")
+    orch.store.update_run(working.id, status=RunStatus.RUNNING)
+
+    assert orch.auto_archive() == []
+    with pytest.raises(OrchestratorError, match=f"{sharer.id} works in its worktree"):
+        orch.archive(owner.id)
+    assert orch.archive_safe(project)["kept"] == {owner.id: f"{sharer.id} works in its worktree"}
+
+    orch.store.finish_run(working.id, RunStatus.DONE)
+    assert orch.archive(owner.id)["archived"] == owner.id
+
+
+def test_the_status_check_takes_no_optional_locks(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = []
+    real = git.git
+
+    def recorded(path, *args, **options):
+        calls.append(args)
+        return real(path, *args, **options)
+
+    monkeypatch.setattr(git, "git", recorded)
+    git.unsaved_work(repo, repo, "main", "main")
+
+    (status,) = [args for args in calls if "status" in args]
+    assert status[0] == "--no-optional-locks"
+
+
+@pytest.fixture
+def hanging_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A `git` first on PATH that never answers, with a helper in a session of its own
+    that keeps its output pipes open (as a hook or fsmonitor daemon could)."""
+    bin_dir = tmp_path / "hanging-bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "git"
+    fake.write_text(
+        f"#!{sys.executable}\n"
+        "import os, subprocess, sys, time\n"
+        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(8)'],"
+        " start_new_session=True)\n"
+        "time.sleep(60)\n"
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    return fake
+
+
+def test_a_hanging_git_never_hangs_the_listings(
+    orch: Orchestrator,
+    project: str,
+    repo: Path,
+    client: TestClient,
+    hanging_git: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PATH", os.environ["PATH"].split(os.pathsep, 1)[1])  # real git first
+    agents = [with_worktree(orch, project, repo, name=f"w{n}") for n in range(3)]
+    for agent in agents:
+        finished_turn(orch, agent.id)
+    monkeypatch.setenv("PATH", f"{hanging_git.parent}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(service, "AUTO_ARCHIVE_BUDGET", 1.5)
+
+    started = time.monotonic()
+    archived = orch.auto_archive()
+    took = time.monotonic() - started
+
+    assert archived == [] and took < 1.5 + git.KILL_GRACE + 1.0
+    started = time.monotonic()
+    state = client.get("/api/state").json()  # runs the check too
+    assert time.monotonic() - started < 1.5 + git.KILL_GRACE + 3.0
+    assert len(state["projects"][0]["agents"]) == 3
+
+
+def test_a_git_call_with_a_timeout_returns_in_time(hanging_git: Path) -> None:
+    started = time.monotonic()
+    with pytest.raises(git.GitError, match="no answer within 0.5 s"):
+        git.git(".", "status", timeout=0.5)
+    assert time.monotonic() - started < 0.5 + git.KILL_GRACE + 0.5
+    with pytest.raises(git.GitError, match="no time left"):
+        git.branch_exists(".", "main", timeout=0)
+
+
+def test_project_counts_leave_archived_agents_out(orch: Orchestrator, project: str) -> None:
+    orch.create_agent(project, name="kept", worktree=False)
+    orch.archive(orch.create_agent(project, name="gone", worktree=False).id)
+
+    (listed,) = mcp_server.list_projects()
+    output = CliRunner().invoke(cli.app, ["project", "list"]).output
+
+    assert listed["agents"] == 1 and "  1 agents" in output
+
+
+@pytest.mark.parametrize("script", ["smoke_notify", "measure_loadout"])
+def test_the_scripts_clean_up_their_agents(
+    orch: Orchestrator, project: str, repo: Path, script: str
+) -> None:
+    path = Path(__file__).parent.parent / "scripts" / f"{script}.py"
+    spec = importlib.util.spec_from_file_location(f"script_{script}", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    owner = with_worktree(orch, project, repo, name="owner")
+    commit(owner.cwd)
+    orch.create_agent(project, name="sharer", role="reviewer", share_with=owner.id)
+    lead = orch.create_agent(project, name="boss", role="lead", worktree=False)
+    orch.create_agent(project, name="child", worktree=False, parent_id=lead.id)
+
+    module.cleanup(orch)
+
+    assert orch.store.list_agents(project) == []
+    assert not Path(owner.cwd).exists() and not git.branch_exists(repo, owner.branch)

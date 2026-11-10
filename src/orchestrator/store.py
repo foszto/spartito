@@ -466,11 +466,16 @@ class Store:
         }
 
     def archive(
-        self, agent_id: str, how: str = ARCHIVE_MANUAL, idle_since: str | None = None
-    ) -> bool:
+        self,
+        agent_id: str,
+        how: str = ARCHIVE_MANUAL,
+        idle_since: str | None = None,
+        held: Callable[[sqlite3.Connection], str | None] | None = None,
+    ) -> bool | str | None:
         """Archive the agent unless it or a descendant has a queued or running turn (or,
-        with `idle_since`, it was active after that time); atomic against a message
-        arriving meanwhile. False: refused for that reason."""
+        with `idle_since`, it was active after that time, or `held(conn)` gives a reason);
+        atomic against a message arriving meanwhile. None: archived; True: refused as
+        busy or recently active; a string: refused for the reason `held` gave."""
         with self.transaction() as conn:
             busy = conn.execute(
                 subtree_sql() + " SELECT 1 FROM runs WHERE agent_id IN (SELECT id FROM tree)"
@@ -478,16 +483,18 @@ class Store:
                 (agent_id,),
             ).fetchone()
             if busy:
-                return False
+                return True
             if idle_since and (self._last_activity(conn, agent_id) or "") > idle_since:
-                return False
+                return True
+            if held and (reason := held(conn)):
+                return reason
             conn.execute(
                 "INSERT INTO archived_agents (agent_id, archived_at, how, restored_at)"
                 " VALUES (?, ?, ?, NULL) ON CONFLICT(agent_id) DO UPDATE SET"
                 " archived_at = excluded.archived_at, how = excluded.how, restored_at = NULL",
                 (agent_id, now(), how),
             )
-        return True
+        return None
 
     def restore(self, agent_id: str) -> bool:
         """Take the agent out of the archive; False if it was not archived."""

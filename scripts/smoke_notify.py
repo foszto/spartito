@@ -367,11 +367,21 @@ def main() -> int:
     if args.keep:
         print(f"kept {tmp}", file=sys.stderr)
     else:
-        for agent in orch.store.list_agents():
-            with contextlib.suppress(Exception):
-                orch.remove(agent.id, delete_branch=True)
+        cleanup(orch)
         shutil.rmtree(tmp, ignore_errors=True)
     return 0 if info["passed"] else 1
+
+
+def cleanup(orch: Any) -> None:
+    """Delete every agent with its worktree and branch, best effort (the temp dir goes
+    anyway). Only archived agents are deleted: each is stopped and archived first, newest
+    first so that sub-agents and agents sharing a worktree go before the ones above."""
+    for agent in reversed(orch.store.list_agents()):
+        with contextlib.suppress(Exception):
+            orch.stop(agent.id)
+            orch.archive(agent.id, confirm=True)
+        with contextlib.suppress(Exception):
+            orch.remove(agent.id, delete_branch=True)
 
 
 if __name__ == "__main__":
