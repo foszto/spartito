@@ -118,6 +118,15 @@ CREATE TABLE IF NOT EXISTS run_meta (
     claimed TEXT,
     checked INTEGER NOT NULL DEFAULT 0
 );
+-- Archived agents: hidden from the default listings, everything else kept. Its own table
+-- for the same reasons as run_usage. A row whose restored_at is set is no longer archived
+-- (restored_at counts as activity for the automatic archiving); how: 'manual' | 'auto'.
+CREATE TABLE IF NOT EXISTS archived_agents (
+    agent_id TEXT PRIMARY KEY,
+    archived_at TEXT NOT NULL,
+    how TEXT NOT NULL,
+    restored_at TEXT
+);
 CREATE INDEX IF NOT EXISTS runs_agent ON runs(agent_id, id);
 CREATE INDEX IF NOT EXISTS events_agent ON events(agent_id, id);
 """
@@ -125,6 +134,7 @@ CREATE INDEX IF NOT EXISTS events_agent ON events(agent_id, id);
 MESSAGE = "message"
 NOTIFICATION = "notification"
 NOTIFY_MODES = ("each", "all")
+ANYONE = object()  # withdraw_queued/replace_queued: whoever queued the run
 
 # run_meta columns added after its first version (run_id, agent_id, kind, sender, notify).
 RUN_META_ADDED = (
@@ -132,6 +142,10 @@ RUN_META_ADDED = (
     ("cause_run", "INTEGER"),
     ("claimed", "TEXT"),
     ("checked", "INTEGER NOT NULL DEFAULT 0"),
+)
+ARCHIVE_MANUAL, ARCHIVE_AUTO = "manual", "auto"
+RESTORE_SQL = (
+    "UPDATE archived_agents SET restored_at = ? WHERE agent_id = ? AND restored_at IS NULL"
 )
 LOST_TRIGGER_SECONDS = 120  # an ended run still unchecked this long lost its trigger
 
@@ -430,8 +444,86 @@ class Store:
                 (agent_id, agent_id),
             )
             conn.execute("DELETE FROM runs WHERE agent_id = ?", (agent_id,))
+            conn.execute("DELETE FROM archived_agents WHERE agent_id = ?", (agent_id,))
             conn.execute("UPDATE agents SET parent_id = NULL WHERE parent_id = ?", (agent_id,))
             conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
+
+    # -- archive ----------------------------------------------------------
+
+    def archived(self, project: str | None = None) -> dict[str, dict[str, str]]:
+        """The archived agents (of one project): id -> {"archived_at", "how"}."""
+        query = (
+            "SELECT x.agent_id, x.archived_at, x.how FROM archived_agents x"
+            " JOIN agents a ON a.id = x.agent_id WHERE x.restored_at IS NULL"
+        )
+        args: tuple[Any, ...] = ()
+        if project:
+            query, args = query + " AND a.project = ?", (project,)
+        with self._conn() as conn:
+            rows = conn.execute(query, args).fetchall()
+        return {
+            row["agent_id"]: {"archived_at": row["archived_at"], "how": row["how"]} for row in rows
+        }
+
+    def archive(
+        self,
+        agent_id: str,
+        how: str = ARCHIVE_MANUAL,
+        idle_since: str | None = None,
+        held: Callable[[sqlite3.Connection], str | None] | None = None,
+    ) -> bool | str | None:
+        """Archive the agent unless it or a descendant has a queued or running turn (or,
+        with `idle_since`, it was active after that time, or `held(conn)` gives a reason);
+        atomic against a message arriving meanwhile. None: archived; True: refused as
+        busy or recently active; a string: refused for the reason `held` gave."""
+        with self.transaction() as conn:
+            busy = conn.execute(
+                subtree_sql() + " SELECT 1 FROM runs WHERE agent_id IN (SELECT id FROM tree)"
+                f" AND status IN ('{ACTIVE[0]}', '{ACTIVE[1]}') LIMIT 1",
+                (agent_id,),
+            ).fetchone()
+            if busy:
+                return True
+            if idle_since and (self._last_activity(conn, agent_id) or "") > idle_since:
+                return True
+            if held and (reason := held(conn)):
+                return reason
+            conn.execute(
+                "INSERT INTO archived_agents (agent_id, archived_at, how, restored_at)"
+                " VALUES (?, ?, ?, NULL) ON CONFLICT(agent_id) DO UPDATE SET"
+                " archived_at = excluded.archived_at, how = excluded.how, restored_at = NULL",
+                (agent_id, now(), how),
+            )
+        return None
+
+    def restore(self, agent_id: str) -> bool:
+        """Take the agent out of the archive; False if it was not archived."""
+        with self._conn() as conn:
+            return conn.execute(RESTORE_SQL, (now(), agent_id)).rowcount == 1
+
+    def last_activity(self) -> dict[str, str]:
+        """Per agent, the latest of: created, a run queued, started or ended, restored."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT a.id, MAX(a.created_at, COALESCE(r.latest, ''), COALESCE(x.restored_at, ''))"
+                " AS latest FROM agents a"
+                " LEFT JOIN (SELECT agent_id, MAX(MAX(created_at), COALESCE(MAX(started_at), ''),"
+                " COALESCE(MAX(ended_at), '')) AS latest FROM runs GROUP BY agent_id) r"
+                " ON r.agent_id = a.id LEFT JOIN archived_agents x ON x.agent_id = a.id"
+            ).fetchall()
+        return {row["id"]: row["latest"] for row in rows}
+
+    @staticmethod
+    def _last_activity(conn: sqlite3.Connection, agent_id: str) -> str | None:
+        row = conn.execute(
+            "SELECT MAX(t) AS latest FROM (SELECT created_at AS t FROM agents WHERE id = ?"
+            " UNION ALL SELECT MAX(created_at) FROM runs WHERE agent_id = ?"
+            " UNION ALL SELECT MAX(started_at) FROM runs WHERE agent_id = ?"
+            " UNION ALL SELECT MAX(ended_at) FROM runs WHERE agent_id = ?"
+            " UNION ALL SELECT restored_at FROM archived_agents WHERE agent_id = ?)",
+            (agent_id,) * 5,
+        ).fetchone()
+        return row["latest"]
 
     # -- runs -------------------------------------------------------------
 
@@ -505,6 +597,8 @@ class Store:
                 cause_run,
             ),
         )
+        if kind == MESSAGE:  # a message to an archived agent restores it
+            conn.execute(RESTORE_SQL, (now(), agent_id))
         return run_id
 
     def delete_run(self, run_id: int, conn: sqlite3.Connection | None = None) -> None:
@@ -516,6 +610,42 @@ class Store:
         for table in ("events", "run_usage", "deliveries", "run_meta"):
             conn.execute(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
         conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+
+    def withdraw_queued(self, run_id: int, sender: Any = ANYONE) -> Run:
+        """Delete a queued message run that has not started; returns it as it was. Atomic
+        against its runner taking the turn (`take_turn` then finds it gone). Raises
+        ValueError, saying why, for anything else; with `sender`, also for a run that
+        another sender queued."""
+        with self.transaction() as conn:
+            run = self._queued_message(conn, run_id, sender)
+            self.delete_run(run_id, conn)
+        return run
+
+    def replace_queued(self, run_id: int, prompt: str, sender: Any = ANYONE) -> Run:
+        """Replace the text of a queued message run that has not started (see
+        `withdraw_queued`); its runner reads the text when it takes the turn."""
+        with self.transaction() as conn:
+            self._queued_message(conn, run_id, sender)
+            conn.execute("UPDATE runs SET prompt = ? WHERE id = ?", (prompt, run_id))
+        run = self.get_run(run_id)
+        assert run is not None
+        return run
+
+    def _queued_message(self, conn: sqlite3.Connection, run_id: int, sender: Any) -> Run:
+        row = conn.execute(
+            "SELECT r.*, m.kind AS meta_kind, m.sender AS meta_sender FROM runs r"
+            " LEFT JOIN run_meta m ON m.run_id = r.id WHERE r.id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None or (sender is not ANYONE and row["meta_sender"] != sender):
+            raise ValueError(f"no run {run_id}" + ("" if sender is ANYONE else " sent by you"))
+        if (row["meta_kind"] or MESSAGE) != MESSAGE:
+            raise ValueError(f"run {run_id} is a notification (written when it starts)")
+        if row["status"] == RunStatus.RUNNING.value:
+            raise ValueError(f"run {run_id} has already started")
+        if row["status"] != RunStatus.WAITING.value:
+            raise ValueError(f"run {run_id} has already ended ({row['status']})")
+        return self.run_from_row(row)
 
     def meta(self, run_id: int) -> RunMeta:
         with self._conn() as conn:
@@ -660,6 +790,12 @@ class Store:
         fields = {"status": RunStatus.RUNNING.value, "started_at": now(), **fields}
         assignments = ", ".join(f"{key} = ?" for key in fields)
         conn.execute(f"UPDATE runs SET {assignments} WHERE id = ?", (*fields.values(), run_id))
+        # A turn that starts (a notification too) brings an archived agent back.
+        conn.execute(
+            "UPDATE archived_agents SET restored_at = ? WHERE restored_at IS NULL"
+            " AND agent_id = (SELECT agent_id FROM runs WHERE id = ?)",
+            (fields["started_at"], run_id),
+        )
 
     def get_run(self, run_id: int) -> Run | None:
         with self._conn() as conn:

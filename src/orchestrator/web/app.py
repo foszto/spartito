@@ -25,8 +25,8 @@ from starlette.staticfiles import StaticFiles
 
 from .. import providers, roles
 from ..providers.base import model_choices
-from ..service import ORCHESTRATOR_ID, Orchestrator, OrchestratorError
-from ..settings import TIERS
+from ..service import ORCHESTRATOR_ID, NeedsConfirmation, Orchestrator, OrchestratorError
+from ..settings import ARCHIVE_AFTER, ARCHIVE_AFTER_DEFAULT, TIERS
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
@@ -107,6 +107,10 @@ def state(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
             for name, provider in providers.PROVIDERS.items()
         ],
         "tiers": list(TIERS),
+        # Ids only: the archive view loads the agents themselves (/api/archive).
+        "archived": sorted(orch.store.archived()),
+        "archive_after_default": ARCHIVE_AFTER_DEFAULT,
+        "archive_after_key": ARCHIVE_AFTER,
         "settings": {
             "global": orch.settings(),
             "projects": {p.name: orch.settings(p.name) for p in orch.store.list_projects()},
@@ -240,6 +244,53 @@ def stop_agent(orch: Orchestrator, request: Request, body: dict) -> dict[str, An
     return {"stopped_runs": orch.stop(request.path_params["agent_id"])}
 
 
+def get_run(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """One run with its full text (the queue lists a preview), for editing it."""
+    run_id = request.path_params["run_id"]
+    run = orch.store.get_run(run_id)
+    if run is None:
+        raise OrchestratorError(f"no run {run_id}")
+    kind = orch.store.meta(run_id).kind
+    return {
+        "id": run.id,
+        "agent_id": run.agent_id,
+        "status": run.status.value,
+        "kind": kind,
+        "prompt": run.prompt,
+    }
+
+
+def withdraw_run(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    run = orch.withdraw(request.path_params["run_id"])
+    return {"withdrawn": run.id, "agent_id": run.agent_id}
+
+
+def edit_run(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    run = orch.replace_message(request.path_params["run_id"], required(body, "message"))
+    return queued(run.agent_id, run.id)
+
+
+def archived_agents(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    return {"agents": orch.overview(archived=True)}
+
+
+def archive_agent(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """Archive the agent; work that is not merged comes back as `confirm` (what it is)
+    instead, until the request is repeated with `confirm: true`."""
+    try:
+        return orch.archive(request.path_params["agent_id"], bool(body.get("confirm")))
+    except NeedsConfirmation as exc:
+        return {"confirm": str(exc)}
+
+
+def archive_safe(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    return orch.archive_safe(request.path_params["name"])
+
+
+def restore_agent(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    return orch.restore(request.path_params["agent_id"])
+
+
 def remove_agent(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
     agent_id = request.path_params["agent_id"]
     orch.remove(agent_id, delete_branch=bool(body.get("delete_branch")))
@@ -253,16 +304,23 @@ app = Starlette(
         Route("/api/browse", api(browse)),
         Mount("/static", NoCacheStatic(directory=Path(__file__).parent / "static")),
         Route("/api/agents/{agent_id}/events", api(events)),
+        Route("/api/archive", api(archived_agents)),
         Route("/api/projects", api(add_project), methods=["POST"]),
         Route("/api/projects/{name}/remove", api(remove_project), methods=["POST"]),
         Route("/api/projects/{name}/lead", api(message_lead), methods=["POST"]),
+        Route("/api/projects/{name}/archive", api(archive_safe), methods=["POST"]),
         Route("/api/orchestrator", api(message_orchestrator), methods=["POST"]),
         Route("/api/settings", api(save_settings), methods=["POST"]),
         Route("/api/agents", api(spawn_agent), methods=["POST"]),
         Route("/api/agents/{agent_id}/messages", api(message_agent), methods=["POST"]),
         Route("/api/agents/{agent_id}/model", api(set_agent_model), methods=["POST"]),
         Route("/api/agents/{agent_id}/stop", api(stop_agent), methods=["POST"]),
+        Route("/api/agents/{agent_id}/archive", api(archive_agent), methods=["POST"]),
+        Route("/api/agents/{agent_id}/restore", api(restore_agent), methods=["POST"]),
         Route("/api/agents/{agent_id}/remove", api(remove_agent), methods=["POST"]),
+        Route("/api/runs/{run_id:int}", api(get_run)),
+        Route("/api/runs/{run_id:int}/withdraw", api(withdraw_run), methods=["POST"]),
+        Route("/api/runs/{run_id:int}/edit", api(edit_run), methods=["POST"]),
     ],
     middleware=[Middleware(LocalOnly)],
 )

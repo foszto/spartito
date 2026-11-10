@@ -19,6 +19,7 @@ from . import roles
 from .models import Run, running_total
 from .replies import clip, run_reply, structured_page
 from .service import Orchestrator, OrchestratorError, agent_state, result_file, run_usage
+from .store import ANYONE
 
 MAX_WAIT_SECONDS = 1800
 WAIT_SECONDS = 120  # default wait_for_agents timeout
@@ -235,11 +236,15 @@ def _statuses(
 
 @server.tool()
 def list_projects() -> list[dict[str, Any]]:
-    """List registered projects with the number of agents in each."""
+    """List registered projects with the number of agents in each (archived ones not)."""
     orch = _orch()
     caller = _caller(orch)
     return [
-        {**vars(project), "agents": len(orch.store.list_agents(project.name))}
+        {
+            **vars(project),
+            "agents": len(orch.store.list_agents(project.name))
+            - len(orch.store.archived(project.name)),
+        }
         for project in orch.store.list_projects()
         if not (caller and caller.project) or project.name == caller.project
     ]
@@ -373,6 +378,19 @@ def send_message(
 
 
 @server.tool()
+def withdraw_message(run_id: int, replacement: str | None = None) -> dict[str, Any]:
+    """Withdraw a message you sent (its `run_id`) that has not started, or with
+    `replacement` replace its text. Refused once it has started."""
+    orch = _orch()
+    sender = _sender() or ANYONE  # the interactive session may act on any run
+    if replacement is None:
+        run = orch.withdraw(run_id, sender)
+        return {"withdrawn": run.id, "agent_id": run.agent_id}
+    run = orch.replace_message(run_id, replacement, sender)
+    return {"replaced": run.id, "agent_id": run.agent_id}
+
+
+@server.tool()
 async def wait_for_agents(
     agent_ids: list[str], timeout_seconds: int = WAIT_SECONDS, result_chars: int = RESULT_CHARS
 ) -> dict[str, Any]:
@@ -397,15 +415,15 @@ async def wait_for_agents(
 
 
 @server.tool()
-def list_agents(project: str | None = None) -> list[dict[str, Any]]:
+def list_agents(project: str | None = None, archived: bool = False) -> list[dict[str, Any]]:
     """List agents with status, hierarchy (parent_id), branch and a short last result.
 
     `model`/`effort` are what the agent's next turn runs with; `cost_usd` and `tokens`
-    are the totals of its runs.
+    are the totals of its runs. `archived`: only the archived agents instead.
     """
     orch = _orch()
     scope = _project(orch, project) if project or _scoped(orch) else None
-    return orch.overview(scope)
+    return orch.overview(scope, archived=archived)
 
 
 @server.tool()
@@ -557,14 +575,13 @@ def stop_agent(agent_id: str) -> dict[str, Any]:
 
 
 @server.tool()
-def remove_agent(agent_id: str, delete_branch: bool = False) -> dict[str, Any]:
-    """Delete an agent and its worktree. The branch is kept unless delete_branch is true.
-
-    Uncommitted work in the worktree is lost — check get_agent first.
-    """
+def archive_agent(agent_id: str, confirm: bool = False, restore: bool = False) -> dict[str, Any]:
+    """Archive an agent you no longer need: hidden from list_agents, all kept (branch,
+    worktree, log). Unmerged or uncommitted work is refused unless `confirm`. `restore`
+    brings one back; so does a message to it."""
     orch = _orch()
-    orch.remove(_own(orch, agent_id), delete_branch)
-    return {"removed": agent_id}
+    agent_id = _own(orch, agent_id)
+    return orch.restore(agent_id) if restore else orch.archive(agent_id, confirm)
 
 
 def main() -> None:

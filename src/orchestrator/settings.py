@@ -12,6 +12,10 @@ Precedence for one turn, first hit wins:
 
 Values are resolved when a turn starts, so a changed setting applies to an existing
 agent's next message.
+
+One more key, `archive_after_hours`, is not a tier: after how many idle hours a finished
+agent whose work is safe is archived automatically (0: never). A project's value overrides
+the global one; without either it is ARCHIVE_AFTER_DEFAULT.
 """
 
 from __future__ import annotations
@@ -26,6 +30,8 @@ from .store import Store
 TIERS = ("orchestrator", "lead", "worker")
 GLOBAL = ""
 FIELDS = ("model", "effort")
+ARCHIVE_AFTER = "archive_after_hours"
+ARCHIVE_AFTER_DEFAULT = 24.0
 
 
 MODEL_MAX_CHARS = 200
@@ -54,12 +60,45 @@ def tier_of(agent: Agent, role: Role) -> str:
     return "lead" if role.lead else "worker"
 
 
-def clean(data: Any) -> dict[str, dict[str, dict[str, str]]]:
+def archive_hours(value: Any) -> float | None:
+    """An `archive_after_hours` value: hours (>= 0; 0 or "off": never), None for empty
+    (inherit). Raises ValueError."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, str) and value.strip().lower() == "off":
+        return 0.0
+    try:
+        hours = float(value)
+    except TypeError, ValueError:
+        raise ValueError(f"{ARCHIVE_AFTER} must be a number of hours or 'off'") from None
+    if not hours >= 0 or hours == float("inf") or isinstance(value, bool):
+        raise ValueError(f"{ARCHIVE_AFTER} must be 0 or more hours ('off' or 0: never)")
+    return hours
+
+
+def archive_after(store: Store, project: str | None) -> float:
+    """Idle hours after which the project's agents are archived automatically; 0: never."""
+    for scope in ([project] if project else []) + [GLOBAL]:
+        value = store.get_settings(scope).get(ARCHIVE_AFTER)
+        if value is not None:
+            try:
+                return archive_hours(value) or 0.0
+            except ValueError:
+                return 0.0  # unreadable: do not archive
+    return ARCHIVE_AFTER_DEFAULT
+
+
+def clean(data: Any) -> dict[str, Any]:
     """Validate a settings document and drop empty values. Raises ValueError."""
     if not isinstance(data, dict):
         raise ValueError("settings must be an object")
-    result: dict[str, dict[str, dict[str, str]]] = {}
+    result: dict[str, Any] = {}
     for tier, per_provider in data.items():
+        if tier == ARCHIVE_AFTER:
+            hours = archive_hours(per_provider)
+            if hours is not None:
+                result[ARCHIVE_AFTER] = int(hours) if hours.is_integer() else hours
+            continue
         if tier not in TIERS:
             raise ValueError(f"unknown tier '{tier}' (use: {', '.join(TIERS)})")
         for provider_name, values in (per_provider or {}).items():

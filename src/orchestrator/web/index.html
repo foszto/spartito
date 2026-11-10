@@ -105,6 +105,20 @@
   </form>
 </dialog>
 
+<dialog id="editDialog">
+  <form method="dialog">
+    <div class="dialog-head"><h3>Edit queued message <span data-run></span></h3>
+      <button class="btn ghost icon" value="cancel" formnovalidate aria-label="Close" data-icon="x"></button></div>
+    <div class="dialog-body">
+      <label class="field"><span class="label">Message</span>
+        <textarea class="input" name="message" rows="8" required></textarea>
+        <span class="help">The agent receives this text when its turn starts. Once it has started it can no longer be changed.</span></label>
+    </div>
+    <div class="dialog-foot"><span class="error"></span>
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" value="ok">Save</button></div>
+  </form>
+</dialog>
 <dialog id="confirmDialog">
   <form method="dialog">
     <div class="dialog-head"><h3 data-title></h3></div>

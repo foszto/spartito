@@ -180,11 +180,21 @@ def measure(roles: list[str], model: str | None, timeout: float, keep: bool) -> 
     if keep:
         info["orch_home"] = str(home)
     else:
-        for agent in orch.store.list_agents():
-            with contextlib.suppress(Exception):  # best effort; the temp dir goes anyway
-                orch.remove(agent.id, delete_branch=True)
+        cleanup(orch)
         shutil.rmtree(tmp, ignore_errors=True)
     return info
+
+
+def cleanup(orch: Any) -> None:
+    """Delete every agent with its worktree and branch, best effort (the temp dir goes
+    anyway). Only archived agents are deleted: each is stopped and archived first, newest
+    first so that sub-agents and agents sharing a worktree go before the ones above."""
+    for agent in reversed(orch.store.list_agents()):
+        with contextlib.suppress(Exception):
+            orch.stop(agent.id)
+            orch.archive(agent.id, confirm=True)
+        with contextlib.suppress(Exception):
+            orch.remove(agent.id, delete_branch=True)
 
 
 COLUMNS = (

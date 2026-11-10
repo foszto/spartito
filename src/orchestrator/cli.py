@@ -14,8 +14,8 @@ import typer
 from . import config, loadout, providers, roles
 from .models import Agent
 from .providers.claude import loadout_flags
-from .service import Orchestrator, OrchestratorError, cache_hint
-from .settings import TIERS
+from .service import NeedsConfirmation, Orchestrator, OrchestratorError, cache_hint
+from .settings import ARCHIVE_AFTER, ARCHIVE_AFTER_DEFAULT, TIERS
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help=__doc__)
 project_app = typer.Typer(no_args_is_help=True, help="Manage projects (git repositories).")
@@ -251,7 +251,7 @@ def project_list() -> None:
     """List projects."""
     o = orch()
     for project in o.store.list_projects():
-        count = len(o.store.list_agents(project.name))
+        count = len(o.store.list_agents(project.name)) - len(o.store.archived(project.name))
         typer.echo(
             f"{project.name:<20} {project.default_provider:<7} {count:>3} agents  {project.path}"
         )
@@ -283,10 +283,18 @@ def config_show(project: Annotated[str | None, typer.Option("--project", "-p")] 
             typer.echo(
                 f"  {tier:<13} {provider:<7} model={values.get('model', '-'):<16} effort={values.get('effort', '-')}"
             )
-    if not data:
+    if not any(tier in data for tier in TIERS):
         typer.echo(
             "  (none: agents use the CLI defaults)" if not project else "  (none: inherits global)"
         )
+    if ARCHIVE_AFTER in data:
+        typer.echo(f"  archive after {hours_text(data[ARCHIVE_AFTER])}")
+    elif not project:
+        typer.echo(f"  archive after {hours_text(ARCHIVE_AFTER_DEFAULT)} (default)")
+
+
+def hours_text(hours: float) -> str:
+    return "off (never automatically)" if not hours else f"{hours:g} idle hours"
 
 
 @config_app.command("set")
@@ -310,6 +318,32 @@ def config_set(
         for key, value in (("model", model), ("effort", effort)):
             if value is not None:
                 values[key] = value
+        o.update_settings(data, project)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    config_show(project)
+
+
+@config_app.command("archive-after")
+def config_archive_after(
+    hours: Annotated[
+        str, typer.Argument(help='Idle hours; 0 or "off": never; "" clears (inherit).')
+    ],
+    project: Annotated[
+        str | None,
+        typer.Option("--project", "-p", help="For one project instead of the global default."),
+    ] = None,
+) -> None:
+    """Archive finished agents automatically after this many idle hours (default 24).
+
+    Only agents whose work is safe: no worktree of their own, or their branch merged into
+    the project's base branch and no uncommitted changes. Never project leads or the
+    orchestrator, never while they or their agents work.
+    """
+    o = orch()
+    try:
+        data = o.settings(project)
+        data[ARCHIVE_AFTER] = hours
         o.update_settings(data, project)
     except OrchestratorError as exc:
         raise fail(exc) from None
@@ -386,14 +420,22 @@ def send(
 
 
 @app.command()
-def ps(project: Annotated[str | None, typer.Option("--project", "-p")] = None) -> None:
-    """List agents as a tree: project -> agent -> sub-agents.
+def ps(
+    project: Annotated[str | None, typer.Option("--project", "-p")] = None,
+    archived: Annotated[
+        bool, typer.Option("--archived", "-a", help="List the archived agents instead.")
+    ] = False,
+) -> None:
+    """List agents as a tree: project -> agent -> sub-agents (archived ones: --archived).
 
     `idle·3↓`: no own turn, 3 sub-agents still working (it is notified when they finish);
     `failed·3↓`: its last turn failed while they work; `running +2`: two more turns queued
     behind the running one.
     """
     o = orch()
+    if archived:
+        show_archived(o, project)
+        return
     views = o.overview(project)
     width = max((len(state_label(view)[0]) for view in views), default=0)
     width = max(width, 8)
@@ -433,6 +475,26 @@ def ps(project: Annotated[str | None, typer.Option("--project", "-p")] = None) -
         show(item.name, None, 0)
 
 
+def show_archived(o: Orchestrator, project: str | None) -> None:
+    try:
+        views = o.overview(project, archived=True)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    if not views:
+        typer.echo("no archived agents")
+        return
+    for name in sorted({view["project"] for view in views}):
+        typer.secho(name, bold=True)
+        for view in (view for view in views if view["project"] == name):
+            text, color = state_label(view)
+            when = f"{view['archived_at'][:16].replace('T', ' ')} {view['archived_how']}"
+            typer.echo(
+                f"  {view['id']:<34} {typer.style(f'{text:<8}', fg=color)} {view['role']:<9}"
+                f" {when:<24} {view['branch'] or ''}"
+            )
+    typer.echo("orch restore <id> brings one back; orch rm <id> deletes it for good")
+
+
 @app.command()
 def status(agent_id: str) -> None:
     """Show one agent: state, last result and the changes in its worktree."""
@@ -446,6 +508,8 @@ def status(agent_id: str) -> None:
     last = view.pop("last_run")
     counts, cost = view.pop("tokens"), view.pop("cost_usd")
     queue, working = view.pop("queue"), view.pop("children_running")
+    if mark := view.pop("archived", None):
+        view["archived"] = f"{mark['archived_at']} ({mark['how']}; orch restore {agent_id})"
     for key in ("model", "effort"):
         override = view.pop(f"{key}_override")
         view[key] = f"{view[key] or 'default'}" + (" (set on the agent)" if override else "")
@@ -581,11 +645,90 @@ def stop(agent_id: str) -> None:
 
 
 @app.command()
+def withdraw(run_id: int) -> None:
+    """Withdraw a queued message (a `#<run id>` of `orch status`) before it starts."""
+    try:
+        run = orch().withdraw(run_id)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    typer.echo(f"withdrew run {run.id} of {run.agent_id}")
+
+
+@app.command()
+def edit(run_id: int, message: str) -> None:
+    """Replace the text of a queued message (a `#<run id>` of `orch status`) before it starts."""
+    try:
+        run = orch().replace_message(run_id, message)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    typer.echo(f"replaced the text of run {run.id} of {run.agent_id}")
+
+
+@app.command()
+def archive(
+    agent_id: Annotated[str | None, typer.Argument(help="The agent to archive.")] = None,
+    safe: Annotated[
+        bool,
+        typer.Option(
+            "--safe", help="Archive every idle agent whose work is safe (of --project, or all)."
+        ),
+    ] = False,
+    project: Annotated[str | None, typer.Option("--project", "-p")] = None,
+    yes: Annotated[
+        bool, typer.Option("--yes", "-y", help="Archive unmerged work without asking.")
+    ] = False,
+) -> None:
+    """Archive an agent: hidden from `orch ps`, the dashboard and list_agents; its record,
+    runs, logs, branch and worktree are kept. `orch restore` or a message brings it back.
+
+    An agent with commits not merged into the base branch or uncommitted changes is archived
+    only after a confirmation; one that (or whose agents) has a queued or running turn not
+    at all. `--safe` archives every idle agent with no worktree of its own or a merged, clean
+    one (not project leads).
+    """
+    o = orch()
+    if safe == bool(agent_id):
+        raise fail("give an agent id, or --safe")
+    try:
+        if safe:
+            result = o.archive_safe(project)
+            for archived_id in result["archived"]:
+                typer.echo(f"archived {archived_id}")
+            for kept_id, reason in result["kept"].items():
+                typer.echo(f"kept {kept_id}: {reason}")
+            if not result["archived"]:
+                typer.echo("nothing to archive")
+            return
+        try:
+            o.archive(agent_id)
+        except NeedsConfirmation as exc:
+            if not yes and not typer.confirm(f"{exc}. Archive anyway?"):
+                raise typer.Exit(1) from None
+            o.archive(agent_id, confirm=True)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    typer.echo(f"archived {agent_id} (orch restore {agent_id} brings it back)")
+
+
+@app.command()
+def restore(agent_id: str) -> None:
+    """Take an agent out of the archive (a message to it does that too)."""
+    try:
+        orch().restore(agent_id)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    typer.echo(f"restored {agent_id}")
+
+
+@app.command()
 def rm(
     agent_id: str,
     delete_branch: Annotated[bool, typer.Option(help="Also delete the agent's branch.")] = False,
 ) -> None:
-    """Delete an agent and its worktree (uncommitted work is lost)."""
+    """Delete an archived agent for good, with its worktree (uncommitted work is lost).
+
+    Only archived agents (`orch ps --archived`) can be deleted; `orch archive` first.
+    """
     try:
         orch().remove(agent_id, delete_branch)
     except OrchestratorError as exc:

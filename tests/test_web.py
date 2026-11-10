@@ -82,6 +82,7 @@ def test_project_and_agent_lifecycle_over_the_api(
     assert events["agent"]["last_run"]["result"] == "echo[resumed]: again"
 
     refused = client.post("/api/projects/demo/remove", json={}, headers=ORIGIN)
+    client.post(f"/api/agents/{agent_id}/archive", json={"confirm": True}, headers=ORIGIN)
     client.post(f"/api/agents/{agent_id}/remove", json={"delete_branch": True}, headers=ORIGIN)
     removed = client.post("/api/projects/demo/remove", json={}, headers=ORIGIN)
 

@@ -50,6 +50,9 @@ def wait_for_turn(store: Store, run: Run) -> str | None:
     removed or ended by someone else meanwhile."""
     polls = 0
     while True:
+        # Withdrawn meanwhile (Orchestrator.withdraw deletes it): end at this safe point.
+        if store.get_run(run.id) is None:
+            raise notify.Gone
         blocked = False
         for dep_id in run.depends_on:
             dep = store.get_run(dep_id)
@@ -692,6 +695,9 @@ def take_turn(store: Store, run: Run, kind: str) -> None:
                 store.add_event(run_id, run.agent_id, "error", f"skipped: {skip_reason}")
                 store.finish_run(run_id, RunStatus.SKIPPED, error=skip_reason)
                 return
+            # The text as it is now that the turn is taken: it may have been replaced
+            # while queued (Store.replace_queued), never after.
+            run = store.get_run(run_id) or run
         agent = store.get_agent(run.agent_id)
         project = store.get_project(agent.project) if agent and agent.project else None
         if agent is None or (agent.project and project is None):
