@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 
+from ..loadout import Loadout
 from ..models import Agent, Event, Usage
 from .base import Invocation, RunContext, brief
 
@@ -24,6 +25,20 @@ PARENT_SESSION_ENV = [
 DEFAULT_PERMISSION = "auto"
 
 
+def loadout_flags(loadout: Loadout) -> list[str]:
+    """CLI flags for a loadout. Needed on every turn: `--resume` does not remember them."""
+    flags = []
+    if loadout.tools is not None:
+        flags += ["--tools", ",".join(loadout.tools)]
+    if loadout.strict_mcp:
+        flags.append("--strict-mcp-config")
+    if loadout.setting_sources is not None:
+        flags += ["--setting-sources", ",".join(loadout.setting_sources)]
+    if not loadout.slash_commands:
+        flags.append("--disable-slash-commands")
+    return flags
+
+
 class ClaudeProvider:
     name = "claude"
     efforts = ("low", "medium", "high", "xhigh", "max")
@@ -39,6 +54,7 @@ class ClaudeProvider:
         else:
             argv += ["--session-id", str(uuid.uuid4()), "--name", agent.id]
         argv += ["--permission-mode", agent.permission or DEFAULT_PERMISSION]
+        argv += loadout_flags(ctx.loadout)
         if ctx.model:
             argv += ["--model", ctx.model]
         if ctx.effort:

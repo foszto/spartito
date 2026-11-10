@@ -46,6 +46,8 @@ class CodexProvider:
         if agent.session_id:
             argv += ["resume", agent.session_id]
         argv += ["--json", "--skip-git-repo-check"]
+        if not ctx.loadout.codex_user_config:
+            argv.append("--ignore-user-config")  # accepted by `exec resume` too
         argv += ["-c", f"sandbox_mode={_toml(agent.permission or DEFAULT_SANDBOX)}"]
         if ctx.writable_dirs:
             argv += ["-c", f"sandbox_workspace_write.writable_roots={_toml(ctx.writable_dirs)}"]
@@ -59,6 +61,8 @@ class CodexProvider:
             argv += ["-c", f"mcp_servers.orch.env={_toml(ctx.mcp.env)}"]
             # Waiting on sub-agents is a long tool call.
             argv += ["-c", "mcp_servers.orch.tool_timeout_sec=3600"]
+            # Without the user's approvals_reviewer, exec rejects MCP calls that need approval.
+            argv += ["-c", 'mcp_servers.orch.default_tools_approval_mode="approve"']
         if ctx.output_schema:
             schema_file = ctx.scratch / "output-schema.json"
             schema_file.write_text(json.dumps(ctx.output_schema), encoding="utf-8")

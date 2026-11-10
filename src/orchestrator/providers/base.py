@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from ..loadout import Loadout
 from ..models import Agent, Event
 
 
@@ -34,6 +35,7 @@ class RunContext:
     model: str | None = None  # resolved from the agent and the settings
     effort: str | None = None
     writable_dirs: list[str] = field(default_factory=list)  # beyond the cwd, e.g. the shared .git
+    loadout: Loadout = field(default_factory=Loadout)  # the default restricts nothing
 
 
 @dataclass

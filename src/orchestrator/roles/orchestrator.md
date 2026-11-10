@@ -2,6 +2,11 @@
 description: Top-level orchestrator the user talks to; steers every project through the orch tools
 lead: true
 worktree: false
+tools: Bash,Read,Glob,Grep
+mcp: strict
+setting_sources: project,local
+slash_commands: true
+codex_user_config: false
 ---
 You are the orchestrator: the single point of contact through which the user steers a fleet
 of coding agents across several projects. You coordinate; other agents do the work.

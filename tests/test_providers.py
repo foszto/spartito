@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+from orchestrator.loadout import Loadout
 from orchestrator.models import Agent, Event, Usage
 from orchestrator.providers import McpServer, RunContext, get
 
@@ -179,3 +182,81 @@ def test_codex_reports_thread_totals_that_become_per_turn_figures() -> None:
     assert tokens(resumed.usage) == (15245, 10, 14976, 0)
     assert tokens(own) == (144, 5, 14976, 0)
     assert fresh.usage.cost_usd is None and own.cost_usd is None
+
+
+LEAD_LOADOUT = Loadout(
+    tools=("Bash", "Read", "Glob", "Grep"),
+    strict_mcp=True,
+    setting_sources=("project", "local"),
+    codex_user_config=False,
+)
+WORKER_LOADOUT = Loadout(
+    tools=("Bash", "Read", "Edit", "Write", "Glob", "Grep"),
+    strict_mcp=True,
+    setting_sources=("project", "local"),
+    slash_commands=False,
+    codex_user_config=False,
+)
+
+
+def loadout_context(tmp_path: Path, loadout: Loadout, lead: bool, **agent_fields) -> RunContext:
+    ctx = context(tmp_path, **agent_fields)
+    ctx.loadout = loadout
+    if lead:
+        ctx.mcp = McpServer("py", ["-m", "x"], {"ORCH_AGENT_ID": "a-1"})
+    return ctx
+
+
+@pytest.mark.parametrize("session_id", [None, "sid"])
+def test_claude_passes_the_loadout_on_fresh_and_resumed_turns(
+    tmp_path: Path, session_id: str | None
+) -> None:
+    claude = get("claude")
+
+    lead = claude.invocation(loadout_context(tmp_path, LEAD_LOADOUT, True, session_id=session_id))
+    worker = claude.invocation(
+        loadout_context(tmp_path, WORKER_LOADOUT, False, session_id=session_id)
+    )
+
+    assert ("--resume" in lead.argv) == bool(session_id)
+    assert lead.argv[lead.argv.index("--tools") + 1] == "Bash,Read,Glob,Grep"
+    assert "--strict-mcp-config" in lead.argv and "--mcp-config" in lead.argv
+    assert lead.argv[lead.argv.index("--allowedTools") + 1] == "mcp__orch"
+    assert lead.argv[lead.argv.index("--setting-sources") + 1] == "project,local"
+    assert "--disable-slash-commands" not in lead.argv
+    assert worker.argv[worker.argv.index("--tools") + 1] == "Bash,Read,Edit,Write,Glob,Grep"
+    assert "--strict-mcp-config" in worker.argv and "--mcp-config" not in worker.argv
+    assert "--disable-slash-commands" in worker.argv
+
+
+def test_claude_inherit_and_default_values_restrict_nothing(tmp_path: Path) -> None:
+    inherit = Loadout(tools=None, strict_mcp=False, setting_sources=None)
+    none = Loadout(tools=())
+
+    argv = get("claude").invocation(loadout_context(tmp_path, inherit, True)).argv
+    no_tools = get("claude").invocation(loadout_context(tmp_path, none, False)).argv
+
+    for flag in ("--tools", "--strict-mcp-config", "--setting-sources", "--disable-slash-commands"):
+        assert flag not in argv
+    assert no_tools[no_tools.index("--tools") + 1] == ""
+
+
+@pytest.mark.parametrize("session_id", [None, "tid"])
+def test_codex_ignores_the_user_config_on_fresh_and_resumed_turns(
+    tmp_path: Path, session_id: str | None
+) -> None:
+    codex = get("codex")
+
+    lead = codex.invocation(loadout_context(tmp_path, LEAD_LOADOUT, True, session_id=session_id))
+    worker = codex.invocation(
+        loadout_context(tmp_path, WORKER_LOADOUT, False, session_id=session_id)
+    )
+    inherit = codex.invocation(loadout_context(tmp_path, Loadout(), False, session_id=session_id))
+
+    assert ("resume" in lead.argv) == bool(session_id)
+    assert "--ignore-user-config" in lead.argv and "--ignore-user-config" in worker.argv
+    assert "--ignore-user-config" not in inherit.argv
+    approve = 'mcp_servers.orch.default_tools_approval_mode="approve"'
+    assert approve in lead.argv and approve not in " ".join(worker.argv)
+    for argv in (lead.argv, worker.argv):
+        assert "--tools" not in argv and "--strict-mcp-config" not in argv  # Claude-only keys

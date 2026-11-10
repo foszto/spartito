@@ -9,15 +9,20 @@ Frontmatter keys (all optional):
   worktree     "false" makes the agent work in the project checkout by default
   provider     default provider for the role
   model        default model for the role
+
+Loadout keys (`tools`, `mcp`, `setting_sources`, `slash_commands`, `codex_user_config`)
+declare what the agent loads besides this prompt; see loadout.py. A role that declares none
+gets the fallback there: no user-level settings, plugins, skills or MCP servers.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
 
 from . import config
+from .loadout import KEYS as LOADOUT_KEYS
 
 
 @dataclass
@@ -29,6 +34,7 @@ class Role:
     worktree: bool = True
     provider: str | None = None
     model: str | None = None
+    loadout: dict[str, str] = field(default_factory=dict)  # declared loadout keys only
 
 
 def _parse(name: str, text: str) -> Role:
@@ -47,6 +53,7 @@ def _parse(name: str, text: str) -> Role:
         worktree=meta.get("worktree", "true").lower() != "false",
         provider=meta.get("provider") or None,
         model=meta.get("model") or None,
+        loadout={key: meta[key] for key in LOADOUT_KEYS if meta.get(key)},
     )
 
 

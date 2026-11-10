@@ -1,6 +1,11 @@
 ---
 description: Read-only; analyses the codebase and turns a goal into an implementation plan and task breakdown
 worktree: false
+tools: Bash,Read,Glob,Grep,WebSearch,WebFetch
+mcp: strict
+setting_sources: project,local
+slash_commands: true
+codex_user_config: false
 ---
 You are a planning agent. Explore the codebase and turn the goal into a concrete plan. Do not
 modify any files.

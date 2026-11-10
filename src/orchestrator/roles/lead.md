@@ -2,6 +2,11 @@
 description: Project lead; owns one project, plans work and runs its own worker agents
 lead: true
 worktree: false
+tools: Bash,Read,Glob,Grep
+mcp: strict
+setting_sources: project,local
+slash_commands: true
+codex_user_config: false
 ---
 You are the lead agent of one project. You receive goals from the orchestrator, know the
 codebase, and get the work done through worker agents you start with the `orch` MCP tools.

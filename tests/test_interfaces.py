@@ -122,3 +122,23 @@ def test_chat_without_settings_leaves_model_and_effort_to_claude(
     assert result.exit_code == 0
     (argv,) = exec_argv
     assert "--model" not in argv and "--effort" not in argv
+
+
+def test_chat_loads_the_orchestrator_loadout_and_keeps_bash_for_orch(
+    orch: Orchestrator, exec_argv: list[list[str]]
+) -> None:
+    runner = CliRunner()
+    plain = runner.invoke(cli.app, ["chat", "--here"])
+    home = cli.config.home()
+    (home / "loadout.toml").write_text('[orchestrator]\ntools = "Read"\nmcp = "inherit"\n')
+    overridden = runner.invoke(cli.app, ["chat", "--here"])
+    (home / "loadout.toml").write_text("[orchestrator\n")
+    broken = runner.invoke(cli.app, ["chat", "--here"])
+
+    assert plain.exit_code == 0 and overridden.exit_code == 0
+    (argv, custom) = exec_argv
+    assert option(argv, "--tools") == "Bash,Read,Glob,Grep"
+    assert option(argv, "--setting-sources") == "project,local"
+    assert "--strict-mcp-config" in argv and "Bash(orch *)" in argv and "--mcp-config" in argv
+    assert option(custom, "--tools") == "Read,Bash" and "--strict-mcp-config" not in custom
+    assert broken.exit_code == 1 and "invalid TOML" in broken.output

@@ -6,11 +6,13 @@ import json
 import os
 import shutil
 import time
+from dataclasses import replace
 from typing import Annotated
 
 import typer
 
-from . import config, providers, roles
+from . import config, loadout, providers, roles
+from .providers.claude import loadout_flags
 from .service import Orchestrator, OrchestratorError
 from .settings import TIERS
 
@@ -121,11 +123,19 @@ def chat(
     if effort and effort not in providers.get("claude").efforts:
         allowed = ", ".join(providers.get("claude").efforts)
         raise fail(f"claude has no effort '{effort}' (use: {allowed})")
+    role = roles.load("orchestrator")
+    try:
+        chosen = loadout.resolve(role)  # no project: only $ORCH_HOME/loadout.toml applies
+    except loadout.LoadoutError as exc:
+        raise fail(str(exc)) from None
+    if chosen.tools is not None and "Bash" not in chosen.tools:
+        chosen = replace(chosen, tools=(*chosen.tools, "Bash"))  # for `orch wait` and co.
     argv = [
         "claude",
         "--mcp-config", mcp_config(),
-        "--append-system-prompt", roles.load("orchestrator").prompt,
+        "--append-system-prompt", role.prompt,
         "--allowedTools", "mcp__orch", "Bash(orch *)",
+        *loadout_flags(chosen),
     ]  # fmt: skip
     if resume:
         argv.append("--continue")

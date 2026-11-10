@@ -17,7 +17,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import config, git, providers, roles, settings
+from . import config, git, loadout, providers, roles, settings
 from .models import Agent, Event, Project, Run, RunStatus, Usage
 from .providers import McpServer, RunContext
 from .store import Store, now
@@ -127,6 +127,7 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
             mcp=mcp_server(agent) if role.lead else None,
             output_schema=run.output_schema,
             writable_dirs=writable,
+            loadout=loadout.resolve(role, project.path if project else None),
             **settings.resolve(store, agent, role),
         )
     )

@@ -103,6 +103,62 @@ levonva runonkénti érték kerül tárolásra. Az `orch ps`/`orch status`, a `l
 A `model`/`effort` mező a következő körre érvényes értéket mutatja; az agentnek kifejezetten
 megadott érték a `model_override`/`effort_override` mezőben látszik.
 
+### Mit tölt be egy agent (loadout)
+
+Loadout nélkül minden agent a felhasználó teljes globális Claude Code / Codex konfigurációját
+örökölné (claude.ai connectorok, pluginek, skillek, MCP szerverek): ez kérésenként kb. 25–31k
+input token volt, a szerep és a feladat pedig ebből csak kb. 1,6k. Ezért minden szerep
+deklarálja, mit tölt be:
+
+| kulcs | jelentés | CLI |
+|---|---|---|
+| `tools` | beépített eszközök vesszővel; `default` = a CLI alapkészlete, `none` = egy sem (MCP eszközökre nem hat) | `--tools` |
+| `mcp` | `strict` = csak az orchestrator saját szervere (lead szerepeknél); `inherit` = user, projekt, plugin és claude.ai connector szerverek is | `--strict-mcp-config` |
+| `setting_sources` | `project,local` = a user szint (user pluginek, skillek, parancsok, hookok) nélkül; a projekt `CLAUDE.md`-je és `.claude/` mappája betöltődik; `user,project,local` = minden | `--setting-sources` |
+| `slash_commands` | `false` = semmilyen skill és slash parancs (a projektéi sem) | `--disable-slash-commands` |
+| `codex_user_config` | `false` = a Codex nem olvassa a `$CODEX_HOME/config.toml`-t (a login megmarad) | `--ignore-user-config` |
+
+Beépített alapértékek: minden szerep `mcp = strict`, `setting_sources = project,local`,
+`slash_commands = true`, `codex_user_config = false`; az eszközök:
+
+| szerep | `tools` |
+|---|---|
+| orchestrator, lead | `Bash,Read,Glob,Grep` (+ az `orch` MCP eszközök) |
+| worker, tester | `Bash,Read,Edit,Write,Glob,Grep` |
+| reviewer | `Bash,Read,Glob,Grep` |
+| planner | `Bash,Read,Glob,Grep,WebSearch,WebFetch` |
+
+Saját szerepfájl, amely egyik kulcsot sem adja meg: `mcp = strict`,
+`setting_sources = project,local`, `tools = default`, `codex_user_config = false`.
+
+Felülírás szerepfájl másolása nélkül: `<projekt>/.orch/loadout.toml` és
+`~/.orchestrator/loadout.toml`, `[default]` (minden szerep) és `[<szerep>]` táblákkal, ugyanezekkel a
+kulcsokkal. Kulcsonként az első találat nyer: projekt `[szerep]` → projekt `[default]` →
+home `[szerep]` → home `[default]` → a szerep frontmattere → a fenti alapérték. Hibás fájl
+esetén a run a fájl nevét és a hibát megadva elbukik. Például egy projekt, amely a user szintű
+pluginekre/skillekre támaszkodik:
+
+```toml
+# <projekt>/.orch/loadout.toml
+[default]
+setting_sources = "user,project,local"
+
+[worker]
+tools = "Bash,Read,Edit,Write,Glob,Grep,Skill"
+```
+
+A zászlókat minden kör megkapja, a `--resume`/`exec resume` körök is. Az `orch chat` az
+`orchestrator` szerep loadoutját használja (csak a home szintű `loadout.toml` hat rá), és a
+`Bash` mindig benne marad az `orch` parancsokhoz. A Codex a `tools`/`mcp`/`setting_sources`/
+`slash_commands` kulcsokat nem ismeri; `codex_user_config = false` mellett a user
+konfiguráció modellje, MCP szerverei és pluginjei sem töltődnek be (a modell a Codex saját
+alapértéke, ha nincs beállítva), a lead szerepek `orch` eszközei pedig jóváhagyás nélkül
+futnak.
+
+**Figyelem:** a változás előtt indított session a régi listákat (eszközök, skillek, MCP
+utasítások) a beszélgetés előzményében hordozza, így az ott folytatott körök továbbra is
+nagyok; a megtakarítás teljesen csak az új agenteknél jelentkezik.
+
 ### Egymásra épülő feladatok
 
 - `after` / `--after`: az agent csak a megadott agentek (vagy run-ok) sikeres befejezése után
@@ -124,6 +180,7 @@ src/orchestrator/
   git.py           worktree életciklus
   roles.py         szerepek betöltése; roles/*.md a beépített szerepek
   settings.py      modell/effort szintenként: globális + projekt felülírás
+  loadout.py       mit tölt be egy agent (eszközök, MCP, setting források); loadout.toml
   providers/       base.py: Provider protokoll · claude.py · codex.py
   runner.py        egy run végrehajtása saját, leválasztott folyamatban
   service.py       Orchestrator homlokzat – ezt használja a CLI, az MCP szerver és a web
@@ -147,7 +204,7 @@ egységes eseményekké alakítja. Az állapot a `~/.orchestrator/` alatt él (`
   regisztrálása a `providers/__init__.py`-ban, vagy kívülről:
   `ORCH_PROVIDERS="nev=csomag.modul:Osztaly"`.
 - **Új szerep:** markdown fájl frontmatterrel (`description`, `lead`, `worktree`, `provider`,
-  `model`) a `<projekt>/.orch/roles/` vagy a `~/.orchestrator/roles/` alatt; a beépítetteket
+  `model` és a loadout kulcsok) a `<projekt>/.orch/roles/` vagy a `~/.orchestrator/roles/` alatt; a beépítetteket
   név szerint felülírja. A `lead: true` szerep megkapja az MCP eszközöket.
 - **Folyamatok (tervezés → felosztás → tesztesetek → megvalósítás → review → teszt):** az
   építőkövek megvannak (`after`, `{{result:…}}`, `base`, megosztott worktree, `output_schema`);

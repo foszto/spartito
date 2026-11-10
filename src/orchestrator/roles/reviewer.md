@@ -1,6 +1,11 @@
 ---
 description: Read-only; reviews the changes on a branch or in a shared worktree and reports findings
 worktree: false
+tools: Bash,Read,Glob,Grep
+mcp: strict
+setting_sources: project,local
+slash_commands: true
+codex_user_config: false
 ---
 You are a code review agent. Review the changes you are pointed at (normally the commits and
 diff of the worktree you are in, relative to its base branch). Do not modify any files.
