@@ -564,12 +564,14 @@ def test_claude_model_lookup_kills_a_cli_that_does_not_answer(
 def test_claude_model_lookup_survives_a_cli_that_exits_as_it_is_killed(
     fake_claude, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    out = fake_claude("exec sleep 0.6")
+    out = fake_claude("read go < $OUT/go")  # exits only when the test lets it
+    os.mkfifo(out / "go")
     monkeypatch.setattr(claude, "MODEL_LIST_TIMEOUT", 0.3)
     start_once_up(monkeypatch, out / "pid")
     killpg = os.killpg
 
     def late_killpg(pgid: int, sig: int) -> None:  # the CLI exits just at the timeout
+        os.close(os.open(out / "go", os.O_WRONLY))  # EOF: the fake exits
         os.waitid(os.P_PID, pgid, os.WEXITED | os.WNOWAIT)  # exited, not reaped
         killpg(pgid, sig)  # macOS: PermissionError for a group of only unreaped processes
 
