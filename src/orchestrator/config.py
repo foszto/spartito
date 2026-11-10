@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 # Display names only: ids, the role, the `orch` command and the package keep "orchestrator".
-PROJECT_NAME = "Kotta"  # the tool itself (Hungarian: sheet music, the score everyone plays from)
+PROJECT_NAME = "Spartito"  # the tool itself (Italian: sheet music, the score everyone plays from)
 ORCHESTRATOR_NAME = "Maestro"  # the top-level orchestrator agent
 
 
