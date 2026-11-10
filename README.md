@@ -126,6 +126,15 @@ legfeljebb kb. 5 másodperc). Nincs hozzá daemon: a listázások (webes lekérd
 `list_agents`) futtatják, folyamatokon át legfeljebb 5 percenként. Végleges törlés csak az
 archívumból és csak a felhasználó kezéből lehetséges; az agentek az MCP-n csak archiválnak.
 
+### Ébren tartás
+
+Amíg egy agent köre fut (a sorban álló és a tétlen agent nem számít), a gép nem alszik el
+tétlenség miatt: macOS-en `caffeinate -i -w <runner pid>`, Linuxon `systemd-inhibit
+--what=idle`; a runnerrel együtt ér véget, összeomlás után is. Csak a tétlenségi alvást
+akadályozza meg (a kijelző elalhat); a laptop fedelének lecsukása külső kijelző nélkül vagy a
+kényszerített alvás (pl. `pmset sleepnow`, Apple menü → Alvás) ellen nem véd. Kikapcsolás:
+`orch config keep-awake off` (alapból `on`).
+
 ### Modell és effort szintenként
 
 Három szint állítható külön, providerenként (Claude / Codex): az **orchestrator**, a
@@ -342,6 +351,7 @@ src/orchestrator/
   git.py           worktree életciklus
   roles.py         szerepek betöltése; roles/*.md a beépített szerepek
   settings.py      modell/effort szintenként: globális + projekt felülírás
+  keep_awake.py    alvásgátló a futó körök idejére (caffeinate / systemd-inhibit)
   loadout.py       mit tölt be egy agent (eszközök, MCP, setting források); loadout.toml
   memory_guard.py  PreToolUse hook: a `memory` kulcs Write/Edit-je csak a memóriamappába ír
   providers/       base.py: Provider protokoll · claude.py · codex.py

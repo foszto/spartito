@@ -24,7 +24,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from . import config, git, loadout, notify, providers, roles, settings
+from . import config, git, keep_awake, loadout, notify, providers, roles, settings
 from .models import Agent, Event, Project, Run, RunStatus, Usage, running_total
 from .providers import McpServer, RunContext
 from .providers.base import NOTIFICATION_RESULT, Invocation
@@ -483,7 +483,7 @@ def turn_processes(
     still the same processes; and the members of process groups and sessions that any of
     these created (Claude's shells start sessions of their own, and what they leave
     behind keeps their ids). Other runners (sub-agents a lead started) and everything in
-    their sessions are left out."""
+    their sessions are left out, as is the runner's sleep inhibitor (keep_awake.held)."""
     known = known or {}
     table = _process_table()
     me = os.getpid()
@@ -492,7 +492,15 @@ def turn_processes(
     runners = {pid for pid, proc in table.items() if pid != me and RUNNER_ARGV in proc.command}
 
     def foreign(pid: int, proc: _Proc) -> bool:
-        return pid == me or pid in runners or proc.sid in runners or proc.pgid in runners
+        return (
+            pid == me
+            or pid in runners
+            or proc.sid in runners
+            or proc.pgid in runners
+            # The runner's sleep inhibitor (and its child): it lasts until the run is stored.
+            or pid in keep_awake.held
+            or proc.sid in keep_awake.held
+        )
 
     def same(pid: int) -> bool:  # a known pid not reused by another process since
         return pid not in table or (table[pid].pgid, table[pid].sid) == known[pid]
@@ -681,8 +689,10 @@ def main(run_id: int) -> None:
 
 
 def take_turn(store: Store, run: Run, kind: str) -> None:
-    """Wait for the run's turn and execute it; record how it ended."""
+    """Wait for the run's turn and execute it; record how it ended. From the turn taken
+    until the run is stored, the machine is kept from sleeping on idle (keep_awake)."""
     run_id = run.id
+    inhibitor = None
     try:
         if kind == NOTIFICATION:
             prepared = notify.start(store, run)
@@ -705,6 +715,7 @@ def take_turn(store: Store, run: Run, kind: str) -> None:
         store.add_event(
             run_id, agent.id, "notification" if kind == NOTIFICATION else "prompt", run.prompt
         )
+        inhibitor = keep_awake.start(store, run_id, agent.id, unset=TURN_ENV)
         execute(store, run, agent, project)
     except notify.Gone:
         return
@@ -717,6 +728,8 @@ def take_turn(store: Store, run: Run, kind: str) -> None:
             message = f"{type(exc).__name__}: {exc}"
             store.add_event(run_id, run.agent_id, "error", message)
             store.finish_run(run_id, RunStatus.FAILED, error=message)
+    finally:
+        keep_awake.release(inhibitor)
 
 
 def _drop_unstarted(store: Store, run_id: int, kind: str) -> bool:

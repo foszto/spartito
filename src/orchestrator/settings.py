@@ -16,6 +16,9 @@ agent's next message.
 One more key, `archive_after_hours`, is not a tier: after how many idle hours a finished
 agent whose work is safe is archived automatically (0: never). A project's value overrides
 the global one; without either it is ARCHIVE_AFTER_DEFAULT.
+
+And `keep_awake`, global only: whether a turn keeps the machine from sleeping on idle
+(keep_awake.py); on unless set to false.
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ GLOBAL = ""
 FIELDS = ("model", "effort")
 ARCHIVE_AFTER = "archive_after_hours"
 ARCHIVE_AFTER_DEFAULT = 24.0
+KEEP_AWAKE = "keep_awake"
 
 
 MODEL_MAX_CHARS = 200
@@ -88,6 +92,29 @@ def archive_after(store: Store, project: str | None) -> float:
     return ARCHIVE_AFTER_DEFAULT
 
 
+def on_off(value: Any) -> bool | None:
+    """A `keep_awake` value: true/false (also on/off, yes/no, 1/0), None for empty
+    (the default: on). Raises ValueError."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, bool):
+        return value
+    word = str(value).strip().lower()
+    if word in ("on", "true", "yes", "1"):
+        return True
+    if word in ("off", "false", "no", "0"):
+        return False
+    raise ValueError(f"{KEEP_AWAKE} must be on or off")
+
+
+def keep_awake(store: Store) -> bool:
+    """Whether turns keep the machine awake; an unreadable value counts as the default."""
+    try:
+        return on_off(store.get_settings(GLOBAL).get(KEEP_AWAKE)) is not False
+    except ValueError:
+        return True
+
+
 def clean(data: Any) -> dict[str, Any]:
     """Validate a settings document and drop empty values. Raises ValueError."""
     if not isinstance(data, dict):
@@ -98,6 +125,11 @@ def clean(data: Any) -> dict[str, Any]:
             hours = archive_hours(per_provider)
             if hours is not None:
                 result[ARCHIVE_AFTER] = int(hours) if hours.is_integer() else hours
+            continue
+        if tier == KEEP_AWAKE:
+            on = on_off(per_provider)
+            if on is not None:
+                result[KEEP_AWAKE] = on
             continue
         if tier not in TIERS:
             raise ValueError(f"unknown tier '{tier}' (use: {', '.join(TIERS)})")
