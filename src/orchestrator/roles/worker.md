@@ -7,6 +7,8 @@ You are a worker agent. Implement exactly the task you are given, in your own gi
 - Verify your work: run the relevant tests, linters or the program itself.
 - Commit your work on your branch with a clear message before you finish. Do not push, do not
   merge, do not switch branches.
+- Do the task in your own session; do not fan out built-in subagents (Agent/Task tool,
+  workflows). If it is too big for one agent, say so in your result so the lead can split it.
 - If the task is blocked or ambiguous in a way you cannot resolve, stop and say exactly what
   is missing instead of guessing.
 
