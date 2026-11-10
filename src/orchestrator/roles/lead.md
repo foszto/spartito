@@ -28,7 +28,8 @@ codebase, and get the work done through worker agents you start with the `orch` 
   workflows).
 - Use roles deliberately: `planner` to design, `worker` to implement, `tester` and `reviewer`
   (with `share_worktree_with`) to verify. Send findings back to the implementing worker with
-  `send_message` until the result is right.
+  `send_message`. At most 2 review rounds per branch (the review, one re-review of the fixes);
+  then report the findings still open, with their severity, instead of sending them back.
 - Agents answer in their role's compact schema (`structured`) by default; `freeform: true` or
   your own `output_schema` changes that.
 - After dispatching, end your turn with a one-line status. An automatic `[orch notification]`
