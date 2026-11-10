@@ -7,13 +7,15 @@ connection and WAL mode keeps readers and writers out of each other's way.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import sqlite3
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -96,9 +98,24 @@ CREATE TABLE IF NOT EXISTS deliveries (
     delivered_at TEXT NOT NULL,
     PRIMARY KEY (caller, run_id)
 );
+-- What kind of turn a run is and who queued it; its own table for the same reasons as
+-- run_usage. Runs without a row (queued by older code) are messages of unknown sender.
+-- kind: 'message' | 'notification'; sender: the agent whose MCP server queued the run
+-- (NULL: user, CLI, dashboard); notify: 'each' | 'all', how the sender wants to be woken.
+CREATE TABLE IF NOT EXISTS run_meta (
+    run_id INTEGER PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    sender TEXT,
+    notify TEXT NOT NULL DEFAULT 'each'
+);
 CREATE INDEX IF NOT EXISTS runs_agent ON runs(agent_id, id);
 CREATE INDEX IF NOT EXISTS events_agent ON events(agent_id, id);
 """
+
+MESSAGE = "message"
+NOTIFICATION = "notification"
+NOTIFY_MODES = ("each", "all")
 
 EVENT_TEXT_LIMIT = 4000
 WAL_WAIT_SECONDS = 3.0
@@ -120,7 +137,33 @@ def pid_alive(pid: int | None) -> bool:
     return True
 
 
+@dataclass
+class RunMeta:
+    """A run's row in run_meta; runs without one get `RunMeta.legacy()`."""
+
+    kind: str = MESSAGE
+    sender: str | None = None
+    notify: str = "each"
+    known: bool = True  # False: queued by code from before run metadata
+
+    @classmethod
+    def legacy(cls) -> RunMeta:
+        return cls(known=False)
+
+
+def subtree_sql(column: str = "?") -> str:
+    """A recursive CTE `tree(id)`: the agent `column` and all its descendants."""
+    return (
+        f"WITH RECURSIVE tree(id) AS (SELECT {column} UNION"
+        " SELECT a.id FROM agents a JOIN tree t ON a.parent_id = t.id)"
+    )
+
+
 class Store:
+    # Called with an agent id whenever this store ends a run on its own (reconcile);
+    # the Orchestrator sets it so parents get notified.
+    on_run_end: Callable[[str], None] | None = None
+
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or config.db_path()
         self._use_wal()
@@ -185,6 +228,29 @@ class Store:
         try:
             with conn:
                 yield conn
+        finally:
+            conn.close()
+
+    def connection(self) -> contextlib.AbstractContextManager[sqlite3.Connection]:
+        """A short connection whose work is committed when the block ends."""
+        return self._conn()
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """One connection holding the write lock from the first statement on, so checks
+        and the writes based on them are atomic across processes. Use only this
+        connection inside: another one that writes would wait for this lock."""
+        conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield conn
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            conn.execute("COMMIT")
         finally:
             conn.close()
 
@@ -283,10 +349,11 @@ class Store:
     def delete_agent(self, agent_id: str) -> None:
         with self._conn() as conn:
             conn.execute("DELETE FROM events WHERE agent_id = ?", (agent_id,))
-            conn.execute(
-                "DELETE FROM run_usage WHERE run_id IN (SELECT id FROM runs WHERE agent_id = ?)",
-                (agent_id,),
-            )
+            for table in ("run_usage", "run_meta"):
+                conn.execute(
+                    f"DELETE FROM {table} WHERE run_id IN (SELECT id FROM runs WHERE agent_id = ?)",
+                    (agent_id,),
+                )
             conn.execute(
                 "DELETE FROM deliveries WHERE caller = ?"
                 " OR run_id IN (SELECT id FROM runs WHERE agent_id = ?)",
@@ -299,7 +366,7 @@ class Store:
     # -- runs -------------------------------------------------------------
 
     @staticmethod
-    def _run(row: sqlite3.Row) -> Run:
+    def run_from_row(row: sqlite3.Row) -> Run:
         data = dict(row)
         data["status"] = RunStatus(data["status"])
         data["depends_on"] = json.loads(data["depends_on"])
@@ -313,29 +380,179 @@ class Store:
         prompt: str,
         depends_on: list[int] | None = None,
         output_schema: dict[str, Any] | None = None,
+        kind: str = MESSAGE,
+        sender: str | None = None,
+        notify: str = "each",
     ) -> Run:
         with self._conn() as conn:
-            cursor = conn.execute(
-                "INSERT INTO runs (agent_id, prompt, status, depends_on, output_schema, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    agent_id,
-                    prompt,
-                    RunStatus.WAITING.value,
-                    json.dumps(depends_on or []),
-                    json.dumps(output_schema) if output_schema else None,
-                    now(),
-                ),
+            run_id = self.insert_run(
+                conn, agent_id, prompt, depends_on, output_schema, kind, sender, notify
             )
-            run_id = cursor.lastrowid
         run = self.get_run(run_id)
         assert run is not None
         return run
 
+    @staticmethod
+    def insert_run(
+        conn: sqlite3.Connection,
+        agent_id: str,
+        prompt: str,
+        depends_on: list[int] | None = None,
+        output_schema: dict[str, Any] | None = None,
+        kind: str = MESSAGE,
+        sender: str | None = None,
+        notify: str = "each",
+    ) -> int:
+        """Insert a waiting run and its metadata on `conn`; returns the run id."""
+        if notify not in NOTIFY_MODES:
+            raise ValueError(f"notify must be one of {', '.join(NOTIFY_MODES)}")
+        cursor = conn.execute(
+            "INSERT INTO runs (agent_id, prompt, status, depends_on, output_schema, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                agent_id,
+                prompt,
+                RunStatus.WAITING.value,
+                json.dumps(depends_on or []),
+                json.dumps(output_schema) if output_schema else None,
+                now(),
+            ),
+        )
+        run_id = cursor.lastrowid
+        conn.execute(
+            "INSERT INTO run_meta (run_id, agent_id, kind, sender, notify) VALUES (?, ?, ?, ?, ?)",
+            (run_id, agent_id, kind, sender, notify),
+        )
+        return run_id
+
+    def delete_run(self, run_id: int, conn: sqlite3.Connection | None = None) -> None:
+        """Remove a run that never had a turn (a notification with nothing to say)."""
+        if conn is None:
+            with self._conn() as own:
+                self.delete_run(run_id, own)
+            return
+        for table in ("events", "run_usage", "deliveries", "run_meta"):
+            conn.execute(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
+        conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+
+    def meta(self, run_id: int) -> RunMeta:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM run_meta WHERE run_id = ?", (run_id,)).fetchone()
+        return from_row(RunMeta, row) if row else RunMeta.legacy()
+
+    def meta_of(self, agent_id: str) -> dict[int, RunMeta]:
+        """Metadata of an agent's runs, by run id. Runs without a row are absent."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM run_meta WHERE agent_id = ? ORDER BY run_id", (agent_id,)
+            ).fetchall()
+        return {row["run_id"]: from_row(RunMeta, row) for row in rows}
+
+    def waiting_messages(self, agent_id: str) -> list[int]:
+        """Ids of the agent's waiting runs that are messages (not notifications)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT r.id FROM runs r LEFT JOIN run_meta m ON m.run_id = r.id"
+                " WHERE r.agent_id = ? AND r.status = ? AND COALESCE(m.kind, ?) = ?"
+                " ORDER BY r.id",
+                (agent_id, RunStatus.WAITING.value, MESSAGE, MESSAGE),
+            ).fetchall()
+        return [row["id"] for row in rows]
+
+    def active_descendants(self, agent_id: str) -> int:
+        """How many of the agent's descendants (not itself) have a waiting or running run."""
+        with self._conn() as conn:
+            row = conn.execute(
+                subtree_sql() + " SELECT COUNT(DISTINCT r.agent_id) AS n FROM runs r"
+                " WHERE r.agent_id IN (SELECT id FROM tree) AND r.agent_id != ?"
+                f" AND r.status IN ('{ACTIVE[0]}', '{ACTIVE[1]}')",
+                (agent_id, agent_id),
+            ).fetchone()
+        return row["n"]
+
+    def subtree(self, agent_id: str) -> list[str]:
+        """The agent and all its descendants, the agent first."""
+        with self._conn() as conn:
+            rows = conn.execute(subtree_sql() + " SELECT id FROM tree", (agent_id,)).fetchall()
+        return [row["id"] for row in rows]
+
+    # -- turn order -------------------------------------------------------
+    #
+    # At most one run of an agent runs at a time. Message runs keep their order among
+    # themselves; a waiting notification never holds a message back and starts only when
+    # no message is ready to. Runs queued by older code (no metadata) are treated with
+    # care because their runner may be old code too, which waits for every earlier
+    # active run and starts without checking: a notification lets an earlier one go first
+    # and does not wait for a later one (whose old runner waits for the notification).
+
+    def may_start(self, conn: sqlite3.Connection, run_id: int, agent_id: str, kind: str) -> bool:
+        """Whether the run may take the agent's turn now (dependencies aside for messages)."""
+        rows = conn.execute(
+            "SELECT r.id, r.status, r.depends_on, m.kind FROM runs r"
+            " LEFT JOIN run_meta m ON m.run_id = r.id"
+            f" WHERE r.agent_id = ? AND r.id != ? AND r.status IN ('{ACTIVE[0]}', '{ACTIVE[1]}')"
+            " ORDER BY r.id",
+            (agent_id, run_id),
+        ).fetchall()
+        if any(row["status"] == RunStatus.RUNNING.value for row in rows):
+            return False
+        messages = [row for row in rows if (row["kind"] or MESSAGE) == MESSAGE]
+        if kind == MESSAGE:
+            return not any(row["id"] < run_id for row in messages)
+        if any(row["kind"] == NOTIFICATION and row["id"] < run_id for row in rows):
+            return False
+        for position, row in enumerate(messages):
+            if row["kind"] is None:  # queued by older code
+                if row["id"] < run_id:
+                    return False
+                continue
+            head = position == 0
+            if head and not self._blocked(conn, json.loads(row["depends_on"])):
+                return False  # a message is ready to start: it goes first
+        return True
+
+    @staticmethod
+    def _blocked(conn: sqlite3.Connection, depends_on: list[int]) -> bool:
+        if not depends_on:
+            return False
+        marks = ", ".join("?" * len(depends_on))
+        row = conn.execute(
+            f"SELECT COUNT(*) AS n FROM runs WHERE id IN ({marks})"
+            f" AND status IN ('{ACTIVE[0]}', '{ACTIVE[1]}')",
+            depends_on,
+        ).fetchone()
+        return row["n"] > 0
+
+    def take_turn(self, run: Run, kind: str = MESSAGE) -> bool | None:
+        """Atomically mark the run running if it may start now. True: started; False: not
+        yet; None: the run is gone or no longer waiting."""
+        if not self.could_start(run, kind):
+            return False
+        with self.transaction() as conn:
+            row = conn.execute("SELECT status FROM runs WHERE id = ?", (run.id,)).fetchone()
+            if row is None or row["status"] != RunStatus.WAITING.value:
+                return None
+            if not self.may_start(conn, run.id, run.agent_id, kind):
+                return False
+            self.start_run(conn, run.id)
+            return True
+
+    def could_start(self, run: Run, kind: str) -> bool:
+        """`may_start` without the write lock: a cheap check while waiting, to be repeated
+        in a transaction before starting. A run that is gone answers True (to be seen)."""
+        with self._conn() as conn:
+            return self.may_start(conn, run.id, run.agent_id, kind)
+
+    @staticmethod
+    def start_run(conn: sqlite3.Connection, run_id: int, **fields: Any) -> None:
+        fields = {"status": RunStatus.RUNNING.value, "started_at": now(), **fields}
+        assignments = ", ".join(f"{key} = ?" for key in fields)
+        conn.execute(f"UPDATE runs SET {assignments} WHERE id = ?", (*fields.values(), run_id))
+
     def get_run(self, run_id: int) -> Run | None:
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
-        return self._run(row) if row else None
+        return self.run_from_row(row) if row else None
 
     def update_run(self, run_id: int, **fields: Any) -> None:
         if "status" in fields:
@@ -354,14 +571,14 @@ class Store:
             rows = conn.execute(
                 "SELECT * FROM runs WHERE agent_id = ? ORDER BY id", (agent_id,)
             ).fetchall()
-        return [self._run(row) for row in rows]
+        return [self.run_from_row(row) for row in rows]
 
     def last_run(self, agent_id: str) -> Run | None:
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT * FROM runs WHERE agent_id = ? ORDER BY id DESC LIMIT 1", (agent_id,)
             ).fetchone()
-        return self._run(row) if row else None
+        return self.run_from_row(row) if row else None
 
     def active_runs(self, agent_id: str | None = None) -> list[Run]:
         query = f"SELECT * FROM runs WHERE status IN ('{ACTIVE[0]}', '{ACTIVE[1]}')"
@@ -370,16 +587,21 @@ class Store:
             query, args = query + " AND agent_id = ?", (agent_id,)
         with self._conn() as conn:
             rows = conn.execute(query + " ORDER BY id", args).fetchall()
-        return [self._run(row) for row in rows]
+        return [self.run_from_row(row) for row in rows]
 
     def reconcile(self) -> None:
         """Fail active runs whose runner process no longer exists (crash, reboot)."""
+        ended = []
         for run in self.active_runs():
             if run.pid is not None and not pid_alive(run.pid):
                 # Re-read: the runner may have finished between the query and the check.
                 fresh = self.get_run(run.id)
                 if fresh and fresh.status.active:
                     self.finish_run(run.id, RunStatus.FAILED, error="runner process died")
+                    ended.append(run.agent_id)
+        if self.on_run_end:
+            for agent_id in dict.fromkeys(ended):
+                self.on_run_end(agent_id)
 
     # -- usage ------------------------------------------------------------
 
