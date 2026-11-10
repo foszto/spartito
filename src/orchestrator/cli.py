@@ -55,6 +55,39 @@ def tokens(counts: dict | None) -> str:
     return f"{count(prompt)}/{count(counts['out'])} tok"
 
 
+CONTEXT_WARN = 80  # percent of the window from which the context is shown in a warning colour
+
+
+def short(n: int) -> str:
+    """780k, 1M, 1.5M: a size at a glance."""
+    if n < 1000:
+        return str(n)
+    if n < 1_000_000:
+        return f"{n / 1000:.0f}k"
+    return f"{n / 1e6:.1f}".removesuffix(".0") + "M"
+
+
+def context_text(context: dict | None) -> str:
+    """`780k/1M 78%`: the conversation against the model's window; `compacted` when its
+    size is known only after the next turn; empty when nothing is known."""
+    if not context:
+        return ""
+    if context["compacted"]:
+        return "compacted"
+    if not context["window"]:
+        return f"{short(context['tokens'])} ctx"
+    return f"{short(context['tokens'])}/{short(context['window'])} {context['percent']}%"
+
+
+def context_styled(context: dict | None, width: int = 0) -> str:
+    text = f"{context_text(context):<{width}}"
+    if context and (context["percent"] or 0) >= CONTEXT_WARN:
+        return typer.style(
+            text, fg=typer.colors.RED if context["percent"] >= 95 else typer.colors.YELLOW
+        )
+    return text
+
+
 def usage_line(counts: dict | None, cost: float | None, model: str | None = None) -> str:
     parts = []
     if counts:
@@ -455,8 +488,8 @@ def ps(
             cost = f"${view['cost_usd']:.2f}" if view["cost_usd"] else ""
             typer.echo(
                 f"  {label:<34} {status} {view['role']:<9} {view['provider']:<7}"
-                f" {setup(view, agents.get(view['id'])):<18} {tokens(view['tokens']):<15}"
-                f" {cost:<7} {view['branch'] or ''}"
+                f" {setup(view, agents.get(view['id'])):<18} {context_styled(view['context'], 14)}"
+                f" {tokens(view['tokens']):<15} {cost:<7} {view['branch'] or ''}"
             )
             show(project_name, view["id"], depth + 1)
 
@@ -466,7 +499,8 @@ def ps(
             status = typer.style(text, fg=color)
             cost = f"${view['cost_usd']:.2f}" if view["cost_usd"] else ""
             setup_text = setup(view, agents.get(view["id"]) or o.store.get_agent(view["id"]))
-            extra = "  ".join(filter(None, (setup_text, tokens(view["tokens"]), cost)))
+            context = context_text(view["context"]) and context_styled(view["context"])
+            extra = "  ".join(filter(None, (setup_text, context, tokens(view["tokens"]), cost)))
             typer.secho(f"{view['id']}  {status}  {extra}", bold=True)
     for item in o.store.list_projects():
         if project and item.name != project:
@@ -507,6 +541,7 @@ def status(agent_id: str) -> None:
         raise fail(exc) from None
     last = view.pop("last_run")
     counts, cost = view.pop("tokens"), view.pop("cost_usd")
+    context, refusal = view.pop("context"), view.pop("compact_refusal")
     queue, working = view.pop("queue"), view.pop("children_running")
     if mark := view.pop("archived", None):
         view["archived"] = f"{mark['archived_at']} ({mark['how']}; orch restore {agent_id})"
@@ -521,6 +556,13 @@ def status(agent_id: str) -> None:
     plural = "agent" if working == 1 else "agents"
     typer.echo(f"{'children':<12} {f'{working} {plural} working' if working else 'none working'}")
     typer.echo(f"{'usage':<12} {usage_line(counts, cost)}")
+    hint = f"orch compact {agent_id}" if refusal is None else f"no compact: {refusal}"
+    if context and context["compacted"]:
+        typer.echo(f"{'context':<12} compacted; its size is known after the next turn")
+    elif context:
+        typer.echo(f"{'context':<12} {context_styled(context)}  ({hint})")
+    else:
+        typer.echo(f"{'context':<12} unknown  ({hint})")
     if queue:
         waiting = max(waiting_turns(view), len(queue))
         typer.echo(f"{'queue':<12} {waiting} waiting")
@@ -533,7 +575,8 @@ def status(agent_id: str) -> None:
             typer.echo(f"  +{waiting - len(queue)} more")
     typer.echo(f"{'changes':<12} {changes.replace(chr(10), chr(10) + ' ' * 13)}")
     if last:
-        typer.secho(f"\nlast run {last['id']}: {last['status']}", bold=True)
+        kind = f" ({last['kind']})" if last["kind"] != "message" else ""
+        typer.secho(f"\nlast run {last['id']}{kind}: {last['status']}", bold=True)
         if any(last["usage"].values()):
             usage = last["usage"]
             typer.echo(usage_line(usage["tokens"], usage["cost_usd"], usage["model"]))
@@ -642,6 +685,23 @@ def stop(agent_id: str) -> None:
         typer.echo(f"stopped {orch().stop(agent_id)} run(s)")
     except OrchestratorError as exc:
         raise fail(exc) from None
+
+
+@app.command()
+def compact(
+    agent_id: str,
+    instructions: Annotated[
+        str | None, typer.Argument(help="What the summary must keep (Claude's /compact).")
+    ] = None,
+) -> None:
+    """Compact an agent's conversation (queued like a message): Claude Code's own
+    `/compact [instructions]` replaces it with a summary in the same session. Codex: a turn
+    with a lower auto-compaction limit, without instructions."""
+    try:
+        run = orch().compact(agent_id, instructions)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    typer.echo(f"run {run.id}")
 
 
 @app.command()

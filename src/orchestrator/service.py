@@ -20,11 +20,12 @@ from pathlib import Path
 from typing import Any
 
 from . import config, git, notify, providers, roles, settings
-from .models import Agent, Project, Run, RunStatus, Usage, running_total
+from .models import Agent, Project, Run, RunStatus, Usage, context_now, running_total
 from .store import (
     ANYONE,
     ARCHIVE_AUTO,
     ARCHIVE_MANUAL,
+    COMPACT,
     MESSAGE,
     NOTIFICATION,
     NOTIFY_MODES,
@@ -94,6 +95,17 @@ def run_usage(usage: Usage | None) -> dict[str, Any]:
     if usage is None:
         return {"tokens": None, "cost_usd": None, "model": None}
     return {"tokens": usage.tokens(), "cost_usd": usage.cost, "model": usage.model}
+
+
+def context_view(record: Usage | None) -> dict[str, Any] | None:
+    """How full the conversation is (see models.context_now): `tokens` of `window`,
+    `percent`; after a compaction no request followed yet, `compacted` with the size
+    unknown. None when nothing is known."""
+    if record is None:
+        return None
+    tokens, window = record.context_tokens, record.context_window
+    percent = round(100 * tokens / window) if tokens is not None and window else None
+    return {"tokens": tokens, "window": window, "percent": percent, "compacted": tokens is None}
 
 
 def result_file(run_id: int) -> str | None:
@@ -265,6 +277,42 @@ class Orchestrator:
         )
         self._launch(run)
         return run
+
+    def compact(self, agent_id: str, instructions: str | None = None) -> Run:
+        """Queue a turn that compacts the agent's conversation with the CLI's own means
+        (Claude: `/compact [instructions]`), in order with its other turns. The session
+        stays the same; the run's result is a short summary (`compacted 48k -> 1k tokens`)
+        that is never delivered to a parent and wakes no one."""
+        agent = self.agent(agent_id)
+        refusal = self.compact_refusal(agent)
+        if refusal:
+            raise OrchestratorError(f"cannot compact {agent.id}: {refusal}")
+        compact_prompt = providers.get(agent.provider).compact_prompt  # type: ignore[attr-defined]
+        try:
+            prompt = compact_prompt(instructions)
+        except ValueError as exc:
+            raise OrchestratorError(f"cannot compact {agent.id}: {exc}") from None
+        run = self.store.add_run(agent.id, prompt, kind=COMPACT)
+        self._launch(run)
+        return run
+
+    def compact_refusal(self, agent: Agent) -> str | None:
+        """Why the agent's conversation cannot be compacted now; None when it can."""
+        try:
+            provider = providers.get(agent.provider)
+        except KeyError as exc:
+            return str(exc.args[0])
+        if not hasattr(provider, "compact_prompt"):
+            return f"the {agent.provider} provider has no way to compact a conversation"
+        if not agent.session_id:
+            return "it has no conversation yet"
+        if getattr(provider, "compact_needs_size", False):
+            record = context_now(
+                self.store.runs_of(agent.id), self.store.usage_of(agent.id), agent.session_id
+            )
+            if record is None or not record.context_tokens:
+                return "its context size is not known yet (it is after its next turn)"
+        return None
 
     def _cause(self, sender: str | None) -> int | None:
         running = self.store.running_run(sender) if sender else None
@@ -501,6 +549,10 @@ class Orchestrator:
         `last_run.result_file` (the full final answer on disk) and `queue` (the waiting
         runs: id, kind, sender, created_at, prompt preview).
         `children_running` is how many descendants have a queued or running turn.
+        `context`: how full the conversation is (see context_view), null when unknown.
+        With `detail` also `last_run.kind` (`message`, `notification` or `compact`, a
+        compaction turn) and `compact_refusal`: why `compact` is not possible now (null: it
+        is).
         """
         runs = self.store.runs_of(agent.id)
         usage = self.store.usage_of(agent.id)
@@ -531,6 +583,7 @@ class Orchestrator:
             "runs": len(runs),
             "cost_usd": totals.cost or 0,
             "tokens": totals.tokens(),
+            "context": context_view(context_now(runs, usage, agent.session_id)),
             "last_run": shown
             and {
                 "id": shown.id,
@@ -542,15 +595,17 @@ class Orchestrator:
             },
         }
         if detail:
+            view["compact_refusal"] = self.compact_refusal(agent)
             view["model_override"] = agent.model
             view["effort_override"] = agent.effort
             if mark := self.store.archived(agent.project).get(agent.id):
                 view["archived"] = mark
+            meta = self.store.meta_of(agent.id)
             if shown:
+                view["last_run"]["kind"] = meta[shown.id].kind if shown.id in meta else MESSAGE
                 view["last_run"]["structured"] = shown.structured
                 view["last_run"]["usage"] = run_usage(usage.get(shown.id))
                 view["last_run"]["result_file"] = result_file(shown.id)
-            meta = self.store.meta_of(agent.id)
             view["queue"] = [
                 {
                     "id": run.id,
@@ -564,11 +619,13 @@ class Orchestrator:
         return view
 
     def run_history(self, agent: Agent, limit: int = 10) -> list[dict[str, Any]]:
-        """The agent's latest runs with their own tokens, cost and reported model."""
+        """The agent's latest runs with their kind, own tokens, cost and reported model."""
         usage = self.store.usage_of(agent.id)
+        meta = self.store.meta_of(agent.id)
         return [
             {
                 "id": run.id,
+                "kind": meta[run.id].kind if run.id in meta else MESSAGE,
                 "status": run.status.value,
                 "created_at": run.created_at,
                 "started_at": run.started_at,

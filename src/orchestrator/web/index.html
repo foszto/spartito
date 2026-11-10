@@ -119,6 +119,21 @@
       <button class="btn primary" value="ok">Save</button></div>
   </form>
 </dialog>
+<dialog id="compactDialog">
+  <form method="dialog">
+    <div class="dialog-head"><h3>Compact <span data-agent></span></h3>
+      <button class="btn ghost icon" value="cancel" formnovalidate aria-label="Close" data-icon="x"></button></div>
+    <div class="dialog-body">
+      <p data-context style="margin-top:0"></p>
+      <label class="field"><span class="label">Instructions (optional)</span>
+        <textarea class="input" name="instructions" rows="3" placeholder="What the summary must keep, e.g. the open review points"></textarea>
+        <span class="help">The agent's CLI replaces its conversation with a summary in the same session, after its queued turns. Details from earlier in the conversation may be lost. Codex agents compact without instructions.</span></label>
+    </div>
+    <div class="dialog-foot"><span class="error"></span>
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" value="ok">Compact</button></div>
+  </form>
+</dialog>
 <dialog id="confirmDialog">
   <form method="dialog">
     <div class="dialog-head"><h3 data-title></h3></div>

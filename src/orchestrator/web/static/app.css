@@ -106,6 +106,14 @@ code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, m
 .chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px; background: var(--sunken);
   color: var(--muted); font-size: 12px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip svg { width: 12px; height: 12px; }
+/* how full the conversation is: a small bar and `780k/1M 78%`; amber from 80% */
+.chip.context { gap: 6px; font-variant-numeric: tabular-nums; }
+.chip.context .bar { width: 36px; height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.chip.context .bar i { display: block; height: 100%; background: var(--done); }
+.chip.context.warn { color: var(--waiting); }
+.chip.context.warn .bar i { background: var(--waiting); }
+.nav-item .sub .ctx { font-variant-numeric: tabular-nums; }
+.nav-item .sub .ctx.warn { color: var(--waiting); font-weight: 600; }
 .chip-group, .setup { display: contents; }
 /* model and effort of the agent: compact selects in the chip row; the agent's own value is accented */
 .setting { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--faint); }

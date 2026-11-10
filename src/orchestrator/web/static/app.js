@@ -19,6 +19,7 @@ const ICONS = {
   archive: '<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11h14V8M10 12h4"/>',
   restore: '<path d="M4 12a8 8 0 1 0 2.5-5.8M4 4v4h4"/>',
   pencil: '<path d="M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4"/>',
+  compress: '<path d="M4 9h16M4 15h16M12 3v4M10 5l2 2 2-2M12 21v-4M10 19l2-2 2 2"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
   sliders: '<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>',
   moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
@@ -147,6 +148,25 @@ function tokenText(counts) {
   return t ? `${count(t[0])} in · ${count(t[1])} out` : '';
 }
 
+// How full an agent's conversation is against its model's window (`context` of the view).
+const CONTEXT_WARN = 80;  // percent from which it is shown in a warning colour
+function short(n) {
+  return n < 1000 ? String(n) : n < 1e6 ? `${Math.round(n / 1000)}k` : `${+(n / 1e6).toFixed(1)}M`;
+}
+function contextText(context) {
+  if (!context) return '';
+  if (context.compacted) return 'compacted';
+  if (!context.window) return `${short(context.tokens)} ctx`;
+  return `${short(context.tokens)}/${short(context.window)} ${context.percent}%`;
+}
+const contextWarn = context => Boolean(context && context.percent >= CONTEXT_WARN);
+function contextTitle(context) {
+  if (!context) return 'Context size not known yet: it is measured after a turn';
+  if (context.compacted) return 'The conversation was compacted; its size is known after the next turn';
+  return `Conversation: ${context.tokens.toLocaleString()} tokens`
+    + (context.window ? ` of a ${context.window.toLocaleString()}-token window (${context.percent}%)` : '');
+}
+
 function inline(text, parent) {
   const pattern = /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\))/g;
   let last = 0, match;
@@ -229,7 +249,7 @@ function renderNav() {
 
   const orch = state.orchestrator;
   const top = navItem(ORCH, ORCH, orch ? stateOf(orch).cls : '', 'Orchestrator',
-    orch ? `${stateOf(orch).label} · talks to every project` : 'Tell it what you want built', 0);
+    orch ? `${stateOf(orch).label} · talks to every project` : 'Tell it what you want built', 0, orch?.context);
   top.classList.add('orchestrator');
   nav.append(top);
 
@@ -270,7 +290,7 @@ function renderNav() {
         total++; cost += agent.cost_usd; addTokens(agent.tokens);
         if (isActive(agent)) busy++;
         const now = stateOf(agent);
-        agents.append(navItem(agent.id, agent.provider, now.cls, agent.id, `${agent.role} · ${now.label}`, depth));
+        agents.append(navItem(agent.id, agent.provider, now.cls, agent.id, `${agent.role} · ${now.label}`, depth, agent.context));
         add(agent.id, depth + 1);
       }
     };
@@ -288,14 +308,17 @@ function renderNav() {
   $('summary').textContent = `${total} agents · ${busy} active · ${count(used[0] + used[1])} tokens · $${cost.toFixed(2)} spent`;
 }
 
-function navItem(id, providerName, status, name, sub, depth) {
+function navItem(id, providerName, status, name, sub, depth, context) {
   const row = el('button', `nav-item${id === selected ? ' selected' : ''}`);
   row.type = 'button';
   row.style.paddingLeft = `${8 + depth * 16}px`;
-  const label = el('span', 'label');
-  label.append(el('span', 'name', name), el('span', 'sub', sub));
+  const label = el('span', 'label'), subLine = el('span', 'sub', sub);
+  // One small field: the context's fill (or `compacted`), in a warning colour from CONTEXT_WARN.
+  const fill = context && (context.compacted ? 'compacted' : context.percent != null ? `ctx ${context.percent}%` : '');
+  if (fill) subLine.append(' · ', el('span', `ctx${contextWarn(context) ? ' warn' : ''}`, fill));
+  label.append(el('span', 'name', name), subLine);
   row.append(avatar(providerName, status), label);
-  row.title = `${name}\n${sub}`;
+  row.title = `${name}\n${sub}${fill ? `\n${contextTitle(context)}` : ''}`;
   row.onclick = () => select(id);
   return row;
 }
@@ -318,12 +341,14 @@ function buildView() {
   who.append(title, chips, note);
   const detailsButton = button('ghost', 'info', 'Details', () => { $('details').hidden = !$('details').hidden; });
   const stop = button('danger', 'stop', 'Stop', stopAgent);
+  const compact = button('ghost', 'compress', 'Compact', () => compactAgent(selected));
+  compact.id = 'compact';
   const archive = button('ghost', 'archive', 'Archive', () => archiveAgent(selected));
   const restore = button('ghost', 'restore', 'Restore', () => restoreAgent(selected));
   const remove = button('ghost icon', 'trash', '', () => removeAgent(selected), 'Delete agent for good');
   detailsButton.id = 'detailsButton'; stop.id = 'stop'; archive.id = 'archive'; restore.id = 'restore'; remove.id = 'remove';
   archive.title = 'Hide it from the lists; everything is kept and it can be restored';
-  top.append(face, who, detailsButton, stop, archive, restore, remove);
+  top.append(face, who, compact, detailsButton, stop, archive, restore, remove);
 
   const details = el('div'); details.id = 'details'; details.hidden = true;
   const facts = el('dl'); facts.id = 'facts';
@@ -399,6 +424,12 @@ function renderHeader(agent, setupFreshness = true) {
   title.replaceChildren(name, el('span', `pill ${now.cls}`, now.label));
   if (agent?.archived) title.append(el('span', 'pill archived', 'archived'));
   $('stop').hidden = !isActive(agent);
+  // Compaction is offered once there is a conversation; a refusal other than that is shown.
+  const compactButton = $('compact');
+  compactButton.hidden = !agent || Boolean(agent.archived) || !agent.session_id;
+  compactButton.disabled = Boolean(agent?.compact_refusal);
+  compactButton.title = agent?.compact_refusal
+    || 'Replace the conversation with a summary (the CLI\'s own compaction), queued like a message';
   $('archive').hidden = !agent || Boolean(agent.archived) || agent.id === ORCH;
   $('restore').hidden = !agent?.archived;
   $('remove').hidden = !agent?.archived;  // only archived agents are deleted
@@ -444,6 +475,18 @@ function renderHeader(agent, setupFreshness = true) {
     (parent || chips).append(node);
   };
   chip(agent.role); chip(agent.provider);
+  const context = agent.context;
+  if (context || agent.session_id) {
+    const node = el('span', `chip context${contextWarn(context) ? ' warn' : ''}`);
+    if (context && !context.compacted && context.window) {
+      const bar = el('span', 'bar'), fill = el('i');
+      fill.style.width = `${Math.min(100, context.percent)}%`;
+      bar.append(fill); node.append(bar);
+    }
+    node.append(contextText(context) || 'context ?');
+    node.title = contextTitle(context);
+    tail.append(node);
+  }
   chip(agent.branch, 'branch', tail);
   chip(tokenText(agent.tokens), null, tail);
   chip(agent.cost_usd ? `$${agent.cost_usd.toFixed(2)}` : '', null, tail);
@@ -459,7 +502,7 @@ function renderHeader(agent, setupFreshness = true) {
   const row = (cells, tag) => { const tr = el('tr'); for (const c of cells) tr.append(el(tag, '', c)); runs.append(tr); };
   if ((agent.recent_runs || []).length) row(['Run', 'Status', 'Ended', 'Tokens', 'Cost', 'Model'], 'th');
   for (const run of agent.recent_runs || []) {
-    row([`#${run.id}`, run.status, (run.ended_at || '').slice(11, 19), tokenText(run.tokens) || '–',
+    row([`#${run.id}${run.kind === 'compact' ? ' compact' : ''}`, run.status, (run.ended_at || '').slice(11, 19), tokenText(run.tokens) || '–',
       run.cost_usd != null ? `$${run.cost_usd.toFixed(4)}` : '–', run.model || ''], 'td');
   }
   $('changes').textContent = agent.changes || '';
@@ -747,6 +790,17 @@ function withdrawQueued(run) {
       toast('Queued message withdrawn'); await refresh();
     },
   });
+}
+
+function compactAgent(id) {
+  const dialog = $('compactDialog');
+  dialog.querySelector('[data-agent]').textContent = id;
+  dialog.querySelector('[data-context]').textContent = shownAgent?.id === id ? contextTitle(shownAgent.context) : '';
+  openDialog(dialog, async data => {
+    await call(`/api/agents/${encodeURIComponent(id)}/compact`, { instructions: data.get('instructions') });
+    toast('Compaction queued'); await refresh();
+  });
+  dialog.querySelector('[name=instructions]').focus();
 }
 
 async function stopAgent() {

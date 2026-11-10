@@ -244,6 +244,12 @@ def stop_agent(orch: Orchestrator, request: Request, body: dict) -> dict[str, An
     return {"stopped_runs": orch.stop(request.path_params["agent_id"])}
 
 
+def compact_agent(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """Queue a compaction of the agent's conversation, with optional `instructions`."""
+    agent_id = request.path_params["agent_id"]
+    return queued(agent_id, orch.compact(agent_id, optional(body, "instructions")).id)
+
+
 def get_run(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
     """One run with its full text (the queue lists a preview), for editing it."""
     run_id = request.path_params["run_id"]
@@ -315,6 +321,7 @@ app = Starlette(
         Route("/api/agents/{agent_id}/messages", api(message_agent), methods=["POST"]),
         Route("/api/agents/{agent_id}/model", api(set_agent_model), methods=["POST"]),
         Route("/api/agents/{agent_id}/stop", api(stop_agent), methods=["POST"]),
+        Route("/api/agents/{agent_id}/compact", api(compact_agent), methods=["POST"]),
         Route("/api/agents/{agent_id}/archive", api(archive_agent), methods=["POST"]),
         Route("/api/agents/{agent_id}/restore", api(restore_agent), methods=["POST"]),
         Route("/api/agents/{agent_id}/remove", api(remove_agent), methods=["POST"]),
