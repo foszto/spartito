@@ -125,7 +125,7 @@ def test_state_lists_each_providers_models_as_values_and_labels(
     assert {"value": "claude-mythos-5-1", "label": "Mythos 5.1"} in listed["claude"]["models"]
     assert listed["claude"]["models"][0] == {
         "value": "default",
-        "label": "Default (recommended) · claude-mythos-5-2",
+        "label": "Claude Code default (now claude-mythos-5-2)",
     }
     assert listed["fake"]["models"][0] == {"value": "fake-small", "label": "fake-small"}
 

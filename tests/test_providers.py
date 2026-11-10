@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -8,6 +11,10 @@ import pytest
 from orchestrator.loadout import Loadout
 from orchestrator.models import Agent, Event, Usage
 from orchestrator.providers import McpServer, RunContext, claude, get
+
+# The real lookup; conftest replaces the module attribute with a recorded answer.
+REAL_REQUEST_MODEL_LIST = claude.request_model_list
+RECORDED = Path(__file__).parent / "fixtures" / "claude_initialize.jsonl"
 
 
 def context(tmp_path: Path, **agent_fields) -> RunContext:
@@ -279,7 +286,7 @@ def test_claude_models_are_what_its_cli_offers_with_versions_in_the_labels() -> 
     recorded = (Path(__file__).parent / "fixtures" / "claude_initialize.jsonl").read_text()
 
     assert claude.parse_model_list(recorded) == [
-        ("default", "Default (recommended) · claude-mythos-5-2"),
+        ("default", "Claude Code default (now claude-mythos-5-2)"),
         ("opus", "Opus 5.5"),
         ("haiku", "Haiku 5.5"),
         ("claude-fable-5-1", "Fable 5.1"),
@@ -333,3 +340,136 @@ def test_claude_models_fall_back_to_the_aliases_and_say_so(
     assert len(calls) == 1
     assert provider.models_note == "model list unavailable: showing aliases"
     assert "claude model list unavailable" in capsys.readouterr().err
+
+
+def answer_with(models: list[dict]) -> str:
+    response = {"subtype": "success", "request_id": "orch-models", "response": {"models": models}}
+    return json.dumps({"type": "control_response", "response": response}) + "\n"
+
+
+# What the CLI answered before it knew the account (empty config dir), trimmed.
+GENERIC = answer_with(
+    [
+        {
+            "value": "default",
+            "displayName": "Default (recommended)",
+            "resolvedModel": "claude-opus-5-5",
+        },
+        {"value": "opus", "displayName": "Opus", "resolvedModel": "claude-opus-5-5"},
+        {
+            "value": "claude-fable-5-1[1m]",
+            "displayName": "Fable",
+            "resolvedModel": "claude-fable-5-1",
+        },
+        {"value": "haiku", "displayName": "Haiku", "resolvedModel": "claude-haiku-5-5"},
+    ]
+)
+
+
+def test_a_generic_or_failed_claude_list_is_asked_for_again_after_a_while(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    answers = [GENERIC, None, RECORDED.read_text()]
+
+    def lookup() -> str:
+        answer = answers.pop(0)
+        if answer is None:
+            raise subprocess.TimeoutExpired("claude", 20)
+        return answer
+
+    monkeypatch.setattr(claude, "request_model_list", lookup)
+    provider = claude.ClaudeProvider()
+
+    generic = provider.models()
+    assert provider.models() is generic and provider.models_note == "model list may be incomplete"
+    assert ("opus", "Opus · claude-opus-5-5") in generic
+    provider._models_at -= claude.MODEL_LIST_RETRY_SECONDS
+    assert provider.models() == list(claude.FALLBACK_MODELS)
+    assert provider.models_note == "model list unavailable: showing aliases"
+    provider._models_at -= claude.MODEL_LIST_RETRY_SECONDS
+    full = provider.models()
+    assert ("claude-mythos-5-1", "Mythos 5.1") in full and provider.models_note is None
+    provider._models_at -= claude.MODEL_LIST_RETRY_SECONDS
+    assert provider.models() is full and not answers  # a full list is kept
+
+
+@pytest.fixture
+def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Puts a `claude` shell script with the given body first on PATH; returns where it
+    writes: `pid` (its own process id) and whatever the body writes to "$OUT"."""
+
+    def install(body: str) -> Path:
+        out = tmp_path / "out"
+        out.mkdir()
+        script = tmp_path / "bin" / "claude"
+        script.parent.mkdir()
+        script.write_text(f"#!/bin/sh\nOUT={out}\necho $$ > $OUT/pid\n{body}\n")
+        script.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{script.parent}{os.pathsep}{os.environ['PATH']}")
+        return out
+
+    monkeypatch.setattr(claude, "MODEL_LIST_TIMEOUT", 5)  # an answering script takes ~0.1 s
+    return install
+
+
+def gone(pid_file: Path) -> bool:
+    """The process is gone (reaped; an orphan is reaped by init within moments)."""
+    pid = int(pid_file.read_text())
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_claude_model_lookup_asks_the_cli_without_the_parent_session(
+    fake_claude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "parent")
+    out = fake_claude(
+        'read request\nprintf "%s" "$request" > $OUT/request\n'
+        f'env > $OUT/env\necho "$*" > $OUT/argv\npwd > $OUT/cwd\ncat {RECORDED}'
+    )
+
+    output = REAL_REQUEST_MODEL_LIST()
+
+    assert claude.parse_model_list(output)[-1] == ("claude-mythos-5-1", "Mythos 5.1")
+    assert json.loads((out / "request").read_text())["request"] == {"subtype": "initialize"}
+    env = (out / "env").read_text().splitlines()
+    assert not [line for line in env if line.startswith(("CLAUDECODE=", "CLAUDE_CODE_SESSION_ID="))]
+    argv = (out / "argv").read_text()
+    assert "--input-format stream-json" in argv and "--no-session-persistence" in argv
+    assert "orch-models-" in (out / "cwd").read_text()  # a temporary directory
+    assert gone(out / "pid")
+
+
+@pytest.mark.parametrize(
+    ("body", "error"),
+    [("exit 1", subprocess.SubprocessError), ("echo 'not json at all'", ValueError)],
+)
+def test_claude_model_lookup_fails_on_an_error_exit_or_garbage(
+    fake_claude, body: str, error: type[Exception]
+) -> None:
+    out = fake_claude(body)
+
+    with pytest.raises(error):
+        claude.parse_model_list(REAL_REQUEST_MODEL_LIST())
+    assert gone(out / "pid")
+
+
+def test_claude_model_lookup_kills_a_cli_that_does_not_answer(
+    fake_claude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = fake_claude("sleep 30 &\necho $! > $OUT/child\nexec sleep 30")
+    monkeypatch.setattr(claude, "MODEL_LIST_TIMEOUT", 0.3)
+    started = time.monotonic()
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        REAL_REQUEST_MODEL_LIST()
+
+    assert time.monotonic() - started < 1
+    assert gone(out / "pid") and gone(out / "child")  # its children too

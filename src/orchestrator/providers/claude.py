@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
 
 from ..loadout import Loadout
@@ -39,6 +40,10 @@ NO_BACKGROUND_ENV = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}
 # The picker's fallback when the installed CLI cannot say what it offers.
 FALLBACK_MODELS = ("fable", "opus", "sonnet", "haiku")
 MODEL_LIST_TIMEOUT = 20
+# A fallback or generic list is asked for again after this long; a full one is kept.
+MODEL_LIST_RETRY_SECONDS = 600
+UNAVAILABLE_NOTE = "model list unavailable: showing aliases"
+GENERIC_NOTE = "model list may be incomplete"
 _INIT_ID = "orch-models"
 
 
@@ -82,6 +87,11 @@ def request_model_list() -> str:
 
 def parse_model_list(output: str) -> list[tuple[str, str]]:
     """(value, label) pairs from the `initialize` answer; the label carries the version."""
+    return [_model_choice(entry) for entry in model_entries(output)]
+
+
+def model_entries(output: str) -> list[dict]:
+    """The model entries of the `initialize` answer (each with a string `value`)."""
     for line in output.splitlines():
         try:
             data = json.loads(line)
@@ -100,25 +110,42 @@ def parse_model_list(output: str) -> list[tuple[str, str]]:
         entries = answer.get("models") if isinstance(answer, dict) else None
         if not isinstance(entries, list):
             raise ValueError("initialize answer has no model list")
-        models = [_model_choice(m) for m in entries if isinstance(m, dict)]
-        models = [m for m in models if m]
+        models = [m for m in entries if isinstance(m, dict) and _text(m.get("value"))]
         if not models:
             raise ValueError("initialize answer lists no models")
         return models
     raise ValueError("no initialize answer")
 
 
-def _model_choice(entry: dict) -> tuple[str, str] | None:
-    value = entry.get("value")
-    if not isinstance(value, str) or not value:
-        return None
-    label = entry.get("displayName")
-    label = label if isinstance(label, str) and label.strip() else value
-    # "Default (recommended)" names no version: add the model it stands for.
-    if not any(c.isdigit() for c in label):
-        resolved = entry.get("resolvedModel")
-        if resolved and resolved != label:
-            label = f"{label} · {resolved}"
+def looks_generic(entries: list[dict]) -> bool:
+    """The short list the CLI gives before it knows the account: no full model ids, or
+    names without a version (seen: "Opus" for `opus`, "Fable" for `claude-fable-5-1[1m]`)."""
+    others = [entry for entry in entries if entry["value"] != "default"]
+    full_ids = any(entry["value"].startswith("claude-") for entry in others)
+    unversioned = any(not _has_digit(_display_name(entry)) for entry in others)
+    return not full_ids or unversioned
+
+
+def _text(value: object) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _has_digit(text: str) -> bool:
+    return any(c.isdigit() for c in text)
+
+
+def _display_name(entry: dict) -> str:
+    return _text(entry.get("displayName")) or entry["value"]
+
+
+def _model_choice(entry: dict) -> tuple[str, str]:
+    value, label, resolved = entry["value"], _display_name(entry), _text(entry.get("resolvedModel"))
+    if value == "default":
+        # Not the picker's "inherit": an own `default` runs the CLI's default, whatever that
+        # is at the time; the model named here is the one it stood for at lookup.
+        return value, f"Claude Code default (now {resolved})" if resolved else "Claude Code default"
+    if not _has_digit(label) and resolved and resolved != label:
+        label = f"{label} · {resolved}"  # a name without a version: add the model it stands for
     return value, label
 
 
@@ -140,25 +167,32 @@ class ClaudeProvider:
     name = "claude"
     efforts = ("low", "medium", "high", "xhigh", "max")
 
-    models_note: str | None = None  # set when the list is the fallback
+    models_note: str | None = None  # set when the list is the fallback or looks generic
     _models: list[tuple[str, str]] | list[str] | None = None
+    _models_at = 0.0  # time.monotonic() of the lookup
     _models_lock = threading.Lock()
 
     def models(self) -> list[tuple[str, str]] | list[str]:
         """What Claude Code's own `/model` picker offers, as (value for --model, label).
 
-        Asked from the installed CLI once per process; the aliases when that fails.
+        Asked from the installed CLI once per process; the aliases when that fails. A
+        fallback or generic answer is asked for again once it is MODEL_LIST_RETRY_SECONDS old.
         """
         with self._models_lock:
-            if self._models is None:
+            age = time.monotonic() - self._models_at
+            if self._models is None or (self.models_note and age >= MODEL_LIST_RETRY_SECONDS):
+                self._models_at = time.monotonic()
                 try:
-                    self._models = parse_model_list(request_model_list())
+                    entries = model_entries(request_model_list())
                 except (OSError, subprocess.SubprocessError, ValueError) as exc:
                     print(
                         f"claude model list unavailable ({exc}); showing aliases", file=sys.stderr
                     )
                     self._models = list(FALLBACK_MODELS)
-                    self.models_note = "model list unavailable: showing aliases"
+                    self.models_note = UNAVAILABLE_NOTE
+                else:
+                    self._models = [_model_choice(entry) for entry in entries]
+                    self.models_note = GENERIC_NOTE if looks_generic(entries) else None
             return self._models
 
     def invocation(self, ctx: RunContext) -> Invocation:
