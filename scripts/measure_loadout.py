@@ -27,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -76,8 +77,12 @@ def read_stream(path: Path) -> dict[str, Any]:
             mcp_tools=sum(1 for t in tools if str(t).startswith("mcp__")),
             builtin_tools=sorted(t for t in tools if not str(t).startswith("mcp__")),
             mcp_servers=len(servers),
-            mcp_server_names=sorted(
-                f"{s.get('name')}:{s.get('status')}" if isinstance(s, dict) else str(s)
+            # Counts only: server names identify the account's connectors and systems.
+            mcp_server_status=dict(
+                Counter(s.get("status", "?") if isinstance(s, dict) else "?" for s in servers)
+            ),
+            orch_connected=any(
+                isinstance(s, dict) and s.get("name") == "orch" and s.get("status") == "connected"
                 for s in servers
             ),
             skills=len(init.get("skills") or []),
