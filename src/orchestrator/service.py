@@ -30,7 +30,6 @@ from .store import (
     NOTIFICATION,
     NOTIFY_MODES,
     Store,
-    pid_alive,
 )
 
 LEAD_ROLE = "lead"
@@ -40,7 +39,6 @@ QUEUE_PREVIEW_CHARS = 120
 QUEUE_LISTED = 20  # waiting runs in the detail view's `queue`; `queued_runs` has the count
 WAIT_POLL_SECONDS = 1.0
 WITHDRAWN_PREVIEW_CHARS = 80  # of a withdrawn message, in the agent's info event
-RUNNER_EXIT_SECONDS = 2.0  # a withdraw waits this long for the killed runner to be gone
 # The automatic archive check runs from the listings (dashboard poll, `orch ps`,
 # list_agents), at most once per AUTO_ARCHIVE_EVERY seconds across all processes, and stops
 # checking further agents once it has spent AUTO_ARCHIVE_BUDGET seconds (the rest: next time).
@@ -732,7 +730,8 @@ class Orchestrator:
         self.store.add_event(
             run.id, run.agent_id, "info", f"queued message {run.id} withdrawn: {preview}"
         )
-        self._end_waiting_runner(run.pid)
+        # Its runner sees the run gone at its next poll and exits (runner.wait_for_turn);
+        # no signal: it may be in the middle of reconcile or a notification launch.
         # Not for the withdrawn run (it is gone), but the agent may now be settled.
         self.run_ended(run.id, run.agent_id)
         return run
@@ -746,18 +745,6 @@ class Orchestrator:
             return self.store.replace_queued(run_id, message, sender)
         except ValueError as exc:
             raise OrchestratorError(f"cannot edit: {exc}") from None
-
-    @staticmethod
-    def _end_waiting_runner(pid: int | None) -> None:
-        """End the runner of a withdrawn run. It only waited (its run never started), so
-        it is killed outright: on SIGTERM it would record a stop for a run that is gone."""
-        if not pid:
-            return  # not launched yet: the runner finds no run and exits
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(pid, signal.SIGKILL)
-        deadline = time.monotonic() + RUNNER_EXIT_SECONDS
-        while pid_alive(pid) and time.monotonic() < deadline:
-            time.sleep(0.05)
 
     @staticmethod
     def _kill(run: Run, sig: int) -> None:
@@ -777,11 +764,12 @@ class Orchestrator:
         except Exception:
             return True
 
-    def unsaved(self, agent: Agent) -> str | None:
-        """What archiving would hide that is not safe: commits of its own branch not merged
-        into the project's base branch, uncommitted changes in its own worktree. None: an
-        agent without a worktree of its own, or merged and clean. Never raises; a git error
-        is reported as not safe."""
+    def unsaved(self, agent: Agent, deadline: float | None = None) -> str | None:
+        """What archiving would hide that is not safe: commits not merged into the
+        project's base branch (on its own branch, or at its worktree's HEAD: detached or on
+        another branch), uncommitted changes in its own worktree. None: an agent without a
+        worktree of its own, or merged and clean. Never raises; a git error (a timeout, or
+        `deadline` passed: see git.unsaved_work) is reported as not safe."""
         if not agent.owns_worktree or agent.project is None:
             return None
         project = self.store.get_project(agent.project)
@@ -789,7 +777,7 @@ class Orchestrator:
             return "its project is no longer registered"
         try:
             commits, changes = git.unsaved_work(
-                project.path, agent.cwd, agent.branch, project.base_branch
+                project.path, agent.cwd, agent.branch, project.base_branch, deadline
             )
         except (git.GitError, OSError, ValueError) as exc:
             return f"its work could not be checked ({exc})"
@@ -797,12 +785,40 @@ class Orchestrator:
         if commits:
             plural = "commit" if commits == 1 else "commits"
             parts.append(
-                f"{commits} {plural} on {agent.branch} not merged into {project.base_branch}"
+                f"{commits} {plural} not merged into {project.base_branch}"
+                f" (on {agent.branch} or checked out in its worktree)"
             )
         if changes:
             plural = "change" if changes == 1 else "changes"
             parts.append(f"{changes} uncommitted {plural} in {agent.cwd}")
         return " and ".join(parts) or None
+
+    def _held(self, agent: Agent, undelivered: bool) -> Callable[[Any], str | None]:
+        """A check for Store.archive, inside its transaction: why the agent must not be
+        archived now, or None. An agent owning a worktree in which another agent works is
+        held; with `undelivered`, also one whose parent has not received a result of it
+        yet (notify: deliverable runs; delivered by a notification or wait_for_agents)."""
+
+        def held(conn: Any) -> str | None:
+            if agent.owns_worktree:
+                row = conn.execute(
+                    "SELECT a.id FROM agents a JOIN runs r ON r.agent_id = a.id"
+                    " WHERE a.cwd = ? AND a.id != ? AND r.status IN (?, ?) LIMIT 1",
+                    (agent.cwd, agent.id, RunStatus.WAITING.value, RunStatus.RUNNING.value),
+                ).fetchone()
+                if row:
+                    return f"{row['id']} works in its worktree"
+            if undelivered and agent.parent_id:
+                for kid in notify.children(conn, agent.parent_id):
+                    if kid.id == agent.id and kid.deliverable:
+                        return f"{agent.parent_id} has not received its result yet"
+            return None
+
+        return held
+
+    def _check_held(self, agent: Agent, undelivered: bool) -> str | None:
+        with self.store.connection() as conn:
+            return self._held(agent, undelivered)(conn)
 
     def _archivable(self, agent: Agent) -> None:
         if agent.project is None:
@@ -817,13 +833,17 @@ class Orchestrator:
         not merged needs `confirm` (else NeedsConfirmation says what it is)."""
         agent = self.agent(agent_id)
         self._archivable(agent)
+        busy = f"{agent.id} or one of its agents has a queued or running turn"
         if self.store.active_runs(agent.id) or self.store.active_descendants(agent.id):
-            raise OrchestratorError(f"{agent.id} or one of its agents has a queued or running turn")
+            raise OrchestratorError(busy)
+        if held := self._check_held(agent, undelivered=False):
+            raise OrchestratorError(f"{agent.id} cannot be archived now: {held}")
         unsaved = self.unsaved(agent)
         if unsaved and not confirm:
             raise NeedsConfirmation(f"{agent.id} has {unsaved}")
-        if not self.store.archive(agent.id, ARCHIVE_MANUAL):
-            raise OrchestratorError(f"{agent.id} or one of its agents has a queued or running turn")
+        refused = self.store.archive(agent.id, ARCHIVE_MANUAL, held=self._held(agent, False))
+        if refused:
+            raise OrchestratorError(busy if refused is True else f"{agent.id}: {refused}")
         return {"archived": agent.id, "unsaved": unsaved}
 
     def restore(self, agent_id: str) -> dict[str, Any]:
@@ -835,8 +855,9 @@ class Orchestrator:
     def archive_safe(self, project_name: str | None = None) -> dict[str, Any]:
         """Archive by hand every agent (of one project) whose work is safe and which is not
         working: no worktree of its own, or its branch merged and its worktree clean.
-        Project leads and the orchestrator are left alone. Returns the ids archived and,
-        for the others that are idle, why they were kept."""
+        Project leads and the orchestrator are left alone, and so is an agent whose parent
+        has not received its result yet or in whose worktree another agent works. Returns
+        the ids archived and, for the others that are idle, why they were kept."""
         if project_name:
             self.project(project_name)
         archived, kept = [], {}
@@ -846,17 +867,24 @@ class Orchestrator:
                 continue
             if self.store.active_runs(agent.id) or self.store.active_descendants(agent.id):
                 continue
-            if unsaved := self.unsaved(agent):
-                kept[agent.id] = unsaved
-            elif self.store.archive(agent.id, ARCHIVE_MANUAL):
-                archived.append(agent.id)
+            reason = self._check_held(agent, undelivered=True) or self.unsaved(agent)
+            if not reason:
+                refused = self.store.archive(agent.id, ARCHIVE_MANUAL, held=self._held(agent, True))
+                reason = refused if isinstance(refused, str) else None
+                if refused is None:
+                    archived.append(agent.id)
+            if reason:
+                kept[agent.id] = reason
         return {"archived": archived, "kept": kept}
 
     def auto_archive(self) -> list[str]:
         """Archive every agent that is idle and safe for long enough (see `tidy`): no turn
-        queued or running in it or below it, last activity older than the project's
-        `archive_after_hours`, its work safe (`unsaved`), not a lead, not the orchestrator.
-        Returns the ids archived."""
+        queued or running in it or below it (or in its worktree), last activity older than
+        the project's `archive_after_hours`, its work safe (`unsaved`), its results
+        received by its parent, not a lead, not the orchestrator. The whole pass, git
+        included, ends within AUTO_ARCHIVE_BUDGET (plus git.KILL_GRACE when a git call had
+        to be killed); agents not checked by then are checked next time. Returns the ids
+        archived."""
         deadline = time.monotonic() + AUTO_ARCHIVE_BUDGET
         marks = self.store.archived()
         activity = self.store.last_activity()
@@ -876,13 +904,16 @@ class Orchestrator:
                 candidates.append((activity.get(agent.id) or "", agent, cutoff))
         archived = []
         for _, agent, cutoff in sorted(candidates, key=lambda item: item[0]):
-            if time.monotonic() > deadline:
+            if time.monotonic() >= deadline:
                 break
             if self.is_lead(agent) or self.store.active_runs(agent.id):
                 continue
-            if self.store.active_descendants(agent.id) or self.unsaved(agent):
+            if self.store.active_descendants(agent.id) or self._check_held(agent, True):
                 continue
-            if self.store.archive(agent.id, ARCHIVE_AUTO, idle_since=cutoff):
+            if self.unsaved(agent, deadline) or time.monotonic() >= deadline:
+                continue
+            held = self._held(agent, undelivered=True)
+            if self.store.archive(agent.id, ARCHIVE_AUTO, idle_since=cutoff, held=held) is None:
                 archived.append(agent.id)
         return archived
 

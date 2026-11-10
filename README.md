@@ -115,11 +115,14 @@ orch config archive-after 48 [-p valami]   # automatikus archiválás ennyi tét
 
 Dolgozó agent (várakozó vagy futó köre van, vagy valamelyik al-agentjének) nem archiválható.
 A munka akkor **biztonságos**, ha az agentnek nincs saját worktree-je (planner, reviewer, megosztott
-worktree), vagy a branche teljesen be van mergelve a projekt alap-branchébe és a worktree-ben
-nincs commitolatlan változás (vagy a worktree már nem létezik). Az **automatikus archiválás**
-(alapból 24 tétlen óra után; globálisan és projektenként állítható, a **Modellek és effort**
-ablakban is) csak tétlen, biztonságos munkájú agentet archivál, lead-et és az orchestratort
-soha; git hiba esetén sem. Nincs hozzá daemon: a listázások (webes lekérdezés, `orch ps`,
+worktree), vagy a branche és a worktree-ben kicsekkolt HEAD (leválasztott HEAD vagy másik
+branch) minden commitja benne van a projekt alap-branchében (squash merge után nincs), és a
+worktree-ben nincs commitolatlan változás (vagy a worktree már nem létezik). Az **automatikus
+archiválás** (alapból 24 tétlen óra után; globálisan és projektenként állítható, a **Modellek és
+effort** ablakban is) csak tétlen, biztonságos munkájú agentet archivál, és csak ha a szülője
+már megkapta az eredményét, és más agent sem dolgozik a worktree-jében; lead-et és az
+orchestratort soha, git hiba vagy időtúllépés esetén sem (egy menet git hívásokkal együtt
+legfeljebb kb. 5 másodperc). Nincs hozzá daemon: a listázások (webes lekérdezés, `orch ps`,
 `list_agents`) futtatják, folyamatokon át legfeljebb 5 percenként. Végleges törlés csak az
 archívumból és csak a felhasználó kezéből lehetséges; az agentek az MCP-n csak archiválnak.
 

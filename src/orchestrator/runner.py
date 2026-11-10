@@ -60,6 +60,9 @@ def wait_for_turn(store: Store, run: Run) -> str | None:
     removed or ended by someone else meanwhile."""
     polls = 0
     while True:
+        # Withdrawn meanwhile (Orchestrator.withdraw deletes it): end at this safe point.
+        if store.get_run(run.id) is None:
+            raise notify.Gone
         blocked = False
         for dep_id in run.depends_on:
             dep = store.get_run(dep_id)

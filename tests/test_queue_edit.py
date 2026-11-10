@@ -12,10 +12,10 @@ import pytest
 from starlette.testclient import TestClient
 from typer.testing import CliRunner
 
-from orchestrator import cli, mcp_server
+from orchestrator import cli, mcp_server, runner
 from orchestrator.models import RunStatus
 from orchestrator.service import Orchestrator, OrchestratorError
-from orchestrator.store import NOTIFICATION, pid_alive
+from orchestrator.store import MESSAGE, NOTIFICATION, Store, pid_alive
 from orchestrator.web.app import app
 
 ORIGIN = {"origin": "http://localhost"}
@@ -49,13 +49,13 @@ def test_a_withdrawn_message_never_runs_and_the_others_go_on(
     third = orch.send(agent.id, "third")
     other, dependent = orch.spawn(project, "dependent", worktree=False, after=[second.id])
     running(orch, agent.id)
-    runner = until(lambda: orch.store.get_run(second.id).pid)
+    runner_pid = until(lambda: orch.store.get_run(second.id).pid)
 
     withdrawn = orch.withdraw(second.id)
 
     assert withdrawn.id == second.id and withdrawn.prompt == "second"
     assert orch.store.get_run(second.id) is None
-    assert not pid_alive(runner)
+    until(lambda: not pid_alive(runner_pid), timeout=5)  # it noticed at its next poll
     assert orch.store.get_run(first.id).status is RunStatus.RUNNING  # untouched
     view, other_view = finished(orch, agent.id, other.id)
     runs = orch.store.runs_of(agent.id)
@@ -111,51 +111,110 @@ def test_the_agent_receives_the_replaced_text(orch: Orchestrator, project: str) 
     assert prompts[0] == "new text"
 
 
-@pytest.mark.parametrize("action", ["withdraw", "replace"])
-def test_a_change_and_the_turn_starting_at_once_exactly_one_wins(
-    orch: Orchestrator, project: str, action: str
+def test_a_runner_waiting_for_a_dependency_ends_when_its_run_is_withdrawn(
+    orch: Orchestrator, project: str
+) -> None:
+    dep_agent, dep = orch.spawn(project, "SLEEP 4 dep", worktree=False)
+    agent, waiting = orch.spawn(project, "never", worktree=False, after=[dep.id])
+    try:
+        running(orch, dep_agent.id)
+        runner_pid = until(lambda: orch.store.get_run(waiting.id).pid)
+        time.sleep(1)  # the runner is in its poll loop, waiting for the dependency
+
+        orch.withdraw(waiting.id)
+
+        until(lambda: not pid_alive(runner_pid), timeout=3)
+        # It ended on its own, not because the dependency did.
+        assert orch.store.get_run(dep.id).status is RunStatus.RUNNING
+    finally:
+        orch.stop(dep_agent.id)
+    assert orch.store.runs_of(agent.id) == []
+    events = orch.store.events(agent.id)
+    assert [(e.run_id, e.kind) for e in events] == [(waiting.id, "info")]
+
+
+def test_an_edit_committed_just_before_the_turn_is_taken_reaches_the_agent(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     agent = orch.create_agent(project, worktree=False)
-    outcomes = set()
-    for _ in range(15):
-        run = orch.store.add_run(agent.id, "queued")  # no runner: this test takes the turn
-        start = threading.Barrier(2)
-        result: dict[str, Any] = {}
+    queued = orch.store.add_run(agent.id, "old text")  # no runner launched: the test is it
+    stale = orch.store.get_run(queued.id)  # what a runner read when it started
+    take = orch.store.take_turn
 
-        def change(run_id: int = run.id, result: dict = result, start=start) -> None:
-            start.wait()
-            try:
-                if action == "withdraw":
-                    orch.withdraw(run_id)
-                else:
-                    orch.replace_message(run_id, "replaced")
-                result["changed"] = True
-            except OrchestratorError as exc:
-                result["changed"] = str(exc)
+    def edit_then_take(run: Any, kind: str) -> bool | None:
+        orch.replace_message(queued.id, "new text")
+        monkeypatch.setattr(orch.store, "take_turn", take)
+        return take(run, kind)
 
-        def take(run=run, result: dict = result, start=start) -> None:
-            start.wait()
-            result["started"] = orch.store.take_turn(run)
+    monkeypatch.setattr(orch.store, "take_turn", edit_then_take)
 
-        threads = [threading.Thread(target=change), threading.Thread(target=take)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-        stored = orch.store.get_run(run.id)
-        if result["changed"] is not True:  # the turn came first: the change was refused
-            assert "has already started" in result["changed"]
-            assert result["started"] is True and stored.prompt == "queued"
-            outcomes.add("turn")
-        elif action == "withdraw":  # the withdrawal came first: the turn found no run
-            assert result["started"] is None and stored is None
-            outcomes.add("change")
-        else:  # the edit came first: the turn (started or not yet) has the new text
-            assert stored.prompt == "replaced"
-            outcomes.add("change")
-        if stored is not None and stored.status.active:
-            orch.store.finish_run(run.id, RunStatus.DONE)
-    assert outcomes <= {"turn", "change"}
+    runner.take_turn(orch.store, stale, MESSAGE)
+
+    done = orch.store.get_run(queued.id)
+    assert (done.status, done.result) == (RunStatus.DONE, "echo[new]: new text")
+    prompts = [e.text for e in orch.store.events(agent.id) if e.kind == "prompt"]
+    assert prompts == ["new text"]
+
+
+@pytest.mark.parametrize("first", ["turn", "change"])
+@pytest.mark.parametrize("action", ["withdraw", "replace"])
+def test_a_change_and_the_turn_starting_at_once_are_serialised(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch, action: str, first: str
+) -> None:
+    """`first` is paused inside its write transaction; the other one, started meanwhile,
+    waits for that lock and then sees the outcome."""
+    agent = orch.create_agent(project, worktree=False)
+    run = orch.store.add_run(agent.id, "queued")  # no runner: this test takes the turn
+    inside, release = threading.Event(), threading.Event()
+
+    def hold(original: Callable[..., Any]) -> Callable[..., Any]:
+        def held(*args: Any, **kwargs: Any) -> Any:
+            value = original(*args, **kwargs)
+            inside.set()
+            assert release.wait(10)
+            return value
+
+        return held
+
+    if first == "turn":
+        monkeypatch.setattr(Store, "start_run", staticmethod(hold(Store.start_run)))
+    else:
+        monkeypatch.setattr(Store, "_queued_message", hold(Store._queued_message))
+    result: dict[str, Any] = {}
+
+    def change() -> None:
+        try:
+            if action == "withdraw":
+                orch.withdraw(run.id)
+            else:
+                orch.replace_message(run.id, "replaced")
+            result["changed"] = True
+        except OrchestratorError as exc:
+            result["changed"] = str(exc)
+
+    def take() -> None:
+        result["started"] = orch.store.take_turn(run)
+
+    leader = threading.Thread(target=take if first == "turn" else change)
+    leader.start()
+    assert inside.wait(10)
+    follower = threading.Thread(target=change if first == "turn" else take)
+    follower.start()
+    time.sleep(0.3)
+    assert follower.is_alive()  # waits for the leader's write lock
+    release.set()
+    leader.join(10)
+    follower.join(10)
+
+    stored = orch.store.get_run(run.id)
+    if first == "turn":
+        assert result["started"] is True and "has already started" in result["changed"]
+        assert (stored.status, stored.prompt) == (RunStatus.RUNNING, "queued")
+    elif action == "withdraw":
+        assert result == {"changed": True, "started": None} and stored is None
+    else:
+        assert result == {"changed": True, "started": True}
+        assert (stored.status, stored.prompt) == (RunStatus.RUNNING, "replaced")
 
 
 @pytest.fixture

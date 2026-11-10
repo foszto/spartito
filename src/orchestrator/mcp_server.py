@@ -236,11 +236,15 @@ def _statuses(
 
 @server.tool()
 def list_projects() -> list[dict[str, Any]]:
-    """List registered projects with the number of agents in each."""
+    """List registered projects with the number of agents in each (archived ones not)."""
     orch = _orch()
     caller = _caller(orch)
     return [
-        {**vars(project), "agents": len(orch.store.list_agents(project.name))}
+        {
+            **vars(project),
+            "agents": len(orch.store.list_agents(project.name))
+            - len(orch.store.archived(project.name)),
+        }
         for project in orch.store.list_projects()
         if not (caller and caller.project) or project.name == caller.project
     ]
