@@ -17,7 +17,9 @@ running total of the session instead, like `codex exec resume` does.
 1000-token window for the model; `AUTOCOMPACT` reports an automatic compaction before it.
 A prompt that starts with `/compact` (FakeProvider.compact_prompt) compacts: a manual
 compaction (48450 -> 901 tokens) and an empty result, like Claude Code; with `NOOP` in it,
-it answers like Claude with `--disable-slash-commands` instead. `invocation` writes what the
+it answers like Claude with `--disable-slash-commands` instead (with `CODEX` as well: like a
+Codex model, `compacted`). FAKE_NEEDS_SIZE=1 makes the provider ask for the context size
+before a compaction, like Codex. `invocation` writes what the
 runner passed it (prompt, slash_commands, output_schema, compact_below) to `ctx.json` in
 the run's scratch directory.
 
@@ -39,6 +41,7 @@ that keeps the script's stdout open for an hour and kills the script before it a
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 from orchestrator.models import Agent, Event, Usage
@@ -111,7 +114,8 @@ for flag, value in zip(words, words[1:]):
         extra["windows"] = {"fake-model-1": 1000}
 if prompt.startswith("/compact"):
     if "NOOP" in words:
-        print(json.dumps({"result": "/compact isn't available in this environment.", **extra}))
+        reply = "compacted" if "CODEX" in words else "/compact isn't available in this environment."
+        print(json.dumps({"result": reply, **extra}))
     else:
         print(json.dumps({"compact": ["manual", 48450, 901]}), flush=True)
         print(json.dumps({"result": "", **extra}), flush=True)
@@ -160,6 +164,10 @@ if server:
 class FakeProvider:
     name = "fake"
     efforts = ("low", "high")
+
+    @property
+    def compact_needs_size(self) -> bool:
+        return os.environ.get("FAKE_NEEDS_SIZE") == "1"
 
     def models(self) -> list[str]:
         return ["fake-small", "fake-large"]

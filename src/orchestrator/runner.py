@@ -158,7 +158,13 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
     kind = store.meta(run.id).kind
     compact = kind == COMPACT
     began = now()
-    before = context_now(store.runs_of(agent.id), store.usage_of(agent.id), agent.session_id)
+    recorded = store.usage_of(agent.id)
+    before = context_now(store.runs_of(agent.id), recorded, agent.session_id)
+    if compact and getattr(provider, "compact_needs_size", False) and compact_limit(before) is None:
+        # Checked when it was queued, but e.g. a compaction just before left it unknown.
+        store.add_event(run.id, agent.id, "error", SIZE_UNKNOWN)
+        store.finish_run(run.id, RunStatus.FAILED, error=SIZE_UNKNOWN)
+        return
     if project and agent.owns_worktree and git.ensure_initial_commit(project.path):
         note = "the repository had no commits: created an empty initial commit to branch from"
         store.add_event(run.id, agent.id, "info", note)
@@ -306,7 +312,9 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
                 child.stdout.close()
 
     result = combine_results(results)
-    measured = measured_context(context, compaction, windows)
+    # A run without a result (the CLI died) reports no window: the model's known one.
+    known = {u.model: u.context_window for u in recorded.values() if u.model and u.context_window}
+    measured = measured_context(context, compaction, {**known, **windows})
     context_after = getattr(provider, "context_after", None)
     if context_after and session_id:
         read = context_after(session_id, began)
@@ -318,8 +326,10 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
     usage = record_usage(store, run, agent, result, reported_model, session_id, measured)
     cost = usage.cost_usd if usage else None
     if compact and result and not result.is_error and code == 0 and not measured.compact_trigger:
-        # Nothing was compacted, e.g. "/compact isn't available in this environment."
-        failure = result.text or last_text or "the CLI did not compact the conversation"
+        # Nothing was compacted, e.g. "/compact isn't available in this environment." (or
+        # a Codex model's no-op reply, which must not read as success).
+        answer = one_line(result.text or last_text)
+        failure = NOT_COMPACTED + (f" (the CLI answered: {answer})" if answer else "")
         result = dataclasses.replace(result, text=failure, is_error=True)
     if result and not result.is_error and code == 0:
         text = compact_summary(measured) if compact else result.text or last_text
@@ -660,6 +670,18 @@ def measured_context(
             window = next(iter(windows.values()))
         measured.context_window = window
     return measured
+
+
+NOT_COMPACTED = "nothing was compacted"
+SIZE_UNKNOWN = (
+    "not compacted: the conversation's size is not known (e.g. right after a compaction);"
+    " it is after the agent's next turn"
+)
+
+
+def one_line(text: str, limit: int = 200) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[:limit] + "…"
 
 
 def compact_limit(before: Usage | None) -> int | None:

@@ -106,7 +106,9 @@ def test_a_compaction_the_cli_does_not_perform_fails(orch: Orchestrator, project
 
     failed = orch.store.get_run(run.id)
     assert failed.status is RunStatus.FAILED
-    assert failed.error == "/compact isn't available in this environment."
+    assert failed.error == (
+        "nothing was compacted (the CLI answered: /compact isn't available in this environment.)"
+    )
     assert orch.view(orch.agent(agent.id))["context"]["tokens"] == 780  # nothing changed
 
 
@@ -553,3 +555,48 @@ def test_a_queued_compaction_can_be_withdrawn_but_not_edited(
     assert withdrawn.json() == {"withdrawn": again.id, "agent_id": agent.id}
     finished(orch, agent.id)
     assert orch.store.get_run(again.id) is None
+
+
+def test_a_compaction_that_needs_the_size_fails_cleanly_without_it(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_NEEDS_SIZE", "1")  # like Codex: the limit is half the size
+    agent, _ = orch.spawn(project, "CONTEXT 780", worktree=False)
+    finished(orch, agent.id)
+    orch.send(agent.id, "SLEEP 1 busy")
+    first = orch.compact(agent.id)
+    second = orch.compact(agent.id)  # still allowed: the size is known when it is queued
+    view = finished(orch, agent.id)
+
+    assert seen_by_provider(first.id)["compact_below"] == 390
+    failed = orch.store.get_run(second.id)
+    assert failed.status is RunStatus.FAILED and failed.error.startswith("not compacted: the ")
+    assert not (config.run_dir(second.id) / "ctx.json").exists()  # never launched
+    assert view["status"] == "done" and view["context"]["compacted"]
+
+
+def test_a_no_op_reply_to_a_compaction_reads_as_a_failure(orch: Orchestrator, project: str) -> None:
+    agent, _ = orch.spawn(project, "CONTEXT 780", worktree=False)
+    finished(orch, agent.id)
+
+    run = orch.compact(agent.id, "NOOP CODEX")
+    finished(orch, agent.id)
+
+    failed = orch.store.get_run(run.id)
+    assert failed.error == "nothing was compacted (the CLI answered: compacted)"
+    shown = CliRunner().invoke(cli.app, ["status", agent.id]).output
+    assert f"#{run.id} failed: nothing was compacted" in shown
+
+
+def test_a_run_without_a_result_keeps_the_known_window(orch: Orchestrator, project: str) -> None:
+    agent, _ = orch.spawn(project, "CONTEXT 500", worktree=False)
+    finished(orch, agent.id)
+
+    run = orch.send(agent.id, "CONTEXT 960 DIE")  # the CLI dies before its result
+    view = finished(orch, agent.id)
+
+    assert orch.store.get_run(run.id).status is RunStatus.FAILED
+    usage = orch.store.get_usage(run.id)
+    assert (usage.context_tokens, usage.context_window) == (960, 1000)
+    assert view["context"] == {"tokens": 960, "window": 1000, "percent": 96, "compacted": False}
+    assert "960/1k 96%" in CliRunner().invoke(cli.app, ["ps"]).output
