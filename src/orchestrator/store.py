@@ -637,12 +637,12 @@ class Store:
         conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
 
     def withdraw_queued(self, run_id: int, sender: Any = ANYONE) -> Run:
-        """Delete a queued message run that has not started; returns it as it was. Atomic
-        against its runner taking the turn (`take_turn` then finds it gone). Raises
+        """Delete a queued message or compaction run that has not started; returns it as it
+        was. Atomic against its runner taking the turn (`take_turn` then finds it gone). Raises
         ValueError, saying why, for anything else; with `sender`, also for a run that
         another sender queued."""
         with self.transaction() as conn:
-            run = self._queued_message(conn, run_id, sender)
+            run = self._queued_message(conn, run_id, sender, compaction=True)
             self.delete_run(run_id, conn)
         return run
 
@@ -656,7 +656,10 @@ class Store:
         assert run is not None
         return run
 
-    def _queued_message(self, conn: sqlite3.Connection, run_id: int, sender: Any) -> Run:
+    def _queued_message(
+        self, conn: sqlite3.Connection, run_id: int, sender: Any, compaction: bool = False
+    ) -> Run:
+        """The queued run, if it is a message (with `compaction`: or a compaction)."""
         row = conn.execute(
             "SELECT r.*, m.kind AS meta_kind, m.sender AS meta_sender FROM runs r"
             " LEFT JOIN run_meta m ON m.run_id = r.id WHERE r.id = ?",
@@ -664,9 +667,9 @@ class Store:
         ).fetchone()
         if row is None or (sender is not ANYONE and row["meta_sender"] != sender):
             raise ValueError(f"no run {run_id}" + ("" if sender is ANYONE else " sent by you"))
-        if row["meta_kind"] == COMPACT:
-            raise ValueError(f"run {run_id} is a compaction, not a message (orch stop ends it)")
-        if (row["meta_kind"] or MESSAGE) != MESSAGE:
+        if row["meta_kind"] == COMPACT and not compaction:
+            raise ValueError(f"run {run_id} is a compaction (it can be withdrawn, not edited)")
+        if (row["meta_kind"] or MESSAGE) not in IN_ORDER:
             raise ValueError(f"run {run_id} is a notification (written when it starts)")
         if row["status"] == RunStatus.RUNNING.value:
             raise ValueError(f"run {run_id} has already started")

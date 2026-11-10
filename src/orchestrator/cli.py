@@ -714,7 +714,8 @@ def compact(
 
 @app.command()
 def withdraw(run_id: int) -> None:
-    """Withdraw a queued message (a `#<run id>` of `orch status`) before it starts."""
+    """Withdraw a queued message or compaction (a `#<run id>` of `orch status`) before it
+    starts."""
     try:
         run = orch().withdraw(run_id)
     except OrchestratorError as exc:

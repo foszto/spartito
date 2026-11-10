@@ -739,17 +739,18 @@ class Orchestrator:
         return [run.id for run in active]
 
     def withdraw(self, run_id: int, sender: Any = ANYONE) -> Run:
-        """Withdraw a queued message that has not started: it never runs and leaves no run
-        behind (runs waiting for it are skipped as for any vanished dependency); the
-        agent's running turn and its other queued runs go on. `sender`: only a run that
-        this agent queued. Returns the run as it was."""
+        """Withdraw a queued message or compaction that has not started: it never runs and
+        leaves no run behind (runs waiting for it are skipped as for any vanished
+        dependency); the agent's running turn and its other queued runs go on. `sender`:
+        only a run that this agent queued. Returns the run as it was."""
+        what = "compaction" if self.store.meta(run_id).kind == COMPACT else "message"
         try:
             run = self.store.withdraw_queued(run_id, sender)
         except ValueError as exc:
             raise OrchestratorError(f"cannot withdraw: {exc}") from None
         preview = " ".join(run.prompt.split())[:WITHDRAWN_PREVIEW_CHARS]
         self.store.add_event(
-            run.id, run.agent_id, "info", f"queued message {run.id} withdrawn: {preview}"
+            run.id, run.agent_id, "info", f"queued {what} {run.id} withdrawn: {preview}"
         )
         # Its runner sees the run gone at its next poll and exits (runner.wait_for_turn);
         # no signal: it may be in the middle of reconcile or a notification launch.

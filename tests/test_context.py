@@ -524,3 +524,32 @@ def test_codex_compaction_lowers_the_auto_compaction_limit(tmp_path: Path) -> No
     assert compact_limit(Usage(context_tokens=15172)) == 7586
     assert compact_limit(None) is None and compact_limit(Usage()) is None
     assert "model_auto_compact_token_limit" not in " ".join(CodexProvider().invocation(ctx).argv)
+
+
+def test_a_queued_compaction_can_be_withdrawn_but_not_edited(
+    orch: Orchestrator, project: str
+) -> None:
+    agent, _ = orch.spawn(project, "CONTEXT 10", worktree=False)
+    finished(orch, agent.id)
+    busy = orch.send(agent.id, "SLEEP 1.5 busy")
+    compaction = orch.compact(agent.id)
+    later = orch.send(agent.id, "later")
+
+    with pytest.raises(OrchestratorError, match="can be withdrawn, not edited"):
+        orch.replace_message(compaction.id, "/compact other")
+    orch.withdraw(compaction.id)
+    finished(orch, agent.id)
+
+    assert orch.store.get_run(compaction.id) is None
+    assert [orch.store.get_run(r.id).status for r in (busy, later)] == [RunStatus.DONE] * 2
+    infos = [e.text for e in orch.store.events(agent.id) if e.kind == "info"]
+    assert f"queued compaction {compaction.id} withdrawn: /compact" in infos
+
+    # The dashboard's route withdraws it the same way while it is queued.
+    client = TestClient(app, base_url="http://localhost")
+    orch.send(agent.id, "SLEEP 1.5 busy again")
+    again = orch.compact(agent.id)
+    withdrawn = client.post(f"/api/runs/{again.id}/withdraw", json={}, headers=ORIGIN)
+    assert withdrawn.json() == {"withdrawn": again.id, "agent_id": agent.id}
+    finished(orch, agent.id)
+    assert orch.store.get_run(again.id) is None

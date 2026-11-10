@@ -721,11 +721,11 @@ function renderQueue(agent) {
       el('span', 'preview', run.prompt.replace(/\s+/g, ' ')));
     row.title = `#${run.id}: ${run.prompt}`;
     // A notification's text is written when it starts: nothing to edit or withdraw yet.
-    if (run.kind === 'message') {
+    // A compaction can be withdrawn, not edited.
+    if (run.kind === 'message' || run.kind === 'compact') {
       const actions = el('span', 'actions');
-      actions.append(
-        button('ghost icon', 'pencil', null, () => editQueued(run), `Edit queued message #${run.id}`),
-        button('ghost icon', 'x', null, () => withdrawQueued(run), `Withdraw queued message #${run.id}`));
+      if (run.kind === 'message') actions.append(button('ghost icon', 'pencil', null, () => editQueued(run), `Edit queued message #${run.id}`));
+      actions.append(button('ghost icon', 'x', null, () => withdrawQueued(run), `Withdraw queued ${run.kind === 'compact' ? 'compaction' : 'message'} #${run.id}`));
       row.append(actions);
     }
     queue.append(row);
@@ -788,13 +788,14 @@ async function editQueued(run) {
 }
 
 function withdrawQueued(run) {
+  const what = run.kind === 'compact' ? 'compaction' : 'message';
   confirmDialog({
-    title: `Withdraw queued message #${run.id}?`,
+    title: `Withdraw queued ${what} #${run.id}?`,
     text: `It never runs; turns that wait for it are skipped. “${run.prompt.replace(/\s+/g, ' ').slice(0, 200)}”`,
     ok: 'Withdraw',
     action: async () => {
       await call(`/api/runs/${run.id}/withdraw`, {});
-      toast('Queued message withdrawn'); await refresh();
+      toast(`Queued ${what} withdrawn`); await refresh();
     },
   });
 }
