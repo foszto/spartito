@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import json
+import re
 import sqlite3
 import subprocess
 import threading
@@ -247,6 +248,46 @@ def test_a_run_queued_after_the_idle_check_means_not_finished(
     }
 
 
+def test_many_undelivered_runs_stay_within_one_budget(orch: Orchestrator, project: str) -> None:
+    agent_id = worker(orch, project, "first")
+    wait(agent_id)
+    runs = []
+    for n in range(30):
+        run = orch.store.add_run(agent_id, f"task {n}")
+        orch.store.finish_run(run.id, RunStatus.FAILED, result=LONG, error=LONG[:5000])
+        runs.append(run.id)
+
+    reply = wait(agent_id)
+    again = wait(agent_id)
+
+    (outcome,) = reply["agents"]
+    assert len(json.dumps(reply)) < 2 * 4000
+    assert outcome["last_run"]["id"] == runs[-1]
+    assert outcome["last_run"]["error"].startswith(LONG[:4000])  # the budget is spent
+    assert outcome["last_run"]["more"] == f"get_agent run_id={runs[-1]}"
+    assert "earlier_runs" not in outcome
+    assert [run["id"] for run in outcome["other_runs"]] == runs[-21:-1]
+    assert "9 older runs not listed" in outcome["other_runs_note"]
+    assert "other_runs" not in again["agents"][0]  # listed runs count as delivered
+    assert "already_delivered" in again["agents"][0]["last_run"]
+
+
+def test_earlier_runs_share_the_budget_newest_first(orch: Orchestrator, project: str) -> None:
+    agent_id = worker(orch, project, "first")
+    wait(agent_id)
+    runs = [finish(orch, agent_id, f"answer {n} " + "x" * 1000) for n in range(5)]
+
+    (outcome,) = wait(agent_id, result_chars=2500)["agents"]
+
+    assert outcome["last_run"]["result"].startswith("answer 4 ")
+    earlier = outcome["earlier_runs"]
+    assert [run["id"] for run in earlier] == runs[2:4]
+    assert earlier[1]["result"].startswith("answer 3 ") and "…" not in earlier[1]["result"]
+    assert earlier[0]["result"].startswith("answer 2 ") and "result_offset=" in earlier[0]["result"]
+    assert [run["id"] for run in outcome["other_runs"]] == runs[:2]
+    assert len(json.dumps(outcome)) < 2 * 2500
+
+
 # -- get_agent --------------------------------------------------------------
 
 
@@ -292,13 +333,15 @@ def test_get_agent_pages_structured_output(orch: Orchestrator, project: str) -> 
     text = json.dumps(data)
 
     cut = wait(agent_id, result_chars=2000)["agents"][0]["last_run"]["structured"]
-    rest = mcp_server.get_agent(agent_id, result_offset=2000)["last_run"]["structured"]
+    offset = int(re.search(r"result_offset=(\d+)", cut).group(1))
+    rest = mcp_server.get_agent(agent_id, result_offset=offset)["last_run"]["structured"]
     whole = mcp_server.get_agent(agent_id)["last_run"]["structured"]
     past = mcp_server.get_agent(agent_id, result_offset=5000)["last_run"]["structured"]
 
-    assert len(text) == 3000 and cut.split("…")[0] == text[:2000]
-    assert "result_offset=2000" in cut
-    assert rest == f"[chars 2000-3000 of 3000] {text[2000:]}"
+    # The cut JSON is a string in the reply: its quotes are escaped within the 2000.
+    assert len(text) == 3000 and cut.split("…")[0] == text[:offset]
+    assert 1990 <= offset < 2000 and len(json.dumps(cut.split("…")[0])) <= 2002
+    assert rest == f"[chars {offset}-3000 of 3000] {text[offset:]}"
     assert whole == data
     assert past == "[result_offset 5000 is past the end: 3000 chars]"
 
@@ -314,7 +357,8 @@ def test_get_agent_limits_the_error_and_gives_it_in_full(orch: Orchestrator, pro
 
     assert cut.split("…")[0] == LONG[:4000] and len(cut) < 4100
     assert "result_chars=0 for all" in cut and "result_offset" not in cut
-    assert waited == cut
+    assert waited.split("…")[0] == LONG[:4000] and "result_offset" not in waited
+    assert f"get_agent run_id={run.id} result_chars=0 for all" in waited
     assert full == LONG
 
 
@@ -334,14 +378,14 @@ def test_agent_log_stays_under_the_cap_and_returns_an_event_in_full(
     agent_id = worker(orch, project)
     run_id = orch.store.last_run(agent_id).id
     for n in range(100):
-        orch.store.add_event(run_id, agent_id, "text", f"event {n} " + "y" * 3000)
+        orch.store.add_event(run_id, agent_id, "text", f'event {n} "q"\n\t…' + "y" * 3000)
     newest = orch.store.events(agent_id)[-1]
 
     reply = mcp_server.agent_log(agent_id)
     (one,) = mcp_server.agent_log(agent_id, event_id=newest.id)
     everything = mcp_server.agent_log(agent_id, tail=100, event_chars=0, max_chars=0)
 
-    assert sum(map(len, reply)) <= 6000
+    assert len(json.dumps(reply)) <= 6000
     assert reply[0].startswith("[") and "older events omitted" in reply[0]
     assert reply[-1].startswith(f"#{newest.id} ") and "event 99 " in reply[-1]
     assert "… [+" in reply[-1] and len(reply[-1]) < 400
@@ -359,18 +403,20 @@ def test_agent_log_refuses_another_agents_event(orch: Orchestrator, project: str
 
 
 @pytest.mark.parametrize("event_chars", [0, 10, 300])
-@pytest.mark.parametrize("max_chars", [1, 30, 100, 359, 500, 4100])
+@pytest.mark.parametrize("max_chars", [1, 2, 30, 100, 359, 500, 4100])
 def test_agent_log_respects_any_cap(
     orch: Orchestrator, project: str, event_chars: int, max_chars: int
 ) -> None:
     agent_id = worker(orch, project)
     run_id = orch.store.last_run(agent_id).id
     for n in range(5):
-        orch.store.add_event(run_id, agent_id, "text", f"event {n} " + "y" * 4000)
+        orch.store.add_event(run_id, agent_id, "text", f"event {n} " + '"\n…' * 1000)
 
     reply = mcp_server.agent_log(agent_id, event_chars=event_chars, max_chars=max_chars)
 
-    assert reply and sum(map(len, reply)) <= max_chars
+    # A JSON list is at least `[]`; below that nothing fits.
+    assert len(json.dumps(reply)) <= max(max_chars, 2)
+    assert len(json.dumps(reply, ensure_ascii=False)) <= max(max_chars, 2)
     if max_chars >= 200:
         assert "event 4" in reply[-1]
 

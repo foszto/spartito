@@ -76,11 +76,13 @@ def _queued(orch: Orchestrator, agent_id: str, run_id: int) -> dict[str, Any]:
     return {**{key: view[key] for key in keys}, "run_id": run_id}
 
 
-def clip(text: str, limit: int, offset: int = 0, run_id: int | None = None) -> str:
+def clip(
+    text: str, limit: int, offset: int = 0, run_id: int | None = None, paged: bool = True
+) -> str:
     """`limit` chars of `text` from `offset` (limit <= 0: all), saying what was left out.
 
-    With `run_id` the note tells how to page on through get_agent; without, only how to
-    get everything (for text get_agent does not page, like errors).
+    The note names the get_agent call for the rest: with `run_id` that run's, and with
+    `paged` the `result_offset` to continue from (errors are not paged).
     """
     total = len(text)
     offset = max(0, offset)
@@ -93,7 +95,8 @@ def clip(text: str, limit: int, offset: int = 0, run_id: int | None = None) -> s
     if offset:
         part = f"[chars {offset}-{end} of {total}] {part}"
     if end < total:
-        page = f"get_agent run_id={run_id} result_offset={end}; " if run_id else ""
+        call = f"get_agent run_id={run_id} " if run_id else ""
+        page = f"{call}result_offset={end}; " if paged and run_id else call
         part += f"… [cut at {end} of {total} chars; {page}result_chars=0 for all]"
     return part
 
@@ -107,17 +110,97 @@ def _structured(data: Any, limit: int, offset: int = 0, run_id: int | None = Non
     return clip(text, limit, offset, run_id)
 
 
-def _run_reply(run: Run, limit: int) -> dict[str, Any]:
-    """A finished run for wait_for_agents: its structured output when it has one, else
-    its text, and its error."""
+def _run_reply(run: Run, budget: int | None, answer: bool = True) -> tuple[dict[str, Any], int]:
+    """A finished run for wait_for_agents: its error and its answer (structured output
+    when it has one, else its text), together cut to `budget` chars of JSON (None: no
+    limit).
+
+    Returns the reply and the budget left. A text that gets no room at all is left out
+    and the reply points to get_agent instead.
+    """
     reply: dict[str, Any] = {"id": run.id, "status": run.status.value}
+    left = budget
+    texts: list[tuple[str, str, Any]] = []
     if run.error:
-        reply["error"] = clip(run.error, limit)
-    if run.structured is not None:
-        reply["structured"] = _structured(run.structured, limit, run_id=run.id)
-    elif run.result is not None:
-        reply["result"] = clip(run.result, limit, run_id=run.id)
-    return reply
+        texts.append(("error", run.error, None))
+    if answer and run.structured is not None:
+        texts.append(("structured", json.dumps(run.structured, ensure_ascii=False), run))
+    elif answer and run.result is not None:
+        texts.append(("result", run.result, None))
+    for key, text, structured in texts:
+        if left is not None and left <= 0:
+            reply["more"] = f"get_agent run_id={run.id}"
+            continue
+        if structured and (left is None or len(json.dumps(structured.structured)) <= left):
+            reply[key] = structured.structured
+        elif left is None:
+            reply[key] = text
+        elif chars := _fitting(text, left):
+            reply[key] = clip(text, chars, run_id=run.id, paged=key != "error")
+            left -= _json_len(text[:chars])
+        else:  # not even one char fits (clip would read a limit of 0 as "all")
+            reply["more"] = f"get_agent run_id={run.id}"
+            left = 0
+    return reply, (0 if left is None else left)
+
+
+def _json_len(text: str) -> int:
+    """Length of `text` once quoted in a JSON reply, without the quotes (escaping non-ASCII
+    too, the longer of the two ways to serialize it)."""
+    return len(json.dumps(text)) - 2
+
+
+def _fitting(text: str, budget: int) -> int:
+    """How many leading chars of `text` take at most `budget` chars of JSON."""
+    low, high = 0, len(text)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if _json_len(text[:middle]) <= budget:
+            low = middle
+        else:
+            high = middle - 1
+    return low
+
+
+EARLIER_WITH_TEXT = 2  # undelivered runs before the latest that wait_for_agents shows
+LISTED_RUNS = 20  # further undelivered runs it lists by id and status
+
+
+def _agent_runs(shown: Run | None, claimed: list[Run], limit: int) -> dict[str, Any]:
+    """The run part of one agent's wait_for_agents reply, within one budget of `limit`
+    chars (0: no limit) for all its texts, newest first.
+
+    `last_run` is the latest finished run, with its answer only if this call claimed it.
+    Up to EARLIER_WITH_TEXT earlier claimed runs share what is left (`earlier_runs`);
+    the rest are only listed (`other_runs`) — they count as delivered all the same.
+    """
+    budget = None if limit <= 0 else limit
+    parts: dict[str, Any] = {}
+    last = None
+    if shown:
+        is_new = any(run.id == shown.id for run in claimed)
+        last, left = _run_reply(shown, budget, answer=is_new)
+        if not is_new:
+            last["already_delivered"] = "get_agent result_chars=0 reads it again"
+        budget = None if budget is None else left
+    earlier = [run for run in claimed if not shown or run.id != shown.id]
+    with_text, listed = [], []
+    for run in reversed(earlier):
+        if len(with_text) < EARLIER_WITH_TEXT and (budget is None or budget > 0):
+            reply, left = _run_reply(run, budget)
+            budget = None if budget is None else left
+            with_text.append(reply)
+        else:
+            listed.append({"id": run.id, "status": run.status.value})
+    if with_text:
+        parts["earlier_runs"] = with_text[::-1]
+    if listed:
+        unlisted = len(listed) - LISTED_RUNS
+        parts["other_runs"] = listed[:LISTED_RUNS][::-1]
+        parts["other_runs_note"] = "results not shown; get_agent run_id=<id> reads one" + (
+            f"; {unlisted} older runs not listed" if unlisted > 0 else ""
+        )
+    return {**parts, "last_run": last}
 
 
 def _delivery_floor(orch: Orchestrator, caller: str, agent_id: str) -> int:
@@ -163,17 +246,8 @@ def _wait(orch: Orchestrator, ids: list[str], timeout: float, limit: int) -> dic
             "cost_usd": totals.cost or 0,
             "tokens": totals.tokens(),
         }
-        earlier = [
-            _run_reply(run, limit) for run in new if run.id in claimed and run.id != shown.id
-        ]
-        if earlier:
-            outcome["earlier_runs"] = earlier
-        last = shown and _run_reply(shown, limit)
-        if last and shown.id not in claimed:
-            last.pop("result", None)
-            last.pop("structured", None)
-            last["already_delivered"] = "get_agent result_chars=0 reads it again"
-        outcomes.append({**outcome, "last_run": last})
+        claimed_runs = [run for run in new if run.id in claimed]
+        outcomes.append({**outcome, **_agent_runs(shown, claimed_runs, limit)})
     return {"finished": True, "agents": outcomes}
 
 
@@ -301,9 +375,9 @@ async def wait_for_agents(
 ) -> dict[str, Any]:
     """Block until all the given agents are idle, then return their new results.
 
-    If `finished` is false the timeout elapsed first: only statuses; call again to keep
-    waiting. Each result is returned once per caller (`earlier_runs` if several finished),
-    cut at `result_chars` (0: no limit); later calls mark it `already_delivered`.
+    If `finished` is false not all are idle yet: only statuses; call again. Each result
+    is returned once per caller, all texts of an agent together cut at `result_chars`
+    (0: no limit); later calls mark it `already_delivered`.
     """
     orch = _orch()
     ids = [_own(orch, agent_id) for agent_id in agent_ids]
@@ -410,28 +484,50 @@ def _log_line(event: Any, limit: int) -> str:
     return f"#{event.id} {event.ts} run {event.run_id} [{event.kind}] {text}"
 
 
+def _cost(line: str) -> int:
+    """What a line adds to the JSON list sent back: the quoted, escaped string and its
+    separator (escaping non-ASCII too, the longer of the two ways to serialize it)."""
+    return len(json.dumps(line)) + 2
+
+
 def _cap_log(lines: list[str], max_chars: int) -> list[str]:
-    """The newest lines whose lengths add up to at most `max_chars` (<= 0: all), with a
-    note on the older ones left out; the newest line itself is cut if it alone is longer."""
-    if max_chars <= 0 or sum(map(len, lines)) <= max_chars:
+    """The newest lines whose JSON list is at most `max_chars` long (<= 0: no limit),
+    with a note on the older ones left out; the newest line itself is cut if it alone
+    is too long."""
+    if max_chars <= 0 or len(json.dumps(lines)) <= max_chars:
         return lines
-    note = f"[{len(lines)} older events omitted; raise max_chars]"
-    budget = max_chars - len(note)
+
+    def note(omitted: int) -> str:
+        return f"[{omitted} older events omitted; raise max_chars]"
+
+    budget = max_chars - _cost(note(len(lines)))  # a list of n items is sum(cost) long
     kept: list[str] = []
     for line in reversed(lines):
-        if len(line) > budget:
+        if _cost(line) > budget:
             break
         kept.append(line)
-        budget -= len(line)
-    if not kept:
-        marker = "… [cut; event_id gives it in full]"
-        kept.append(lines[-1][: max(0, budget - len(marker))] + marker)
+        budget -= _cost(line)
+    if not kept and (cut := _cut(lines[-1], budget)):
+        kept.append(cut)
+    reply = kept[::-1]
     if omitted := len(lines) - len(kept):
-        kept.append(note.replace(str(len(lines)), str(omitted), 1))
-    kept.reverse()
-    while len(kept) > 1 and sum(map(len, kept)) > max_chars:
-        kept.pop(0)  # max_chars smaller than the note: drop it
-    return [line[:max_chars] for line in kept]
+        reply.insert(0, note(omitted))
+    while reply and len(json.dumps(reply)) > max_chars:
+        reply.pop(0)  # only when max_chars is too small for even the note
+    return reply
+
+
+def _cut(line: str, budget: int) -> str | None:
+    """The longest start of `line` plus a marker whose cost fits in `budget`, if any."""
+    marker = "… [cut; event_id gives it in full]"
+    low, high = 0, len(line)  # escapes make the cost of a start uneven: search for it
+    while low < high:
+        middle = (low + high + 1) // 2
+        if _cost(line[:middle] + marker) <= budget:
+            low = middle
+        else:
+            high = middle - 1
+    return line[:low] + marker if low and _cost(line[:low] + marker) <= budget else None
 
 
 @server.tool()
