@@ -90,7 +90,8 @@ def queued(agent_id: str, run_id: int) -> dict[str, Any]:
 def index(request: Request) -> HTMLResponse:
     page = resources.files("orchestrator.web") / "index.html"
     html = page.read_text(encoding="utf-8")
-    return HTMLResponse(html.replace("{{project_name}}", escape(config.PROJECT_NAME)))
+    html = html.replace("{{project_name}}", escape(config.PROJECT_NAME))
+    return HTMLResponse(html.replace("{{orchestrator_name}}", escape(config.ORCHESTRATOR_NAME)))
 
 
 def state(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:

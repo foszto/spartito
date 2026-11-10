@@ -57,6 +57,7 @@ def test_the_page_and_the_state_carry_the_display_names(client: TestClient) -> N
 
     assert f"<title>{config.PROJECT_NAME}</title>" in page
     assert f"<h1>{config.PROJECT_NAME}</h1>" in page and "{{" not in page
+    assert f'<body data-orchestrator-name="{config.ORCHESTRATOR_NAME}">' in page
     assert (state["project_name"], state["orchestrator_name"]) == ("Kotta", "Maestro")
 
 

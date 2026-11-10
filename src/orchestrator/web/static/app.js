@@ -37,7 +37,8 @@ const SUGGESTIONS = [
   'Review the unmerged agent branches in project <name> and tell me which are ready to merge.',
 ];
 
-let state = { orchestrator: null, projects: [], providers: [], roles: [], tiers: [], archived: [], settings: { global: {}, projects: {} } };
+// The names come with the page too, so no label waits for the first /api/state reply.
+let state = { orchestrator_name: document.body.dataset.orchestratorName, orchestrator: null, projects: [], providers: [], roles: [], tiers: [], archived: [], settings: { global: {}, projects: {} } };
 let selected = decodeURIComponent(location.hash.slice(1)) || ORCH;
 let shown = null, lastEvent = 0, refreshing = false, again = false, toolGroup = null;
 let shownAgent = null, archiveList = [], archiveKey = '';
