@@ -92,6 +92,7 @@ CREATE INDEX IF NOT EXISTS events_agent ON events(agent_id, id);
 """
 
 EVENT_TEXT_LIMIT = 4000
+WAL_WAIT_SECONDS = 3.0
 
 
 def now() -> str:
@@ -123,20 +124,25 @@ class Store:
             self._make_agent_project_nullable()
 
     def _use_wal(self) -> None:
-        """Switch the database to WAL once; the mode is stored in the file.
+        """Switch the database to WAL; the mode is stored in the file, so this is a no-op
+        for a database that is in WAL already.
 
-        Switching needs a moment with no other connection and, unlike ordinary writes,
-        does not wait for one, so several processes opening a new database at once retry.
+        Switching needs a moment in which no other connection uses the file, and SQLite
+        may report "locked" at once instead of waiting, so it is retried with a short busy
+        timeout for at most WAL_WAIT_SECONDS. If it still does not succeed the database
+        stays usable in its current mode and the next open tries again.
         """
-        conn = sqlite3.connect(self.path, timeout=30)
+        deadline = time.monotonic() + WAL_WAIT_SECONDS
+        conn = sqlite3.connect(self.path, timeout=0.2)
         try:
-            for attempt in range(100):
+            while True:
                 try:
                     if conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal":
                         return
                 except sqlite3.OperationalError:
-                    if attempt == 99:
-                        raise
+                    pass
+                if time.monotonic() >= deadline:
+                    return
                 time.sleep(0.05)
         finally:
             conn.close()

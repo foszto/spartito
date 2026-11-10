@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 from . import config, git, providers, roles, settings
-from .models import Agent, Event, Project, Run, RunStatus, Usage
+from .models import Agent, Event, Project, Run, RunStatus, Usage, running_total
 from .providers import McpServer, RunContext
 from .store import Store, now
 
@@ -215,8 +215,15 @@ def record_usage(
     if usage is None:
         return None
     if usage.cumulative:
-        earlier = [u for run_id, u in store.usage_of(agent.id).items() if run_id != run.id]
-        usage = usage.since(sum(earlier, Usage()))
+        # The CLI reported totals for the whole session/thread (Codex always; Claude without
+        # model_usage_since_last_result): this run's share is what exceeds the running total
+        # of the agent's earlier runs. Agent totals stay correct, but per-run values are off
+        # in two known cases: the first run under this code of an agent whose earlier runs
+        # had no usage records (old code) gets their tokens too (Claude's legacy session cost
+        # is known and subtracted, tokens are not), and the tokens of a turn that failed or
+        # was stopped without a result land in the agent's next run.
+        earlier = [other for other in store.runs_of(agent.id) if other.id < run.id]
+        usage = usage.since(running_total(earlier, store.usage_of(agent.id)))
     usage.model = model or usage.model
     store.set_usage(run.id, agent.id, usage)
     return usage

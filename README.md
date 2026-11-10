@@ -101,7 +101,10 @@ Folytatott sessionnél a CLI-k részben a teljes sessionre összesített számot
 levonva runonkénti érték kerül tárolásra. Az `orch ps`/`orch status`, a `list_agents` és
 `get_agent` MCP eszközök (utóbbi az utolsó 10 run adataival) és a webes felület mutatják.
 A `model`/`effort` mező a következő körre érvényes értéket mutatja; az agentnek kifejezetten
-megadott érték a `model_override`/`effort_override` mezőben látszik.
+megadott érték a részletes nézetben (`get_agent`, `orch status`) a `model_override`/
+`effort_override` mezőben látszik. A listák (`list_agents`, `wait_for_agents`) agentenként
+csak a `cost_usd` összeget és egy rövid `tokens` objektumot (`in`, `out`, `cache_read`,
+`cache_write`) adnak.
 
 ### Egymásra épülő feladatok
 

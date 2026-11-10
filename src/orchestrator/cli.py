@@ -11,6 +11,7 @@ from typing import Annotated
 import typer
 
 from . import config, providers, roles
+from .models import Agent
 from .service import Orchestrator, OrchestratorError
 from .settings import TIERS
 
@@ -43,38 +44,34 @@ def count(n: int) -> str:
     return str(n) if n < 1000 else f"{n / 1000:.1f}k" if n < 1_000_000 else f"{n / 1e6:.1f}M"
 
 
-def tokens(usage: dict | None) -> str:
+def tokens(counts: dict | None) -> str:
     """`<prompt>/<output> tok`, the prompt counting cache reads and writes."""
-    if not usage or usage.get("input_tokens") is None:
+    if not counts:
         return ""
-    prompt = sum(
-        usage[key] or 0 for key in ("input_tokens", "cache_read_tokens", "cache_creation_tokens")
-    )
-    return f"{count(prompt)}/{count(usage['output_tokens'] or 0)} tok"
+    prompt = counts["in"] + counts["cache_read"] + counts["cache_write"]
+    return f"{count(prompt)}/{count(counts['out'])} tok"
 
 
-def usage_line(usage: dict | None) -> str:
-    if not usage:
-        return "-"
+def usage_line(counts: dict | None, cost: float | None, model: str | None = None) -> str:
     parts = []
-    if usage.get("input_tokens") is not None:
+    if counts:
         parts += [
-            f"in {count(usage['input_tokens'])}",
-            f"cache read {count(usage['cache_read_tokens'] or 0)}",
-            f"cache write {count(usage['cache_creation_tokens'] or 0)}",
-            f"out {count(usage['output_tokens'] or 0)}",
+            f"in {count(counts['in'])}",
+            f"cache read {count(counts['cache_read'])}",
+            f"cache write {count(counts['cache_write'])}",
+            f"out {count(counts['out'])}",
         ]
-    if usage.get("cost_usd"):
-        parts.append(f"${usage['cost_usd']:.4f}")
-    if usage.get("model"):
-        parts.append(usage["model"])
+    if cost:
+        parts.append(f"${cost:.4f}")
+    if model:
+        parts.append(model)
     return " · ".join(parts) or "-"
 
 
-def setup(view: dict) -> str:
+def setup(view: dict, agent: Agent | None) -> str:
     """Effective `model/effort`; `*` marks a value set explicitly on the agent."""
-    model = (view["model"] or "default") + ("*" if view["model_override"] else "")
-    effort = view["effort"] and view["effort"] + ("*" if view["effort_override"] else "")
+    model = (view["model"] or "default") + ("*" if agent and agent.model else "")
+    effort = view["effort"] and view["effort"] + ("*" if agent and agent.effort else "")
     return f"{model}/{effort}" if effort else model
 
 
@@ -337,6 +334,7 @@ def ps(project: Annotated[str | None, typer.Option("--project", "-p")] = None) -
     """List agents as a tree: project -> agent -> sub-agents."""
     o = orch()
     views = o.overview(project)
+    agents = {agent.id: agent for agent in o.store.list_agents(project)}
     children: dict[str | None, list[dict]] = {}
     home = {view["id"]: view["project"] for view in views}
     for view in views:
@@ -351,7 +349,8 @@ def ps(project: Annotated[str | None, typer.Option("--project", "-p")] = None) -
             cost = f"${view['cost_usd']:.2f}" if view["cost_usd"] else ""
             typer.echo(
                 f"  {label:<34} {status} {view['role']:<9} {view['provider']:<7}"
-                f" {setup(view):<18} {tokens(view['usage']):<15} {cost:<7} {view['branch'] or ''}"
+                f" {setup(view, agents.get(view['id'])):<18} {tokens(view['tokens']):<15}"
+                f" {cost:<7} {view['branch'] or ''}"
             )
             show(project_name, view["id"], depth + 1)
 
@@ -359,7 +358,8 @@ def ps(project: Annotated[str | None, typer.Option("--project", "-p")] = None) -
         if view["project"] is None and not project:
             status = typer.style(view["status"], fg=STATUS_COLORS.get(view["status"]))
             cost = f"${view['cost_usd']:.2f}" if view["cost_usd"] else ""
-            extra = "  ".join(filter(None, (setup(view), tokens(view["usage"]), cost)))
+            setup_text = setup(view, agents.get(view["id"]) or o.store.get_agent(view["id"]))
+            extra = "  ".join(filter(None, (setup_text, tokens(view["tokens"]), cost)))
             typer.secho(f"{view['id']}  {status}  {extra}", bold=True)
     for item in o.store.list_projects():
         if project and item.name != project:
@@ -374,23 +374,24 @@ def status(agent_id: str) -> None:
     o = orch()
     try:
         o.store.reconcile()
-        view = o.view(o.agent(agent_id))
+        view = o.view(o.agent(agent_id), detail=True)
         changes = o.changes(agent_id)
     except OrchestratorError as exc:
         raise fail(exc) from None
     last = view.pop("last_run")
-    usage = view.pop("usage")
+    counts, cost = view.pop("tokens"), view.pop("cost_usd")
     for key in ("model", "effort"):
         override = view.pop(f"{key}_override")
         view[key] = f"{view[key] or 'default'}" + (" (set on the agent)" if override else "")
     for key, value in view.items():
         typer.echo(f"{key:<12} {value}")
-    typer.echo(f"{'usage':<12} {usage_line(usage)}")
+    typer.echo(f"{'usage':<12} {usage_line(counts, cost)}")
     typer.echo(f"{'changes':<12} {changes.replace(chr(10), chr(10) + ' ' * 13)}")
     if last:
         typer.secho(f"\nlast run {last['id']}: {last['status']}", bold=True)
-        if last["usage"]:
-            typer.echo(usage_line(last["usage"]))
+        if any(last["usage"].values()):
+            usage = last["usage"]
+            typer.echo(usage_line(usage["tokens"], usage["cost_usd"], usage["model"]))
         typer.echo(
             last["error"] if last["status"] != "done" and last["error"] else last["result"] or ""
         )

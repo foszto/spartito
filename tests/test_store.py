@@ -80,21 +80,21 @@ def test_legacy_runs_count_their_session_running_total_once(old_db: Path) -> Non
     store.finish_run(run.id, RunStatus.DONE, cost_usd=0.1)
     store.set_usage(run.id, "a-1", Usage(1, 1, 0, 0, cost_usd=0.1))
 
-    view = Orchestrator(store).view(store.get_agent("a-1"))
+    view = Orchestrator(store).view(store.get_agent("a-1"), detail=True)
 
     # 0.25 then 0.75 were Claude's session totals: 0.75 was spent before, plus 0.1 now.
-    assert view["cost_usd"] == 0.85 and view["usage"]["cost_usd"] == 0.85
-    assert view["usage"]["input_tokens"] == 1
+    assert view["cost_usd"] == 0.85
+    assert view["tokens"]["in"] == 1
     assert view["last_run"]["usage"]["cost_usd"] == 0.1
 
 
 def test_an_old_database_without_usage_reports_none(old_db: Path) -> None:
     store = Store(old_db)
 
-    view = Orchestrator(store).view(store.get_agent("a-1"))
+    view = Orchestrator(store).view(store.get_agent("a-1"), detail=True)
 
-    assert view["last_run"]["usage"] is None
-    assert view["usage"]["input_tokens"] is None and view["cost_usd"] == 0.75
+    assert view["last_run"]["usage"] == {"tokens": None, "cost_usd": None, "model": None}
+    assert view["tokens"] is None and view["cost_usd"] == 0.75
 
 
 def test_several_processes_may_open_an_old_database_at_once(old_db: Path) -> None:

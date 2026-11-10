@@ -181,11 +181,12 @@ def test_agent_detail_lists_the_usage_of_recent_runs(
     (listed,) = client.get("/api/state").json()["projects"][0]["agents"]
 
     (run,) = detail["recent_runs"]
-    assert (run["id"], run["status"], run["input_tokens"], run["model"]) == (
+    assert (run["id"], run["status"], run["tokens"]["in"], run["model"]) == (
         spawned["run_id"],
         "done",
         100,
         "fake-model-1",
     )
-    assert listed["usage"]["output_tokens"] == 10 and listed["cost_usd"] == 0.001
+    assert listed["tokens"]["out"] == 10 and listed["cost_usd"] == 0.001
+    assert "model_override" in detail and "model_override" not in listed
     assert detail["effective"] == {"model": detail["model"], "effort": detail["effort"]}

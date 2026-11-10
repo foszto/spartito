@@ -227,26 +227,18 @@ def test_each_run_of_a_resumed_agent_stores_its_own_usage(
     finished(orch, agent.id)
     orch.send(agent.id, f"{mode}TOKENS 40")
 
-    (view,) = finished(orch, agent.id)
+    finished(orch, agent.id)
+    view = orch.view(agent, detail=True)
 
     assert stored_usage(orch, agent.id) == [
         (100, 10, 200, 50, "fake-model-1"),
         (40, 4, 80, 20, "fake-model-1"),
     ]
     assert [run.cost_usd for run in orch.store.runs_of(agent.id)] == [0.001, 0.0004]
-    assert view["usage"] == {
-        "input_tokens": 140,
-        "output_tokens": 14,
-        "cache_read_tokens": 280,
-        "cache_creation_tokens": 70,
-        "cost_usd": 0.0014,
-    }
+    assert view["tokens"] == {"in": 140, "out": 14, "cache_read": 280, "cache_write": 70}
     assert view["cost_usd"] == 0.0014
     assert view["last_run"]["usage"] == {
-        "input_tokens": 40,
-        "output_tokens": 4,
-        "cache_read_tokens": 80,
-        "cache_creation_tokens": 20,
+        "tokens": {"in": 40, "out": 4, "cache_read": 80, "cache_write": 20},
         "cost_usd": 0.0004,
         "model": "fake-model-1",
     }
@@ -259,13 +251,15 @@ def test_a_failed_run_keeps_its_usage_and_a_run_without_a_result_has_none(
     finished(orch, agent.id)
     plain = orch.send(agent.id, "no usage reported")
 
-    (view,) = finished(orch, agent.id)
+    finished(orch, agent.id)
+    view = orch.view(agent, detail=True)
 
     assert view["status"] == "done"
     assert orch.store.get_usage(failed.id).input_tokens == 10
     assert orch.store.get_run(failed.id).status.value == "failed"
     assert orch.store.get_usage(plain.id) is None
-    assert view["usage"]["input_tokens"] == 10 and view["last_run"]["usage"] is None
+    assert view["tokens"]["in"] == 10
+    assert view["last_run"]["usage"] == {"tokens": None, "cost_usd": None, "model": None}
 
 
 def test_codex_style_usage_without_cost_reports_no_cost(orch: Orchestrator, project: str) -> None:
@@ -273,7 +267,7 @@ def test_codex_style_usage_without_cost_reports_no_cost(orch: Orchestrator, proj
     finished(orch, agent.id)
     orch.store.set_usage(run.id, agent.id, Usage(5, 1, 0, 0))
 
-    view = orch.view(agent)
+    view = orch.view(agent, detail=True)
 
-    assert view["usage"]["cost_usd"] is None and view["last_run"]["usage"]["cost_usd"] is None
-    assert view["usage"]["input_tokens"] == 5 and view["cost_usd"] == 0
+    assert view["last_run"]["usage"]["cost_usd"] is None
+    assert view["tokens"]["in"] == 5 and view["cost_usd"] == 0

@@ -126,16 +126,10 @@ def test_view_shows_the_effective_model_and_effort_and_keeps_overrides_apart(
     lead = orch.lead(project)
 
     def picked(agent: Agent) -> tuple:
-        view = orch.view(agent)
+        view = orch.view(agent, detail=True)
         return view["model"], view["effort"], view["model_override"], view["effort_override"]
 
     assert picked(inherited) == ("fake-small", "high", None, None)
     assert picked(explicit) == ("mine", "high", "mine", None)
     assert picked(lead) == (None, None, None, None)
-    assert orch.view(inherited)["usage"] == {
-        "input_tokens": None,
-        "output_tokens": None,
-        "cache_read_tokens": None,
-        "cache_creation_tokens": None,
-        "cost_usd": None,
-    }
+    assert (orch.view(inherited)["tokens"], orch.view(inherited)["cost_usd"]) == (None, 0)

@@ -121,7 +121,7 @@ def events(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
     rows = orch.store.events(agent.id, after=after, tail=None if after else 400)
     return {
         "agent": {
-            **orch.view(agent),
+            **orch.view(agent, detail=True),
             "changes": orch.changes(agent.id),
             "effective": orch.effective(agent),
             "recent_runs": orch.run_history(agent, limit=10),
