@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import StrEnum
 from typing import Any
 
@@ -74,6 +74,64 @@ class Run:
     ended_at: str | None = None
 
 
+TOKEN_FIELDS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens")
+
+
+@dataclass
+class Usage:
+    """Tokens and cost of one run, as the provider CLI reported them.
+
+    `input_tokens` excludes cache reads and cache writes for every provider, so
+    input + cache_read + cache_creation is the whole prompt. `cumulative` marks figures
+    that are totals for the whole session/thread rather than for this run; the runner
+    turns those into per-run values before storing them.
+    """
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_creation_tokens: int | None = None
+    cost_usd: float | None = None
+    model: str | None = None  # the model the CLI says it used
+    cumulative: bool = False
+
+    def __add__(self, other: Usage) -> Usage:
+        def add(a: Any, b: Any) -> Any:
+            return b if a is None else a if b is None else a + b
+
+        return Usage(
+            *(add(getattr(self, key), getattr(other, key)) for key in (*TOKEN_FIELDS, "cost_usd")),
+            model=other.model or self.model,
+        )
+
+    def since(self, earlier: Usage) -> Usage:
+        """Per-run figures from a session total and the total stored before this run.
+
+        Falls back to the reported figures when they are lower than what was stored before
+        (the session or thread was started over).
+        """
+        keys = (*TOKEN_FIELDS, "cost_usd")
+        delta = {key: (getattr(self, key), getattr(earlier, key) or 0) for key in keys}
+        if any(now is not None and now < before - 1e-9 for now, before in delta.values()):
+            return Usage(**{key: getattr(self, key) for key in keys}, model=self.model)
+        values = {
+            key: None if now is None else now - before for key, (now, before) in delta.items()
+        }
+        if values["cost_usd"] is not None:
+            values["cost_usd"] = round(values["cost_usd"], 8)
+        return Usage(**values, model=self.model)
+
+    def as_dict(self) -> dict[str, Any]:
+        cost = None if self.cost_usd is None else round(self.cost_usd, 4)
+        return {**{key: getattr(self, key) for key in TOKEN_FIELDS}, "cost_usd": cost}
+
+
+def from_row[T](cls: type[T], row: Any) -> T:
+    """Build a record from a database row, ignoring columns a newer version added."""
+    names = {f.name for f in fields(cls)}
+    return cls(**{key: value for key, value in dict(row).items() if key in names})
+
+
 @dataclass
 class Event:
     """A normalised, provider-independent line of agent activity."""
@@ -84,6 +142,8 @@ class Event:
     cost_usd: float | None = None
     is_error: bool = False
     structured: Any = None
+    model: str | None = None  # the model the CLI reports, when it does (session events)
+    usage: Usage | None = None  # on result events
     id: int = 0
     run_id: int = 0
     agent_id: str = ""

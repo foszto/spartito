@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 from . import config, git, providers, roles, settings
-from .models import Agent, Project, Run, RunStatus
+from .models import Agent, Event, Project, Run, RunStatus, Usage
 from .providers import McpServer, RunContext
 from .store import Store, now
 
@@ -134,7 +134,7 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
     env.update(invocation.env)
 
     stderr_path = scratch / "stderr.log"
-    last_text, result, errors = "", None, []
+    last_text, result, errors, reported_model = "", None, [], None
     with (
         open(scratch / "stream.jsonl", "w", encoding="utf-8") as raw,
         open(stderr_path, "w", encoding="utf-8") as stderr,
@@ -159,6 +159,7 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
                     if event.session_id:
                         store.set_session(agent.id, event.session_id)
                     if event.kind == "session":
+                        reported_model = event.model or reported_model
                         continue
                     if event.kind == "result":
                         result = event
@@ -177,7 +178,8 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
                 child.kill()
             raise
 
-    cost = result.cost_usd if result else None
+    usage = record_usage(store, run, agent, result, reported_model)
+    cost = usage.cost_usd if usage else None
     if result and not result.is_error and code == 0:
         text = result.text or last_text
         structured = result.structured
@@ -199,6 +201,25 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
     )
     store.add_event(run.id, agent.id, "error", error)
     store.finish_run(run.id, RunStatus.FAILED, error=error, result=last_text or None, cost_usd=cost)
+
+
+def record_usage(
+    store: Store, run: Run, agent: Agent, result: Event | None, model: str | None
+) -> Usage | None:
+    """Store the run's own tokens and cost; providers may report session totals instead."""
+    if result is None:
+        return None
+    usage = result.usage
+    if usage is None and result.cost_usd is not None:
+        usage = Usage(cost_usd=result.cost_usd)
+    if usage is None:
+        return None
+    if usage.cumulative:
+        earlier = [u for run_id, u in store.usage_of(agent.id).items() if run_id != run.id]
+        usage = usage.since(sum(earlier, Usage()))
+    usage.model = model or usage.model
+    store.set_usage(run.id, agent.id, usage)
+    return usage
 
 
 def main(run_id: int) -> None:

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from orchestrator import git
+from orchestrator.models import Usage
 from orchestrator.service import Orchestrator, OrchestratorError
 
 
@@ -123,6 +124,7 @@ def test_stop_ends_running_and_queued_turns(orch: Orchestrator, project: str) ->
     assert orch.stop(agent.id) == 2
 
     assert [run.status.value for run in orch.store.runs_of(agent.id)] == ["stopped", "stopped"]
+    assert orch.store.usage_of(agent.id) == {}
 
 
 def test_a_run_whose_runner_died_is_reported_as_failed(orch: Orchestrator, project: str) -> None:
@@ -206,3 +208,72 @@ def test_first_worktree_in_a_fresh_repository_gets_an_initial_commit(
     assert orch.project_note(project) is None
     notes = [e.text for a in (first, second) for e in orch.store.events(a.id) if e.kind == "info"]
     assert len(notes) == 1 and "empty initial commit" in notes[0]
+
+
+def stored_usage(orch: Orchestrator, agent_id: str) -> list[tuple]:
+    usage = orch.store.usage_of(agent_id)
+    return [
+        (u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_creation_tokens, u.model)
+        for u in usage.values()
+    ]
+
+
+@pytest.mark.parametrize("mode", ["", "CUMULATIVE "])
+def test_each_run_of_a_resumed_agent_stores_its_own_usage(
+    orch: Orchestrator, project: str, mode: str
+) -> None:
+    """Per-run figures whether the CLI reports per-run (Claude) or thread totals (Codex)."""
+    agent, _ = orch.spawn(project, f"{mode}TOKENS 100", worktree=False)
+    finished(orch, agent.id)
+    orch.send(agent.id, f"{mode}TOKENS 40")
+
+    (view,) = finished(orch, agent.id)
+
+    assert stored_usage(orch, agent.id) == [
+        (100, 10, 200, 50, "fake-model-1"),
+        (40, 4, 80, 20, "fake-model-1"),
+    ]
+    assert [run.cost_usd for run in orch.store.runs_of(agent.id)] == [0.001, 0.0004]
+    assert view["usage"] == {
+        "input_tokens": 140,
+        "output_tokens": 14,
+        "cache_read_tokens": 280,
+        "cache_creation_tokens": 70,
+        "cost_usd": 0.0014,
+    }
+    assert view["cost_usd"] == 0.0014
+    assert view["last_run"]["usage"] == {
+        "input_tokens": 40,
+        "output_tokens": 4,
+        "cache_read_tokens": 80,
+        "cache_creation_tokens": 20,
+        "cost_usd": 0.0004,
+        "model": "fake-model-1",
+    }
+
+
+def test_a_failed_run_keeps_its_usage_and_a_run_without_a_result_has_none(
+    orch: Orchestrator, project: str
+) -> None:
+    agent, failed = orch.spawn(project, "FAIL TOKENS 10", worktree=False)
+    finished(orch, agent.id)
+    plain = orch.send(agent.id, "no usage reported")
+
+    (view,) = finished(orch, agent.id)
+
+    assert view["status"] == "done"
+    assert orch.store.get_usage(failed.id).input_tokens == 10
+    assert orch.store.get_run(failed.id).status.value == "failed"
+    assert orch.store.get_usage(plain.id) is None
+    assert view["usage"]["input_tokens"] == 10 and view["last_run"]["usage"] is None
+
+
+def test_codex_style_usage_without_cost_reports_no_cost(orch: Orchestrator, project: str) -> None:
+    agent, run = orch.spawn(project, "no usage", worktree=False)
+    finished(orch, agent.id)
+    orch.store.set_usage(run.id, agent.id, Usage(5, 1, 0, 0))
+
+    view = orch.view(agent)
+
+    assert view["usage"]["cost_usd"] is None and view["last_run"]["usage"]["cost_usd"] is None
+    assert view["usage"]["input_tokens"] == 5 and view["cost_usd"] == 0

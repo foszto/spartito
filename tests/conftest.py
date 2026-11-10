@@ -10,6 +10,13 @@ from orchestrator import providers
 from orchestrator.service import Orchestrator
 
 
+@pytest.fixture(autouse=True)
+def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test may see the real ~/.orchestrator, even one that never asks for `orch`."""
+    monkeypatch.setenv("ORCH_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("ORCH_AGENT_ID", raising=False)
+
+
 @pytest.fixture
 def orch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Orchestrator:
     """An orchestrator with an isolated home; runners load the fake provider via env."""

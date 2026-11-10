@@ -60,7 +60,7 @@ Ugyanez parancssorból is megy:
 orch spawn -p valami -n login "Készítsd el a login végpontot ..."      # worker, saját worktree
 orch spawn -p valami -r reviewer --provider codex --share login-ab12 --after login-ab12 "Review-zd a változást."
 orch ask valami "Tervezd meg és valósítsd meg a ... funkciót."          # a projekt lead agentjének
-orch ps                    # projekt → agent → al-agent fa, státusz, költség
+orch ps                    # projekt → agent → al-agent fa, státusz, modell/effort, tokenek, költség
 orch logs login-ab12 -f    # mit csinál éppen
 orch status login-ab12     # utolsó eredmény + commitok a worktree-ben
 orch send login-ab12 "Javítsd a review észrevételeit: ..."              # folytatja a beszélgetést
@@ -88,6 +88,20 @@ Sorrend egy körnél: az agentnek kifejezetten megadott érték (`orch spawn --m
 az űrlap mezői) → projekt beállítás → globális beállítás → a szerep `model` mezője → a CLI
 saját alapértelmezése. A beállítás a kör indulásakor érvényesül, tehát a már létező agentek
 következő üzenetére is hat.
+
+Az `orch chat` az **orchestrator** szint globális Claude beállításával indul; `--model` és
+`--effort` felülírja.
+
+### Token- és költségmérés
+
+Minden run eltárolja a saját tokenjeit (input, output, cache olvasás, cache írás), a költségét
+és a CLI által ténylegesen használt modellt (`run_usage` tábla). A Codex nem ad költséget.
+Folytatott sessionnél a CLI-k részben a teljes sessionre összesített számot adnak (Claude
+`total_cost_usd`/`modelUsage`, Codex `turn.completed`); ilyenkor az előző runok összegét
+levonva runonkénti érték kerül tárolásra. Az `orch ps`/`orch status`, a `list_agents` és
+`get_agent` MCP eszközök (utóbbi az utolsó 10 run adataival) és a webes felület mutatják.
+A `model`/`effort` mező a következő körre érvényes értéket mutatja; az agentnek kifejezetten
+megadott érték a `model_override`/`effort_override` mezőben látszik.
 
 ### Egymásra épülő feladatok
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from orchestrator.models import Agent
+from orchestrator.models import Agent, Event, Usage
 from orchestrator.providers import McpServer, RunContext, get
 
 
@@ -102,3 +102,80 @@ def test_codex_parses_the_stream() -> None:
     assert shell.text == "shell ls -> exit 0"
     assert done.kind == "result" and not done.is_error
     assert failed.is_error and failed.text == "model_not_found"
+
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def parsed(provider: str, fixture: str) -> tuple[Event, Event]:
+    """The session and result events of a captured stream (trimmed real CLI output)."""
+    lines = (FIXTURES / fixture).read_text().splitlines()
+    session, result = (event for line in lines for event in get(provider).parse(line))
+    return session, result
+
+
+def tokens(usage: Usage) -> tuple:
+    return (
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cache_read_tokens,
+        usage.cache_creation_tokens,
+    )
+
+
+def test_claude_reports_the_usage_of_this_invocation_also_when_resumed() -> None:
+    session, fresh = parsed("claude", "claude_fresh.jsonl")
+    _, resumed = parsed("claude", "claude_resumed.jsonl")
+
+    assert session.model == "claude-haiku-5-5"
+    assert tokens(fresh.usage) == (2, 4, 11873, 17855) and fresh.usage.cost_usd == 0.00369193
+    # total_cost_usd of the resumed line is 0.00689838: the whole session, not this run.
+    assert tokens(resumed.usage) == (2, 4, 14945, 15274) and resumed.usage.cost_usd == 0.00320645
+    assert resumed.cost_usd == 0.00320645
+    assert not fresh.usage.cumulative and not resumed.usage.cumulative
+    assert resumed.usage.model == "claude-haiku-5-5"
+
+
+def test_claude_without_a_per_invocation_breakdown_reports_session_totals() -> None:
+    lines = (FIXTURES / "claude_resumed.jsonl").read_text().splitlines()
+    result = json.loads(lines[-1])
+    del result["model_usage_since_last_result"]
+    _, fresh = parsed("claude", "claude_fresh.jsonl")
+
+    (event,) = get("claude").parse(json.dumps(result))
+    own = event.usage.since(fresh.usage)
+
+    assert event.usage.cumulative and event.usage.cost_usd == 0.00689838
+    assert tokens(own) == (2, 4, 14945, 15274) and own.cost_usd == 0.00320645
+
+
+def test_claude_sums_every_model_of_the_invocation() -> None:
+    result = {
+        "type": "result",
+        "subtype": "success",
+        "total_cost_usd": 9.0,  # session total, ignored
+        "model_usage_since_last_result": {
+            "claude-opus-5-5": {"inputTokens": 10, "outputTokens": 5, "costUSD": 0.5},
+            "claude-haiku-5-5": {"inputTokens": 3, "cacheReadInputTokens": 7, "costUSD": 0.25},
+        },
+    }
+
+    (event,) = get("claude").parse(json.dumps(result))
+
+    assert tokens(event.usage) == (13, 5, 7, 0) and event.usage.cost_usd == 0.75
+    assert event.usage.model is None  # the runner takes the model from the init event
+
+
+def test_codex_reports_thread_totals_that_become_per_turn_figures() -> None:
+    session, fresh = parsed("codex", "codex_fresh.jsonl")
+    _, resumed = parsed("codex", "codex_resumed.jsonl")
+
+    own = resumed.usage.since(fresh.usage)
+
+    assert session.session_id == "01a1c566-fba4-77d2-8d4a-fd3d93931e39"
+    assert fresh.usage.cumulative and resumed.usage.cumulative
+    # Codex counts cached tokens inside input_tokens (30221 = 15245 + 14976).
+    assert tokens(fresh.usage) == (15101, 5, 0, 0)
+    assert tokens(resumed.usage) == (15245, 10, 14976, 0)
+    assert tokens(own) == (144, 5, 14976, 0)
+    assert fresh.usage.cost_usd is None and own.cost_usd is None
