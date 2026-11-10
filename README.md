@@ -42,7 +42,8 @@ Az `orch web` felületéről minden irányítható:
   worktree, „start after” függőségek).
 - **Modellek és effort** (csúszka ikon fent): lásd lent.
 - Bármely agentre kattintva látod a beszélgetést és az eszközhívásokat, írhatsz neki
-  (Enter küld), leállíthatod (**Stop**) vagy törölheted (**Remove**).
+  (Enter küld), leállíthatod (**Stop**) vagy archiválhatod (**Archive**; lásd lent). A
+  **Queued** lista üzeneteit indulás előtt átírhatod (ceruza) vagy visszavonhatod (**✕**).
 - **Modell és effort az agent fejlécében** (minden agentnél, az orchestratornál és a leadeknél
   is): a lenyílóban a provider modelljei verzióval (Claude-nál azok, amelyeket a telepített Claude
   Code `/model` választója kínál: a CLI `initialize` válaszából, modellkérés nélkül, folyamatonként
@@ -68,7 +69,9 @@ a saját gépről érhető el, más weboldalak kéréseit elutasítja. Ne tedd k
 Az `orch chat`-ben természetes nyelven kérsz, például: *„A valami projektben készüljön el X.
 Bontsd feladatokra, a megvalósítás Claude-dal menjen, a review Codexszel.”* Az orchestrator az
 `orch` MCP eszközökkel dolgozik (`spawn_agent`, `ask_project_lead`, `wait_for_agents`,
-`send_message`, `get_agent`, `agent_log`, `stop_agent`, `remove_agent`, …).
+`send_message`, `withdraw_message`, `get_agent`, `agent_log`, `stop_agent`, `archive_agent`, …).
+A `withdraw_message` egy még el nem indult, általad küldött üzenetet von vissza, vagy
+`replacement`-tel átírja a szövegét.
 
 Ugyanez parancssorból is megy:
 
@@ -82,12 +85,43 @@ orch status login-ab12     # utolsó eredmény, dolgozó al-agentek, várakozó 
 orch send login-ab12 "Javítsd a review észrevételeit: ..."              # folytatja a beszélgetést
 orch wait login-ab12       # megvárja (kilépési kód: 0 kész, 1 hiba, 2 időtúllépés)
 orch attach login-ab12     # kézi átvétel: interaktív claude/codex az agent sessionjében
-orch stop login-ab12 / orch rm login-ab12 [--delete-branch]
+orch withdraw 42           # a 42-es, még el nem indult üzenet visszavonása (#42 az `orch status` listájában)
+orch edit 42 "Új szöveg"   # ugyanennek a szövegét cseréli indulás előtt
+orch stop login-ab12       # leállítja a futó és várakozó köreit
+orch archive login-ab12    # archiválás (lásd lent); orch restore login-ab12 visszahozza
 ```
 
 Az `orch ps` státuszoszlopában az `idle·3↓` azt jelenti, hogy az agent maga tétlen, de 3
 al-agentje még dolgozik (a `running·3↓` pedig, hogy közben a saját turnje is fut); a `+2` két
 további sorban álló turnt jelez.
+
+### Archiválás
+
+A kész agentek archiválhatók: eltűnnek az `orch ps`, a webes lista és a `list_agents`
+alapnézetéből, de minden megmarad (rekord, runok, napló, branch, worktree). Az archívum:
+`orch ps --archived`, a webes **Archive** nézet (a bal oldali lista alján), illetve
+`list_agents(archived=true)`. Visszahozni `orch restore <id>`-vel, a felületen a **Restore**
+gombbal vagy `archive_agent(restore=true)`-val lehet; egy archivált agentnek küldött üzenet
+(CLI, web, `send_message`, `ask_project_lead`) is visszahozza.
+
+```sh
+orch archive login-ab12          # nem mergelt commit vagy commitolatlan változás esetén rákérdez (--yes: nem)
+orch archive --safe -p valami    # minden tétlen agent, amelynek a munkája biztonságban van
+orch ps --archived [-p valami]
+orch restore login-ab12
+orch rm login-ab12 [--delete-branch]   # végleges törlés: csak archivált agentet, worktree-vel együtt
+orch config archive-after 48 [-p valami]   # automatikus archiválás ennyi tétlen óra után; 0 vagy off: soha
+```
+
+Dolgozó agent (várakozó vagy futó köre van, vagy valamelyik al-agentjének) nem archiválható.
+A munka akkor **biztonságos**, ha az agentnek nincs saját worktree-je (planner, reviewer, megosztott
+worktree), vagy a branche teljesen be van mergelve a projekt alap-branchébe és a worktree-ben
+nincs commitolatlan változás (vagy a worktree már nem létezik). Az **automatikus archiválás**
+(alapból 24 tétlen óra után; globálisan és projektenként állítható, a **Modellek és effort**
+ablakban is) csak tétlen, biztonságos munkájú agentet archivál, lead-et és az orchestratort
+soha; git hiba esetén sem. Nincs hozzá daemon: a listázások (webes lekérdezés, `orch ps`,
+`list_agents`) futtatják, folyamatokon át legfeljebb 5 percenként. Végleges törlés csak az
+archívumból és csak a felhasználó kezéből lehetséges; az agentek az MCP-n csak archiválnak.
 
 ### Modell és effort szintenként
 
