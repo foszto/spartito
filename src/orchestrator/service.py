@@ -457,6 +457,12 @@ class Orchestrator:
             raise OrchestratorError(str(exc)) from None
         if project and "orchestrator" in cleaned:
             raise OrchestratorError("the orchestrator tier can only be set globally")
+        if project and settings.KEEP_AWAKE in cleaned:
+            raise OrchestratorError(f"{settings.KEEP_AWAKE} can only be set globally")
+        if not project and isinstance(data, dict) and settings.KEEP_AWAKE not in data:
+            # Kept when not named (the settings dialog sends only its own fields).
+            stored = self.store.get_settings(settings.GLOBAL).get(settings.KEEP_AWAKE)
+            cleaned.update({} if stored is None else {settings.KEEP_AWAKE: stored})
         self.store.set_settings(self.project(project).name if project else settings.GLOBAL, cleaned)
         return cleaned
 

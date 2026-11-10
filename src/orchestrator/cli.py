@@ -15,7 +15,7 @@ from . import config, loadout, providers, roles
 from .models import Agent
 from .providers.claude import loadout_flags
 from .service import NeedsConfirmation, Orchestrator, OrchestratorError, cache_hint
-from .settings import ARCHIVE_AFTER, ARCHIVE_AFTER_DEFAULT, TIERS
+from .settings import ARCHIVE_AFTER, ARCHIVE_AFTER_DEFAULT, KEEP_AWAKE, TIERS
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help=__doc__)
 project_app = typer.Typer(no_args_is_help=True, help="Manage projects (git repositories).")
@@ -324,6 +324,10 @@ def config_show(project: Annotated[str | None, typer.Option("--project", "-p")] 
         typer.echo(f"  archive after {hours_text(data[ARCHIVE_AFTER])}")
     elif not project:
         typer.echo(f"  archive after {hours_text(ARCHIVE_AFTER_DEFAULT)} (default)")
+    if not project:
+        on = data.get(KEEP_AWAKE, True) is not False
+        default = "" if KEEP_AWAKE in data else " (default)"
+        typer.echo(f"  keep awake while agents work: {'on' if on else 'off'}{default}")
 
 
 def hours_text(hours: float) -> str:
@@ -381,6 +385,25 @@ def config_archive_after(
     except OrchestratorError as exc:
         raise fail(exc) from None
     config_show(project)
+
+
+@config_app.command("keep-awake")
+def config_keep_awake(
+    value: Annotated[str, typer.Argument(help='"on" or "off"; "" clears (default: on).')],
+) -> None:
+    """Keep the machine from sleeping on idle while any agent's turn runs (default on).
+
+    macOS: caffeinate -i (the display may still sleep); Linux: systemd-inhibit. A closed
+    lid or a forced sleep is outside its control.
+    """
+    o = orch()
+    try:
+        data = o.settings()
+        data[KEEP_AWAKE] = value
+        o.update_settings(data)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    config_show(None)
 
 
 # -- agents -----------------------------------------------------------------
