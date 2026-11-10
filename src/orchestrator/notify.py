@@ -172,13 +172,17 @@ def run_ended(
 
     A notification turn that did not succeed gives back what it claimed: those results
     reach the parent with its next notification, which only a later run end causes (no
-    retry loop), and wait_for_agents returns them meanwhile. `recheck`: a notification
-    of this agent was lost before it started (its runner died); check the agent once.
-    Then the ancestors are checked and the run is marked checked.
+    retry loop), and wait_for_agents returns them meanwhile. The agent itself is checked
+    once when a message turn of it succeeded (that brings back results released by a
+    failed notification) or with `recheck` (a notification of it was lost before it
+    started); the end of a notification never checks its own agent. Then the ancestors
+    are checked and the run is marked checked.
     """
     run = store.get_run(run_id)
     if run is not None and not run.status.active and run.status is not RunStatus.DONE:
         release(store, run_id)
+    if run is not None and run.status is RunStatus.DONE and store.meta(run_id).kind == MESSAGE:
+        recheck = True
     if recheck:
         try:
             notify(store, agent_id, launch)
@@ -209,8 +213,7 @@ def settled(store: Store, agent_id: str) -> bool:
     """Whether the agent and all its descendants are idle: no run is waiting or running,
     and every ended run had its parents checked (else a notification may be on its way).
     Read only."""
-    tree = store.subtree(agent_id)
-    return not any(store.active_runs(member) for member in tree) and not store.unchecked(tree)
+    return not store.subtree_busy(agent_id)
 
 
 class Gone(Exception):

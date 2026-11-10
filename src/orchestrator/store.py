@@ -118,7 +118,6 @@ CREATE TABLE IF NOT EXISTS run_meta (
     claimed TEXT,
     checked INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS run_meta_unchecked ON run_meta(checked);
 CREATE INDEX IF NOT EXISTS runs_agent ON runs(agent_id, id);
 CREATE INDEX IF NOT EXISTS events_agent ON events(agent_id, id);
 """
@@ -127,12 +126,35 @@ MESSAGE = "message"
 NOTIFICATION = "notification"
 NOTIFY_MODES = ("each", "all")
 
+# run_meta columns added after its first version (run_id, agent_id, kind, sender, notify).
+RUN_META_ADDED = (
+    ("origin", "TEXT"),
+    ("cause_run", "INTEGER"),
+    ("claimed", "TEXT"),
+    ("checked", "INTEGER NOT NULL DEFAULT 0"),
+)
+LOST_TRIGGER_SECONDS = 120  # an ended run still unchecked this long lost its trigger
+
 EVENT_TEXT_LIMIT = 4000
 WAL_WAIT_SECONDS = 3.0
 
 
 def now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _older_than(timestamp: str | None, seconds: float) -> bool:
+    """Whether a stored timestamp lies more than `seconds` back (a live runner marks its
+    run checked within seconds; a pid that still answers may belong to another process)."""
+    if not timestamp:
+        return False
+    try:
+        then = datetime.fromisoformat(timestamp)
+    except ValueError:
+        return False
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - then).total_seconds() > seconds
 
 
 def pid_alive(pid: int | None) -> bool:
@@ -195,8 +217,27 @@ class Store:
                 except sqlite3.OperationalError as exc:  # another process was quicker
                     if "duplicate column" not in str(exc):
                         raise
+        self._complete_run_meta()
+        with self._conn() as conn:
+            conn.execute("CREATE INDEX IF NOT EXISTS run_meta_unchecked ON run_meta(checked)")
         if any(column["name"] == "project" and column["notnull"] for column in columns):
             self._make_agent_project_nullable()
+
+    def _complete_run_meta(self) -> None:
+        """Add the columns a first-version run_meta lacks, under the write lock so that
+        concurrent openers add them once. Rows that exist when `checked` is added count as
+        checked: their runs ended long ago, and checking them now would wake parents."""
+        with self.transaction() as conn:
+            present = {row["name"] for row in conn.execute("PRAGMA table_info(run_meta)")}
+            missing = [(name, ddl) for name, ddl in RUN_META_ADDED if name not in present]
+            for name, ddl in missing:
+                try:
+                    conn.execute(f"ALTER TABLE run_meta ADD COLUMN {name} {ddl}")
+                except sqlite3.OperationalError as exc:  # another process was quicker
+                    if "duplicate column" not in str(exc):
+                        raise
+            if any(name == "checked" for name, _ in missing):
+                conn.execute("UPDATE run_meta SET checked = 1")
 
     def _use_wal(self) -> None:
         """Switch the database to WAL; the mode is stored in the file, so this is a no-op
@@ -511,17 +552,15 @@ class Store:
             )
         return cursor.rowcount == 1
 
-    def unchecked(self, agent_ids: list[str]) -> bool:
-        """Whether one of the agents has an ended run whose parents were not checked yet."""
-        if not agent_ids:
-            return False
-        marks = ", ".join("?" * len(agent_ids))
+    def subtree_busy(self, agent_id: str) -> bool:
+        """Whether the agent or a descendant has a waiting or running run, or an ended one
+        whose parents were not checked yet for a notification. One query."""
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT 1 FROM run_meta m JOIN runs r ON r.id = m.run_id WHERE m.checked = 0"
-                f" AND r.status NOT IN ('{ACTIVE[0]}', '{ACTIVE[1]}') AND m.agent_id IN ({marks})"
-                " LIMIT 1",
-                agent_ids,
+                subtree_sql() + " SELECT 1 FROM runs r LEFT JOIN run_meta m ON m.run_id = r.id"
+                " WHERE r.agent_id IN (SELECT id FROM tree)"
+                f" AND (r.status IN ('{ACTIVE[0]}', '{ACTIVE[1]}') OR m.checked = 0) LIMIT 1",
+                (agent_id,),
             ).fetchone()
         return row is not None
 
@@ -535,12 +574,6 @@ class Store:
                 (agent_id, agent_id),
             ).fetchone()
         return row["n"]
-
-    def subtree(self, agent_id: str) -> list[str]:
-        """The agent and all its descendants, the agent first."""
-        with self._conn() as conn:
-            rows = conn.execute(subtree_sql() + " SELECT id FROM tree", (agent_id,)).fetchall()
-        return [row["id"] for row in rows]
 
     # -- turn order -------------------------------------------------------
     #
@@ -676,11 +709,13 @@ class Store:
                         ended.append((run.id, run.agent_id, False))
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT r.id, r.agent_id, r.pid FROM run_meta m JOIN runs r ON r.id = m.run_id"
+                "SELECT r.id, r.agent_id, r.pid, r.ended_at FROM run_meta m"
+                " JOIN runs r ON r.id = m.run_id"
                 f" WHERE m.checked = 0 AND r.status NOT IN ('{ACTIVE[0]}', '{ACTIVE[1]}')"
             ).fetchall()
         for row in rows:  # the trigger was lost with its runner
-            if not pid_alive(row["pid"]) and self.mark_checked(row["id"]):
+            lost = not pid_alive(row["pid"]) or _older_than(row["ended_at"], LOST_TRIGGER_SECONDS)
+            if lost and self.mark_checked(row["id"]):
                 ended.append((row["id"], row["agent_id"], False))
         if self.on_run_end:
             for run_id, agent_id, recheck in ended:
