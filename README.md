@@ -1,406 +1,414 @@
 # Spartito
 
-A *spartito* olaszul kottát jelent (angolul sheet music): a partitúra, amiből mindenki játszik; a legfelső agent neve Maestro. A parancs továbbra is `orch`.
+*Spartito* is Italian for sheet music: the score everyone plays from; the top-level agent is called Maestro. The command stays `orch`.
 
-Egyszerű orchestrator kódoló agentek (Claude Code, Codex) vezérlésére. Egy orchestrator
-agenttel beszélsz; ő projekteket, projekt-lead agenteket és azok alatt worktree-ben dolgozó
-worker agenteket irányít.
+A simple orchestrator for steering coding agents (Claude Code, Codex). You talk to one
+orchestrator agent; it directs projects, project lead agents and, below them, worker agents
+working in worktrees.
 
 ```
-te ── orchestrator (interaktív Claude Code session, `orch chat`)
-        └─ projekt ── lead agent (a projekt fő checkoutjában, saját al-agenteket indíthat)
-                        ├─ worker    (saját git worktree + `orch/<id>` branch)
-                        ├─ reviewer  (a worker worktree-jében, utána fut)
+you ── orchestrator (interactive Claude Code session, `orch chat`)
+        └─ project ── lead agent (in the project's main checkout, can start its own sub-agents)
+                        ├─ worker    (own git worktree + `orch/<id>` branch)
+                        ├─ reviewer  (in the worker's worktree, runs after it)
                         └─ ...
 ```
 
-## Telepítés
+## Installation
 
-Kell hozzá: Python 3.14, `uv`, `git`, valamint a `claude` és/vagy a `codex` CLI bejelentkezve.
+Requirements: Python 3.14, `uv`, `git`, and the `claude` and/or `codex` CLI, logged in.
 
 ```sh
-uv tool install --editable .     # az `orch` parancs felkerül a PATH-ra
-# vagy telepítés nélkül, a repóból:  uv run orch ...
+uv tool install --editable .     # puts the `orch` command on the PATH
+# or without installing, from the repo:  uv run orch ...
 ```
 
-## Használat
+## Usage
 
 ```sh
-orch project add ~/Projects/valami        # git repó regisztrálása projektként
-orch chat                                 # az orchestrator megnyitása (Claude Code)
-orch web                                  # webes felület: http://127.0.0.1:8787
+orch project add ~/Projects/valami        # register a git repo as a project
+orch chat                                 # open the orchestrator (Claude Code)
+orch web                                  # web interface: http://127.0.0.1:8787
 ```
 
-### Webes felület
+### Web interface
 
-Az `orch web` felületéről minden irányítható:
+Everything can be controlled from the `orch web` interface:
 
-- **Maestro** (bal felül): beszélgetés a legfelső szintű orchestrator agenttel, amely
-  projekteket regisztrál, lead agenteket brieffel lát el és agenteket indít.
-- **Projekt hozzáadása** (**+** a Projects mellett): mappaválasztóból jelölöd ki a repót (a git
-  repók meg vannak jelölve); a projekt melletti **✕** törli a regisztrációt.
-- **Lead**: beszélgetés a projekt lead agentjével (az első üzenet hozza létre).
-- **+ Agent**: új agent indítása (feladat, szerep, Claude/Codex, modell, saját vagy megosztott
-  worktree, „start after” függőségek).
-- **Modellek és effort** (csúszka ikon fent): lásd lent.
-- Bármely agentre kattintva látod a beszélgetést és az eszközhívásokat, írhatsz neki
-  (Enter küld), leállíthatod (**Stop**) vagy archiválhatod (**Archive**; lásd lent). A
-  **Queued** lista üzeneteit indulás előtt átírhatod (ceruza) vagy visszavonhatod (**✕**).
-- **Modell és effort az agent fejlécében** (minden agentnél, az orchestratornál és a leadeknél
-  is): a lenyílóban a provider modelljei verzióval (Claude-nál azok, amelyeket a telepített Claude
-  Code `/model` választója kínál: a CLI `initialize` válaszából, modellkérés nélkül, folyamatonként
-  egyszer lekérve; ha ez nem sikerül, az aliasok és mellettük `model list unavailable: showing
-  aliases`), utána a legutóbbi kör ténylegesen használt modellje (`→ claude-fable-5-2`), `other…` alatt tetszőleges név (Enterrel érvényes, Esc
-  vagy a mező elhagyása elveti), és az `inherit (…)` sor, amely a saját értéket törli
-  (zárójelben, ami akkor érvényes: a szint-beállítás vagy `CLI default`). A saját érték kiemelt és `own` jelölést kap. A változás a
-  következő körtől érvényes, a futó kört nem érinti. Meglévő sessionnél a modellváltás új prompt
-  cache-t kezd (Claude-nál és Codexnél mérve): a következő kör a teljes beszélgetést teljes áron
-  olvassa újra. Az effort váltása Codexnél megtartja a cache-t, Claude-nál újat kezdhet (nem
-  mértük). A Codex folytatott sessionben is modellt vált (`codex exec resume -m`; a saját
-  figyelmeztetését a naplóba írja).
-- Az **idle · 3 agents working** állapot azt jelenti, hogy az agent nem dolgozik, csak az általa
-  indított agentek: most is írhatsz neki, és értesítést kap, amikor azok végeznek. A várakozó
-  üzenetek a **Queued** listában látszanak, az értesítések (`notification`) halvány rendszer-
-  üzenetként jelennek meg a beszélgetésben.
+- **Maestro** (top left): conversation with the top-level orchestrator agent, which
+  registers projects, briefs lead agents and starts agents.
+- **Add project** (**+** next to Projects): pick the repo in a folder picker (git repos are
+  marked); the **✕** next to a project removes its registration.
+- **Lead**: conversation with the project's lead agent (the first message creates it).
+- **+ Agent**: start a new agent (task, role, Claude/Codex, model, own or shared worktree,
+  "start after" dependencies).
+- **Models and effort** (slider icon at the top): see below.
+- Click any agent to see its conversation and tool calls, write to it (Enter sends), stop it
+  (**Stop**) or archive it (**Archive**; see below). Messages in the **Queued** list can be
+  edited (pencil) or withdrawn (**✕**) before they start.
+- **Model and effort in the agent's header** (for every agent, the orchestrator and the leads
+  too): the drop-down lists the provider's models with their versions (for Claude, the ones the
+  installed Claude Code's `/model` picker offers: from the CLI's `initialize` response, without a
+  model request, fetched once per process; if that fails, the aliases with `model list
+  unavailable: showing aliases` next to them), then the model the last turn actually used
+  (`→ claude-fable-5-2`), any name under `other…` (Enter applies it, Esc or leaving the field
+  discards it), and the `inherit (…)` row, which clears the agent's own value (in parentheses,
+  what then applies: the tier setting or `CLI default`). The own value is highlighted and marked
+  `own`. The change applies from the next turn; it does not affect the running turn. For an
+  existing session a model switch starts a new prompt cache (measured with Claude and Codex):
+  the next turn re-reads the whole conversation at full price. Switching effort keeps the cache
+  with Codex; with Claude it may start a new one (not measured). Codex switches models in a
+  resumed session too (`codex exec resume -m`; it writes its own warning to the log).
+- The **idle · 3 agents working** state means the agent itself is not working, only the agents
+  it started: you can still write to it now, and it is notified when they finish. Waiting
+  messages show in the **Queued** list; notifications (`notification`) appear as faint system
+  messages in the conversation.
 
-A webes orchestrator egy fej nélküli agent (`orchestrator`), az `orch chat` ettől független
-interaktív session; ugyanazt az állapotot látják. A felületnek nincs bejelentkezése: csak
-a saját gépről érhető el, más weboldalak kéréseit elutasítja. Ne tedd ki hálózatra
-(`--host 0.0.0.0`) megbízhatatlan környezetben, mert aki eléri, kódot futtató agenteket indíthat.
+The web orchestrator is a headless agent (`orchestrator`); `orch chat` is a separate
+interactive session; they see the same state. The interface has no login: it is reachable
+only from your own machine and rejects requests from other websites. Do not expose it to a
+network (`--host 0.0.0.0`) in an untrusted environment, because anyone who reaches it can start
+code-running agents.
 
-Az `orch chat`-ben természetes nyelven kérsz, például: *„A valami projektben készüljön el X.
-Bontsd feladatokra, a megvalósítás Claude-dal menjen, a review Codexszel.”* Az orchestrator az
-`orch` MCP eszközökkel dolgozik (`spawn_agent`, `ask_project_lead`, `wait_for_agents`,
-`send_message`, `withdraw_message`, `get_agent`, `agent_log`, `stop_agent`, `archive_agent`, …).
-A `withdraw_message` egy még el nem indult, általad küldött üzenetet von vissza, vagy
-`replacement`-tel átírja a szövegét.
+In `orch chat` you ask in natural language, for example: *"In the valami project, get X done.
+Break it into tasks; do the implementation with Claude and the review with Codex."* The
+orchestrator works with the `orch` MCP tools (`spawn_agent`, `ask_project_lead`,
+`wait_for_agents`, `send_message`, `withdraw_message`, `get_agent`, `agent_log`, `stop_agent`,
+`archive_agent`, …). `withdraw_message` withdraws a message you sent that has not started yet,
+or rewrites its text with `replacement`.
 
-Ugyanez parancssorból is megy:
+The same works from the command line:
 
 ```sh
-orch spawn -p valami -n login "Készítsd el a login végpontot ..."      # worker, saját worktree
-orch spawn -p valami -r reviewer --provider codex --share login-ab12 --after login-ab12 "Review-zd a változást."
-orch ask valami "Tervezd meg és valósítsd meg a ... funkciót."          # a projekt lead agentjének
-orch ps                    # projekt → agent → al-agent fa, státusz, modell/effort, tokenek, költség
-orch logs login-ab12 -f    # mit csinál éppen
-orch status login-ab12     # utolsó eredmény, dolgozó al-agentek, várakozó üzenetek, commitok
-orch send login-ab12 "Javítsd a review észrevételeit: ..."              # folytatja a beszélgetést
-orch wait login-ab12       # megvárja (kilépési kód: 0 kész, 1 hiba, 2 időtúllépés)
-orch attach login-ab12     # kézi átvétel: interaktív claude/codex az agent sessionjében
-orch withdraw 42           # a 42-es, még el nem indult üzenet visszavonása (#42 az `orch status` listájában)
-orch edit 42 "Új szöveg"   # ugyanennek a szövegét cseréli indulás előtt
-orch stop login-ab12       # leállítja a futó és várakozó köreit
-orch archive login-ab12    # archiválás (lásd lent); orch restore login-ab12 visszahozza
+orch spawn -p valami -n login "Build the login endpoint ..."      # worker, own worktree
+orch spawn -p valami -r reviewer --provider codex --share login-ab12 --after login-ab12 "Review the change."
+orch ask valami "Design and implement the ... feature."          # to the project's lead agent
+orch ps                    # project → agent → sub-agent tree, status, model/effort, tokens, cost
+orch logs login-ab12 -f    # what it is doing right now
+orch status login-ab12     # last result, working sub-agents, waiting messages, commits
+orch send login-ab12 "Fix the review findings: ..."              # continues the conversation
+orch wait login-ab12       # waits for it (exit code: 0 done, 1 failure, 2 timeout)
+orch attach login-ab12     # manual takeover: interactive claude/codex in the agent's session
+orch withdraw 42           # withdraw message 42, which has not started yet (#42 in the `orch status` list)
+orch edit 42 "New text"    # replaces the text of the same message before it starts
+orch stop login-ab12       # stops its running and waiting turns
+orch archive login-ab12    # archive (see below); orch restore login-ab12 brings it back
 ```
 
-Az `orch ps` státuszoszlopában az `idle·3↓` azt jelenti, hogy az agent maga tétlen, de 3
-al-agentje még dolgozik (a `running·3↓` pedig, hogy közben a saját turnje is fut); a `+2` két
-további sorban álló turnt jelez.
+In the status column of `orch ps`, `idle·3↓` means the agent itself is idle but 3 of its
+sub-agents are still working (and `running·3↓` that its own turn is running meanwhile); `+2`
+marks two more queued turns.
 
-### Archiválás
+### Archiving
 
-A kész agentek archiválhatók: eltűnnek az `orch ps`, a webes lista és a `list_agents`
-alapnézetéből, de minden megmarad (rekord, runok, napló, branch, worktree). Az archívum:
-`orch ps --archived`, a webes **Archive** nézet (a bal oldali lista alján), illetve
-`list_agents(archived=true)`. Visszahozni `orch restore <id>`-vel, a felületen a **Restore**
-gombbal vagy `archive_agent(restore=true)`-val lehet; egy archivált agentnek küldött üzenet
-(CLI, web, `send_message`, `ask_project_lead`) is visszahozza.
+Finished agents can be archived: they disappear from the default view of `orch ps`, the web
+list and `list_agents`, but everything is kept (record, runs, log, branch, worktree). The
+archive: `orch ps --archived`, the web **Archive** view (at the bottom of the list on the
+left), or `list_agents(archived=true)`. An agent is brought back with `orch restore <id>`, the
+**Restore** button in the interface, or `archive_agent(restore=true)`; a message sent to an
+archived agent (CLI, web, `send_message`, `ask_project_lead`) brings it back too.
 
 ```sh
-orch archive login-ab12          # nem mergelt commit vagy commitolatlan változás esetén rákérdez (--yes: nem)
-orch archive --safe -p valami    # minden tétlen agent, amelynek a munkája biztonságban van
+orch archive login-ab12          # asks first if there are unmerged commits or uncommitted changes (--yes: doesn't)
+orch archive --safe -p valami    # every idle agent whose work is safe
 orch ps --archived [-p valami]
 orch restore login-ab12
-orch rm login-ab12 [--delete-branch]   # végleges törlés: csak archivált agentet, worktree-vel együtt
-orch config archive-after 48 [-p valami]   # automatikus archiválás ennyi tétlen óra után; 0 vagy off: soha
+orch rm login-ab12 [--delete-branch]   # permanent deletion: archived agents only, together with the worktree
+orch config archive-after 48 [-p valami]   # automatic archiving after this many idle hours; 0 or off: never
 ```
 
-Dolgozó agent (várakozó vagy futó köre van, vagy valamelyik al-agentjének) nem archiválható.
-A munka akkor **biztonságos**, ha az agentnek nincs saját worktree-je (planner, reviewer, megosztott
-worktree), vagy a branche és a worktree-ben kicsekkolt HEAD (leválasztott HEAD vagy másik
-branch) minden commitja benne van a projekt alap-branchében (squash merge után nincs), és a
-worktree-ben nincs commitolatlan változás (vagy a worktree már nem létezik). Az **automatikus
-archiválás** (alapból 24 tétlen óra után; globálisan és projektenként állítható, a **Modellek és
-effort** ablakban is) csak tétlen, biztonságos munkájú agentet archivál, és csak ha a szülője
-már megkapta az eredményét, és más agent sem dolgozik a worktree-jében; lead-et és az
-orchestratort soha, git hiba vagy időtúllépés esetén sem (egy menet git hívásokkal együtt
-legfeljebb kb. 5 másodperc). Nincs hozzá daemon: a listázások (webes lekérdezés, `orch ps`,
-`list_agents`) futtatják, folyamatokon át legfeljebb 5 percenként. Végleges törlés csak az
-archívumból és csak a felhasználó kezéből lehetséges; az agentek az MCP-n csak archiválnak.
+A working agent (it, or one of its sub-agents, has a waiting or running turn) cannot be
+archived. The work is **safe** if the agent has no worktree of its own (planner, reviewer,
+shared worktree), or every commit of its branch and of the HEAD checked out in the worktree
+(detached HEAD or another branch) is contained in the project's base branch (not the case
+after a squash merge), and the worktree has no uncommitted changes (or the worktree no longer
+exists). **Automatic archiving** (by default after 24 idle hours; settable globally and per
+project, also in the **Models and effort** window) archives only idle agents whose work is
+safe, and only if their parent has already received their result and no other agent is working
+in their worktree; never a lead or the orchestrator, and not on a git error or timeout either
+(one pass, git calls included, takes at most about 5 seconds). There is no daemon for it: the
+listings (web poll, `orch ps`, `list_agents`) run it, at most every 5 minutes across processes.
+Permanent deletion is only possible from the archive and only by the user; agents can only
+archive through MCP.
 
-### Ébren tartás
+### Keeping awake
 
-Amíg egy agent köre fut (a sorban álló és a tétlen agent nem számít), a gép nem alszik el
-tétlenség miatt: macOS-en `caffeinate -i -w <runner pid>`, Linuxon `systemd-inhibit
---what=idle`; a runnerrel együtt ér véget, összeomlás után is. Csak a tétlenségi alvást
-akadályozza meg (a kijelző elalhat); a laptop fedelének lecsukása külső kijelző nélkül vagy a
-kényszerített alvás (pl. `pmset sleepnow`, Apple menü → Alvás) ellen nem véd, és azokon a
-linuxos asztali környezeteken sem, amelyek energiakezelője saját időzítővel altat. Kikapcsolás:
-`orch config keep-awake off` (alapból `on`).
+While an agent's turn is running (queued and idle agents do not count), the machine does not
+go to sleep on idle: on macOS `caffeinate -i -w <runner pid>`, on Linux `systemd-inhibit
+--what=idle`; it ends together with the runner, after a crash too. It only prevents idle sleep
+(the display may sleep); it does not protect against closing the laptop lid without an external
+display or forced sleep (e.g. `pmset sleepnow`, Apple menu → Sleep), nor on Linux desktop
+environments whose power management puts the machine to sleep on its own timer. To turn it off:
+`orch config keep-awake off` or in the **Models and effort** window (default `on`).
 
-### Döntések és asztali értesítések
+### Decisions and desktop notifications
 
-Ami a tulajdonos döntésére vár, nem marad a beszélgetésekben: az orchestrator és a lead-ek a
-`request_decision(question, options, recommendation)` MCP eszközzel rögzítik (kérdés legfeljebb
-500 karakter, legfeljebb 6 rövid opció, egy ajánlás), és közben azzal haladnak, ami nem függ
-tőle; ha okafogyottá vált, `withdraw_decision(decision_id)` zárja le (csak a saját nyitott
-döntését). A nyitott döntések egy helyen, projekteken át látszanak: a webes felület fejlécében
-a kérdőjeles gomb mutatja a számukat, és a **Döntések** ablakban (projekt, agent, kérdés,
-opciók, ajánlás, kor) egy opcióval vagy szabad szöveggel lehet válaszolni. Parancssorból:
+What waits for the owner's decision does not stay buried in the conversations: the
+orchestrator and the leads record it with the `request_decision(question, options,
+recommendation)` MCP tool (question at most 500 characters, at most 6 short options, one
+recommendation), and meanwhile carry on with whatever does not depend on it; if it has become
+moot, `withdraw_decision(decision_id)` closes it (only their own open decision). Open decisions
+are visible in one place, across projects: in the header of the web interface the
+question-mark button shows their number, and in the **Decisions** window (project, agent,
+question, options, recommendation, age) you can answer with an option or free text. From the
+command line:
 
 ```bash
-orch decisions            # a nyitott döntések (--all: a lezártak is)
-orch decide 12 2          # a 2. opció; vagy szabad szöveg: orch decide 12 "inkább Postgres"
+orch decisions            # the open decisions (--all: the closed ones too)
+orch decide 12 2          # option 2; or free text: orch decide 12 "Postgres instead"
 ```
 
-A válasz rendes felhasználói üzenetként jut el a kérő agenthez (`Decision #12 — <kérdés>` és
-`Answer: <válasz>`), a döntés lezárul; lezárt döntésre újabb válasz nem megy. Archivált agentet
-az üzenet visszahoz; ha az agentet törölték, a döntés válasz nélkül zárul (`note`).
+The answer reaches the requesting agent as an ordinary user message (`Decision #12 —
+<question>` and `Answer: <answer>`), and the decision is closed; a closed decision takes no
+further answer. The message brings back an archived agent; if the agent was deleted, the
+decision closes without an answer (`note`).
 
-Asztali értesítés (csak macOS-en, `osascript`; máshol semmi): ha döntés vár, és ha egy agent,
-akinek közvetlenül te írtál (a legutóbbi üzenetét a felhasználó küldte), végzett: a köre véget
-ért, és sem neki, sem a leszármazottainak nincs futó vagy sorban álló köre. Így Maestro akkor
-jelez, amikor az agentjei után ő is végzett; egy lead által indított worker soha. Kikapcsolás:
-`orch config desktop-notifications off` vagy a **Modellek és effort** ablakban (alapból `on`).
+Desktop notification (macOS only, `osascript`; nothing elsewhere): when a decision is waiting,
+and when an agent you wrote to directly (its latest message was sent by the user) has finished:
+its turn ended, and neither it nor its descendants have a running or queued turn. So Maestro
+signals when it has finished too, after its agents; a worker started by a lead never does. To
+turn it off: `orch config desktop-notifications off` or in the **Models and effort** window
+(default `on`).
 
-### Feladattábla (board)
+### Task board
 
-Az ötletek és az összegyűjtött feladatok projektenként egy tartós táblán vannak, nem csak az
-orchestrator beszélgetésében: új munkamenetben is megmaradnak. Minden elem egy regisztrált
-projekthez tartozik, és négy állapot egyikében van: `idea`, `ready`, `in_progress`, `done`;
-állapoton belül sorrendje van (új elem és állapotot váltó elem a végére kerül). Egy elem
-megnevezheti az agentet és a branchet, amelyik rajta dolgozik. Az orchestrator és a lead-ek a
-`list_board(project, state)`, `add_board_item(project, title, description, state)` és
-`update_board_item(item_id, state, title, description, agent, branch)` MCP eszközökkel
-használják (a lead csak a saját projektjéét). A webes felületen a projekt sorában a tábla gomb
-nyitja meg: állapotonként egy lista, új elem, szerkesztés, fel/le mozgatás, állapotváltás.
-Parancssorból:
+Ideas and collected tasks live on a persistent board per project, not only in the
+orchestrator's conversation: they survive into a new session. Every item belongs to a
+registered project and is in one of four states: `idea`, `ready`, `in_progress`, `done`; items
+are ordered within a state (a new item and an item that changes state go to the end). An item
+can name the agent and the branch working on it. The orchestrator and the leads use it with the
+`list_board(project, state)`, `add_board_item(project, title, description, state)` and
+`update_board_item(item_id, state, title, description, agent, branch)` MCP tools (a lead only
+its own project's). In the web interface the board button in the project's row opens it: one
+list per state, new item, editing, moving up/down, changing state. From the command line:
 
 ```bash
-orch board -p demo [--state ready]               # a tábla (-p nélkül minden projekté)
-orch board add -p demo "Login oldal" -d "OAuth-val" [--state idea]
+orch board -p demo [--state ready]               # the board (without -p: every project's)
+orch board add -p demo "Login page" -d "With OAuth" [--state idea]
 orch board edit 7 --state ready [--title …] [--description …] [--agent …] [--branch …]
-orch board move 7 up                              # vagy down, az állapotán belül
-orch board dispatch -p demo                      # a ready elemek a lead-nek
+orch board move 7 up                              # or down, within its state
+orch board dispatch -p demo                      # the ready items to the lead
 ```
 
-A **Dispatch** (felületen megerősítés után) a projekt összes `ready` elemét **egy** üzenetben
-küldi el a projekt lead-jének, mintha te írtad volna (elemenként azonosító, cím, leírás, és a
-kérés, hogy az állapotokat `update_board_item`-mel vezesse); az elemek `in_progress` állapotba
-kerülnek, a lead-hez kötve, így egy újabb dispatch nem küldi el őket újra. Ha nincs `ready`
-elem, nem megy semmi. Magától soha nem indul dispatch.
+**Dispatch** (in the interface after a confirmation) sends all of the project's `ready` items
+to the project's lead in **one** message, as if you had written it (per item its id, title and
+description, and the request to keep the states up to date with `update_board_item`); the items
+move to `in_progress`, linked to the lead, so another dispatch does not send them again. If
+there is no `ready` item, nothing is sent. A dispatch never starts on its own.
 
-### Modell és effort szintenként
+### Model and effort per tier
 
-Három szint állítható külön, providerenként (Claude / Codex): az **orchestrator**, a
-**projekt lead** és a **workerek** (minden más szerep: worker, planner, reviewer, tester).
-Van globális alapértelmezés, amit projektenként felül lehet írni.
+Three tiers can be set separately, per provider (Claude / Codex): the **orchestrator**, the
+**project lead** and the **workers** (every other role: worker, planner, reviewer, tester).
+There is a global default, which can be overridden per project.
 
 ```sh
 orch config set orchestrator --model opus --effort high
 orch config set lead --model sonnet --effort medium
 orch config set worker --model haiku --effort low
 orch config set worker --provider codex --model gpt-6-luna
-orch config set worker --model sonnet -p valami      # csak a `valami` projektben
+orch config set worker --model sonnet -p valami      # only in the `valami` project
 orch config show [-p valami]
 ```
 
-Sorrend egy körnél: az agentnek kifejezetten megadott érték (`orch spawn --model/--effort`,
-az űrlap mezői) → projekt beállítás → globális beállítás → a szerep `model` mezője → a CLI
-saját alapértelmezése. A beállítás a kör indulásakor érvényesül, tehát a már létező agentek
-következő üzenetére is hat.
+Precedence for a turn: the value given explicitly for the agent (`orch spawn --model/--effort`,
+the form's fields) → project setting → global setting → the role's `model` field → the CLI's
+own default. The setting takes effect when the turn starts, so it also affects the next message
+of agents that already exist.
 
-Egy meglévő agent saját értéke (a felület fejlécében vagy parancssorból) a következő körtől él:
+An existing agent's own value (in the interface header or from the command line) applies from
+the next turn:
 
 ```sh
-orch model login-ab12                       # érvényes, saját és örökölt érték
+orch model login-ab12                       # effective, own and inherited value
 orch model login-ab12 --model opus --effort high
-orch model login-ab12 --model ""            # törli: újra a szint-beállítás érvényes
-orch model orchestrator --effort high       # az orchestratort is (első használatkor létrejön)
+orch model login-ab12 --model ""            # clears it: the tier setting applies again
+orch model orchestrator --effort high       # the orchestrator too (created on first use)
 ```
 
-A modell bármilyen név lehet, de egyetlen szó: szóköz, vezérlőkarakter, `-` kezdet és 200
-karakternél hosszabb név nem adható meg (az `orch spawn`, az `orch config set` és az MCP
-`spawn_agent` is így ellenőriz; a korábban eltárolt értékek továbbra is olvashatók). Webes API: `POST /api/agents/<id>/model`
-`{"model": "...", "effort": null}` (a `null` töröl, a hiányzó kulcs nem változik).
+The model can be any name, but a single word: a name with a space, a control character, a
+leading `-` or longer than 200 characters is not accepted (`orch spawn`, `orch config set` and
+the MCP `spawn_agent` all check this; values stored earlier can still be read). Web API: `POST
+/api/agents/<id>/model` `{"model": "...", "effort": null}` (`null` clears, a missing key does
+not change).
 
-Az `orch chat` az **orchestrator** szint globális Claude beállításával indul; `--model` és
-`--effort` felülírja.
+`orch chat` starts with the global Claude setting of the **orchestrator** tier; `--model` and
+`--effort` override it.
 
-### Token- és költségmérés
+### Token and cost tracking
 
-Minden run eltárolja a saját tokenjeit (input, output, cache olvasás, cache írás), a költségét
-és a CLI által ténylegesen használt modellt (`run_usage` tábla). A Codex nem ad költséget.
-Folytatott sessionnél a CLI-k részben a teljes sessionre összesített számot adnak (Claude
-`total_cost_usd`/`modelUsage`, Codex `turn.completed`); ilyenkor az előző runok összegét
-levonva runonkénti érték kerül tárolásra. Az `orch ps`/`orch status`, a `list_agents` és
-`get_agent` MCP eszközök (utóbbi az utolsó 10 run adataival) és a webes felület mutatják.
-A `model`/`effort` mező a következő körre érvényes értéket mutatja; az agentnek kifejezetten
-megadott érték a részletes nézetben (`get_agent`, `orch status`) a `model_override`/
-`effort_override` mezőben látszik. A listák (`list_agents`, `wait_for_agents`) agentenként
-csak a `cost_usd` összeget és egy rövid `tokens` objektumot (`in`, `out`, `cache_read`,
-`cache_write`) adnak.
+Every run stores its own tokens (input, output, cache read, cache write), its cost and the
+model the CLI actually used (`run_usage` table). Codex does not report a cost. In a resumed
+session the CLIs partly report a number totalled over the whole session (Claude
+`total_cost_usd`/`modelUsage`, Codex `turn.completed`); in that case the sum of the previous
+runs is subtracted and a per-run value is stored. `orch ps`/`orch status`, the `list_agents`
+and `get_agent` MCP tools (the latter with the data of the last 10 runs) and the web interface
+show them. The `model`/`effort` field shows the value that applies to the next turn; the value
+given explicitly for the agent appears in the detailed view (`get_agent`, `orch status`) in the
+`model_override`/`effort_override` field. The lists (`list_agents`, `wait_for_agents`) give per
+agent only the `cost_usd` sum and a short `tokens` object (`in`, `out`, `cache_read`,
+`cache_write`).
 
-### Kontextus és tömörítés (compact)
+### Context and compaction (compact)
 
-Minden run eltárolja azt is, mekkora lett a beszélgetés a kör végén, és mekkora a modell
-ablaka (`run_usage.context_tokens`/`context_window`). Claude: a kör utolsó fő (nem subagent,
-nem szintetikus) kérésének promptja (input + cache olvasás + cache írás), az ablak a modell
-`contextWindow` értéke (jelenleg 1M minden Claude modellnél); a `result.usage` erre nem jó,
-mert a kör összes kérését összeadja. Codex: a thread rollout fájljának
-(`$CODEX_HOME/sessions/…/rollout-…-<thread>.jsonl`) utolsó `token_count` eseménye (csak
-olvasva; hiányzó fájl vagy ismeretlen formátum esetén nincs adat). Az `orch ps`/`orch status`,
-a `list_agents`/`get_agent` (`context` mező) és a webes felület (fejléc: sáv és
-`780k/1M 78%` és az automatikus tömörítés küszöbe; agentlista: `ctx 78%`) mutatja; a küszöb
-fölött (ha az automatikus tömörítés ki van kapcsolva: 80%-tól) figyelmeztető színnel. Tömörítés után,
-amíg nem volt újabb kérés, a méret ismeretlen: ilyenkor `compacted` látszik.
+Every run also stores how large the conversation was at the end of the turn and how large the
+model's window is (`run_usage.context_tokens`/`context_window`). Claude: the prompt of the
+turn's last main (not subagent, not synthetic) request (input + cache read + cache write); the
+window is the model's `contextWindow` value (currently 1M for every Claude model);
+`result.usage` is no good for this, because it adds up all the requests of the turn. Codex: the
+last `token_count` event of the thread's rollout file
+(`$CODEX_HOME/sessions/…/rollout-…-<thread>.jsonl`) (read only; with a missing file or an
+unknown format there is no data). `orch ps`/`orch status`, `list_agents`/`get_agent` (`context`
+field) and the web interface (header: bar and `780k/1M 78%` and the automatic compaction
+threshold; agent list: `ctx 78%`) show it; above the threshold (if automatic compaction is
+off: from 80%) in a warning colour. After a compaction, until there has been another request,
+the size is unknown: `compacted` is shown then.
 
 ```sh
-orch compact <agent> ["mit őrizzen meg az összefoglaló"]
+orch compact <agent> ["what the summary should keep"]
 ```
 
-Ugyanez a webes felületen a **Compact** gomb (opcionális utasítással), API:
-`POST /api/agents/<id>/compact` `{"instructions": …}`. Üzenetként sorba áll (`compact`
-fajtájú run), és a CLI saját tömörítését futtatja ugyanabban a sessionben: Claude-nál a
-`/compact [utasítás]` parancsot pontosan így adja át (`{{result:…}}` behelyettesítés és
-output schema nélkül, `--disable-slash-commands` nélkül, egyébként az agent szokásos
-loadoutjával). Az eredménye egy rövid összegzés (`compacted 91k -> 1k tokens`); a szülőnek
-nem kerül kézbesítésre (értesítés és `wait_for_agents` sem), senkit nem ébreszt, és nem az
-agent válasza: az agent státusza, `last_run`-ja és a `{{result:<agent>}}` hivatkozás az
-utolsó valódi körét mutatja, a tömörítés kimenete külön látszik (`orch status` `compaction`
-sora, `get_agent` `last_compaction`, a felületen a sikertelen tömörítés jelzése). Egy sorban
-álló tömörítés visszavonható (`orch withdraw <run>`), de nem szerkeszthető. A tömörítés részleteket veszíthet el a
-beszélgetés korábbi részéből. Codexnél a `/compact` nem működik `exec resume`-ban: helyette
-egy kör fut alacsonyabb `model_auto_compact_token_limit` értékkel (az aktuális méret fele) és
-egy kifejezett „nincs teendő” prompttal; utasítás nem adható, és csak ismert méret mellett
-indítható. A Claude Code magától is tömörít (akár kör közben), amikor a beszélgetés eléri az
-ablak − 33k tokent (1M ablaknál 967k); ezt a run `info` eseménye és a `compact_*` mezők
-rögzítik.
+The same in the web interface is the **Compact** button (with optional instructions), API:
+`POST /api/agents/<id>/compact` `{"instructions": …}`. It is queued as a message (a run of kind
+`compact`) and runs the CLI's own compaction in the same session: with Claude it passes the
+`/compact [instructions]` command exactly as is (without `{{result:…}}` substitution and output
+schema, without `--disable-slash-commands`, otherwise with the agent's usual loadout). Its
+result is a short summary (`compacted 91k -> 1k tokens`); it is not delivered to the parent
+(neither a notification nor `wait_for_agents`), wakes nobody, and is not the agent's answer:
+the agent's status, its `last_run` and the `{{result:<agent>}}` reference show its last real
+turn; the compaction's output is shown separately (the `compaction` line of `orch status`,
+`get_agent` `last_compaction`, in the interface the indication of a failed compaction). A
+queued compaction can be withdrawn (`orch withdraw <run>`), but not edited. Compaction can lose
+details from the earlier part of the conversation. With Codex `/compact` does not work in
+`exec resume`: instead a turn runs with a lower `model_auto_compact_token_limit` value (half the
+current size) and an explicit "nothing to do" prompt; no instructions can be given, and it can
+only be started when the size is known. Claude Code also compacts on its own (even mid-turn)
+when the conversation reaches the window − 33k tokens (967k with a 1M window); the run's `info`
+event and the `compact_*` fields record this.
 
-Lead szerepnél (`lead: true`: az orchestrator és a projekt leadek) az utasítás nélküli
-tömörítés (az automatikus és az `orch compact <lead>` is) egy rövid alapértelmezett utasítást
-kap (`service.LEAD_KEEP`): maradjanak meg a tulajdonos állandó szabályai, az aktuális állapot,
-a nyitott döntések és teendők, és a folyamatban lévő munka agent-azonosítókkal és branchekkel.
-A többi szerep a CLI alapértelmezett összefoglalóját kapja. Codex nem fogad utasítást: ott
-utasítás nélkül fut.
+For a lead role (`lead: true`: the orchestrator and the project leads) a compaction without
+instructions (the automatic one and `orch compact <lead>` too) gets short default instructions
+(`service.LEAD_KEEP`): keep the owner's standing rules, the current state, the open decisions
+and open items, and the work in progress with agent ids and branches. The other roles get the
+CLI's default summary. Codex takes no instructions: there it runs without them.
 
-#### Automatikus tömörítés
+#### Automatic compaction
 
 ```sh
-orch config compact-at 256k [-p valami]   # alapból 256000; 0 vagy off: soha; "" törli (örököl)
+orch config compact-at 256k [-p valami]   # default 256000; 0 or off: never; "" clears it (inherit)
 ```
 
-Ha egy agent köre sikeresen véget ér, és a kontextusa a küszöb fölött van, a runner még a kör
-lezárása előtt (a prompt cache ilyenkor még meleg) sorba állít egy tömörítést, így az az agent
-következő köre előtt fut, sosem kör közben. Egy már sorban álló üzenetet is megelőz (az
-különben a teljes kontextust fizetné), az üzenet utána rendesen lefut, akkor is, ha a
-tömörítés nem sikerül, visszavonják vagy leállítják. Nem kerül sorba tömörítés után, sikertelen
-vagy leállított kör után, ha már áll vagy fut egy tömörítés, vagy ha az agent nem tömöríthető
-(ilyenkor csendben elmarad). A napló `info` eseménye jelzi (`automatic compaction: context
-301k is above the threshold of 256k`), a `get_agent`/`orch status` `last_compaction` mezője
-`automatic: true`. Az agent addig dolgozónak számít: a szülő értesítése és a
-`wait_for_agents` a tömörítés végét is megvárja, és a gyerek valódi válaszát adja, nem a
-tömörítését.
+If an agent's turn ends successfully and its context is above the threshold, the runner queues
+a compaction before closing the turn (the prompt cache is still warm then), so it runs before
+the agent's next turn, never mid-turn. It also goes ahead of a message that is already queued
+(which would otherwise pay for the whole context); the message then runs normally afterwards,
+even if the compaction fails, is withdrawn or is stopped. No compaction is queued after a
+compaction, after a failed or stopped turn, if a compaction is already queued or running, or if
+the agent cannot be compacted (then it is silently skipped). The log's `info` event signals it
+(`automatic compaction: context 301k is above the threshold of 256k`), and the
+`last_compaction` field of `get_agent`/`orch status` has `automatic: true`. Until then the
+agent counts as working: the parent's notification and `wait_for_agents` also wait for the
+compaction to end, and give the child's real answer, not its compaction.
 
-Egymás után kétszer nem: azt, hogy a legutóbbi tömörítés (amely elindult; a sosem indult,
-leállított vagy visszavont nem számít, akárcsak a CLI saját, kör közbeni tömörítése) mekkora
-kontextust hagyott, a ténylegesen mért méret dönti el, nem a CLI tömörítés utáni számja (a
-Claude `post_tokens` értéke a rendszerpromptot és az eszközöket nem tartalmazza, a Codex nem
-ad ilyet): ha maga a tömörítő kör mért méretet utána, az; különben a következő kör első
-modellkérésének mérete (`run_usage.first_context_tokens`, Claude), vagy ahol ez nincs (Codex),
-óvatosan annak a körnek a végén mért méret. Ha ez a küszöb fölött van, az automatikus tömörítés
-az agentnél szünetel: a mérő kör egyszer `info` eseményt ír (`automatic compaction paused: …`),
-és a `context.compact_paused` mező, az `orch status` és a felület kontextus-jelzése mutatja.
-Egy olyan tömörítés, amely után a mért méret a küszöb alatt van, vagy a mért méretnél magasabb
-küszöb feloldja. Amíg a legutóbbi tömörítés óta semmi nem mért méretet, nem kerül sorba
-automatikus tömörítés. Ha a kör leállítása (`orch stop`) a tömörítés sorba állítása közben vagy
-után érkezik, a kör `stopped` lesz, és a sorba állított tömörítést visszavonja.
+Not twice in a row: how much context the last compaction (one that started; one that never
+started, was stopped or withdrawn does not count, just like the CLI's own mid-turn compaction)
+left is decided by the actually measured size, not by the CLI's post-compaction number (Claude's
+`post_tokens` value does not include the system prompt and the tools, Codex reports nothing of
+the kind): if the compacting turn itself measured a size afterwards, that one; otherwise the size
+of the next turn's first model request (`run_usage.first_context_tokens`, Claude), or where
+that does not exist (Codex), conservatively the size measured at the end of that turn. If this
+is above the threshold, automatic compaction is paused for the agent: the measuring turn writes
+an `info` event once (`automatic compaction paused: …`), and the `context.compact_paused` field,
+`orch status` and the interface's context indicator show it. A compaction after which the
+measured size is below the threshold, or a threshold higher than the measured size, lifts it.
+As long as nothing has measured a size since the last compaction, no automatic compaction is
+queued. If stopping the turn (`orch stop`) arrives while or after the compaction is being
+queued, the turn becomes `stopped` and withdraws the queued compaction.
 
-A küszöb globálisan és projektenként állítható (a projekt felülírja), a felület beállítási
-ablakában is; az érték a következő kör végén érvényesül. Codexnél ugyanúgy működik, mint a kézi
-tömörítés (csak ismert méret mellett, a „nincs teendő” körrel); ha a modell nem tömörít, a
-tömörítés sikertelen, és az automatikus tömörítés szünetel.
+The threshold can be set globally and per project (the project overrides), also in the
+interface's settings window; the value takes effect at the end of the next turn. With Codex it
+works the same way as manual compaction (only when the size is known, with the "nothing to do"
+turn); if the model does not compact, the compaction fails and automatic compaction is paused.
 
-### Mit tölt be egy agent (loadout)
+### What an agent loads (loadout)
 
-Loadout nélkül minden agent a felhasználó teljes globális Claude Code / Codex konfigurációját
-örökölné (claude.ai connectorok, pluginek, skillek, MCP szerverek): ez kérésenként kb. 25–31k
-input token volt, a szerep és a feladat pedig ebből csak kb. 1,6k. Ezért minden szerep
-deklarálja, mit tölt be:
+Without a loadout every agent would inherit the user's whole global Claude Code / Codex
+configuration (claude.ai connectors, plugins, skills, MCP servers): this was about 25–31k
+input tokens per request, of which the role and the task were only about 1.6k. That is why
+every role declares what it loads:
 
-| kulcs | jelentés | CLI |
+| key | meaning | CLI |
 |---|---|---|
-| `tools` | beépített eszközök vesszővel; `default` = a CLI alapkészlete, `none` = egy sem (MCP eszközökre nem hat) | `--tools` |
-| `mcp` | `strict` = csak az orchestrator saját szervere (lead szerepeknél); `inherit` = user, projekt, plugin és claude.ai connector szerverek is | `--strict-mcp-config` |
-| `setting_sources` | `project,local` = a user szint (user pluginek, skillek, parancsok, hookok) nélkül; a projekt `CLAUDE.md`-je és `.claude/` mappája betöltődik; `user,project,local` = minden | `--setting-sources` |
-| `slash_commands` | `false` = semmilyen skill és slash parancs (a projektéi sem) | `--disable-slash-commands` |
-| `codex_user_config` | `false` = a Codex nem olvassa a `$CODEX_HOME/config.toml`-t (a login megmarad) | `--ignore-user-config` |
-| `memory` | `true` = `Write` és `Edit` is, de csak a session saját memóriamappájába (`~/.claude/projects/<projekt>/memory/`); minden más célt egy hook elutasít. Hatástalan, ha a `tools` már ad író eszközt (`default` is), az `orch chat`-ben és Codexnél | `--settings` (PreToolUse hook) |
+| `tools` | built-in tools, comma-separated; `default` = the CLI's default set, `none` = none at all (does not affect MCP tools) | `--tools` |
+| `mcp` | `strict` = only the orchestrator's own server (for lead roles); `inherit` = user, project, plugin and claude.ai connector servers too | `--strict-mcp-config` |
+| `setting_sources` | `project,local` = without the user level (user plugins, skills, commands, hooks); the project's `CLAUDE.md` and `.claude/` folder are loaded; `user,project,local` = everything | `--setting-sources` |
+| `slash_commands` | `false` = no skills and slash commands at all (not the project's either) | `--disable-slash-commands` |
+| `codex_user_config` | `false` = Codex does not read `$CODEX_HOME/config.toml` (the login stays) | `--ignore-user-config` |
+| `memory` | `true` = `Write` and `Edit` too, but only into the session's own memory folder (`~/.claude/projects/<project>/memory/`); a hook refuses every other target. No effect if `tools` already grants a writing tool (`default` does too), in `orch chat` and with Codex | `--settings` (PreToolUse hook) |
 
-Beépített alapértékek: minden szerep `mcp = strict`, `setting_sources = project,local`,
-`slash_commands = false`, `codex_user_config = false`; az eszközök:
+Built-in defaults: every role has `mcp = strict`, `setting_sources = project,local`,
+`slash_commands = false`, `codex_user_config = false`; the tools:
 
-| szerep | `tools` |
+| role | `tools` |
 |---|---|
-| orchestrator, lead | `Bash,Read,Glob,Grep` (+ az `orch` MCP eszközök), `memory = true` |
+| orchestrator, lead | `Bash,Read,Glob,Grep` (+ the `orch` MCP tools), `memory = true` |
 | worker, tester | `Bash,Read,Edit,Write,Glob,Grep` |
 | reviewer | `Bash,Read,Glob,Grep` |
 | planner | `Bash,Read,Glob,Grep,WebSearch,WebFetch` |
 
-A `memory` a Claude Code memóriáját (egy fájl tényenként és a `MEMORY.md` index) tartja
-életben az orchestratornál és a leadeknél: a lead memóriája a projekt sajátja, közös a
-tulajdonos ott futó interaktív sessionjeivel. A korlát csak a `Write`/`Edit` eszközökre
-vonatkozik, a `Bash`-re nem. Csak akkor lép életbe, ha a session hookjai bizonyítottan futnak:
-a runner a promptot csak a hook által létrehozott jelzőfájl után küldi el; ha a hookok ki
-vannak kapcsolva (`disableAllHooks`, policy `allowManagedHooksOnly`), a kör `Write`/`Edit`
-nélkül indul újra. Ezt az agent megjegyzi (`~/.orchestrator/hooks-off/<agent>.json`): a
-következő körök várakozás nélkül így indulnak, új sessionben vagy egy nap után újra
-próbálja; az állapotváltást egy `info` esemény jelzi. Ha a CLI a jelzőfájl előtt kilép (pl.
-lejárt login), a kör a saját hibájával bukik el, újraindítás nélkül. Az `orch chat` ezért nem kapja meg. Ha a
-memóriamappa helye nem állapítható meg biztosan (szimlinkelt `.git`, a mappát áthelyező
-környezeti változók), minden írást elutasít; `autoMemoryDirectory` mellett csak az
-alapértelmezett mappa írható, az áthelyezett nem.
+`memory` keeps Claude Code's memory (one file per fact and the `MEMORY.md` index) alive for
+the orchestrator and the leads: a lead's memory is the project's own, shared with the owner's
+interactive sessions running there. The restriction applies only to the `Write`/`Edit` tools,
+not to `Bash`. It only takes effect if the session's hooks are proven to run: the runner sends
+the prompt only after the marker file created by the hook; if hooks are turned off
+(`disableAllHooks`, policy `allowManagedHooksOnly`), the turn restarts without `Write`/`Edit`.
+The agent remembers this (`~/.orchestrator/hooks-off/<agent>.json`): the following turns start
+that way without waiting; it tries again in a new session or after a day; an `info` event
+signals the change of state. If the CLI exits before the marker file (e.g. an expired login),
+the turn fails with its own error, without a restart. That is why `orch chat` does not get it.
+If the location of the memory folder cannot be determined reliably (a symlinked `.git`,
+environment variables that move the folder), every write is refused; with
+`autoMemoryDirectory` only the default folder is writable, not the moved one.
 
-A beépített szerepeknek nincs `Skill` eszközük, ezért a skillek és slash parancsok ki vannak
-kapcsolva. Projekt skillek/parancsok használatához az adott szerepnél `slash_commands = true`
-és a `tools` közé a `Skill` kell. (A `scripts/loadout-after.json` mérés még
-`slash_commands = true` mellett készült; a különbség kb. 30 token.)
+The built-in roles have no `Skill` tool, so skills and slash commands are turned off. To use
+project skills/commands, the role in question needs `slash_commands = true` and `Skill` among
+its `tools`. (The `scripts/loadout-after.json` measurement was still made with
+`slash_commands = true`; the difference is about 30 tokens.)
 
-Saját szerepfájl, amely egyik kulcsot sem adja meg: `mcp = strict`,
-`setting_sources = project,local`, `tools = default` (a `Skill`-lel együtt),
-`slash_commands = true`, `codex_user_config = false`. Üres érték (`tools:`) hiba.
+A custom role file that sets none of the keys: `mcp = strict`,
+`setting_sources = project,local`, `tools = default` (including `Skill`),
+`slash_commands = true`, `codex_user_config = false`. An empty value (`tools:`) is an error.
 
-Felülírás szerepfájl másolása nélkül: `<projekt>/.orch/loadout.toml` és
-`~/.orchestrator/loadout.toml`, `[default]` (minden szerep) és `[<szerep>]` táblákkal, ugyanezekkel a
-kulcsokkal. Kulcsonként az első találat nyer: projekt `[szerep]` → projekt `[default]` →
-home `[szerep]` → home `[default]` → a szerep frontmattere → a fenti alapérték. Hibás fájl
-vagy érték esetén a run a fájl nevét és a hibát megadva elbukik; ismeretlen szerep nevű
-táblát (pl. elírt `[wroker]`) figyelmen kívül hagy, és `info` eseményként jelez.
+Overriding without copying the role file: `<project>/.orch/loadout.toml` and
+`~/.orchestrator/loadout.toml`, with `[default]` (every role) and `[<role>]` tables, with the
+same keys. Per key the first hit wins: project `[role]` → project `[default]` → home `[role]` →
+home `[default]` → the role's frontmatter → the default above. With a faulty file or value the
+run fails, naming the file and the error; a table with an unknown role name (e.g. a misspelled
+`[wroker]`) is ignored and reported as an `info` event.
 
-**Ki érintett, és mi a teendő.** A `user` forrás elhagyása a teljes
-`~/.claude/settings.json`-t kihagyja, nem csak a plugineket: az `env` blokkot (pl.
-Bedrock/Vertex/proxy útválasztás), az `apiKeyHelper`-t, a `model`-t, a jogosultságokat és a
-hookokat is. Aki így hitelesít, annak az agentjei a frissítés után nem jutnak el a modellig;
-akinek ott van a `model` és nincs orch szint-beállítása, csendben a CLI alapmodelljét kapja.
-Codexnél a `--ignore-user-config` a `config.toml` `model`, `model_provider` és profil
-beállításait is elhagyja (a login megmarad). Ilyenkor a `~/.orchestrator/loadout.toml`-ba:
+**Who is affected, and what to do.** Dropping the `user` source leaves out the whole
+`~/.claude/settings.json`, not just the plugins: the `env` block (e.g. Bedrock/Vertex/proxy
+routing), `apiKeyHelper`, `model`, the permissions and the hooks too. Anyone who authenticates
+this way will find their agents cannot reach the model after the update; anyone who has `model`
+there and no orch tier setting silently gets the CLI's default model. With Codex,
+`--ignore-user-config` also leaves out the `model`, `model_provider` and profile settings of
+`config.toml` (the login stays). In that case, put this in `~/.orchestrator/loadout.toml`:
 
 ```toml
 [default]
-setting_sources = "user,project,local"   # Claude: a ~/.claude/settings.json újra él
-codex_user_config = true                 # Codex: a ~/.codex/config.toml újra él
+setting_sources = "user,project,local"   # Claude: ~/.claude/settings.json applies again
+codex_user_config = true                 # Codex: ~/.codex/config.toml applies again
 ```
 
-(A modell az `orch config set` szint-beállításával is megadható.) Egy projekt, amely a user
-szintű pluginekre, skillekre és plugin MCP szerverekre támaszkodik, mindhárom réteget
-visszakapcsolja. A `tools` szerepenként adott, ezért a `Skill`-t minden szerephez külön kell
-hozzáadni, amelyiknek kell:
+(The model can also be given with the tier setting of `orch config set`.) A project that relies
+on user-level plugins, skills and plugin MCP servers turns all three layers back on. `tools` is
+given per role, so `Skill` has to be added separately to every role that needs it:
 
 ```toml
-# <projekt>/.orch/loadout.toml
+# <project>/.orch/loadout.toml
 [default]
-setting_sources = "user,project,local"   # user pluginek, skillek, parancsok
-mcp = "inherit"                          # plugin, user és connector MCP szerverek
+setting_sources = "user,project,local"   # user plugins, skills, commands
+mcp = "inherit"                          # plugin, user and connector MCP servers
 slash_commands = true
 
 [worker]
@@ -413,126 +421,129 @@ tools = "Bash,Read,Edit,Write,Glob,Grep,Skill"
 tools = "Bash,Read,Glob,Grep,Skill"
 ```
 
-A zászlókat minden kör megkapja, a `--resume`/`exec resume` körök is. Az `orch chat` az
-`orchestrator` szerep loadoutját használja (csak a home szintű `loadout.toml` hat rá), és a
-`Bash` mindig benne marad az `orch` parancsokhoz; a slash parancsokat viszont sosem kapcsolja
-ki (a `--disable-slash-commands` az interaktív `/compact`, `/clear`, `/model`, `/context`
-parancsokat is elvenné), csak a headless agenteknél hat a `slash_commands`. A Codex a `tools`/`mcp`/`setting_sources`/
-`slash_commands` kulcsokat nem ismeri; `codex_user_config = false` mellett a user
-konfiguráció modellje, MCP szerverei és pluginjei sem töltődnek be (a modell a Codex saját
-alapértéke, ha nincs beállítva), a lead szerepek `orch` eszközei pedig jóváhagyás nélkül
-futnak.
+Every turn gets the flags, the `--resume`/`exec resume` turns too. `orch chat` uses the
+`orchestrator` role's loadout (only the home-level `loadout.toml` affects it), and `Bash`
+always stays in for the `orch` commands; it never turns off slash commands, though
+(`--disable-slash-commands` would also take away the interactive `/compact`, `/clear`, `/model`,
+`/context` commands); `slash_commands` only affects the headless agents. Codex does not know the
+`tools`/`mcp`/`setting_sources`/`slash_commands` keys; with `codex_user_config = false` the user
+configuration's model, MCP servers and plugins are not loaded either (the model is Codex's own
+default if none is set), and the lead roles' `orch` tools run without approval.
 
-**Figyelem:** a változás előtt indított session a régi listákat (eszközök, skillek, MCP
-utasítások) a beszélgetés előzményében hordozza, így az ott folytatott körök továbbra is
-nagyok; a megtakarítás teljesen csak az új agenteknél jelentkezik.
+**Note:** a session started before the change carries the old lists (tools, skills, MCP
+instructions) in its conversation history, so turns continued there stay large; the savings
+show in full only for new agents.
 
-### Egymásra épülő feladatok
+### Dependent tasks
 
-- `after` / `--after`: az agent csak a megadott agentek (vagy run-ok) sikeres befejezése után
-  indul; ha egy függőség elbukik, `skipped` lesz.
-- `{{result:<agent-id>}}` a feladat szövegében: induláskor behelyettesül a másik agent
-  végső válasza (pl. a planner terve a worker briefjébe). A strukturált válasz egészben, tömör
-  JSON-ként kerül be (vágott JSON-nak nincs haszna); a szöveges válasz 4000 karakternél
-  elvágódik, utána egy sor a teljes hosszal és az eredményfájl útvonalával.
-  `{{result:<agent-id>:full}}` a teljes szöveget adja.
-- `base=<agent-id>`: a worktree a másik agent branchéről ágazik le.
-- `share_worktree_with` / `--share`: ugyanabban a worktree-ben dolgozik (review, teszt, javítás).
-- `output_schema` (MCP): JSON Schema szerinti strukturált válasz (pl. feladatlista a plannertől).
-  Ha a hívó nem ad meg sémát, az MCP `spawn_agent` és `send_message` a szerep alapsémáját
-  használja (worker, reviewer, tester, planner: tömör, rögzített mezők; lead és orchestrator:
-  szabad szöveg); `freeform: true` prózai választ kér, a saját `output_schema` mindig nyer. A
-  CLI (`orch spawn/send/ask`) és a web API szabad szöveget kap.
-- Egy agentnek küldött üzenetek sorban futnak le; az agent megőrzi a beszélgetését
+- `after` / `--after`: the agent starts only after the given agents (or runs) have finished
+  successfully; if a dependency fails, it becomes `skipped`.
+- `{{result:<agent-id>}}` in the task text: at start it is replaced with the other agent's
+  final answer (e.g. the planner's plan into the worker's brief). A structured answer goes in
+  whole, as compact JSON (truncated JSON is of no use); a text answer is cut at 4000
+  characters, followed by a line with the full length and the path of the result file.
+  `{{result:<agent-id>:full}}` gives the full text.
+- `base=<agent-id>`: the worktree branches off the other agent's branch.
+- `share_worktree_with` / `--share`: works in the same worktree (review, test, fix).
+- `output_schema` (MCP): a structured answer following a JSON Schema (e.g. a task list from the
+  planner). If the caller gives no schema, the MCP `spawn_agent` and `send_message` use the
+  role's default schema (worker, reviewer, tester, planner: compact, fixed fields; lead and
+  orchestrator: free text); `freeform: true` asks for a prose answer; an own `output_schema`
+  always wins. The CLI (`orch spawn/send/ask`) and the web API get free text.
+- Messages sent to an agent run one after another; the agent keeps its conversation
   (`claude --resume`, `codex exec resume`).
 
-### Értesítések
+### Notifications
 
-Az orchestrator és a leadek nem várakoznak a gyerekeikre: kiosztják a munkát, a kört rövid
-státusszal lezárják, így közben üzenetet kaphatnak (a felhasználó üzenete nem áll be egy
-várakozó kör mögé). Amikor egy gyerek agent és minden al-agentje tétlen, a szülő egy automatikus
-`[orch notification]` kört kap: rövid fejléc (rendszeresemény, nem a felhasználó vagy a szülő
-üzenete, semmit nem hagy jóvá), utána tömör JSON agentenként az utolsó befejezett run
-válaszával (agentenként 4000, összesen 10000 karakterig; a többi `get_agent`-tel olvasható) és
-a még futó gyerekek listájával.
+The orchestrator and the leads do not wait for their children: they hand out the work and end
+the turn with a short status, so they can receive messages meanwhile (the user's message does
+not queue behind a waiting turn). When a child agent and all its sub-agents are idle, the parent
+gets an automatic `[orch notification]` turn: a short header (a system event, not a message from
+the user or the parent, approves nothing), then compact JSON per agent with the answer of its
+last finished run (up to 4000 characters per agent, 10000 in total; the rest can be read with
+`get_agent`) and the list of children still running.
 
-- Csak a szülő által küldött (MCP `spawn_agent`, `send_message`, `ask_project_lead`) runok és a
-  gyerek azon értesítési körei kerülnek bele, amelyek a szülőnek végzett munkáról szólnak (amit
-  a gyerek a szülő megbízása közben indított); a CLI-ből, webről kért munka és a régi runok nem.
-- `notify: "each"` (alapértelmezés): szól, amint ez az agent kész; `notify: "all"`: csak ha
-  minden agent kész, amelynek a szülő munkát küldött. A válasz első mezője, a `next` megmondja,
-  felébresztik-e a hívót (az interaktív `orch chat` sessiont soha: ott `wait_for_agents`).
-- Az értesítés szövege az induláskor készül, egy rövid várakozás után
-  (`ORCH_NOTIFY_DELAY`, alapból 5 mp), így az egyszerre érkező eredmények egy körbe kerülnek; ha
-  addigra nincs mit jelenteni, vagy el sem indul (leállítás, elhalt runner), a run nyom nélkül
-  törlődik. Ha az értesítési kör elbukik, az eredményei újra kézbesíthetők: a következő
-  értesítéssel jönnek (automatikus újrapróbálás nincs), addig `wait_for_agents` adja őket.
-- Értesítést csak egy run vége vált ki, várakozás (`orch wait`, `wait_for_agents`) soha; egy
-  leállított agent így csendben marad a következő valódi befejezésig.
-- Minden eredmény egyszer jut el a szülőhöz: amit `wait_for_agents` már visszaadott, nem jön
-  értesítésben, és az értesítésben kapott eredményt egy későbbi `wait_for_agents`
-  `already_delivered`-ként jelzi. A `wait_for_agents` (alapból 120 mp) az al-agentekre is vár,
-  és azonnal visszatér, ha a hívónak üzenete érkezett.
-- Egy agentnek egyszerre egy köre fut; az üzenetek sorrendje marad, a várakozó értesítés a
-  futásra kész üzenetek után következik. A `get_agent` részletes nézete `queue` mezőben mutatja
-  a várakozó runokat, minden nézet `children_running` mezőben a futó leszármazottak számát.
+- Only the runs sent by the parent (MCP `spawn_agent`, `send_message`, `ask_project_lead`) and
+  those notification turns of the child that report on work done for the parent (which the
+  child started while on the parent's assignment) are included; work requested from the CLI or
+  the web and old runs are not.
+- `notify: "each"` (default): reports as soon as this agent is done; `notify: "all"`: only when
+  every agent the parent sent work to is done. The first field of the answer, `next`, tells
+  whether the caller will be woken up (the interactive `orch chat` session never is: use
+  `wait_for_agents` there).
+- The notification text is written when the turn starts, after a short wait
+  (`ORCH_NOTIFY_DELAY`, 5 s by default), so results arriving together end up in one turn; if by
+  then there is nothing to report, or it never starts (stop, dead runner), the run is deleted
+  without a trace. If the notification turn fails, its results can be delivered again: they come
+  with the next notification (there is no automatic retry), until then `wait_for_agents` gives
+  them.
+- A notification is triggered only by the end of a run, never by waiting (`orch wait`,
+  `wait_for_agents`); a stopped agent therefore stays silent until its next real finish.
+- Every result reaches the parent once: what `wait_for_agents` has already returned does not
+  come in a notification, and a later `wait_for_agents` marks a result received in a
+  notification as `already_delivered`. `wait_for_agents` (120 s by default) also waits for the
+  sub-agents, and returns immediately if a message has arrived for the caller.
+- An agent runs one turn at a time; the order of messages is kept, and a waiting notification
+  comes after the messages ready to run. The detailed view of `get_agent` shows the waiting runs
+  in the `queue` field, every view the number of running descendants in the `children_running`
+  field.
 
-## Felépítés
+## Architecture
 
 ```
 src/orchestrator/
-  models.py        Project, Agent, Run (egy kör: prompt → válasz), Event
-  store.py         SQLite (WAL) – az egyetlen megosztott állapot
-  git.py           worktree életciklus
-  roles.py         szerepek betöltése; roles/*.md a beépített szerepek
-  settings.py      modell/effort szintenként: globális + projekt felülírás
-  keep_awake.py    alvásgátló a futó körök idejére (caffeinate / systemd-inhibit)
-  board.py         a projektek feladattáblája (list_board, orch board, tábla ablak, dispatch)
-  decisions.py     a tulajdonostól kért döntések (request_decision, orch decide, Döntések ablak)
-  desktop.py       asztali értesítés macOS-en (osascript)
-  loadout.py       mit tölt be egy agent (eszközök, MCP, setting források); loadout.toml
-  memory_guard.py  PreToolUse hook: a `memory` kulcs Write/Edit-je csak a memóriamappába ír
-  providers/       base.py: Provider protokoll · claude.py · codex.py
-  runner.py        egy run végrehajtása saját, leválasztott folyamatban
-  service.py       Orchestrator homlokzat – ezt használja a CLI, az MCP szerver és a web
-  mcp_server.py    az orchestrator és a lead agentek eszközei
+  models.py        Project, Agent, Run (one turn: prompt → answer), Event
+  store.py         SQLite (WAL) – the only shared state
+  git.py           worktree lifecycle
+  roles.py         loading roles; roles/*.md are the built-in roles
+  settings.py      model/effort per tier: global + project override
+  keep_awake.py    sleep inhibitor while turns run (caffeinate / systemd-inhibit)
+  board.py         the projects' task board (list_board, orch board, board window, dispatch)
+  decisions.py     decisions requested from the owner (request_decision, orch decide, Decisions window)
+  desktop.py       desktop notification on macOS (osascript)
+  loadout.py       what an agent loads (tools, MCP, setting sources); loadout.toml
+  memory_guard.py  PreToolUse hook: Write/Edit of the `memory` key only write into the memory folder
+  providers/       base.py: Provider protocol · claude.py · codex.py
+  runner.py        executing one run in its own detached process
+  service.py       Orchestrator facade – used by the CLI, the MCP server and the web
+  mcp_server.py    the tools of the orchestrator and the lead agents
   cli.py           `orch`
-  web/             webes felület: egy oldal + JSON API a homlokzat fölött
+  web/             web interface: one page + JSON API on top of the facade
 ```
 
-**Nincs daemon.** Minden run saját `python -m orchestrator.runner <id>` folyamat: megvárja a
-függőségeit, szükség esetén létrehozza a worktree-t, elindítja a CLI-t headless módban
-(`claude -p --output-format stream-json`, illetve `codex exec --json`), és a kimenetet
-egységes eseményekké alakítja. Az állapot a `~/.orchestrator/` alatt él (`ORCH_HOME`-mal
-áthelyezhető): `orch.db`, `logs/run-<id>/` (nyers stream, stderr, `result.md` a teljes végső válasszal –
-elbukott runnál az utolsó szöveg vagy a hiba –, strukturált válasznál `result.json`),
-`worktrees/<projekt>/<agent>`. A `result.md` útvonala a részletes nézetben (`get_agent`)
-`result_file`; a listákban nem szerepel. Leállított run és összeomlott runner nem ír ilyet.
+**No daemon.** Every run is its own `python -m orchestrator.runner <id>` process: it waits for
+its dependencies, creates the worktree if needed, starts the CLI in headless mode
+(`claude -p --output-format stream-json`, or `codex exec --json`), and turns the output into
+uniform events. The state lives under `~/.orchestrator/` (movable with `ORCH_HOME`): `orch.db`,
+`logs/run-<id>/` (raw stream, stderr, `result.md` with the full final answer – for a failed run
+the last text or the error –, `result.json` for a structured answer),
+`worktrees/<project>/<agent>`. The path of `result.md` is `result_file` in the detailed view
+(`get_agent`); it is not in the lists. A stopped run and a crashed runner do not write one.
 
-**Jogosultságok.** A Claude agentek alapból `--permission-mode auto`, a Codex agentek
-`workspace-write` sandboxban futnak; agentenként felülírható (`orch spawn --permission ...`).
+**Permissions.** Claude agents run with `--permission-mode auto` by default, Codex agents in the
+`workspace-write` sandbox; this can be overridden per agent (`orch spawn --permission ...`).
 
-### Bővítési pontok
+### Extension points
 
-- **Új agent típus:** a `Provider` protokoll megvalósítása (`providers/base.py`) és
-  regisztrálása a `providers/__init__.py`-ban, vagy kívülről:
-  `ORCH_PROVIDERS="nev=csomag.modul:Osztaly"`.
-- **Új szerep:** markdown fájl frontmatterrel (`description`, `lead`, `worktree`, `provider`,
-  `model`, `output_schema` és a loadout kulcsok) a `<projekt>/.orch/roles/` vagy a `~/.orchestrator/roles/` alatt; a beépítetteket
-  név szerint felülírja. A `lead: true` szerep megkapja az MCP eszközöket. Az
-  `output_schema: <fájl>` a szerep alapsémája (JSON Schema fájlnév, nem útvonal); a fájlt a
-  szerepekkel azonos sorrendben keresi (`<projekt>/.orch/roles/`, `~/.orchestrator/roles/`,
-  beépített), így egy projekt a beépített sémát is felülírhatja. `none` vagy hiánya: szabad
-  szöveg. A séma a Claude `--json-schema` és a Codex `--output-schema` számára is legyen
-  szigorú: minden mező a `required`-ben, `additionalProperties: false`, az opcionális érték
-  nullable vagy üres lista.
-- **Folyamatok (tervezés → felosztás → tesztesetek → megvalósítás → review → teszt):** az
-  építőkövek megvannak (`after`, `{{result:…}}`, `base`, megosztott worktree, `output_schema`);
-  egy deklaratív pipeline réteg a `service.py` fölé építhető.
+- **New agent type:** implement the `Provider` protocol (`providers/base.py`) and register it
+  in `providers/__init__.py`, or from outside:
+  `ORCH_PROVIDERS="name=package.module:Class"`.
+- **New role:** a markdown file with frontmatter (`description`, `lead`, `worktree`,
+  `provider`, `model`, `output_schema` and the loadout keys) under `<project>/.orch/roles/` or
+  `~/.orchestrator/roles/`; it overrides the built-in ones by name. A `lead: true` role gets the
+  MCP tools. `output_schema: <file>` is the role's default schema (a JSON Schema file name, not
+  a path); the file is looked up in the same order as the roles (`<project>/.orch/roles/`,
+  `~/.orchestrator/roles/`, built-in), so a project can override a built-in schema too. `none`
+  or leaving it out: free text. The schema must be strict for both Claude's `--json-schema` and
+  Codex's `--output-schema`: every field in `required`, `additionalProperties: false`, an
+  optional value nullable or an empty list.
+- **Pipelines (planning → breakdown → test cases → implementation → review → test):** the
+  building blocks exist (`after`, `{{result:…}}`, `base`, shared worktree, `output_schema`); a
+  declarative pipeline layer can be built on top of `service.py`.
 
-## Fejlesztés
+## Development
 
 ```sh
-uv run pytest          # a tesztek ál-providerrel, valódi git worktree-kkel futnak
+uv run pytest          # the tests run with a fake provider, with real git worktrees
 uv run ruff check . && uv run ruff format .
 ```
