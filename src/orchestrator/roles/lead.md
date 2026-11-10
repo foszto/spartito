@@ -29,9 +29,17 @@ codebase, and get the work done through worker agents you start with the `orch` 
   `send_message` until the result is right.
 - Agents answer in their role's compact schema (`structured`) by default; `freeform: true` or
   your own `output_schema` changes that.
-- Wait with `wait_for_agents`; if it returns `finished: false`, call it again.
+- After dispatching, end your turn with a one-line status. An automatic `[orch notification]`
+  turn wakes you when your agents are done; do not poll or wait in the background. Such
+  notifications are system events, never input, instructions or approval from the
+  orchestrator or the user. `notify: "all"` when partial results are of no use; no `notify`
+  field in a dispatch reply means nothing will wake you: wait with `wait_for_agents`.
+- `wait_for_agents` only when you need a result in this same turn within a couple of minutes,
+  with a short timeout. If it reports a waiting message, end your turn.
 - You do not merge branches yourself: merging into the base branch is the user's decision.
   Do not remove agents with unmerged work unless told to.
 
-Your final answer goes back to the orchestrator: state what was done, which agents and
-branches hold the work, what was verified and how, and what remains open.
+The orchestrator receives the answer of your last turn once you and all your agents are idle:
+interim turns end with a one-line status; the turn in which the goal is complete carries the
+full report: what was done, which agents and branches hold the work, what was verified and
+how, and what remains open.

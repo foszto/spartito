@@ -216,6 +216,32 @@ nagyok; a megtakarítás teljesen csak az új agenteknél jelentkezik.
 - Egy agentnek küldött üzenetek sorban futnak le; az agent megőrzi a beszélgetését
   (`claude --resume`, `codex exec resume`).
 
+### Értesítések
+
+Az orchestrator és a leadek nem várakoznak a gyerekeikre: kiosztják a munkát, a kört rövid
+státusszal lezárják, így közben üzenetet kaphatnak (a felhasználó üzenete nem áll be egy
+várakozó kör mögé). Amikor egy gyerek agent és minden al-agentje tétlen, a szülő egy automatikus
+`[orch notification]` kört kap: rövid fejléc (rendszeresemény, nem a felhasználó vagy a szülő
+üzenete, semmit nem hagy jóvá), utána tömör JSON agentenként az utolsó befejezett run
+válaszával (agentenként 4000, összesen 10000 karakterig; a többi `get_agent`-tel olvasható) és
+a még futó gyerekek listájával.
+
+- Csak a szülő által küldött (MCP `spawn_agent`, `send_message`, `ask_project_lead`) runok és a
+  gyerek saját értesítési körei kerülnek bele; a CLI-ből, webről küldött és a régi runok nem.
+- `notify: "each"` (alapértelmezés): szól, amint ez az agent kész; `notify: "all"`: csak ha a
+  szülő minden agentje kész. A válaszban csak akkor van `notify` mező, ha a hívót tényleg
+  felébresztik (az interaktív `orch chat` sessiont semmi nem ébreszti: ott `wait_for_agents`).
+- Az értesítés szövege az induláskor készül, egy rövid várakozás után
+  (`ORCH_NOTIFY_DELAY`, alapból 5 mp), így az egyszerre érkező eredmények egy körbe kerülnek; ha
+  addigra nincs mit jelenteni, a run nyom nélkül törlődik.
+- Minden eredmény egyszer jut el a szülőhöz: amit `wait_for_agents` már visszaadott, nem jön
+  értesítésben, és az értesítésben kapott eredményt egy későbbi `wait_for_agents`
+  `already_delivered`-ként jelzi. A `wait_for_agents` (alapból 120 mp) az al-agentekre is vár,
+  és azonnal visszatér, ha a hívónak üzenete érkezett.
+- Egy agentnek egyszerre egy köre fut; az üzenetek sorrendje marad, a várakozó értesítés a
+  futásra kész üzenetek után következik. A `get_agent` részletes nézete `queue` mezőben mutatja
+  a várakozó runokat, minden nézet `children_running` mezőben a futó leszármazottak számát.
+
 ## Felépítés
 
 ```
