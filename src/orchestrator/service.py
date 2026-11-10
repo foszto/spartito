@@ -29,7 +29,6 @@ from .store import (
     NOTIFICATION,
     NOTIFY_MODES,
     Store,
-    pid_alive,
 )
 
 LEAD_ROLE = "lead"
@@ -39,7 +38,6 @@ QUEUE_PREVIEW_CHARS = 120
 QUEUE_LISTED = 20  # waiting runs in the detail view's `queue`; `queued_runs` has the count
 WAIT_POLL_SECONDS = 1.0
 WITHDRAWN_PREVIEW_CHARS = 80  # of a withdrawn message, in the agent's info event
-RUNNER_EXIT_SECONDS = 2.0  # a withdraw waits this long for the killed runner to be gone
 # The automatic archive check runs from the listings (dashboard poll, `orch ps`,
 # list_agents), at most once per AUTO_ARCHIVE_EVERY seconds across all processes, and stops
 # checking further agents once it has spent AUTO_ARCHIVE_BUDGET seconds (the rest: next time).
@@ -675,7 +673,8 @@ class Orchestrator:
         self.store.add_event(
             run.id, run.agent_id, "info", f"queued message {run.id} withdrawn: {preview}"
         )
-        self._end_waiting_runner(run.pid)
+        # Its runner sees the run gone at its next poll and exits (runner.wait_for_turn);
+        # no signal: it may be in the middle of reconcile or a notification launch.
         # Not for the withdrawn run (it is gone), but the agent may now be settled.
         self.run_ended(run.id, run.agent_id)
         return run
@@ -689,18 +688,6 @@ class Orchestrator:
             return self.store.replace_queued(run_id, message, sender)
         except ValueError as exc:
             raise OrchestratorError(f"cannot edit: {exc}") from None
-
-    @staticmethod
-    def _end_waiting_runner(pid: int | None) -> None:
-        """End the runner of a withdrawn run. It only waited (its run never started), so
-        it is killed outright: on SIGTERM it would record a stop for a run that is gone."""
-        if not pid:
-            return  # not launched yet: the runner finds no run and exits
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(pid, signal.SIGKILL)
-        deadline = time.monotonic() + RUNNER_EXIT_SECONDS
-        while pid_alive(pid) and time.monotonic() < deadline:
-            time.sleep(0.05)
 
     @staticmethod
     def _kill(run: Run, sig: int) -> None:
