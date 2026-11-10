@@ -109,8 +109,9 @@ def on_off(value: Any) -> bool | None:
 
 def keep_awake(store: Store) -> bool:
     """Whether turns keep the machine awake; an unreadable value counts as the default."""
+    data = store.get_settings(GLOBAL)
     try:
-        return on_off(store.get_settings(GLOBAL).get(KEEP_AWAKE)) is not False
+        return on_off(data.get(KEEP_AWAKE) if isinstance(data, dict) else None) is not False
     except ValueError:
         return True
 

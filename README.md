@@ -132,7 +132,8 @@ Amíg egy agent köre fut (a sorban álló és a tétlen agent nem számít), a 
 tétlenség miatt: macOS-en `caffeinate -i -w <runner pid>`, Linuxon `systemd-inhibit
 --what=idle`; a runnerrel együtt ér véget, összeomlás után is. Csak a tétlenségi alvást
 akadályozza meg (a kijelző elalhat); a laptop fedelének lecsukása külső kijelző nélkül vagy a
-kényszerített alvás (pl. `pmset sleepnow`, Apple menü → Alvás) ellen nem véd. Kikapcsolás:
+kényszerített alvás (pl. `pmset sleepnow`, Apple menü → Alvás) ellen nem véd, és azokon a
+linuxos asztali környezeteken sem, amelyek energiakezelője saját időzítővel altat. Kikapcsolás:
 `orch config keep-awake off` (alapból `on`).
 
 ### Modell és effort szintenként

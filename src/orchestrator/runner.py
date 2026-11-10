@@ -715,7 +715,7 @@ def take_turn(store: Store, run: Run, kind: str) -> None:
         store.add_event(
             run_id, agent.id, "notification" if kind == NOTIFICATION else "prompt", run.prompt
         )
-        inhibitor = keep_awake.start(store, run_id, agent.id, unset=TURN_ENV)
+        inhibitor = hold_awake(store, run_id, agent.id)
         execute(store, run, agent, project)
     except notify.Gone:
         return
@@ -729,7 +729,18 @@ def take_turn(store: Store, run: Run, kind: str) -> None:
             store.add_event(run_id, run.agent_id, "error", message)
             store.finish_run(run_id, RunStatus.FAILED, error=message)
     finally:
-        keep_awake.release(inhibitor)
+        keep_awake.release(inhibitor, store, run_id, run.agent_id)
+
+
+def hold_awake(store: Store, run_id: int, agent_id: str) -> Any:
+    """keep_awake.start, which must never fail a turn (a busy database, an odd setting);
+    only a stop goes through."""
+    try:
+        return keep_awake.start(store, run_id, agent_id, unset=TURN_ENV)
+    except Stopped:
+        raise
+    except Exception:
+        return None
 
 
 def _drop_unstarted(store: Store, run_id: int, kind: str) -> bool:

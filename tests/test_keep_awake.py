@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -16,12 +17,13 @@ from test_runner_memory import infos, launches
 from test_turn_end import alive, all_gone, sleeper
 from typer.testing import CliRunner
 
-from orchestrator import cli, keep_awake
+from orchestrator import cli, keep_awake, runner, settings
 from orchestrator.models import RunStatus
 from orchestrator.runner import turn_processes
 from orchestrator.service import Orchestrator, OrchestratorError
 from orchestrator.settings import KEEP_AWAKE
 from orchestrator.settings import keep_awake as keep_awake_on
+from orchestrator.store import MESSAGE
 
 NAME = "caffeinate" if sys.platform == "darwin" else "systemd-inhibit"
 
@@ -185,7 +187,96 @@ def test_without_an_inhibitor_it_says_so_once(
     for _ in range(2):
         assert keep_awake.start(orch.store, run.id, agent.id, unset="ORCH_TURN") is None
 
-    assert infos(orch, agent.id).count(keep_awake.UNAVAILABLE) == 1
+    assert unavailable(orch, agent.id) == [keep_awake.NONE_FOUND]
+
+
+def unavailable(orch: Orchestrator, agent_id: str) -> list[str]:
+    """The reasons of the "not possible here" notes."""
+    prefix, suffix = keep_awake.UNAVAILABLE.split("{why}")
+    return [
+        text[len(prefix) : -len(suffix)]
+        for text in infos(orch, agent_id)
+        if text.startswith(prefix) and text.endswith(suffix)
+    ]
+
+
+def test_an_inhibitor_that_exits_at_once_is_noted_once_and_the_turns_go_on(
+    orch: Orchestrator, project: str, fake_inhibitors: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """systemd-inhibit without logind, or with the lock refused."""
+    monkeypatch.setenv("FAKE_INHIBIT_EXIT", "1")
+    agent, _ = orch.spawn(project, "SLEEP 0.5", worktree=False)
+    assert turn(orch, agent.id).status is RunStatus.DONE
+    orch.send(agent.id, "SLEEP 0.5")
+    assert turn(orch, agent.id).status is RunStatus.DONE
+
+    assert len(started(fake_inhibitors)) == 2
+    assert unavailable(orch, agent.id) == [f"{NAME} exited at once with code 1"]
+
+
+def test_an_inhibitor_that_cannot_be_started_is_noted_and_the_turn_goes_on(
+    orch: Orchestrator, project: str, fake_inhibitors: Path
+) -> None:
+    for name in ("caffeinate", "systemd-inhibit"):  # executable, but exec fails (OSError)
+        (fake_inhibitors.parent / name).write_text("#!/nonexistent/interpreter\n")
+    agent, _ = orch.spawn(project, "SLEEP 0.2", worktree=False)
+
+    assert turn(orch, agent.id).status is RunStatus.DONE
+    (why,) = unavailable(orch, agent.id)
+    assert why.startswith(f"{NAME} did not start: ")
+
+
+def test_an_inhibitor_ignoring_sigterm_is_killed_at_release(
+    orch: Orchestrator, project: str, fake_inhibitors: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_INHIBIT_STUBBORN", "1")
+    agent, _ = orch.spawn(project, "SLEEP 0.5", worktree=False)
+
+    assert turn(orch, agent.id).status is RunStatus.DONE
+    ((pid, *_),) = started(fake_inhibitors)
+    assert all_gone([int(pid)]) and ends(fake_inhibitors, pid) == []
+
+
+@pytest.mark.parametrize(
+    "failure", [sqlite3.OperationalError("database is locked"), AttributeError("odd row")]
+)
+def test_a_failing_settings_read_never_fails_the_turn(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    """In the runner's own code path, run here in-process to make the read fail."""
+
+    def broken(store: object) -> bool:
+        raise failure
+
+    monkeypatch.setattr(settings, "keep_awake", broken)
+    lead = orch.lead(project)
+    run = orch.store.add_run(lead.id, "SLEEP 0.2")
+
+    runner.take_turn(orch.store, run, MESSAGE)
+
+    assert orch.store.get_run(run.id).status is RunStatus.DONE
+
+
+def test_a_stop_while_starting_the_inhibitor_still_stops_the_turn(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def stopped(*args: object, **kwargs: object) -> None:
+        raise runner.Stopped
+
+    monkeypatch.setattr(keep_awake, "start", stopped)
+    lead = orch.lead(project)
+    run = orch.store.add_run(lead.id, "TOUCH launched")
+
+    runner.take_turn(orch.store, run, MESSAGE)
+
+    assert orch.store.get_run(run.id).status is RunStatus.STOPPED
+    assert not (Path(lead.cwd) / "launched").exists()
+
+
+def test_a_global_settings_row_that_is_not_an_object_counts_as_on(orch: Orchestrator) -> None:
+    orch.store.set_settings("", [1, 2])  # written by something else
+
+    assert keep_awake_on(orch.store)
 
 
 def test_turn_processes_leave_out_the_inhibitor() -> None:
