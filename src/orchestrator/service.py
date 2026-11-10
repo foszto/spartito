@@ -19,7 +19,7 @@ from typing import Any
 
 from . import config, git, notify, providers, roles, settings
 from .models import Agent, Project, Run, RunStatus, Usage, running_total
-from .store import ANYONE, MESSAGE, NOTIFICATION, NOTIFY_MODES, Store, pid_alive
+from .store import ANYONE, MESSAGE, NOTIFICATION, NOTIFY_MODES, Store
 
 LEAD_ROLE = "lead"
 ORCHESTRATOR_ID = "orchestrator"
@@ -28,7 +28,6 @@ QUEUE_PREVIEW_CHARS = 120
 QUEUE_LISTED = 20  # waiting runs in the detail view's `queue`; `queued_runs` has the count
 WAIT_POLL_SECONDS = 1.0
 WITHDRAWN_PREVIEW_CHARS = 80  # of a withdrawn message, in the agent's info event
-RUNNER_EXIT_SECONDS = 2.0  # a withdraw waits this long for the killed runner to be gone
 # What a model or effort switch in a resumed session does to the prompt cache. Measured
 # with real turns: a model switch re-wrote Claude's cache on --resume, and codex-cli
 # 0.155.1 read 0 cached tokens after `-m` changed on `exec resume`; an effort switch alone
@@ -635,7 +634,8 @@ class Orchestrator:
         self.store.add_event(
             run.id, run.agent_id, "info", f"queued message {run.id} withdrawn: {preview}"
         )
-        self._end_waiting_runner(run.pid)
+        # Its runner sees the run gone at its next poll and exits (runner.wait_for_turn);
+        # no signal: it may be in the middle of reconcile or a notification launch.
         # Not for the withdrawn run (it is gone), but the agent may now be settled.
         self.run_ended(run.id, run.agent_id)
         return run
@@ -649,18 +649,6 @@ class Orchestrator:
             return self.store.replace_queued(run_id, message, sender)
         except ValueError as exc:
             raise OrchestratorError(f"cannot edit: {exc}") from None
-
-    @staticmethod
-    def _end_waiting_runner(pid: int | None) -> None:
-        """End the runner of a withdrawn run. It only waited (its run never started), so
-        it is killed outright: on SIGTERM it would record a stop for a run that is gone."""
-        if not pid:
-            return  # not launched yet: the runner finds no run and exits
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(pid, signal.SIGKILL)
-        deadline = time.monotonic() + RUNNER_EXIT_SECONDS
-        while pid_alive(pid) and time.monotonic() < deadline:
-            time.sleep(0.05)
 
     @staticmethod
     def _kill(run: Run, sig: int) -> None:
