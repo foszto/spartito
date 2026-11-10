@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sqlite3
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -18,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config
-from .models import ACTIVE, Agent, Event, Project, Run, RunStatus
+from .models import ACTIVE, TOKEN_FIELDS, Agent, Event, Project, Run, RunStatus, Usage, from_row
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -72,6 +73,20 @@ CREATE TABLE IF NOT EXISTS events (
     kind TEXT NOT NULL,
     text TEXT NOT NULL
 );
+-- Added after the first release. Its own table, not columns on `runs`, because processes
+-- still running older code build Run(**row) from `SELECT *` and would fail on a new column.
+-- No foreign key either: older code deletes runs without knowing about this table.
+CREATE TABLE IF NOT EXISTS run_usage (
+    run_id INTEGER PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_creation_tokens INTEGER,
+    cost_usd REAL,
+    model TEXT,
+    created_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS runs_agent ON runs(agent_id, id);
 CREATE INDEX IF NOT EXISTS events_agent ON events(agent_id, id);
 """
@@ -98,6 +113,7 @@ def pid_alive(pid: int | None) -> bool:
 class Store:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or config.db_path()
+        self._use_wal()
         with self._conn() as conn:
             conn.executescript(SCHEMA)
             columns = conn.execute("PRAGMA table_info(agents)").fetchall()
@@ -105,6 +121,25 @@ class Store:
                 conn.execute("ALTER TABLE agents ADD COLUMN effort TEXT")
         if any(column["name"] == "project" and column["notnull"] for column in columns):
             self._make_agent_project_nullable()
+
+    def _use_wal(self) -> None:
+        """Switch the database to WAL once; the mode is stored in the file.
+
+        Switching needs a moment with no other connection and, unlike ordinary writes,
+        does not wait for one, so several processes opening a new database at once retry.
+        """
+        conn = sqlite3.connect(self.path, timeout=30)
+        try:
+            for attempt in range(100):
+                try:
+                    if conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal":
+                        return
+                except sqlite3.OperationalError:
+                    if attempt == 99:
+                        raise
+                time.sleep(0.05)
+        finally:
+            conn.close()
 
     def _make_agent_project_nullable(self) -> None:
         """Databases created before the orchestrator agent existed required a project."""
@@ -124,7 +159,6 @@ class Store:
     def _conn(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.path, timeout=30)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         try:
             with conn:
@@ -152,12 +186,12 @@ class Store:
     def get_project(self, name: str) -> Project | None:
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM projects WHERE name = ?", (name,)).fetchone()
-        return Project(**row) if row else None
+        return from_row(Project, row) if row else None
 
     def list_projects(self) -> list[Project]:
         with self._conn() as conn:
             rows = conn.execute("SELECT * FROM projects ORDER BY name").fetchall()
-        return [Project(**row) for row in rows]
+        return [from_row(Project, row) for row in rows]
 
     def delete_project(self, name: str) -> None:
         with self._conn() as conn:
@@ -210,7 +244,7 @@ class Store:
     def get_agent(self, agent_id: str) -> Agent | None:
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
-        return Agent(**row) if row else None
+        return from_row(Agent, row) if row else None
 
     def list_agents(self, project: str | None = None) -> list[Agent]:
         query, args = "SELECT * FROM agents", ()
@@ -218,7 +252,7 @@ class Store:
             query, args = query + " WHERE project = ?", (project,)
         with self._conn() as conn:
             rows = conn.execute(query + " ORDER BY created_at, id", args).fetchall()
-        return [Agent(**row) for row in rows]
+        return [from_row(Agent, row) for row in rows]
 
     def set_session(self, agent_id: str, session_id: str) -> None:
         with self._conn() as conn:
@@ -227,6 +261,10 @@ class Store:
     def delete_agent(self, agent_id: str) -> None:
         with self._conn() as conn:
             conn.execute("DELETE FROM events WHERE agent_id = ?", (agent_id,))
+            conn.execute(
+                "DELETE FROM run_usage WHERE run_id IN (SELECT id FROM runs WHERE agent_id = ?)",
+                (agent_id,),
+            )
             conn.execute("DELETE FROM runs WHERE agent_id = ?", (agent_id,))
             conn.execute("UPDATE agents SET parent_id = NULL WHERE parent_id = ?", (agent_id,))
             conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
@@ -240,7 +278,7 @@ class Store:
         data["depends_on"] = json.loads(data["depends_on"])
         for key in ("output_schema", "structured"):
             data[key] = json.loads(data[key]) if data[key] else None
-        return Run(**data)
+        return from_row(Run, data)
 
     def add_run(
         self,
@@ -316,6 +354,39 @@ class Store:
                 if fresh and fresh.status.active:
                     self.finish_run(run.id, RunStatus.FAILED, error="runner process died")
 
+    # -- usage ------------------------------------------------------------
+
+    def set_usage(self, run_id: int, agent_id: str, usage: Usage) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO run_usage (run_id, agent_id, input_tokens, output_tokens,"
+                " cache_read_tokens, cache_creation_tokens, cost_usd, model, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    run_id,
+                    agent_id,
+                    *(getattr(usage, key) for key in TOKEN_FIELDS),
+                    usage.cost_usd,
+                    usage.model,
+                    now(),
+                ),
+            )
+
+    def usage_of(self, agent_id: str) -> dict[int, Usage]:
+        """Per-run usage of an agent's runs, by run id. Runs without a record are absent."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT u.* FROM run_usage u JOIN runs r ON r.id = u.run_id"
+                " WHERE r.agent_id = ? ORDER BY u.run_id",
+                (agent_id,),
+            ).fetchall()
+        return {row["run_id"]: from_row(Usage, row) for row in rows}
+
+    def get_usage(self, run_id: int) -> Usage | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM run_usage WHERE run_id = ?", (run_id,)).fetchone()
+        return from_row(Usage, row) if row else None
+
     # -- events -----------------------------------------------------------
 
     def add_event(self, run_id: int, agent_id: str, kind: str, text: str) -> None:
@@ -340,4 +411,4 @@ class Store:
                     "SELECT * FROM events WHERE agent_id = ? AND id > ? ORDER BY id",
                     (agent_id, after),
                 ).fetchall()
-        return [Event(**row) for row in rows]
+        return [from_row(Event, row) for row in rows]

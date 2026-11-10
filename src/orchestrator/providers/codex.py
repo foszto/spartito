@@ -10,7 +10,7 @@ import functools
 import json
 import subprocess
 
-from ..models import Agent, Event
+from ..models import Agent, Event, Usage
 from .base import Invocation, RunContext, brief
 
 DEFAULT_SANDBOX = "workspace-write"
@@ -81,7 +81,8 @@ class CodexProvider:
         if kind == "item.completed":
             return self._item(data.get("item", {}))
         if kind == "turn.completed":
-            return [Event("result")]  # the text is the last agent_message; the runner keeps it
+            # The text is the last agent_message; the runner keeps it.
+            return [Event("result", usage=self._usage(data.get("usage")))]
         if kind == "turn.failed":
             return [
                 Event("result", brief(data.get("error", {}).get("message"), 2000), is_error=True)
@@ -89,6 +90,25 @@ class CodexProvider:
         if kind == "error":
             return [Event("error", brief(data.get("message"), 2000))]
         return []
+
+    @staticmethod
+    def _usage(usage: object) -> Usage | None:
+        """Token counts of `turn.completed`. Codex reports no cost.
+
+        On `codex exec resume` the figures are totals for the whole thread, not for this
+        turn (verified with codex-cli 0.155.1), so they are marked cumulative. Codex counts
+        cached tokens inside `input_tokens`; they are moved out to match Claude's meaning.
+        """
+        if not isinstance(usage, dict) or not usage:
+            return None
+        cached = int(usage.get("cached_input_tokens") or 0)
+        return Usage(
+            input_tokens=int(usage.get("input_tokens") or 0) - cached,
+            output_tokens=int(usage.get("output_tokens") or 0),
+            cache_read_tokens=cached,
+            cache_creation_tokens=int(usage.get("cache_write_input_tokens") or 0),
+            cumulative=True,
+        )
 
     @staticmethod
     def _item(item: dict) -> list[Event]:

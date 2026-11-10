@@ -114,3 +114,28 @@ def test_providers_pass_model_and_effort_to_their_cli(tmp_path: Path) -> None:
         and claude[claude.index("--effort") + 1] == "high"
     )
     assert codex[codex.index("-m") + 1] == "m1" and 'model_reasoning_effort="high"' in codex
+
+
+def test_view_shows_the_effective_model_and_effort_and_keeps_overrides_apart(
+    orch: Orchestrator, project: str
+) -> None:
+    orch.update_settings({"worker": {"fake": {"model": "fake-small", "effort": "low"}}})
+    orch.update_settings({"worker": {"fake": {"effort": "high"}}}, project)
+    inherited = orch.create_agent(project, worktree=False)
+    explicit = orch.create_agent(project, worktree=False, model="mine")
+    lead = orch.lead(project)
+
+    def picked(agent: Agent) -> tuple:
+        view = orch.view(agent)
+        return view["model"], view["effort"], view["model_override"], view["effort_override"]
+
+    assert picked(inherited) == ("fake-small", "high", None, None)
+    assert picked(explicit) == ("mine", "high", "mine", None)
+    assert picked(lead) == (None, None, None, None)
+    assert orch.view(inherited)["usage"] == {
+        "input_tokens": None,
+        "output_tokens": None,
+        "cache_read_tokens": None,
+        "cache_creation_tokens": None,
+        "cost_usd": 0,
+    }

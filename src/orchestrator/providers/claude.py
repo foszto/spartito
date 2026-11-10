@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 
-from ..models import Agent, Event
+from ..models import Agent, Event, Usage
 from .base import Invocation, RunContext, brief
 
 # Set by a parent Claude Code session; a child must not believe it is that session.
@@ -62,7 +62,7 @@ class ClaudeProvider:
             return [Event("info", line.strip())] if line.strip() else []
         kind = data.get("type")
         if kind == "system" and data.get("subtype") == "init":
-            return [Event("session", session_id=data.get("session_id"))]
+            return [Event("session", session_id=data.get("session_id"), model=data.get("model"))]
         if kind == "assistant":
             return self._content(data)
         if kind == "user":
@@ -72,17 +72,53 @@ class ClaudeProvider:
             text = data.get("result") or ""
             if failed and not text:
                 text = "; ".join(data.get("errors") or []) or data.get("subtype", "error")
+            usage = self._usage(data)
             return [
                 Event(
                     "result",
                     text,
                     session_id=data.get("session_id"),
-                    cost_usd=data.get("total_cost_usd"),
+                    cost_usd=usage.cost_usd if usage else data.get("total_cost_usd"),
                     is_error=failed,
                     structured=data.get("structured_output"),
+                    usage=usage,
                 )
             ]
         return []
+
+    @staticmethod
+    def _usage(data: dict) -> Usage | None:
+        """Tokens and cost of this invocation, summed over every model it used.
+
+        On a resumed session `total_cost_usd` and `modelUsage` are totals for the whole
+        session, while `model_usage_since_last_result` covers only this invocation (verified
+        with Claude Code 2.1.322). `usage` is per invocation too but counts only the main
+        model, not subagents or auxiliary models, so it would not match the cost.
+        """
+        per_model = data.get("model_usage_since_last_result")
+        cumulative = not isinstance(per_model, dict)
+        if cumulative:  # older CLIs: only the session totals
+            per_model = data.get("modelUsage")
+        if not isinstance(per_model, dict):
+            cost = data.get("total_cost_usd")
+            return None if cost is None else Usage(cost_usd=cost, cumulative=True)
+        entries = [entry for entry in per_model.values() if isinstance(entry, dict)]
+
+        def total(key: str) -> int:
+            return sum(int(entry.get(key) or 0) for entry in entries)
+
+        costs = [entry["costUSD"] for entry in entries if entry.get("costUSD") is not None]
+        if not costs and cumulative:
+            costs = [data["total_cost_usd"]] if data.get("total_cost_usd") is not None else []
+        return Usage(
+            input_tokens=total("inputTokens"),
+            output_tokens=total("outputTokens"),
+            cache_read_tokens=total("cacheReadInputTokens"),
+            cache_creation_tokens=total("cacheCreationInputTokens"),
+            cost_usd=sum(costs) if costs else None,
+            model=next(iter(per_model)) if len(per_model) == 1 else None,
+            cumulative=cumulative,
+        )
 
     @staticmethod
     def _content(data: dict) -> list[Event]:

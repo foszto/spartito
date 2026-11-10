@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config, git, providers, roles, settings
-from .models import Agent, Project, Run, RunStatus
+from .models import Agent, Project, Run, RunStatus, Usage
 from .store import Store
 
 LEAD_ROLE = "lead"
@@ -29,6 +29,21 @@ class OrchestratorError(Exception):
 
 def slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:32] or "agent"
+
+
+def run_usage(usage: Usage | None) -> dict[str, Any] | None:
+    return usage and {**usage.as_dict(), "model": usage.model}
+
+
+def total_cost(runs: list[Run], usage: dict[int, Usage]) -> float:
+    """Sum of the runs' own costs.
+
+    Runs recorded before per-run usage existed kept Claude's `total_cost_usd`, which is a
+    running total for the session; for those only the highest value counts.
+    """
+    recorded = sum(u.cost_usd or 0 for u in usage.values())
+    legacy = [run.cost_usd for run in runs if run.id not in usage and run.cost_usd]
+    return round(recorded + max(legacy, default=0), 4)
 
 
 class Orchestrator:
@@ -237,13 +252,25 @@ class Orchestrator:
     def effective(self, agent: Agent) -> dict[str, str | None]:
         """Model and effort the agent's next turn will use."""
         project = self.store.get_project(agent.project) if agent.project else None
-        role = roles.load(agent.role, project.path if project else None)
+        try:
+            role = roles.load(agent.role, project.path if project else None)
+        except KeyError:  # the role file was removed; the next turn would fail anyway
+            return {"model": agent.model, "effort": agent.effort}
         return settings.resolve(self.store, agent, role)
 
     # -- observation ------------------------------------------------------
 
     def view(self, agent: Agent, result_limit: int | None = None) -> dict[str, Any]:
+        """One agent as callers see it.
+
+        `model`/`effort` are what the next turn runs with (explicit value, project setting,
+        global setting, role); `model_override`/`effort_override` are the explicit values
+        set on the agent. `usage` sums the runs' tokens and cost; `last_run.usage` is that
+        run's own share, with the model the CLI reported.
+        """
         runs = self.store.runs_of(agent.id)
+        usage = self.store.usage_of(agent.id)
+        effective = self.effective(agent)
         active = [run for run in runs if run.status.active]
         last = runs[-1] if runs else None
         finished = [run for run in runs if not run.status.active]
@@ -257,14 +284,17 @@ class Orchestrator:
         result = shown.result if shown else None
         if result and result_limit and len(result) > result_limit:
             result = result[:result_limit] + "… [truncated; use agent_log for more]"
+        cost = total_cost(runs, usage)
         return {
             "id": agent.id,
             "project": agent.project,
             "name": agent.name,
             "role": agent.role,
             "provider": agent.provider,
-            "model": agent.model,
-            "effort": agent.effort,
+            "model": effective["model"],
+            "effort": effective["effort"],
+            "model_override": agent.model,
+            "effort_override": agent.effort,
             "parent_id": agent.parent_id,
             "status": status,
             "branch": agent.branch,
@@ -272,7 +302,8 @@ class Orchestrator:
             "session_id": agent.session_id,
             "queued_runs": len(active),
             "runs": len(runs),
-            "cost_usd": round(sum(run.cost_usd or 0 for run in runs), 4),
+            "cost_usd": cost,
+            "usage": {**sum(usage.values(), Usage()).as_dict(), "cost_usd": cost},
             "last_run": shown
             and {
                 "id": shown.id,
@@ -282,8 +313,24 @@ class Orchestrator:
                 "error": shown.error,
                 "started_at": shown.started_at,
                 "ended_at": shown.ended_at,
+                "usage": run_usage(usage.get(shown.id)),
             },
         }
+
+    def run_history(self, agent: Agent, limit: int = 10) -> list[dict[str, Any]]:
+        """The agent's latest runs with their own tokens, cost and reported model."""
+        usage = self.store.usage_of(agent.id)
+        return [
+            {
+                "id": run.id,
+                "status": run.status.value,
+                "created_at": run.created_at,
+                "started_at": run.started_at,
+                "ended_at": run.ended_at,
+                **(run_usage(usage.get(run.id)) or {"cost_usd": run.cost_usd}),
+            }
+            for run in self.store.runs_of(agent.id)[-limit:]
+        ]
 
     def overview(self, project: str | None = None) -> list[dict[str, Any]]:
         self.store.reconcile()
