@@ -108,7 +108,7 @@ def test_several_processes_may_open_an_old_database_at_once(old_db: Path) -> Non
     Store(old_db)  # and once more after the upgrade
 
     assert [proc.returncode for proc in procs] == [0] * 6, errors
-    assert "run_usage" in {
+    assert {"run_usage", "deliveries"} <= {
         row[0] for row in sqlite3.connect(old_db).execute("SELECT name FROM sqlite_master")
     }
 
