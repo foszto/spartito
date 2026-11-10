@@ -51,6 +51,9 @@ class Invocation:
     stdin: str
     env: dict[str, str] = field(default_factory=dict)
     unset_env: list[str] = field(default_factory=list)
+    # A file the CLI creates (SessionStart hook) as proof that its hooks run; the runner
+    # sends stdin only after it appears, otherwise it relaunches without `memory`.
+    canary: Path | None = None
 
 
 class Provider(Protocol):

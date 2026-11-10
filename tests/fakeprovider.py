@@ -1,7 +1,9 @@
 """A provider that runs a tiny script instead of a real coding agent.
 
 The prompt drives it: `FAIL` ends with an error result, `SLEEP <s>` delays, `TOUCH <name>`
-creates a file in the working directory, `WHOAMI` answers with `<model>/<effort>`. The answer echoes the prompt and whether the turn
+creates a file in the working directory, `WHOAMI` answers with `<model>/<effort>`, `LOADOUT`
+with `memory` or `plain`. With `memory` in the loadout it first creates the canary file,
+unless FAKE_HOOKS=off: then it exits. The answer echoes the prompt and whether the turn
 resumed an existing session.
 
 `TOKENS <n>` makes the result report usage for the turn (n input tokens, n // 10 output,
@@ -38,6 +40,10 @@ def note(pid):
         pids.write(f"{pid}\n")
 note(os.getpid())
 resumed = sys.argv[1]
+if sys.argv[3] == "memory":  # like Claude's SessionStart canary, before any input
+    if os.environ.get("FAKE_HOOKS") == "off":
+        sys.exit(1)  # hooks off: no canary (the real CLI would wait, see test_runner_memory)
+    pathlib.Path(sys.argv[4]).touch()
 prompt = sys.stdin.read()
 print(json.dumps({"session": "fake-session", "model": "fake-model-1"}), flush=True)
 words = prompt.split()
@@ -76,6 +82,8 @@ for flag, value in zip(words, words[1:]):
         subprocess.run([sys.executable, "-c", helper], **apart)
 if "WHOAMI" in words:
     print(json.dumps({"result": sys.argv[2], **extra}), flush=True)
+elif "LOADOUT" in words:
+    print(json.dumps({"result": sys.argv[3], **extra}), flush=True)
 elif "FAIL" in words:
     print(json.dumps({"result": "boom", "error": True, **extra}), flush=True)
 else:
@@ -103,7 +111,10 @@ class FakeProvider:
     def invocation(self, ctx: RunContext) -> Invocation:
         resumed = "resumed" if ctx.agent.session_id else "new"
         config = f"{ctx.model}/{ctx.effort}"
-        return Invocation(argv=[sys.executable, "-c", SCRIPT, resumed, config], stdin=ctx.prompt)
+        canary = ctx.scratch / "canary" if ctx.loadout.memory else None
+        mode = ["memory", str(canary)] if canary else ["plain"]
+        argv = [sys.executable, "-c", SCRIPT, resumed, config, *mode]
+        return Invocation(argv=argv, stdin=ctx.prompt, canary=canary)
 
     def parse(self, line: str) -> list[Event]:
         data = json.loads(line)

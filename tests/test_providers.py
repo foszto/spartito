@@ -10,6 +10,7 @@ import pytest
 from orchestrator.loadout import Loadout
 from orchestrator.models import Agent, Event, Usage
 from orchestrator.providers import McpServer, RunContext, get
+from orchestrator.providers.claude import loadout_flags
 
 
 def context(tmp_path: Path, **agent_fields) -> RunContext:
@@ -284,21 +285,37 @@ def test_claude_memory_adds_write_and_edit_behind_the_guard_on_every_turn(
     claude = get("claude")
     keeper = replace(LEAD_LOADOUT, memory=True)
 
-    argv = claude.invocation(loadout_context(tmp_path, keeper, True, session_id=session_id)).argv
-    plain = claude.invocation(
-        loadout_context(tmp_path, LEAD_LOADOUT, True, session_id=session_id)
-    ).argv
+    guarded = claude.invocation(loadout_context(tmp_path, keeper, True, session_id=session_id))
+    plain = claude.invocation(loadout_context(tmp_path, LEAD_LOADOUT, True, session_id=session_id))
+    argv = guarded.argv
 
     assert ("--resume" in argv) == bool(session_id)
     assert argv[argv.index("--tools") + 1] == "Bash,Read,Glob,Grep,Write,Edit"
     settings = json.loads(argv[argv.index("--settings") + 1])
-    assert settings["disableAllHooks"] is False
+    assert "disableAllHooks" not in settings  # a user's or project's kill switch is respected
     (entry,) = settings["hooks"]["PreToolUse"]
     assert entry["matcher"] == "Write|Edit|MultiEdit|NotebookEdit"
     command = entry["hooks"][0]["command"]
     assert command.startswith(sys.executable) and command.endswith("memory_guard.py || exit 2")
-    assert "--settings" not in plain
-    assert plain[plain.index("--tools") + 1] == "Bash,Read,Glob,Grep"
+    # The canary: created by a SessionStart hook in the same settings, before any input.
+    assert guarded.canary is not None and guarded.canary.parent == tmp_path
+    (start,) = settings["hooks"]["SessionStart"]
+    assert start["hooks"][0]["command"] == f"touch {guarded.canary}"
+    assert argv[argv.index("--input-format") + 1] == "stream-json"
+    message = json.loads(guarded.stdin)
+    assert message["type"] == "user" and guarded.stdin.endswith("\n")
+    assert message["message"]["content"] == [{"type": "text", "text": "do it"}]
+    # Without memory: as before, nothing waits for a canary.
+    assert plain.canary is None and plain.stdin == "do it"
+    assert "--settings" not in plain.argv and "--input-format" not in plain.argv
+    assert plain.argv[plain.argv.index("--tools") + 1] == "Bash,Read,Glob,Grep"
+
+
+def test_claude_memory_needs_a_canary(tmp_path: Path) -> None:
+    keeper = replace(LEAD_LOADOUT, memory=True)
+
+    assert loadout_flags(keeper) == loadout_flags(LEAD_LOADOUT)  # orch chat: no Write/Edit
+    assert "--settings" in loadout_flags(keeper, tmp_path / "canary")
 
 
 def test_claude_memory_leaves_tools_that_already_write_alone(tmp_path: Path) -> None:

@@ -27,7 +27,7 @@ from typing import Any
 from . import config, git, loadout, notify, providers, roles, settings
 from .models import Agent, Event, Project, Run, RunStatus, Usage, running_total
 from .providers import McpServer, RunContext
-from .providers.base import NOTIFICATION_RESULT
+from .providers.base import NOTIFICATION_RESULT, Invocation
 from .store import MESSAGE, NOTIFICATION, Store
 
 POLL_SECONDS = 0.5
@@ -144,33 +144,28 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
     writable = prepare_workspace(agent, project)
     scratch = config.run_dir(run.id)
     scratch.mkdir(exist_ok=True)
-    invocation = provider.invocation(
-        RunContext(
-            agent=agent,
-            # A notification carries child output: data, never {{result:…}} references.
-            prompt=run.prompt
-            if store.meta(run.id).kind == NOTIFICATION
-            else render_prompt(store, run.prompt),
-            system_prompt=system_prompt(agent, project, role),
-            scratch=scratch,
-            mcp=mcp_server(agent) if role.lead else None,
-            lead=role.lead,
-            output_schema=run.output_schema,
-            writable_dirs=writable,
-            loadout=loadout.resolve(
-                role,
-                project.path if project else None,
-                warn=lambda text: store.add_event(run.id, agent.id, "info", text),
-            ),
-            **settings.resolve(store, agent, role),
-        )
+    ctx = RunContext(
+        agent=agent,
+        # A notification carries child output: data, never {{result:…}} references.
+        prompt=run.prompt
+        if store.meta(run.id).kind == NOTIFICATION
+        else render_prompt(store, run.prompt),
+        system_prompt=system_prompt(agent, project, role),
+        scratch=scratch,
+        mcp=mcp_server(agent) if role.lead else None,
+        lead=role.lead,
+        output_schema=run.output_schema,
+        writable_dirs=writable,
+        loadout=loadout.resolve(
+            role,
+            project.path if project else None,
+            warn=lambda text: store.add_event(run.id, agent.id, "info", text),
+        ),
+        **settings.resolve(store, agent, role),
     )
-    env = {k: v for k, v in os.environ.items() if k not in invocation.unset_env}
-    env.update(invocation.env)
-
+    invocation = provider.invocation(ctx)
     # Every process the CLI starts inherits this mark, also those that leave its session.
     token = f"{run.id}-{uuid.uuid4().hex}"
-    env[TURN_ENV] = token
     mark = f"{TURN_ENV}={token}"
 
     stderr_path = scratch / "stderr.log"
@@ -180,17 +175,25 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
         open(scratch / "stream.jsonl", "w", encoding="utf-8") as raw,
         open(stderr_path, "w", encoding="utf-8") as stderr,
     ):
-        # In the runner's process group (the runner leads its own session and group, see
-        # Orchestrator._launch), so a stop that kills the group ends the CLI as well.
-        child = subprocess.Popen(
-            invocation.argv,
-            cwd=agent.cwd,
-            env=env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=stderr,
-            text=True,
-        )
+        child = _start(invocation, agent.cwd, token, stderr)
+        if invocation.canary is not None:
+            try:
+                proven = hooks_ran(child, invocation.canary)
+                if not proven:  # it has read no prompt yet: nothing ran unguarded
+                    end_turn(child, mark)
+            except BaseException:
+                end_turn(child, mark)
+                raise
+            if not proven:
+                for pipe in (child.stdin, child.stdout):
+                    if pipe:
+                        pipe.close()
+                store.add_event(run.id, agent.id, "info", MEMORY_OFF)
+                plain = dataclasses.replace(ctx.loadout, memory=False)
+                invocation = provider.invocation(dataclasses.replace(ctx, loadout=plain))
+                if invocation.canary is not None:
+                    raise RuntimeError(f"{provider.name} keeps memory on without hooks")
+                child = _start(invocation, agent.cwd, token, stderr)
         assert child.stdin and child.stdout
         lines: queue.Queue[str | None] = queue.Queue()
         reader = threading.Thread(target=_pump, args=(child.stdout, lines), daemon=True)
@@ -282,6 +285,44 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
     store.add_event(run.id, agent.id, "error", error)
     write_result(store, run, scratch, last_text or error, None)
     store.finish_run(run.id, RunStatus.FAILED, error=error, result=last_text or None, cost_usd=cost)
+
+
+CANARY_SECONDS = 15.0  # the CLI's SessionStart hooks run within about 0.2 s of its start
+MEMORY_OFF = (
+    "memory writes are off for this turn: hooks are disabled by settings or policy, so the "
+    "guard that keeps Write/Edit inside the memory directory cannot run"
+)
+
+
+def _start(invocation: Invocation, cwd: str, token: str, stderr: Any) -> subprocess.Popen[str]:
+    env = {k: v for k, v in os.environ.items() if k not in invocation.unset_env}
+    env.update(invocation.env)
+    env[TURN_ENV] = token
+    if invocation.canary is not None:
+        invocation.canary.unlink(missing_ok=True)
+    # In the runner's process group (the runner leads its own session and group, see
+    # Orchestrator._launch), so a stop that kills the group ends the CLI as well.
+    return subprocess.Popen(
+        invocation.argv,
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=stderr,
+        text=True,
+    )
+
+
+def hooks_ran(child: subprocess.Popen[str], canary: Path, timeout: float = CANARY_SECONDS) -> bool:
+    """Whether the CLI created `canary` (its SessionStart hook) before it was sent anything.
+    False when it exits first or the time runs out: then its hooks, the guard among them,
+    do not run in this session."""
+    deadline = time.monotonic() + timeout
+    while not canary.exists():
+        if child.poll() is not None or time.monotonic() >= deadline:
+            return canary.exists()
+        time.sleep(0.05)
+    return True
 
 
 LEAD_EXIT_GRACE_SECONDS = 5.0  # a lead's CLI may exit on its own after its answer

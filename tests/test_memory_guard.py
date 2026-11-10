@@ -218,7 +218,7 @@ def run_hook(
     stdin: str, env: dict[str, str], python: str | None = None
 ) -> subprocess.CompletedProcess:
     """The hook command exactly as the CLI gets it, run through /bin/sh as the CLI does."""
-    command = memory_settings()["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    command = memory_settings(Path("/c"))["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
     if python:
         command = command.replace(command.split(" ")[0], python, 1)
     return subprocess.run(

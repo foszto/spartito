@@ -151,7 +151,7 @@ deklarálja, mit tölt be:
 | `setting_sources` | `project,local` = a user szint (user pluginek, skillek, parancsok, hookok) nélkül; a projekt `CLAUDE.md`-je és `.claude/` mappája betöltődik; `user,project,local` = minden | `--setting-sources` |
 | `slash_commands` | `false` = semmilyen skill és slash parancs (a projektéi sem) | `--disable-slash-commands` |
 | `codex_user_config` | `false` = a Codex nem olvassa a `$CODEX_HOME/config.toml`-t (a login megmarad) | `--ignore-user-config` |
-| `memory` | `true` = `Write` és `Edit` is, de csak a session saját memóriamappájába (`~/.claude/projects/<projekt>/memory/`); minden más célt egy hook elutasít. Hatástalan, ha a `tools` már ad író eszközt (`default` is), és Codexnél | `--settings` (PreToolUse hook) |
+| `memory` | `true` = `Write` és `Edit` is, de csak a session saját memóriamappájába (`~/.claude/projects/<projekt>/memory/`); minden más célt egy hook elutasít. Hatástalan, ha a `tools` már ad író eszközt (`default` is), az `orch chat`-ben és Codexnél | `--settings` (PreToolUse hook) |
 
 Beépített alapértékek: minden szerep `mcp = strict`, `setting_sources = project,local`,
 `slash_commands = false`, `codex_user_config = false`; az eszközök:
@@ -166,8 +166,13 @@ Beépített alapértékek: minden szerep `mcp = strict`, `setting_sources = proj
 A `memory` a Claude Code memóriáját (egy fájl tényenként és a `MEMORY.md` index) tartja
 életben az orchestratornál és a leadeknél: a lead memóriája a projekt sajátja, közös a
 tulajdonos ott futó interaktív sessionjeivel. A korlát csak a `Write`/`Edit` eszközökre
-vonatkozik, a `Bash`-re nem; egy áthelyezett memóriamappát (`autoMemoryDirectory`) nem követ,
-oda is elutasít.
+vonatkozik, a `Bash`-re nem. Csak akkor lép életbe, ha a session hookjai bizonyítottan futnak:
+a runner a promptot csak a hook által létrehozott jelzőfájl után küldi el; ha a hookok ki
+vannak kapcsolva (`disableAllHooks`, policy `allowManagedHooksOnly`), a kör `Write`/`Edit`
+nélkül indul újra, és ezt egy `info` esemény jelzi. Az `orch chat` ezért nem kapja meg. Ha a
+memóriamappa helye nem állapítható meg biztosan (szimlinkelt `.git`, a mappát áthelyező
+környezeti változók), minden írást elutasít; `autoMemoryDirectory` mellett csak az
+alapértelmezett mappa írható, az áthelyezett nem.
 
 A beépített szerepeknek nincs `Skill` eszközük, ezért a skillek és slash parancsok ki vannak
 kapcsolva. Projekt skillek/parancsok használatához az adott szerepnél `slash_commands = true`

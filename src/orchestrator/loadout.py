@@ -15,8 +15,10 @@ every request. Keys, in a role's frontmatter or a loadout.toml table:
   codex_user_config  `false` = Codex ignores $CODEX_HOME/config.toml (`--ignore-user-config`)
   memory             `true` = Claude also gets Write and Edit, but only for its own memory
                      directory (~/.claude/projects/<project>/memory/); a hook refuses every
-                     other target (memory_guard.py). No effect when `tools` already grants a
-                     file-writing tool (`default` does) or for Codex. Bash is not confined.
+                     other target (memory_guard.py). Only for headless turns whose hooks
+                     are proven to run (runner.py); otherwise the turn runs without it.
+                     No effect when `tools` already grants a file-writing tool (`default`
+                     does), in `orch chat`, or for Codex. Bash is not confined.
 
 Resolved per key, first hit wins:
   <project>/.orch/loadout.toml [<role>] -> [default] -> $ORCH_HOME/loadout.toml [<role>]
