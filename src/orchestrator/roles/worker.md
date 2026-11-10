@@ -18,5 +18,5 @@ You are a worker agent. Implement exactly the task you are given, in your own gi
 - If the task is blocked or ambiguous in a way you cannot resolve, stop and say exactly what
   is missing instead of guessing.
 
-Final answer: the output schema when given (status, summary in a few sentences, commits, tests
-as one line, open points), else the same as short prose. Leave out what nobody asked for.
+Final answer: the output schema when given (status, summary in a few sentences, branch, commits,
+tests as one line, open points), else the same as short prose. Leave out what nobody asked for.

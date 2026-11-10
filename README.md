@@ -202,10 +202,17 @@ nagyok; a megtakarítás teljesen csak az új agenteknél jelentkezik.
 - `after` / `--after`: az agent csak a megadott agentek (vagy run-ok) sikeres befejezése után
   indul; ha egy függőség elbukik, `skipped` lesz.
 - `{{result:<agent-id>}}` a feladat szövegében: induláskor behelyettesül a másik agent
-  végső válasza (pl. a planner terve a worker briefjébe).
+  végső válasza (pl. a planner terve a worker briefjébe). A strukturált válasz egészben, tömör
+  JSON-ként kerül be (vágott JSON-nak nincs haszna); a szöveges válasz 4000 karakternél
+  elvágódik, utána egy sor a teljes hosszal és az eredményfájl útvonalával.
+  `{{result:<agent-id>:full}}` a teljes szöveget adja.
 - `base=<agent-id>`: a worktree a másik agent branchéről ágazik le.
 - `share_worktree_with` / `--share`: ugyanabban a worktree-ben dolgozik (review, teszt, javítás).
 - `output_schema` (MCP): JSON Schema szerinti strukturált válasz (pl. feladatlista a plannertől).
+  Ha a hívó nem ad meg sémát, az MCP `spawn_agent` és `send_message` a szerep alapsémáját
+  használja (worker, reviewer, tester, planner: tömör, rögzített mezők; lead és orchestrator:
+  szabad szöveg); `freeform: true` prózai választ kér, a saját `output_schema` mindig nyer. A
+  CLI (`orch spawn/send/ask`) és a web API szabad szöveget kap.
 - Egy agentnek küldött üzenetek sorban futnak le; az agent megőrzi a beszélgetését
   (`claude --resume`, `codex exec resume`).
 
@@ -231,7 +238,10 @@ src/orchestrator/
 függőségeit, szükség esetén létrehozza a worktree-t, elindítja a CLI-t headless módban
 (`claude -p --output-format stream-json`, illetve `codex exec --json`), és a kimenetet
 egységes eseményekké alakítja. Az állapot a `~/.orchestrator/` alatt él (`ORCH_HOME`-mal
-áthelyezhető): `orch.db`, `logs/run-<id>/` (nyers stream, stderr), `worktrees/<projekt>/<agent>`.
+áthelyezhető): `orch.db`, `logs/run-<id>/` (nyers stream, stderr, `result.md` a teljes végső válasszal –
+elbukott runnál az utolsó szöveg vagy a hiba –, strukturált válasznál `result.json`),
+`worktrees/<projekt>/<agent>`. A `result.md` útvonala a részletes nézetben (`get_agent`)
+`result_file`; a listákban nem szerepel. Leállított run és összeomlott runner nem ír ilyet.
 
 **Jogosultságok.** A Claude agentek alapból `--permission-mode auto`, a Codex agentek
 `workspace-write` sandboxban futnak; agentenként felülírható (`orch spawn --permission ...`).
@@ -242,8 +252,14 @@ egységes eseményekké alakítja. Az állapot a `~/.orchestrator/` alatt él (`
   regisztrálása a `providers/__init__.py`-ban, vagy kívülről:
   `ORCH_PROVIDERS="nev=csomag.modul:Osztaly"`.
 - **Új szerep:** markdown fájl frontmatterrel (`description`, `lead`, `worktree`, `provider`,
-  `model` és a loadout kulcsok) a `<projekt>/.orch/roles/` vagy a `~/.orchestrator/roles/` alatt; a beépítetteket
-  név szerint felülírja. A `lead: true` szerep megkapja az MCP eszközöket.
+  `model`, `output_schema` és a loadout kulcsok) a `<projekt>/.orch/roles/` vagy a `~/.orchestrator/roles/` alatt; a beépítetteket
+  név szerint felülírja. A `lead: true` szerep megkapja az MCP eszközöket. Az
+  `output_schema: <fájl>` a szerep alapsémája (JSON Schema fájlnév, nem útvonal); a fájlt a
+  szerepekkel azonos sorrendben keresi (`<projekt>/.orch/roles/`, `~/.orchestrator/roles/`,
+  beépített), így egy projekt a beépített sémát is felülírhatja. `none` vagy hiánya: szabad
+  szöveg. A séma a Claude `--json-schema` és a Codex `--output-schema` számára is legyen
+  szigorú: minden mező a `required`-ben, `additionalProperties: false`, az opcionális érték
+  nullable vagy üres lista.
 - **Folyamatok (tervezés → felosztás → tesztesetek → megvalósítás → review → teszt):** az
   építőkövek megvannak (`after`, `{{result:…}}`, `base`, megosztott worktree, `output_schema`);
   egy deklaratív pipeline réteg a `service.py` fölé építhető.
