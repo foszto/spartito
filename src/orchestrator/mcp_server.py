@@ -159,7 +159,7 @@ def _wait(orch: Orchestrator, ids: list[str], timeout: float, limit: int) -> dic
     caller = os.environ.get("ORCH_AGENT_ID", "")
 
     def message_waiting() -> bool:
-        return bool(caller and orch.store.waiting_messages(caller))
+        return bool(caller and orch.store.ready_messages(caller))
 
     if message_waiting():
         return _statuses(orch, ids, {aid: orch.store.runs_of(aid) for aid in ids}, MESSAGE_NOTE)
@@ -188,6 +188,16 @@ def _wait(orch: Orchestrator, ids: list[str], timeout: float, limit: int) -> dic
         claimed_runs = [run for run in new if run.id in claimed]
         outcomes.append({**outcome, **_agent_runs(shown, claimed_runs, limit)})
     return {"finished": True, "agents": outcomes}
+
+
+def _lineage(orch: Orchestrator, agent_id: str) -> set[str]:
+    """The agent and its ancestors."""
+    seen: set[str] = set()
+    current = orch.store.get_agent(agent_id)
+    while current and current.id not in seen:
+        seen.add(current.id)
+        current = orch.store.get_agent(current.parent_id) if current.parent_id else None
+    return seen
 
 
 MESSAGE_NOTE = "a message for you is waiting: end this turn now with a short status"
@@ -284,8 +294,8 @@ def spawn_agent(
       agent is skipped.
     output_schema: JSON Schema; the final answer is then returned as `structured` data.
       Default: the role's compact schema, if it has one; `freeform` for a prose answer.
-    notify: `each` wakes you when this agent is done, `all` once all your agents are. The
-      reply has `notify` only if you will be woken; without it, use wait_for_agents.
+    notify: `each` wakes you when this agent is done, `all` once every agent you sent work
+      to is. The reply has `notify` only if you will be woken; else use wait_for_agents.
     """
     orch = _orch()
     caller = _caller(orch)
@@ -321,7 +331,7 @@ def ask_project_lead(project: str, message: str, notify: str = "each") -> dict[s
     orch = _orch()
     if _scoped(orch):
         raise OrchestratorError("only the top-level orchestrator talks to project leads")
-    lead = orch.lead(project)
+    lead = orch.lead(project, adopt=_sender())
     run = orch.send(lead.id, message, sender=_sender(), notify=notify)
     return _queued(orch, lead.id, run.id, notify)
 
@@ -366,6 +376,13 @@ async def wait_for_agents(
     """
     orch = _orch()
     ids = [_own(orch, agent_id) for agent_id in agent_ids]
+    if caller := _caller(orch):
+        above = _lineage(orch, caller.id)
+        if inside := [agent_id for agent_id in ids if agent_id in above]:
+            raise OrchestratorError(
+                f"cannot wait for {', '.join(inside)}: yourself or an agent above you"
+                " (it waits for you); end your turn instead"
+            )
     timeout = max(1, min(timeout_seconds, MAX_WAIT_SECONDS))
     return await anyio.to_thread.run_sync(lambda: _wait(orch, ids, timeout, result_chars))
 

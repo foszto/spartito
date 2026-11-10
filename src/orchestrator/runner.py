@@ -144,7 +144,10 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
     invocation = provider.invocation(
         RunContext(
             agent=agent,
-            prompt=render_prompt(store, run.prompt),
+            # A notification carries child output: data, never {{result:…}} references.
+            prompt=run.prompt
+            if store.meta(run.id).kind == NOTIFICATION
+            else render_prompt(store, run.prompt),
             system_prompt=system_prompt(agent, project, role),
             scratch=scratch,
             mcp=mcp_server(agent) if role.lead else None,
@@ -558,7 +561,7 @@ def main(run_id: int) -> None:
         # Whatever happened, the run is over: maybe a parent is now due a notification.
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         signal.signal(signal.SIGINT, signal.SIG_IGN)
-        orch.notify_parents(run.agent_id)
+        orch.run_ended(run_id, run.agent_id)
 
 
 def take_turn(store: Store, run: Run, kind: str) -> None:
@@ -587,16 +590,24 @@ def take_turn(store: Store, run: Run, kind: str) -> None:
     except notify.Gone:
         return
     except Stopped:
-        fresh = store.get_run(run_id)
-        if kind == NOTIFICATION and fresh and fresh.started_at is None:
-            store.delete_run(run_id)  # it never had a turn; do not leave it as the last run
-            return
-        store.add_event(run_id, run.agent_id, "error", "stopped")
-        store.finish_run(run_id, RunStatus.STOPPED, error="stopped")
+        if not _drop_unstarted(store, run_id, kind):
+            store.add_event(run_id, run.agent_id, "error", "stopped")
+            store.finish_run(run_id, RunStatus.STOPPED, error="stopped")
     except Exception as exc:  # the run must never stay 'running' after its runner is gone
-        message = f"{type(exc).__name__}: {exc}"
-        store.add_event(run_id, run.agent_id, "error", message)
-        store.finish_run(run_id, RunStatus.FAILED, error=message)
+        if not _drop_unstarted(store, run_id, kind):
+            message = f"{type(exc).__name__}: {exc}"
+            store.add_event(run_id, run.agent_id, "error", message)
+            store.finish_run(run_id, RunStatus.FAILED, error=message)
+
+
+def _drop_unstarted(store: Store, run_id: int, kind: str) -> bool:
+    """Delete a notification run that never had a turn (it must not stay as a failed or
+    stopped last run, nor be reported upward). True when it was one."""
+    fresh = store.get_run(run_id)
+    if kind == NOTIFICATION and fresh and fresh.started_at is None:
+        store.delete_run(run_id)
+        return True
+    return False
 
 
 if __name__ == "__main__":

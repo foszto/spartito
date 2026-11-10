@@ -2,14 +2,16 @@
 
 A child is *settled* when neither it nor any of its descendants has a waiting or running
 run. A finished run of child C is *deliverable* to its parent P when P has not received it
-yet (table `deliveries`, shared with wait_for_agents) and P sent it, or it is a
-notification turn of C (that is where a lead writes its final report). Runs without
-metadata (queued by older code) are never deliverable, so going live floods no one.
+yet (table `deliveries`, shared with wait_for_agents) and either P sent it, or it is a
+notification turn of C whose origin is P: it reports work C did for P (that is where a lead
+writes its final report). Runs without metadata (queued by older code) are never
+deliverable, so going live floods no one.
 
 A notification for P is *due* when a settled child has deliverable runs and either P asked
-to hear about that child on its own (`notify: each`, the default) or every child of P is
-settled. Then one notification run is queued on P; its text is written only when it
-starts, after a short settle delay, so completions that arrive meanwhile share one turn.
+to hear about that child on its own (`notify: each`, the default) or every child P sent
+work to is settled. Then one notification run is queued on P; its text is written only
+when it starts, after a short settle delay, so completions that arrive meanwhile share one
+turn. Only the end of a run triggers this check (`run_ended`), never a read.
 """
 
 from __future__ import annotations
@@ -25,13 +27,14 @@ from typing import Any, Literal
 
 from .models import ACTIVE, Run, RunStatus
 from .replies import run_reply
-from .store import NOTIFICATION, Store, now, subtree_sql
+from .store import MESSAGE, NOTIFICATION, Store, now, subtree_sql
 
 SETTLE_SECONDS = 5.0  # a starting notification waits this long for more completions
 SETTLE_ENV = "ORCH_NOTIFY_DELAY"  # overrides SETTLE_SECONDS (tests set 0)
 AGENT_CHARS = 4000  # answer text per agent in one notification
 MESSAGE_CHARS = 10000  # the whole notification text
 LISTED_IDS = 50  # earlier undelivered runs of one agent listed by id
+LISTED_AGENTS = 20  # agents listed in not_shown and still_running; the rest are counted
 POLL_SECONDS = 0.5
 RECONCILE_EVERY = 10  # polls
 
@@ -60,6 +63,7 @@ class Child:
     branch: str | None
     settled: bool
     mode: str
+    sent: bool  # the parent sent it a run
     deliverable: list[int] = field(default_factory=list)
 
 
@@ -79,10 +83,10 @@ def children(conn: sqlite3.Connection, parent_id: str) -> list[Child]:
         deliverable = conn.execute(
             "SELECT r.id FROM runs r JOIN run_meta m ON m.run_id = r.id"
             f" WHERE r.agent_id = ? AND r.status NOT IN {_ACTIVE_SQL}"
-            " AND (m.sender = ? OR m.kind = ?)"
+            " AND ((m.kind = ? AND m.sender = ?) OR (m.kind = ? AND m.origin = ?))"
             " AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.caller = ? AND d.run_id = r.id)"
             " ORDER BY r.id",
-            (child, parent_id, NOTIFICATION, parent_id),
+            (child, MESSAGE, parent_id, NOTIFICATION, parent_id, parent_id),
         ).fetchall()
         mode = conn.execute(
             "SELECT notify FROM run_meta WHERE agent_id = ? AND sender = ?"
@@ -95,6 +99,7 @@ def children(conn: sqlite3.Connection, parent_id: str) -> list[Child]:
                 branch=row["branch"],
                 settled=busy is None,
                 mode=mode["notify"] if mode else "each",
+                sent=mode is not None,
                 deliverable=[r["id"] for r in deliverable],
             )
         )
@@ -102,8 +107,9 @@ def children(conn: sqlite3.Connection, parent_id: str) -> list[Child]:
 
 
 def reportable(kids: list[Child]) -> list[Child]:
-    """The children whose results are due to be reported now."""
-    everyone = all(kid.settled for kid in kids)
+    """The children whose results are due to be reported now. `all` waits only for the
+    children the parent sent work to, not for others (e.g. started by the user)."""
+    everyone = all(kid.settled for kid in kids if kid.sent)
     return [
         kid for kid in kids if kid.settled and kid.deliverable and (kid.mode == "each" or everyone)
     ]
@@ -116,14 +122,6 @@ def _waiting_notification(conn: sqlite3.Connection, agent_id: str) -> bool:
         (agent_id, RunStatus.WAITING.value, NOTIFICATION),
     ).fetchone()
     return row is not None
-
-
-def due(store: Store, parent_id: str) -> bool:
-    """Whether a notification should be queued on `parent_id` (read only)."""
-    with store.connection() as conn:
-        if _waiting_notification(conn, parent_id):
-            return False
-        return bool(reportable(children(conn, parent_id)))
 
 
 def queue_if_due(store: Store, parent_id: str) -> Run | None:
@@ -154,8 +152,8 @@ def notify(store: Store, parent_id: str, launch: Launch) -> bool:
 
 
 def notify_ancestors(store: Store, agent_id: str, launch: Launch) -> None:
-    """After a run of `agent_id` ended: check its parent, and further up, since a finished
-    grandchild can leave a child settled."""
+    """Check the agent's parent, and further up, since a finished grandchild can leave a
+    child settled."""
     seen = {agent_id}
     agent = store.get_agent(agent_id)
     while agent and agent.parent_id and agent.parent_id not in seen:
@@ -167,14 +165,52 @@ def notify_ancestors(store: Store, agent_id: str, launch: Launch) -> None:
         agent = store.get_agent(agent.parent_id)
 
 
-def settled(store: Store, agent_id: str, launch: Launch) -> bool:
-    """Whether the agent and all its descendants are idle and will stay so: a notification
-    that is due inside the subtree but not queued yet (its trigger is a moment away, or
-    was lost with a crashed runner) is queued here and counts as work."""
+def run_ended(
+    store: Store, run_id: int, agent_id: str, launch: Launch, recheck: bool = False
+) -> None:
+    """Every path that ends a run calls this afterwards (the run may be deleted already).
+
+    A notification turn that did not succeed gives back what it claimed: those results
+    reach the parent with its next notification, which only a later run end causes (no
+    retry loop), and wait_for_agents returns them meanwhile. `recheck`: a notification
+    of this agent was lost before it started (its runner died); check the agent once.
+    Then the ancestors are checked and the run is marked checked.
+    """
+    run = store.get_run(run_id)
+    if run is not None and not run.status.active and run.status is not RunStatus.DONE:
+        release(store, run_id)
+    if recheck:
+        try:
+            notify(store, agent_id, launch)
+        except Exception as exc:
+            print(f"notifying {agent_id} failed: {exc!r}", file=sys.stderr)
+    notify_ancestors(store, agent_id, launch)
+    if run is not None:
+        store.mark_checked(run_id)
+
+
+def release(store: Store, run_id: int) -> None:
+    """Undo the deliveries a notification run claimed."""
+    with store.transaction() as conn:
+        row = conn.execute(
+            "SELECT agent_id, claimed FROM run_meta WHERE run_id = ? AND kind = ?",
+            (run_id, NOTIFICATION),
+        ).fetchone()
+        if row is None or not row["claimed"]:
+            return
+        conn.executemany(
+            "DELETE FROM deliveries WHERE caller = ? AND run_id = ?",
+            [(row["agent_id"], claimed) for claimed in json.loads(row["claimed"])],
+        )
+        conn.execute("UPDATE run_meta SET claimed = NULL WHERE run_id = ?", (run_id,))
+
+
+def settled(store: Store, agent_id: str) -> bool:
+    """Whether the agent and all its descendants are idle: no run is waiting or running,
+    and every ended run had its parents checked (else a notification may be on its way).
+    Read only."""
     tree = store.subtree(agent_id)
-    if any(store.active_runs(member) for member in tree):
-        return False
-    return not any(due(store, member) and notify(store, member, launch) for member in tree)
+    return not any(store.active_runs(member) for member in tree) and not store.unchecked(tree)
 
 
 class Gone(Exception):
@@ -212,16 +248,39 @@ def _begin(store: Store, run: Run) -> Run | None | Literal[False]:
         if not due_now:
             store.delete_run(run.id, conn)
             return None
-        for kid in due_now:
-            conn.executemany(
-                "INSERT OR IGNORE INTO deliveries (caller, run_id, delivered_at) VALUES (?, ?, ?)",
-                [(run.agent_id, run_id, now()) for run_id in kid.deliverable],
-            )
+        claimed = [run_id for kid in due_now for run_id in kid.deliverable]
+        conn.executemany(
+            "INSERT OR IGNORE INTO deliveries (caller, run_id, delivered_at) VALUES (?, ?, ?)",
+            [(run.agent_id, run_id, now()) for run_id in claimed],
+        )
+        origin, cause = _origin(conn, run.agent_id, claimed)
+        conn.execute(
+            "UPDATE run_meta SET origin = ?, cause_run = ?, claimed = ? WHERE run_id = ?",
+            (origin, cause, json.dumps(claimed), run.id),
+        )
         store.start_run(conn, run.id, prompt=render(conn, kids, due_now))
     started = store.get_run(run.id)
     if started is None:
         raise Gone
     return started
+
+
+def _origin(
+    conn: sqlite3.Connection, agent_id: str, reported: list[int]
+) -> tuple[str | None, int | None]:
+    """Origin and cause of a notification on `agent_id` reporting `reported`: its parent,
+    if one of those runs was queued during a turn of this agent that worked for the parent
+    (and that turn's cause), else nothing — the report then concerns no one above."""
+    parent = conn.execute("SELECT parent_id FROM agents WHERE id = ?", (agent_id,)).fetchone()
+    if not parent or not parent["parent_id"] or not reported:
+        return None, None
+    marks = ", ".join("?" * len(reported))
+    row = conn.execute(
+        "SELECT c.origin, c.cause_run FROM run_meta r JOIN run_meta c ON c.run_id = r.cause_run"
+        f" WHERE r.run_id IN ({marks}) AND c.agent_id = ? AND c.origin = ? LIMIT 1",
+        (*reported, agent_id, parent["parent_id"]),
+    ).fetchone()
+    return (row["origin"], row["cause_run"]) if row else (None, None)
 
 
 # -- the text ---------------------------------------------------------------
@@ -233,18 +292,35 @@ def _compact(data: Any) -> str:
 
 def _text(shown: list[dict[str, Any]], unshown: list[dict[str, Any]], running: list[str]) -> str:
     body: dict[str, Any] = {"agents": shown}
+    notes = []
+    if any("earlier_run_ids" in agent for agent in shown):
+        notes.append(
+            "earlier_run_ids count as delivered without being shown;"
+            " get_agent <id> run_id=<n> result_chars=0 reads one"
+        )
     if unshown:
-        body["not_shown"] = unshown
-        body["not_shown_note"] = "no room left; get_agent <id> result_chars=0 reads one"
+        body["not_shown"] = unshown[:LISTED_AGENTS]
+        notes.append(
+            f"{len(unshown)} agent(s) in not_shown had no room: their results count as"
+            " delivered without being shown; get_agent <id> result_chars=0 reads one"
+        )
+        if len(unshown) > LISTED_AGENTS:
+            body["not_shown_more"] = len(unshown) - LISTED_AGENTS
+            notes.append("list_agents names the ones not listed")
     if running:
-        body["still_running"] = running
+        body["still_running"] = running[:LISTED_AGENTS]
+        if len(running) > LISTED_AGENTS:
+            body["still_running_more"] = len(running) - LISTED_AGENTS
+    if notes:
+        body["note"] = "; ".join(notes)
     return HEADER + _compact(body)
 
 
 def render(conn: sqlite3.Connection, kids: list[Child], due_now: list[Child]) -> str:
-    """The notification text: header, then compact JSON per reported agent (its latest
-    finished run with a bounded answer, ids of earlier undelivered runs), the children
-    still running, and the agents that did not fit, by id and status."""
+    """The notification text, at most MESSAGE_CHARS: header, then compact JSON per reported
+    agent (its latest finished run with an answer of at most AGENT_CHARS, ids of earlier
+    undelivered runs), the agents that did not fit (by id and status) and the children
+    still running, both lists capped at LISTED_AGENTS with a count of the rest."""
     running = [kid.id for kid in kids if not kid.settled]
     latest = {}
     for kid in due_now:
@@ -276,4 +352,8 @@ def render(conn: sqlite3.Connection, kids: list[Child], due_now: list[Child]) ->
             budget -= over + 50
         else:
             unshown.append(shorts[kid.id])
-    return _text(shown, unshown, running)
+    text = _text(shown, unshown, running)
+    while len(text) > MESSAGE_CHARS and shown:  # the lists are capped; this is a last resort
+        unshown.insert(0, shorts[shown.pop()["id"]])
+        text = _text(shown, unshown, running)
+    return text[:MESSAGE_CHARS]

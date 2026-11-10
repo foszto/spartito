@@ -24,6 +24,8 @@ LEAD_ROLE = "lead"
 ORCHESTRATOR_ID = "orchestrator"
 STOP_GRACE_SECONDS = 8
 QUEUE_PREVIEW_CHARS = 120
+QUEUE_LISTED = 20  # waiting runs in the detail view's `queue`; `queued_runs` has the count
+WAIT_POLL_SECONDS = 1.0
 
 
 class OrchestratorError(Exception):
@@ -63,7 +65,7 @@ def agent_state(runs: list[Run]) -> tuple[str, list[Run], Run | None]:
 class Orchestrator:
     def __init__(self, store: Store | None = None) -> None:
         self.store = store or Store()
-        self.store.on_run_end = self.notify_parents
+        self.store.on_run_end = self.run_ended
 
     # -- projects ---------------------------------------------------------
 
@@ -184,7 +186,7 @@ class Orchestrator:
         With `role_schema` and no `output_schema` the agent's role default schema applies.
         `sender` is the agent that sends it (None: the user); when that is the agent's
         parent, `notify` says when it is woken: `each` once this agent is done, `all` once
-        all its agents are.
+        all its agents are. The sender's running turn is recorded as the run's cause.
         """
         agent = self.agent(agent_id)
         self._check_notify(notify)
@@ -199,9 +201,14 @@ class Orchestrator:
             kind=MESSAGE,
             sender=sender,
             notify=notify,
+            cause_run=self._cause(sender),
         )
         self._launch(run)
         return run
+
+    def _cause(self, sender: str | None) -> int | None:
+        running = self.store.running_run(sender) if sender else None
+        return running.id if running else None
 
     @staticmethod
     def _check_notify(notify: str) -> None:
@@ -233,10 +240,17 @@ class Orchestrator:
         except roles.SchemaError as exc:
             raise OrchestratorError(str(exc)) from None
 
-    def lead(self, project_name: str) -> Agent:
-        """The project's own agent: works in the main checkout and may run sub-agents."""
+    def lead(self, project_name: str, adopt: str | None = None) -> Agent:
+        """The project's own agent: works in the main checkout and may run sub-agents.
+
+        `adopt`: the headless orchestrator asking; a lead created before it existed (no
+        parent) becomes its child, so that the orchestrator is notified about it.
+        """
         for agent in self.store.list_agents(self.project(project_name).name):
             if agent.role == LEAD_ROLE and agent.parent_id in (None, ORCHESTRATOR_ID):
+                if adopt == ORCHESTRATOR_ID and agent.parent_id is None:
+                    self.store.set_parent(agent.id, ORCHESTRATOR_ID)
+                    agent.parent_id = ORCHESTRATOR_ID
                 return agent
         parent = ORCHESTRATOR_ID if self.store.get_agent(ORCHESTRATOR_ID) else None
         return self.create_agent(project_name, name="lead", role=LEAD_ROLE, parent_id=parent)
@@ -304,11 +318,12 @@ class Orchestrator:
         # that still looks alive to Store.reconcile().
         threading.Thread(target=proc.wait, daemon=True).start()
 
-    def notify_parents(self, agent_id: str) -> None:
-        """A run of the agent ended: queue a notification on each ancestor that is due one.
-        Never raises: the caller is ending a run and must not fail because of this."""
+    def run_ended(self, run_id: int, agent_id: str, recheck: bool = False) -> None:
+        """Every path that ends a run calls this once it has ended (or was deleted): it
+        queues the notifications that are due (see notify.run_ended). Never raises: the
+        caller is ending a run and must not fail because of this."""
         try:
-            notify.notify_ancestors(self.store, agent_id, self._launch)
+            notify.run_ended(self.store, run_id, agent_id, self._launch, recheck)
         except Exception as exc:
             print(f"notifying the parents of {agent_id} failed: {exc!r}", file=sys.stderr)
 
@@ -411,8 +426,7 @@ class Orchestrator:
                     "created_at": run.created_at,
                     "prompt": run.prompt[:QUEUE_PREVIEW_CHARS],
                 }
-                for run in active
-                if run.status is RunStatus.WAITING
+                for run in [run for run in active if run.status is RunStatus.WAITING][:QUEUE_LISTED]
             ]
         return view
 
@@ -442,8 +456,9 @@ class Orchestrator:
         interrupt: Callable[[], bool] | None = None,
     ) -> bool:
         """Block until the agents are settled: neither they nor any of their descendants
-        has a queued or running turn, and no notification inside is about to be queued
-        (True); or until timeout, or until `interrupt()` is true (False)."""
+        has a queued or running turn, or an ended one whose parents were not checked yet
+        for a notification (True); or until timeout, or until `interrupt()` is true
+        (False). Only reads (and reconciles dead runners): waiting never queues a turn."""
         agents = [self.agent(agent_id) for agent_id in agent_ids]
         deadline = time.monotonic() + timeout
         while True:
@@ -451,10 +466,10 @@ class Orchestrator:
             idle = all(self.settled(agent.id) for agent in agents)
             if idle or time.monotonic() >= deadline or (interrupt and interrupt()):
                 return idle
-            time.sleep(1)
+            time.sleep(WAIT_POLL_SECONDS)
 
     def settled(self, agent_id: str) -> bool:
-        return notify.settled(self.store, agent_id, self._launch)
+        return notify.settled(self.store, agent_id)
 
     def wait(self, agent_ids: list[str], timeout: float = 600) -> tuple[bool, list[dict[str, Any]]]:
         """Block like wait_idle, then return whether they are idle and their detail views
@@ -490,15 +505,13 @@ class Orchestrator:
         deadline = time.monotonic() + STOP_GRACE_SECONDS
         while self.store.active_runs(agent.id) and time.monotonic() < deadline:
             time.sleep(0.2)
-        killed = self.store.active_runs(agent.id)
-        for run in killed:
+        for run in self.store.active_runs(agent.id):
             self._kill(run, signal.SIGKILL)
             if run.started_at is None and self.store.meta(run.id).kind == NOTIFICATION:
                 self.store.delete_run(run.id)  # never had a turn: leave no trace
             else:
                 self.store.finish_run(run.id, RunStatus.STOPPED, error="stopped")
-        if killed:
-            self.notify_parents(agent.id)
+            self.run_ended(run.id, agent.id)  # a deliberate stop: no recheck of the agent
         return [run.id for run in active]
 
     @staticmethod
