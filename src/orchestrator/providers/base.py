@@ -7,6 +7,7 @@ the class in providers/__init__.py. Nothing else in the orchestrator knows provi
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -57,8 +58,12 @@ class Provider(Protocol):
     name: str
     efforts: tuple[str, ...]  # reasoning-effort levels the CLI accepts
 
-    def models(self) -> list[str]:
-        """Model names worth offering in a picker; any other name is still accepted."""
+    def models(self) -> Sequence[str | tuple[str, str]]:
+        """Models worth offering in a picker: names, or (value for the CLI, label) pairs.
+
+        Any other name is still accepted. A provider whose list is a stand-in may say so in
+        an optional `models_note` attribute (read after this call).
+        """
         ...
 
     def invocation(self, ctx: RunContext) -> Invocation:
@@ -72,6 +77,15 @@ class Provider(Protocol):
     def attach_command(self, agent: Agent) -> list[str]:
         """Interactive command a person can run to take over the agent's conversation."""
         ...
+
+
+def model_choices(provider: Provider) -> dict[str, Any]:
+    """A provider's picker list as {"models": [{"value", "label"}], "models_note"}."""
+    models = [
+        {"value": m, "label": m} if isinstance(m, str) else {"value": m[0], "label": m[1]}
+        for m in provider.models()
+    ]
+    return {"models": models, "models_note": getattr(provider, "models_note", None)}
 
 
 def brief(value: Any, limit: int = 300) -> str:

@@ -24,6 +24,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from .. import providers, roles
+from ..providers.base import model_choices
 from ..service import ORCHESTRATOR_ID, Orchestrator, OrchestratorError
 from ..settings import TIERS
 
@@ -102,7 +103,7 @@ def state(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
             for project in orch.store.list_projects()
         ],
         "providers": [
-            {"name": name, "models": provider.models(), "efforts": list(provider.efforts)}
+            {"name": name, **model_choices(provider), "efforts": list(provider.efforts)}
             for name, provider in providers.PROVIDERS.items()
         ],
         "tiers": list(TIERS),

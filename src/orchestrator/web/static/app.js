@@ -92,6 +92,12 @@ const allAgents = () => state.projects.flatMap(p => p.agents).concat(state.orche
 const findAgent = id => allAgents().find(agent => agent.id === id);
 const leadOf = project => project.agents.find(a => a.role === 'lead' && (!a.parent_id || a.parent_id === ORCH));
 const provider = name => state.providers.find(p => p.name === name) || { name, models: [], efforts: [] };
+// A provider's models as {value, label}: the value goes to the CLI, the label (with the version
+// where the provider names one) is shown. Any other typed name is still accepted.
+const modelLabel = (p, value) => p.models.find(m => m.value === value)?.label || value;
+const modelOptions = p => p.models.map(m => {
+  const o = el('option'); o.value = m.value; if (m.label !== m.value) o.label = m.label; return o;
+});
 const isActive = agent => agent && (agent.status === 'running' || agent.status === 'waiting');
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 // No own turn, the last one went fine (or there was none), but its agents still work: it takes a
@@ -400,6 +406,7 @@ function renderHeader(agent, setupFreshness = true) {
     id: agent.id, provider: agent.provider, effective: agent.effective || {}, inherited: agent.inherited || {},
     own: { model: agent.model_override, effort: agent.effort_override },
     session: Boolean(agent.session_id), running: agent.status === 'running', cacheHint: agent.cache_hint,
+    resolved: agent.last_run?.usage?.model || null,
   } : draft && {
     id: ORCH, provider: draft.provider, effective: draft.effective, inherited: draft.inherited,
     own: { model: draft.model_override, effort: draft.effort_override }, session: false, running: false,
@@ -476,8 +483,10 @@ function renderSetup(data, fresh = true) {
   note.textContent = notes.join(' ');
   note.hidden = !notes.length;
   for (const key of ['model', 'effort']) {
-    const items = provider(data.provider)[key === 'model' ? 'models' : 'efforts'];
-    const built = JSON.stringify([data.id, data.own[key], data.inherited[key], items, notes.length > 0]);
+    const p = provider(data.provider);
+    const items = key === 'model' ? p.models.map(m => [m.value, m.label]) : p.efforts.map(e => [e, e]);
+    const extras = key === 'model' ? [data.resolved, p.models_note] : [];
+    const built = JSON.stringify([data.id, data.own[key], data.inherited[key], items, extras, notes.length > 0]);
     const current = box.querySelector(`[data-control=${key}]`);
     if (current && current.contains(document.activeElement)) { syncControl(current, data, key); continue; }
     if (current && (current.dataset.built === built || setupBusy(data.id, key))) continue;  // keep a pick on its way
@@ -498,7 +507,20 @@ function describe(select, data, key) {
 function markOwn(wrap, own) {
   wrap.classList.toggle('own', Boolean(own));
   wrap.querySelector('.mark')?.remove();
-  if (own) wrap.append(el('span', 'mark', 'own'));
+  if (own) wrap.insertBefore(el('span', 'mark', 'own'), wrap.querySelector('.extra'));
+}
+
+// After the model: the model the last run actually used, and why the list may be incomplete.
+function markExtras(wrap, data, key) {
+  for (const node of wrap.querySelectorAll('.extra')) node.remove();
+  if (key !== 'model') return;
+  if (data.resolved) {
+    const node = el('span', 'extra resolved mono', `→ ${data.resolved}`);
+    node.title = 'Model of the last run, as reported by the CLI';
+    wrap.append(node);
+  }
+  const note = provider(data.provider).models_note;
+  if (note) wrap.append(el('span', 'extra models-note', note));
 }
 
 function buildControl(data, key, items, described) {
@@ -507,8 +529,8 @@ function buildControl(data, key, items, described) {
   select.dataset.setup = key;
   if (described) select.setAttribute('aria-describedby', 'setupNote');
   const list = [...items];
-  if (own && !list.includes(own)) list.push(own);
-  options(select, [['', ''], ...list.map(v => [v, v]), ...(key === 'model' ? [[OTHER, 'other…']] : [])], own || '');
+  if (own && !list.some(([value]) => value === own)) list.push([own, own]);
+  options(select, [['', ''], ...list, ...(key === 'model' ? [[OTHER, 'other…']] : [])], own || '');
   describe(select, data, key);
   select.onchange = () => {
     const id = data.id, slot = setupSlot(id, key);
@@ -520,6 +542,7 @@ function buildControl(data, key, items, described) {
     pendingSetup.set(slot, { timer: setTimeout(save, SETUP_SETTLE_MS), save });
   };
   wrap.append(el('span', 'key', key), select);
+  markExtras(wrap, data, key);
   markOwn(wrap, own);
   return wrap;
 }
@@ -530,10 +553,12 @@ function syncControl(wrap, data, key) {
   if (!select || !select.isConnected) return;  // a name is being typed: leave it alone
   const own = data.own[key];
   describe(select, data, key);
+  markExtras(wrap, data, key);
   markOwn(wrap, own);
   if (setupBusy(data.id, key)) return;  // the user's own pick is on its way
   if (own && ![...select.options].some(o => o.value === own)) {
-    select.add(new Option(own, own), key === 'model' ? select.options[select.length - 1] : null);
+    const label = key === 'model' ? modelLabel(provider(data.provider), own) : own;
+    select.add(new Option(label, own), key === 'model' ? select.options[select.length - 1] : null);
   }
   select.value = own || '';
 }
@@ -543,7 +568,7 @@ function syncControl(wrap, data, key) {
 function editModel(select, data) {
   const id = data.id, own = data.own.model, input = el('input', 'input compact mono'), list = el('datalist');
   list.id = 'setupModels';
-  list.append(...provider(data.provider).models.map(name => { const o = el('option'); o.value = name; return o; }));
+  list.append(...modelOptions(provider(data.provider)));
   input.setAttribute('list', list.id); input.autocomplete = 'off'; input.spellcheck = false;
   input.dataset.setup = 'model'; input.value = own || ''; input.placeholder = 'model name';
   input.setAttribute('aria-label', `Model of ${id}: type a name, Enter sets it, Escape cancels`);
@@ -553,7 +578,9 @@ function editModel(select, data) {
     done = true;
     const value = input.value.trim();
     if (save && value && value !== own) {
-      if (![...select.options].some(o => o.value === value)) select.add(new Option(value, value), select.options[select.length - 1]);
+      if (![...select.options].some(o => o.value === value)) {
+        select.add(new Option(modelLabel(provider(data.provider), value), value), select.options[select.length - 1]);
+      }
       select.value = value;
       saveSetup(id, 'model', value);
     } else {
@@ -839,8 +866,9 @@ function openAgentDialog(project) {
     const tier = role?.lead ? 'lead' : 'worker';
     const model = inherited(tier, chosen.name, 'model', project.name);
     const effort = inherited(tier, chosen.name, 'effort', project.name);
-    $('agentModels').replaceChildren(...chosen.models.map(name => { const o = el('option'); o.value = name; return o; }));
+    $('agentModels').replaceChildren(...modelOptions(chosen));
     field('model').placeholder = model ? `${model} (from settings)` : 'default';
+    field('model').title = chosen.models_note || '';
     options(field('effort'), [['', effort ? `${effort} (from settings)` : 'default'], ...chosen.efforts.map(e => [e, e])], '');
   };
   choices(dialog.querySelector('[data-cards=role]'), 'radio', 'role',
@@ -886,11 +914,12 @@ function renderSettings() {
       const model = el('input', 'input'), effort = el('select', 'input'), list = el('datalist');
       const base = scope ? state.settings.global?.[tier]?.[p.name] || {} : {};
       list.id = `models-${tier}-${p.name}`;
-      list.append(...p.models.map(name => { const o = el('option'); o.value = name; return o; }));
+      list.append(...modelOptions(p));
       model.name = `${tier}.${p.name}.model`; model.setAttribute('list', list.id); model.autocomplete = 'off';
       model.value = data?.[tier]?.[p.name]?.model || '';
       model.placeholder = base.model ? `${base.model} (global)` : 'default model';
       model.setAttribute('aria-label', `${title} ${p.name} model`);
+      model.title = p.models_note || '';
       effort.name = `${tier}.${p.name}.effort`;
       effort.setAttribute('aria-label', `${title} ${p.name} effort`);
       options(effort, [['', base.effort ? `${base.effort} (global)` : 'default effort'], ...p.efforts.map(e => [e, e])],

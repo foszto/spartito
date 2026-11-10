@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+import threading
 import uuid
 
 from ..loadout import Loadout
@@ -30,6 +36,92 @@ DEFAULT_PERMISSION = "auto"
 NO_BACKGROUND_ENV = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}
 
 
+# The picker's fallback when the installed CLI cannot say what it offers.
+FALLBACK_MODELS = ("fable", "opus", "sonnet", "haiku")
+MODEL_LIST_TIMEOUT = 20
+_INIT_ID = "orch-models"
+
+
+def request_model_list() -> str:
+    """The CLI's answer to an SDK `initialize` control request (stdout, stream-json).
+
+    The answer lists the models of the account like the `/model` picker. No user message is
+    sent, so no model request is made; closing stdin ends the CLI after its answer. No user
+    settings (hooks, plugins) or MCP servers are loaded and no session is saved.
+    """
+    request = {
+        "type": "control_request",
+        "request_id": _INIT_ID,
+        "request": {"subtype": "initialize"},
+    }
+    argv = ["claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json"]
+    argv += ["--verbose", "--strict-mcp-config", "--setting-sources", "project,local"]
+    argv += ["--no-session-persistence"]
+    env = {k: v for k, v in os.environ.items() if k not in PARENT_SESSION_ENV}
+    with tempfile.TemporaryDirectory(prefix="orch-models-") as cwd:
+        proc = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            out, err = proc.communicate(json.dumps(request) + "\n", timeout=MODEL_LIST_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.communicate()
+            raise
+    if proc.returncode:
+        raise subprocess.SubprocessError(f"exit {proc.returncode}: {brief(err, 200)}")
+    return out
+
+
+def parse_model_list(output: str) -> list[tuple[str, str]]:
+    """(value, label) pairs from the `initialize` answer; the label carries the version."""
+    for line in output.splitlines():
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(data, dict) or data.get("type") != "control_response":
+            continue
+        response = data.get("response")
+        if not isinstance(response, dict):
+            continue
+        if response.get("request_id") != _INIT_ID:
+            continue
+        if response.get("subtype") != "success":
+            raise ValueError(f"initialize failed: {brief(response.get('error', response), 200)}")
+        answer = response.get("response")
+        entries = answer.get("models") if isinstance(answer, dict) else None
+        if not isinstance(entries, list):
+            raise ValueError("initialize answer has no model list")
+        models = [_model_choice(m) for m in entries if isinstance(m, dict)]
+        models = [m for m in models if m]
+        if not models:
+            raise ValueError("initialize answer lists no models")
+        return models
+    raise ValueError("no initialize answer")
+
+
+def _model_choice(entry: dict) -> tuple[str, str] | None:
+    value = entry.get("value")
+    if not isinstance(value, str) or not value:
+        return None
+    label = entry.get("displayName")
+    label = label if isinstance(label, str) and label.strip() else value
+    # "Default (recommended)" names no version: add the model it stands for.
+    if not any(c.isdigit() for c in label):
+        resolved = entry.get("resolvedModel")
+        if resolved and resolved != label:
+            label = f"{label} · {resolved}"
+    return value, label
+
+
 def loadout_flags(loadout: Loadout) -> list[str]:
     """CLI flags for a loadout. Needed on every turn: `--resume` does not remember them."""
     flags = []
@@ -48,8 +140,26 @@ class ClaudeProvider:
     name = "claude"
     efforts = ("low", "medium", "high", "xhigh", "max")
 
-    def models(self) -> list[str]:
-        return ["fable", "opus", "sonnet", "haiku"]
+    models_note: str | None = None  # set when the list is the fallback
+    _models: list[tuple[str, str]] | list[str] | None = None
+    _models_lock = threading.Lock()
+
+    def models(self) -> list[tuple[str, str]] | list[str]:
+        """What Claude Code's own `/model` picker offers, as (value for --model, label).
+
+        Asked from the installed CLI once per process; the aliases when that fails.
+        """
+        with self._models_lock:
+            if self._models is None:
+                try:
+                    self._models = parse_model_list(request_model_list())
+                except (OSError, subprocess.SubprocessError, ValueError) as exc:
+                    print(
+                        f"claude model list unavailable ({exc}); showing aliases", file=sys.stderr
+                    )
+                    self._models = list(FALLBACK_MODELS)
+                    self.models_note = "model list unavailable: showing aliases"
+            return self._models
 
     def invocation(self, ctx: RunContext) -> Invocation:
         agent = ctx.agent

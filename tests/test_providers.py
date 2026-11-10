@@ -7,7 +7,7 @@ import pytest
 
 from orchestrator.loadout import Loadout
 from orchestrator.models import Agent, Event, Usage
-from orchestrator.providers import McpServer, RunContext, get
+from orchestrator.providers import McpServer, RunContext, claude, get
 
 
 def context(tmp_path: Path, **agent_fields) -> RunContext:
@@ -273,3 +273,63 @@ def test_codex_puts_the_loadout_options_after_the_resumed_thread(tmp_path: Path)
     assert argv[thread] == "tid"
     assert argv.index("--ignore-user-config") > thread
     assert argv.index('mcp_servers.orch.default_tools_approval_mode="approve"') > thread
+
+
+def test_claude_models_are_what_its_cli_offers_with_versions_in_the_labels() -> None:
+    recorded = (Path(__file__).parent / "fixtures" / "claude_initialize.jsonl").read_text()
+
+    assert claude.parse_model_list(recorded) == [
+        ("default", "Default (recommended) · claude-mythos-5-2"),
+        ("opus", "Opus 5.5"),
+        ("haiku", "Haiku 5.5"),
+        ("claude-fable-5-1", "Fable 5.1"),
+        ("claude-haiku-4-5-20251001", "Haiku 4.5"),
+        ("claude-mythos-5-2", "Mythos 5.2"),
+        ("claude-mythos-5-1", "Mythos 5.1"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "",
+        "not json\n",
+        '{"type":"control_response","response":{"subtype":"error","request_id":"orch-models",'
+        '"error":"nope"}}\n',
+        '{"type":"control_response","response":{"subtype":"success","request_id":"orch-models",'
+        '"response":{"models":[]}}}\n',
+    ],
+)
+def test_claude_model_list_refuses_an_unexpected_answer(output: str) -> None:
+    with pytest.raises(ValueError):
+        claude.parse_model_list(output)
+
+
+def test_claude_models_are_looked_up_once_per_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded = (Path(__file__).parent / "fixtures" / "claude_initialize.jsonl").read_text()
+    calls = []
+    monkeypatch.setattr(claude, "request_model_list", lambda: calls.append(1) or recorded)
+    provider = claude.ClaudeProvider()
+
+    lists = [provider.models() for _ in range(5)]
+
+    assert len(calls) == 1 and lists[0] == lists[-1] and ("opus", "Opus 5.5") in lists[0]
+    assert provider.models_note is None
+
+
+def test_claude_models_fall_back_to_the_aliases_and_say_so(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = []
+
+    def missing() -> str:
+        calls.append(1)
+        raise FileNotFoundError("claude")
+
+    monkeypatch.setattr(claude, "request_model_list", missing)
+    provider = claude.ClaudeProvider()
+
+    assert provider.models() == provider.models() == ["fable", "opus", "sonnet", "haiku"]
+    assert len(calls) == 1
+    assert provider.models_note == "model list unavailable: showing aliases"
+    assert "claude model list unavailable" in capsys.readouterr().err
