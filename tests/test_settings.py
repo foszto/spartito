@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
 from starlette.testclient import TestClient
 
+from orchestrator import providers
 from orchestrator.models import Agent
-from orchestrator.providers import RunContext, get
+from orchestrator.providers import RunContext, claude, codex, get
 from orchestrator.service import Orchestrator, OrchestratorError
 from orchestrator.web.app import app
 
@@ -97,7 +99,52 @@ def test_settings_over_the_api_and_cleared_values_are_dropped(
         "projects": {project: {"lead": {"fake": {"effort": "high"}}}},
     }
     fake = next(p for p in state["providers"] if p["name"] == "fake")
-    assert fake["efforts"] == ["low", "high"] and fake["models"] == ["fake-small", "fake-large"]
+    assert fake["efforts"] == ["low", "high"] and fake["models_note"] is None
+    assert fake["models"] == [
+        {"value": "fake-small", "label": "fake-small"},
+        {"value": "fake-large", "label": "fake-large"},
+    ]
+
+
+def test_state_lists_each_providers_models_as_values_and_labels(
+    orch: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = TestClient(app, base_url="http://localhost")
+    catalog = '{"models":[{"slug":"gpt-x","visibility":"list"},{"slug":"h","visibility":"hide"}]}'
+    monkeypatch.setattr(
+        codex.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=catalog, stderr=""),
+    )
+    monkeypatch.setitem(providers.PROVIDERS, "codex", codex.CodexProvider())
+
+    listed = {p["name"]: p for p in client.get("/api/state").json()["providers"]}
+
+    assert listed["codex"]["models"] == [{"value": "gpt-x", "label": "gpt-x"}]
+    assert listed["claude"]["models_note"] is None
+    assert {"value": "claude-mythos-5-1", "label": "Mythos 5.1"} in listed["claude"]["models"]
+    assert listed["claude"]["models"][0] == {
+        "value": "default",
+        "label": "Claude Code default (now claude-mythos-5-2)",
+    }
+    assert listed["fake"]["models"][0] == {"value": "fake-small", "label": "fake-small"}
+
+
+def test_state_says_when_the_claude_list_is_the_fallback(
+    orch: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = TestClient(app, base_url="http://localhost")
+
+    def timeout() -> str:
+        raise subprocess.TimeoutExpired("claude", 20)
+
+    monkeypatch.setattr(claude, "request_model_list", timeout)
+    monkeypatch.setitem(providers.PROVIDERS, "claude", claude.ClaudeProvider())
+
+    listed = {p["name"]: p for p in client.get("/api/state").json()["providers"]}
+
+    assert listed["claude"]["models_note"] == "model list unavailable: showing aliases"
+    assert listed["claude"]["models"][0] == {"value": "fable", "label": "fable"}
 
 
 def test_providers_pass_model_and_effort_to_their_cli(tmp_path: Path) -> None:

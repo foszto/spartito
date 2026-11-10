@@ -7,6 +7,7 @@ import pytest
 from fakeprovider import FakeProvider
 
 from orchestrator import providers, service
+from orchestrator.providers import claude
 from orchestrator.service import Orchestrator
 
 
@@ -16,6 +17,16 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ORCH_HOME", str(tmp_path / "home"))
     monkeypatch.delenv("ORCH_AGENT_ID", raising=False)
     monkeypatch.setenv("ORCH_NOTIFY_DELAY", "0")  # notifications start without the delay
+
+
+CLAUDE_INITIALIZE = Path(__file__).parent / "fixtures" / "claude_initialize.jsonl"
+
+
+@pytest.fixture(autouse=True)
+def recorded_claude_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Claude model list comes from a recorded answer, not the installed CLI."""
+    monkeypatch.setattr(claude, "request_model_list", CLAUDE_INITIALIZE.read_text)
+    monkeypatch.setitem(providers.PROVIDERS, "claude", claude.ClaudeProvider())
 
 
 @pytest.fixture

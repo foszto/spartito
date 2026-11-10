@@ -44,7 +44,10 @@ Az `orch web` felületéről minden irányítható:
 - Bármely agentre kattintva látod a beszélgetést és az eszközhívásokat, írhatsz neki
   (Enter küld), leállíthatod (**Stop**) vagy törölheted (**Remove**).
 - **Modell és effort az agent fejlécében** (minden agentnél, az orchestratornál és a leadeknél
-  is): a lenyílóban a provider modelljei, `other…` alatt tetszőleges név (Enterrel érvényes, Esc
+  is): a lenyílóban a provider modelljei verzióval (Claude-nál azok, amelyeket a telepített Claude
+  Code `/model` választója kínál: a CLI `initialize` válaszából, modellkérés nélkül, folyamatonként
+  egyszer lekérve; ha ez nem sikerül, az aliasok és mellettük `model list unavailable: showing
+  aliases`), utána a legutóbbi kör ténylegesen használt modellje (`→ claude-fable-5-2`), `other…` alatt tetszőleges név (Enterrel érvényes, Esc
   vagy a mező elhagyása elveti), és az `inherit (…)` sor, amely a saját értéket törli
   (zárójelben, ami akkor érvényes: a szint-beállítás vagy `CLI default`). A saját érték kiemelt és `own` jelölést kap. A változás a
   következő körtől érvényes, a futó kört nem érinti. Meglévő sessionnél a modellváltás új prompt
