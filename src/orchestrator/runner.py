@@ -133,6 +133,9 @@ def mcp_server(agent: Agent) -> McpServer:
 
 
 def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> None:
+    # A sub-agent's runner inherits the mark of the lead's turn (through the lead's MCP
+    # server); nothing this runner starts (git, hooks) may carry it.
+    os.environ.pop(TURN_ENV, None)
     role = roles.load(agent.role, project.path if project else None)
     provider = providers.get(agent.provider)
     if project and agent.owns_worktree and git.ensure_initial_commit(project.path):
@@ -236,7 +239,7 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
                     # running must not keep it unreachable (the CLI would stay alive and
                     # answer again when the command ends). What the turn started is
                     # noted now, while the CLI still links it.
-                    known = turn_processes(child.pid, mark)
+                    known = turn_processes(_live_pid(child), mark)
                     break
             if answered and role.lead:
                 code = finish_lead_turn(child, mark, known)
@@ -358,11 +361,16 @@ def _marked(pid: int, proc: _Proc, mark: str) -> bool:
         return False
 
 
+def _live_pid(child: subprocess.Popen[str]) -> int | None:
+    """The CLI's pid while it is not reaped: afterwards another process may hold it."""
+    return child.pid if child.poll() is None else None
+
+
 def turn_processes(
-    cli: int, mark: str, known: dict[int, tuple[int, int]] | None = None
+    cli: int | None, mark: str, known: dict[int, tuple[int, int]] | None = None
 ) -> dict[int, tuple[int, int]]:
-    """The processes of a turn, pid -> (process group, session): the CLI and its
-    descendants; the other members of the runner's session when it leads one (as the
+    """The processes of a turn, pid -> (process group, session): the CLI (`cli`, None
+    once it has exited) and its descendants; the other members of the runner's session when it leads one (as the
     service launches it); processes that inherited the turn's mark; `known` ones that are
     still the same processes; and the members of process groups and sessions that any of
     these created (Claude's shells start sessions of their own, and what they leave
@@ -445,7 +453,7 @@ def end_turn(
     known = dict(known or {})
     with _stop_ignored():
         child.poll()
-        procs = turn_processes(child.pid, mark, known)
+        procs = turn_processes(_live_pid(child), mark, known)
         _send(procs, signal.SIGTERM)
         deadline = time.monotonic() + TERM_GRACE_SECONDS
         while time.monotonic() < deadline:
@@ -454,7 +462,7 @@ def end_turn(
                 break
             time.sleep(0.1)
         child.poll()
-        _send(turn_processes(child.pid, mark, {**known, **procs}), signal.SIGKILL)
+        _send(turn_processes(_live_pid(child), mark, {**known, **procs}), signal.SIGKILL)
         with contextlib.suppress(subprocess.TimeoutExpired):
             child.wait(timeout=TERM_GRACE_SECONDS)
 
