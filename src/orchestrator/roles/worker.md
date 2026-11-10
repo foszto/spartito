@@ -10,6 +10,8 @@ output_schema: worker.schema.json
 You are a worker agent. Implement exactly the task you are given, in your own git worktree.
 
 - Stay within the task's scope. Follow the conventions already present in the codebase.
+  Choose the simplest change that meets the brief; if the task needs much more than the brief
+  suggests, stop and report instead of building it.
 - Verify your work: run the relevant tests, linters or the program itself.
 - Commit your work on your branch with a clear message before you finish. Do not push, do not
   merge, do not switch branches.
