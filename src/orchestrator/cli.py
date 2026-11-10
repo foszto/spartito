@@ -30,6 +30,7 @@ STATUS_COLORS = {
     "failed": typer.colors.RED,
     "stopped": typer.colors.MAGENTA,
     "skipped": typer.colors.MAGENTA,
+    "idle": typer.colors.BLUE,
 }
 
 
@@ -75,6 +76,33 @@ def setup(view: dict, agent: Agent | None) -> str:
     model = (view["model"] or "default") + ("*" if agent and agent.model else "")
     effort = view["effort"] and view["effort"] + ("*" if agent and agent.effort else "")
     return f"{model}/{effort}" if effort else model
+
+
+def idle_with_children(view: dict) -> bool:
+    """No own turn queued or running, but descendants still work."""
+    return view["status"] not in ("running", "waiting") and view["children_running"] > 0
+
+
+def queued_after(view: dict) -> int:
+    """Turns queued behind the running (or first waiting) one; `queued_runs` counts both."""
+    return max(view["queued_runs"] - 1, 0)
+
+
+def state_label(view: dict) -> tuple[str, str | None]:
+    """Short state for listings and its colour: `running`, `waiting`, `idle·3↓` (idle while
+    3 descendants work) or the last run's status; `+N`: N more turns queued behind."""
+    status = "idle" if idle_with_children(view) else view["status"]
+    text = status
+    if view["children_running"]:
+        text += f"·{view['children_running']}↓"
+    if waiting := queued_after(view):
+        text += f" +{waiting}"
+    return text, STATUS_COLORS.get(status)
+
+
+def one_line(text: str, limit: int = 80) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def mcp_config() -> str:
@@ -347,7 +375,11 @@ def send(
 
 @app.command()
 def ps(project: Annotated[str | None, typer.Option("--project", "-p")] = None) -> None:
-    """List agents as a tree: project -> agent -> sub-agents."""
+    """List agents as a tree: project -> agent -> sub-agents.
+
+    `idle·3↓`: no own turn, 3 sub-agents still working (it is notified when they finish);
+    `running +2`: two more turns queued behind the running one.
+    """
     o = orch()
     views = o.overview(project)
     agents = {agent.id: agent for agent in o.store.list_agents(project)}
@@ -360,7 +392,8 @@ def ps(project: Annotated[str | None, typer.Option("--project", "-p")] = None) -
 
     def show(project_name: str, parent: str | None, depth: int) -> None:
         for view in children.get((project_name, parent), []):
-            status = typer.style(f"{view['status']:<8}", fg=STATUS_COLORS.get(view["status"]))
+            text, color = state_label(view)
+            status = typer.style(f"{text:<14}", fg=color)
             label = "  " * depth + view["id"]
             cost = f"${view['cost_usd']:.2f}" if view["cost_usd"] else ""
             typer.echo(
@@ -372,7 +405,8 @@ def ps(project: Annotated[str | None, typer.Option("--project", "-p")] = None) -
 
     for view in views:
         if view["project"] is None and not project:
-            status = typer.style(view["status"], fg=STATUS_COLORS.get(view["status"]))
+            text, color = state_label(view)
+            status = typer.style(text, fg=color)
             cost = f"${view['cost_usd']:.2f}" if view["cost_usd"] else ""
             setup_text = setup(view, agents.get(view["id"]) or o.store.get_agent(view["id"]))
             extra = "  ".join(filter(None, (setup_text, tokens(view["tokens"]), cost)))
@@ -396,12 +430,25 @@ def status(agent_id: str) -> None:
         raise fail(exc) from None
     last = view.pop("last_run")
     counts, cost = view.pop("tokens"), view.pop("cost_usd")
+    queue, working = view.pop("queue"), view.pop("children_running")
     for key in ("model", "effort"):
         override = view.pop(f"{key}_override")
         view[key] = f"{view[key] or 'default'}" + (" (set on the agent)" if override else "")
+    if working and view["status"] not in ("running", "waiting"):
+        view["status"] = f"idle while its agents work (last run: {view['status']})"
     for key, value in view.items():
         typer.echo(f"{key:<12} {value}")
+    plural = "agent" if working == 1 else "agents"
+    typer.echo(f"{'children':<12} {f'{working} {plural} working' if working else 'none working'}")
     typer.echo(f"{'usage':<12} {usage_line(counts, cost)}")
+    if queue:
+        typer.echo(f"{'queue':<12} {len(queue)} waiting")
+        for run in queue:
+            sender = run["sender"] or ("orch" if run["kind"] == "notification" else "user")
+            typer.echo(
+                f"  #{run['id']:<6} {run['created_at'][11:19]}  {run['kind']:<12}"
+                f" {sender:<20} {one_line(run['prompt'])}"
+            )
     typer.echo(f"{'changes':<12} {changes.replace(chr(10), chr(10) + ' ' * 13)}")
     if last:
         typer.secho(f"\nlast run {last['id']}: {last['status']}", bold=True)

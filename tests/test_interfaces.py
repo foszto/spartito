@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import json
+import time
+from collections.abc import Callable
+from typing import Any
 
+import click
 import pytest
 from typer.testing import CliRunner
 
 from orchestrator import cli, mcp_server
 from orchestrator.models import RunStatus, Usage
 from orchestrator.service import Orchestrator
+from orchestrator.store import NOTIFICATION
 
 
 @pytest.fixture
@@ -172,3 +177,82 @@ def test_a_continued_chat_keeps_the_orchestrator_loadout(
     assert option(argv, "--setting-sources") == "project,local"
     # Skills and commands stay on in the interactive session (/compact, /clear, ...).
     assert "--disable-slash-commands" not in argv
+
+
+def until(predicate: Callable[[], Any], timeout: float = 30) -> Any:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if value := predicate():
+            return value
+        time.sleep(0.05)
+    raise AssertionError("timed out")
+
+
+def ps_line(agent_id: str) -> str:
+    result = CliRunner().invoke(cli.app, ["ps"])
+    assert result.exit_code == 0, result.output
+    (line,) = [row for row in result.output.splitlines() if f" {agent_id} " in row]
+    return click.unstyle(line)
+
+
+def test_ps_tells_an_idle_parent_with_working_children_from_a_running_one(
+    orch: Orchestrator, project: str
+) -> None:
+    lead = orch.create_agent(project, name="boss", role="lead", worktree=False)
+    child, _ = orch.spawn(project, "SLEEP 20", name="kid", worktree=False, parent_id=lead.id)
+    try:
+        until(lambda: orch.view(child)["status"] == "running")
+        idle = ps_line(lead.id)
+        orch.send(lead.id, "SLEEP 20")
+        until(lambda: orch.view(lead)["status"] == "running")
+        busy = ps_line(lead.id)
+        orch.send(lead.id, "later")
+        queued = ps_line(lead.id)
+    finally:
+        orch.stop(child.id)
+        orch.stop(lead.id)
+
+    assert " idle·1↓ " in idle and "lead" in idle
+    assert " running·1↓ " in busy and "+" not in busy.split()[1]
+    assert " running·1↓ +1 " in queued
+    # The state column keeps its width, so the role column stays aligned.
+    assert idle.index(" lead ") == busy.index(" lead ") == queued.index(" lead ")
+
+
+def test_status_lists_working_children_and_the_queue(orch: Orchestrator, project: str) -> None:
+    lead = orch.create_agent(project, name="boss", role="lead", worktree=False)
+    child = orch.create_agent(project, name="kid", worktree=False, parent_id=lead.id)
+    orch.store.add_run(child.id, "work")  # queued, never started: counts as working
+    first = orch.store.add_run(lead.id, "please review\nthe branch")
+    second = orch.store.add_run(lead.id, "[orch notification] pending", kind=NOTIFICATION)
+    third = orch.store.add_run(lead.id, "from a peer", sender=child.id)
+
+    result = CliRunner().invoke(cli.app, ["status", lead.id])
+
+    assert result.exit_code == 0, result.output
+    lines = click.unstyle(result.output).splitlines()
+    assert "children     1 agent working" in lines
+    assert "queue        3 waiting" in lines
+    (one,) = [line for line in lines if f"#{first.id} " in line]
+    (two,) = [line for line in lines if f"#{second.id} " in line]
+    (three,) = [line for line in lines if f"#{third.id} " in line]
+    assert "message" in one and " user " in one and "please review the branch" in one
+    assert "notification" in two and " orch " in two
+    assert f" {child.id} " in three and "from a peer" in three
+    assert "[{" not in result.output and "'kind'" not in result.output
+
+
+def test_status_of_an_idle_parent_says_its_agents_work(orch: Orchestrator, project: str) -> None:
+    lead = orch.create_agent(project, name="boss", role="lead", worktree=False)
+    done = orch.store.add_run(lead.id, "plan")
+    orch.store.finish_run(done.id, RunStatus.DONE, result="dispatched")
+    for name in ("a", "b"):
+        child = orch.create_agent(project, name=name, worktree=False, parent_id=lead.id)
+        orch.store.add_run(child.id, "work")
+
+    status = CliRunner().invoke(cli.app, ["status", lead.id])
+    ps = ps_line(lead.id)
+
+    assert "idle while its agents work (last run: done)" in status.output
+    assert "children     2 agents working" in status.output and "\nqueue " not in status.output
+    assert " idle·2↓ " in ps

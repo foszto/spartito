@@ -93,6 +93,16 @@ const findAgent = id => allAgents().find(agent => agent.id === id);
 const leadOf = project => project.agents.find(a => a.role === 'lead' && (!a.parent_id || a.parent_id === ORCH));
 const provider = name => state.providers.find(p => p.name === name) || { name, models: [], efforts: [] };
 const isActive = agent => agent && (agent.status === 'running' || agent.status === 'waiting');
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+// No own turn, but its agents still work: it takes a message now and is notified when they finish.
+const isIdle = agent => Boolean(agent && !isActive(agent) && agent.children_running > 0);
+// CSS class and label of an agent's state; queued turns behind the current one count as "+N queued".
+function stateOf(agent) {
+  if (!agent) return { cls: '', label: 'not started' };
+  if (isIdle(agent)) return { cls: 'idle', label: `idle · ${plural(agent.children_running, 'agent')} working` };
+  const more = isActive(agent) ? agent.queued_runs - 1 : 0;
+  return { cls: agent.status, label: more > 0 ? `${agent.status} · +${more} queued` : agent.status };
+}
 
 function select(id) {
   selected = id; location.hash = encodeURIComponent(id); shown = null; refresh();
@@ -195,8 +205,8 @@ function renderNav() {
   nav.replaceChildren();
 
   const orch = state.orchestrator;
-  const top = navItem(ORCH, ORCH, orch ? orch.status : '', 'Orchestrator',
-    orch ? `${orch.status} · talks to every project` : 'Tell it what you want built', 0);
+  const top = navItem(ORCH, ORCH, orch ? stateOf(orch).cls : '', 'Orchestrator',
+    orch ? `${stateOf(orch).label} · talks to every project` : 'Tell it what you want built', 0);
   top.classList.add('orchestrator');
   nav.append(top);
 
@@ -235,7 +245,8 @@ function renderNav() {
       for (const agent of project.agents.filter(a => (ids.has(a.parent_id) ? a.parent_id : null) === parent)) {
         total++; cost += agent.cost_usd; addTokens(agent.tokens);
         if (isActive(agent)) busy++;
-        agents.append(navItem(agent.id, agent.provider, agent.status, agent.id, `${agent.role} · ${agent.status}`, depth));
+        const now = stateOf(agent);
+        agents.append(navItem(agent.id, agent.provider, now.cls, agent.id, `${agent.role} · ${now.label}`, depth));
         add(agent.id, depth + 1);
       }
     };
@@ -285,6 +296,7 @@ function buildView() {
   const welcome = el('div', 'welcome'); welcome.id = 'welcome';
   log.append(welcome, thread);
   const busy = el('div'); busy.id = 'busy';
+  const queue = el('div', 'queue'); queue.id = 'queue'; queue.hidden = true;
 
   const form = el('form'); form.id = 'composer';
   const box = el('div', 'compose-box'), input = el('textarea');
@@ -308,7 +320,7 @@ function buildView() {
     catch (error) { toast(error.message, true); }
     finally { send.disabled = false; input.focus(); }
   };
-  view.append(top, details, log, busy, form);
+  view.append(top, details, log, queue, busy, form);
   shown = selected; lastEvent = 0; toolGroup = null;
   input.focus();
 }
@@ -343,7 +355,8 @@ function renderHeader(agent) {
   const name = agent ? (agent.id === ORCH ? 'Orchestrator' : agent.id) : leadProject ? `${leadProject} lead` : 'Orchestrator';
   const face = avatar(selected === ORCH ? ORCH : agent ? agent.provider : 'claude');
   face.id = 'face'; $('face').replaceWith(face);
-  title.replaceChildren(name, el('span', `pill ${agent ? agent.status : ''}`, agent ? agent.status : 'not started'));
+  const now = stateOf(agent);
+  title.replaceChildren(name, el('span', `pill ${now.cls}`, now.label));
   $('stop').hidden = !isActive(agent);
   $('remove').hidden = !agent;
   $('detailsButton').hidden = !agent;
@@ -356,7 +369,12 @@ function renderHeader(agent) {
     busy.append(dots, 'working…');
   } else if (agent && agent.status === 'waiting') {
     busy.append('queued — waiting for its turn or for the agents it depends on');
+  } else if (isIdle(agent)) {
+    busy.append(el('span', 'idle-mark'),
+      `idle while ${agent.children_running === 1 ? '1 agent works' : `${agent.children_running} agents work`}`
+      + ' — it can take a message now and is notified when they finish');
   }
+  renderQueue(agent);
 
   chips.replaceChildren();
   if (!agent) return;
@@ -376,6 +394,7 @@ function renderHeader(agent) {
   const fact = (key, value) => { if (value) facts.append(el('dt', '', key), el('dd', '', String(value))); };
   fact('Project', agent.project); fact('Started by', agent.parent_id); fact('Workspace', agent.cwd);
   fact('Session', agent.session_id); fact('Turns', `${agent.runs} (${agent.queued_runs} active)`);
+  fact('Agents working', agent.children_running && `${agent.children_running} below this agent`);
   fact('Last run model', agent.last_run && agent.last_run.usage && agent.last_run.usage.model);
   fact('Take over in a terminal', agent.session_id ? `orch attach ${agent.id}` : '');
   const runs = $('runs'); runs.replaceChildren();
@@ -387,6 +406,22 @@ function renderHeader(agent) {
   }
   $('changes').textContent = agent.changes || '';
   $('changes').hidden = !agent.changes;
+}
+
+function renderQueue(agent) {
+  const queue = $('queue'), items = (agent && agent.queue) || [];
+  queue.hidden = !items.length;
+  queue.replaceChildren();
+  if (!items.length) return;
+  queue.append(el('div', 'queue-head', `Queued (${items.length})`));
+  for (const run of items) {
+    const row = el('div', `queued ${run.kind}`);
+    const sender = run.sender || (run.kind === 'notification' ? 'orchestrator' : 'you');
+    row.append(el('span', 'kind', run.kind), el('span', 'from', sender), el('span', 'when', clock(run.created_at)),
+      el('span', 'preview', run.prompt.replace(/\s+/g, ' ')));
+    row.title = `#${run.id}: ${run.prompt}`;
+    queue.append(row);
+  }
 }
 
 function appendEvents(events) {
@@ -409,10 +444,11 @@ function appendEvents(events) {
       continue;
     }
     toolGroup = null;
-    const kind = event.kind === 'prompt' ? 'user' : event.kind === 'error' ? 'error' : 'reply';
+    const kind = { prompt: 'user', error: 'error', notification: 'system' }[event.kind] || 'reply';
     const message = el('div', `msg ${kind}`), body = el('div', 'body');
     if (kind === 'reply') body.append(markdown(event.text)); else body.textContent = event.text;
-    message.append(el('div', 'when', clock(event.ts)), body);
+    const when = kind === 'system' ? `notification · ${clock(event.ts)}` : clock(event.ts);
+    message.append(el('div', 'when', when), body);
     thread.append(message);
   }
   if (events.length && pinned) log.scrollTop = log.scrollHeight;

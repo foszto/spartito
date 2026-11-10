@@ -6,9 +6,10 @@ from pathlib import Path
 import pytest
 from starlette.testclient import TestClient
 
-from orchestrator import config
+from orchestrator import config, notify
+from orchestrator.models import RunStatus
 from orchestrator.service import ORCHESTRATOR_ID, Orchestrator
-from orchestrator.store import Store
+from orchestrator.store import NOTIFICATION, Store
 from orchestrator.web.app import app
 
 ORIGIN = {"origin": "http://localhost"}
@@ -190,3 +191,31 @@ def test_agent_detail_lists_the_usage_of_recent_runs(
     assert listed["tokens"]["out"] == 10 and listed["cost_usd"] == 0.001
     assert "model_override" in detail and "model_override" not in listed
     assert detail["effective"] == {"model": detail["model"], "effort": detail["effort"]}
+
+
+def test_idle_parents_queue_and_notifications_reach_the_dashboard(
+    client: TestClient, orch: Orchestrator, project: str
+) -> None:
+    lead = orch.create_agent(project, name="boss", role="lead", worktree=False)
+    child = orch.create_agent(project, name="kid", worktree=False, parent_id=lead.id)
+    orch.store.add_run(child.id, "work")  # queued, never started: the child counts as working
+    told = orch.store.add_run(lead.id, notify.PENDING, kind=NOTIFICATION)
+    orch.store.add_event(told.id, lead.id, "notification", "[orch notification] kid finished")
+    orch.store.finish_run(told.id, RunStatus.DONE, result="noted")
+    asked = orch.store.add_run(lead.id, "status please", sender=child.id)
+
+    state = client.get("/api/state").json()
+    detail = client.get(f"/api/agents/{lead.id}/events").json()
+
+    listed = {agent["id"]: agent for agent in state["projects"][0]["agents"]}
+    assert listed[lead.id]["children_running"] == 1 and listed[child.id]["children_running"] == 0
+    assert (listed[lead.id]["status"], listed[lead.id]["queued_runs"]) == ("waiting", 1)
+    agent = detail["agent"]
+    assert agent["children_running"] == 1
+    (queued,) = agent["queue"]
+    assert (queued["id"], queued["kind"], queued["sender"]) == (asked.id, "message", child.id)
+    assert queued["prompt"] == "status please" and queued["created_at"]
+    (event,) = detail["events"]
+    assert (event["kind"], event["text"]) == ("notification", "[orch notification] kid finished")
+    child_detail = client.get(f"/api/agents/{child.id}/events").json()["agent"]
+    assert child_detail["queue"][0]["kind"] == "message" and child_detail["children_running"] == 0

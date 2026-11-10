@@ -43,6 +43,10 @@ Az `orch web` felületéről minden irányítható:
 - **Modellek és effort** (csúszka ikon fent): lásd lent.
 - Bármely agentre kattintva látod a beszélgetést és az eszközhívásokat, írhatsz neki
   (Enter küld), leállíthatod (**Stop**) vagy törölheted (**Remove**).
+- Az **idle · 3 agents working** állapot azt jelenti, hogy az agent nem dolgozik, csak az általa
+  indított agentek: most is írhatsz neki, és értesítést kap, amikor azok végeznek. A várakozó
+  üzenetek a **Queued** listában látszanak, az értesítések (`notification`) halvány rendszer-
+  üzenetként jelennek meg a beszélgetésben.
 
 A webes orchestrator egy fej nélküli agent (`orchestrator`), az `orch chat` ettől független
 interaktív session; ugyanazt az állapotot látják. A felületnek nincs bejelentkezése: csak
@@ -62,12 +66,16 @@ orch spawn -p valami -r reviewer --provider codex --share login-ab12 --after log
 orch ask valami "Tervezd meg és valósítsd meg a ... funkciót."          # a projekt lead agentjének
 orch ps                    # projekt → agent → al-agent fa, státusz, modell/effort, tokenek, költség
 orch logs login-ab12 -f    # mit csinál éppen
-orch status login-ab12     # utolsó eredmény + commitok a worktree-ben
+orch status login-ab12     # utolsó eredmény, dolgozó al-agentek, várakozó üzenetek, commitok
 orch send login-ab12 "Javítsd a review észrevételeit: ..."              # folytatja a beszélgetést
 orch wait login-ab12       # megvárja (kilépési kód: 0 kész, 1 hiba, 2 időtúllépés)
 orch attach login-ab12     # kézi átvétel: interaktív claude/codex az agent sessionjében
 orch stop login-ab12 / orch rm login-ab12 [--delete-branch]
 ```
+
+Az `orch ps` státuszoszlopában az `idle·3↓` azt jelenti, hogy az agent maga tétlen, de 3
+al-agentje még dolgozik (a `running·3↓` pedig, hogy közben a saját turnje is fut); a `+2` két
+további sorban álló turnt jelez.
 
 ### Modell és effort szintenként
 
