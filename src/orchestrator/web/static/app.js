@@ -16,6 +16,7 @@ const ICONS = {
   send: '<path d="M12 19V5M5 12l7-7 7 7"/>',
   stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
   trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
+  pencil: '<path d="M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
   sliders: '<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>',
   moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
@@ -630,17 +631,29 @@ async function saveSetup(id, key, value, keepalive) {
 
 function renderQueue(agent) {
   const queue = $('queue'), items = (agent && agent.queue) || [];
+  // `queue` may be capped; `queued_runs` counts every active turn, the running one too.
+  const waiting = items.length && Math.max(agent.queued_runs - (agent.status === 'running' ? 1 : 0), items.length);
+  // Rebuilt only when it changed, so a focused Edit/Withdraw button keeps its focus.
+  const key = JSON.stringify([waiting, items]);
+  if (queue.dataset.key === key) return;
+  queue.dataset.key = key;
   queue.hidden = !items.length;
   queue.replaceChildren();
   if (!items.length) return;
-  // `queue` may be capped; `queued_runs` counts every active turn, the running one too.
-  const waiting = Math.max(agent.queued_runs - (agent.status === 'running' ? 1 : 0), items.length);
   queue.append(el('div', 'queue-head', `Queued (${waiting})`));
   for (const run of items) {
     const row = el('div', `queued ${run.kind}`);
     row.append(el('span', 'kind', run.kind), el('span', 'from', senderOf(run)), el('span', 'when', clock(run.created_at)),
       el('span', 'preview', run.prompt.replace(/\s+/g, ' ')));
     row.title = `#${run.id}: ${run.prompt}`;
+    // A notification's text is written when it starts: nothing to edit or withdraw yet.
+    if (run.kind === 'message') {
+      const actions = el('span', 'actions');
+      actions.append(
+        button('ghost icon', 'pencil', null, () => editQueued(run), `Edit queued message #${run.id}`),
+        button('ghost icon', 'x', null, () => withdrawQueued(run), `Withdraw queued message #${run.id}`));
+      row.append(actions);
+    }
     queue.append(row);
   }
   if (waiting > items.length) queue.append(el('div', 'queued more', `+${waiting - items.length} more`));
@@ -686,6 +699,30 @@ async function sendMessage(message) {
     selected = result.agent_id; shown = selected; location.hash = encodeURIComponent(selected);
   }
   await refresh();
+}
+
+async function editQueued(run) {
+  const dialog = $('editDialog'), text = dialog.querySelector('[name=message]');
+  let full;
+  try { full = await call(`/api/runs/${run.id}`); } catch (error) { toast(error.message, true); return; }
+  dialog.querySelector('[data-run]').textContent = `#${run.id}`;
+  openDialog(dialog, async data => {
+    await call(`/api/runs/${run.id}/edit`, { message: data.get('message') });
+    toast('Queued message updated'); await refresh();
+  });
+  text.value = full.prompt; text.focus();
+}
+
+function withdrawQueued(run) {
+  confirmDialog({
+    title: `Withdraw queued message #${run.id}?`,
+    text: `It never runs; turns that wait for it are skipped. “${run.prompt.replace(/\s+/g, ' ').slice(0, 200)}”`,
+    ok: 'Withdraw',
+    action: async () => {
+      await call(`/api/runs/${run.id}/withdraw`, {});
+      toast('Queued message withdrawn'); await refresh();
+    },
+  });
 }
 
 async function stopAgent() {

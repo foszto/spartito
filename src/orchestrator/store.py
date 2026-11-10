@@ -125,6 +125,7 @@ CREATE INDEX IF NOT EXISTS events_agent ON events(agent_id, id);
 MESSAGE = "message"
 NOTIFICATION = "notification"
 NOTIFY_MODES = ("each", "all")
+ANYONE = object()  # withdraw_queued/replace_queued: whoever queued the run
 
 # run_meta columns added after its first version (run_id, agent_id, kind, sender, notify).
 RUN_META_ADDED = (
@@ -516,6 +517,42 @@ class Store:
         for table in ("events", "run_usage", "deliveries", "run_meta"):
             conn.execute(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
         conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+
+    def withdraw_queued(self, run_id: int, sender: Any = ANYONE) -> Run:
+        """Delete a queued message run that has not started; returns it as it was. Atomic
+        against its runner taking the turn (`take_turn` then finds it gone). Raises
+        ValueError, saying why, for anything else; with `sender`, also for a run that
+        another sender queued."""
+        with self.transaction() as conn:
+            run = self._queued_message(conn, run_id, sender)
+            self.delete_run(run_id, conn)
+        return run
+
+    def replace_queued(self, run_id: int, prompt: str, sender: Any = ANYONE) -> Run:
+        """Replace the text of a queued message run that has not started (see
+        `withdraw_queued`); its runner reads the text when it takes the turn."""
+        with self.transaction() as conn:
+            self._queued_message(conn, run_id, sender)
+            conn.execute("UPDATE runs SET prompt = ? WHERE id = ?", (prompt, run_id))
+        run = self.get_run(run_id)
+        assert run is not None
+        return run
+
+    def _queued_message(self, conn: sqlite3.Connection, run_id: int, sender: Any) -> Run:
+        row = conn.execute(
+            "SELECT r.*, m.kind AS meta_kind, m.sender AS meta_sender FROM runs r"
+            " LEFT JOIN run_meta m ON m.run_id = r.id WHERE r.id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None or (sender is not ANYONE and row["meta_sender"] != sender):
+            raise ValueError(f"no run {run_id}" + ("" if sender is ANYONE else " sent by you"))
+        if (row["meta_kind"] or MESSAGE) != MESSAGE:
+            raise ValueError(f"run {run_id} is a notification (written when it starts)")
+        if row["status"] == RunStatus.RUNNING.value:
+            raise ValueError(f"run {run_id} has already started")
+        if row["status"] != RunStatus.WAITING.value:
+            raise ValueError(f"run {run_id} has already ended ({row['status']})")
+        return self.run_from_row(row)
 
     def meta(self, run_id: int) -> RunMeta:
         with self._conn() as conn:

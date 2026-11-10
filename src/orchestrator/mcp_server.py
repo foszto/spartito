@@ -19,6 +19,7 @@ from . import roles
 from .models import Run, running_total
 from .replies import clip, run_reply, structured_page
 from .service import Orchestrator, OrchestratorError, agent_state, result_file, run_usage
+from .store import ANYONE
 
 MAX_WAIT_SECONDS = 1800
 WAIT_SECONDS = 120  # default wait_for_agents timeout
@@ -370,6 +371,19 @@ def send_message(
         notify=notify,
     )
     return _queued(orch, agent_id, run.id, notify)
+
+
+@server.tool()
+def withdraw_message(run_id: int, replacement: str | None = None) -> dict[str, Any]:
+    """Withdraw a message you sent (its `run_id`) that has not started, or with
+    `replacement` replace its text. Refused once it has started."""
+    orch = _orch()
+    sender = _sender() or ANYONE  # the interactive session may act on any run
+    if replacement is None:
+        run = orch.withdraw(run_id, sender)
+        return {"withdrawn": run.id, "agent_id": run.agent_id}
+    run = orch.replace_message(run_id, replacement, sender)
+    return {"replaced": run.id, "agent_id": run.agent_id}
 
 
 @server.tool()

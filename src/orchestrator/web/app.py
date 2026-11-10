@@ -240,6 +240,32 @@ def stop_agent(orch: Orchestrator, request: Request, body: dict) -> dict[str, An
     return {"stopped_runs": orch.stop(request.path_params["agent_id"])}
 
 
+def get_run(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """One run with its full text (the queue lists a preview), for editing it."""
+    run_id = request.path_params["run_id"]
+    run = orch.store.get_run(run_id)
+    if run is None:
+        raise OrchestratorError(f"no run {run_id}")
+    kind = orch.store.meta(run_id).kind
+    return {
+        "id": run.id,
+        "agent_id": run.agent_id,
+        "status": run.status.value,
+        "kind": kind,
+        "prompt": run.prompt,
+    }
+
+
+def withdraw_run(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    run = orch.withdraw(request.path_params["run_id"])
+    return {"withdrawn": run.id, "agent_id": run.agent_id}
+
+
+def edit_run(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    run = orch.replace_message(request.path_params["run_id"], required(body, "message"))
+    return queued(run.agent_id, run.id)
+
+
 def remove_agent(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
     agent_id = request.path_params["agent_id"]
     orch.remove(agent_id, delete_branch=bool(body.get("delete_branch")))
@@ -263,6 +289,9 @@ app = Starlette(
         Route("/api/agents/{agent_id}/model", api(set_agent_model), methods=["POST"]),
         Route("/api/agents/{agent_id}/stop", api(stop_agent), methods=["POST"]),
         Route("/api/agents/{agent_id}/remove", api(remove_agent), methods=["POST"]),
+        Route("/api/runs/{run_id:int}", api(get_run)),
+        Route("/api/runs/{run_id:int}/withdraw", api(withdraw_run), methods=["POST"]),
+        Route("/api/runs/{run_id:int}/edit", api(edit_run), methods=["POST"]),
     ],
     middleware=[Middleware(LocalOnly)],
 )

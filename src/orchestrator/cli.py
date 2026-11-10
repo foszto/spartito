@@ -581,6 +581,26 @@ def stop(agent_id: str) -> None:
 
 
 @app.command()
+def withdraw(run_id: int) -> None:
+    """Withdraw a queued message (a `#<run id>` of `orch status`) before it starts."""
+    try:
+        run = orch().withdraw(run_id)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    typer.echo(f"withdrew run {run.id} of {run.agent_id}")
+
+
+@app.command()
+def edit(run_id: int, message: str) -> None:
+    """Replace the text of a queued message (a `#<run id>` of `orch status`) before it starts."""
+    try:
+        run = orch().replace_message(run_id, message)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    typer.echo(f"replaced the text of run {run.id} of {run.agent_id}")
+
+
+@app.command()
 def rm(
     agent_id: str,
     delete_branch: Annotated[bool, typer.Option(help="Also delete the agent's branch.")] = False,

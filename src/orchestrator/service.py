@@ -19,7 +19,7 @@ from typing import Any
 
 from . import config, git, notify, providers, roles, settings
 from .models import Agent, Project, Run, RunStatus, Usage, running_total
-from .store import MESSAGE, NOTIFICATION, NOTIFY_MODES, Store
+from .store import ANYONE, MESSAGE, NOTIFICATION, NOTIFY_MODES, Store, pid_alive
 
 LEAD_ROLE = "lead"
 ORCHESTRATOR_ID = "orchestrator"
@@ -27,6 +27,8 @@ STOP_GRACE_SECONDS = 8
 QUEUE_PREVIEW_CHARS = 120
 QUEUE_LISTED = 20  # waiting runs in the detail view's `queue`; `queued_runs` has the count
 WAIT_POLL_SECONDS = 1.0
+WITHDRAWN_PREVIEW_CHARS = 80  # of a withdrawn message, in the agent's info event
+RUNNER_EXIT_SECONDS = 2.0  # a withdraw waits this long for the killed runner to be gone
 # What a model or effort switch in a resumed session does to the prompt cache. Measured
 # with real turns: a model switch re-wrote Claude's cache on --resume, and codex-cli
 # 0.155.1 read 0 cached tokens after `-m` changed on `exec resume`; an effort switch alone
@@ -619,6 +621,46 @@ class Orchestrator:
                 self.store.finish_run(run.id, RunStatus.STOPPED, error="stopped")
             self.run_ended(run.id, agent.id)  # a deliberate stop: no recheck of the agent
         return [run.id for run in active]
+
+    def withdraw(self, run_id: int, sender: Any = ANYONE) -> Run:
+        """Withdraw a queued message that has not started: it never runs and leaves no run
+        behind (runs waiting for it are skipped as for any vanished dependency); the
+        agent's running turn and its other queued runs go on. `sender`: only a run that
+        this agent queued. Returns the run as it was."""
+        try:
+            run = self.store.withdraw_queued(run_id, sender)
+        except ValueError as exc:
+            raise OrchestratorError(f"cannot withdraw: {exc}") from None
+        preview = " ".join(run.prompt.split())[:WITHDRAWN_PREVIEW_CHARS]
+        self.store.add_event(
+            run.id, run.agent_id, "info", f"queued message {run.id} withdrawn: {preview}"
+        )
+        self._end_waiting_runner(run.pid)
+        # Not for the withdrawn run (it is gone), but the agent may now be settled.
+        self.run_ended(run.id, run.agent_id)
+        return run
+
+    def replace_message(self, run_id: int, message: str, sender: Any = ANYONE) -> Run:
+        """Replace the text of a queued message that has not started; the agent gets the
+        new text when its turn starts. `sender` as in `withdraw`."""
+        if not message.strip():
+            raise OrchestratorError("the new text is empty (withdraw the message instead)")
+        try:
+            return self.store.replace_queued(run_id, message, sender)
+        except ValueError as exc:
+            raise OrchestratorError(f"cannot edit: {exc}") from None
+
+    @staticmethod
+    def _end_waiting_runner(pid: int | None) -> None:
+        """End the runner of a withdrawn run. It only waited (its run never started), so
+        it is killed outright: on SIGTERM it would record a stop for a run that is gone."""
+        if not pid:
+            return  # not launched yet: the runner finds no run and exits
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pid, signal.SIGKILL)
+        deadline = time.monotonic() + RUNNER_EXIT_SECONDS
+        while pid_alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
 
     @staticmethod
     def _kill(run: Run, sig: int) -> None:
