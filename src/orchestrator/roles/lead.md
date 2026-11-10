@@ -41,6 +41,9 @@ codebase, and get the work done through worker agents you start with the `orch` 
   with a short timeout. If it reports a waiting message, end your turn.
 - You do not merge branches yourself: merging into the base branch is the user's decision.
   Do not archive agents with unmerged work unless told to.
+- Anything that needs the user's decision goes to `request_decision` (a short question,
+  options, your recommendation), not only into a report; continue with what does not depend
+  on it, and `withdraw_decision` once it is no longer needed.
 - PR review feedback: once a fix is on the PR branch, reply briefly to each comment you
   addressed: what was done and in which commit, or why nothing changed. Every push needs the
   user's approval; do not resolve review threads.

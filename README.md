@@ -138,6 +138,31 @@ kényszerített alvás (pl. `pmset sleepnow`, Apple menü → Alvás) ellen nem 
 linuxos asztali környezeteken sem, amelyek energiakezelője saját időzítővel altat. Kikapcsolás:
 `orch config keep-awake off` (alapból `on`).
 
+### Döntések és asztali értesítések
+
+Ami a tulajdonos döntésére vár, nem marad a beszélgetésekben: az orchestrator és a lead-ek a
+`request_decision(question, options, recommendation)` MCP eszközzel rögzítik (kérdés legfeljebb
+500 karakter, legfeljebb 6 rövid opció, egy ajánlás), és közben azzal haladnak, ami nem függ
+tőle; ha okafogyottá vált, `withdraw_decision(decision_id)` zárja le (csak a saját nyitott
+döntését). A nyitott döntések egy helyen, projekteken át látszanak: a webes felület fejlécében
+a kérdőjeles gomb mutatja a számukat, és a **Döntések** ablakban (projekt, agent, kérdés,
+opciók, ajánlás, kor) egy opcióval vagy szabad szöveggel lehet válaszolni. Parancssorból:
+
+```bash
+orch decisions            # a nyitott döntések (--all: a lezártak is)
+orch decide 12 2          # a 2. opció; vagy szabad szöveg: orch decide 12 "inkább Postgres"
+```
+
+A válasz rendes felhasználói üzenetként jut el a kérő agenthez (`Decision #12 — <kérdés>` és
+`Answer: <válasz>`), a döntés lezárul; lezárt döntésre újabb válasz nem megy. Archivált agentet
+az üzenet visszahoz; ha az agentet törölték, a döntés válasz nélkül zárul (`note`).
+
+Asztali értesítés (csak macOS-en, `osascript`; máshol semmi): ha döntés vár, és ha egy agent,
+akinek közvetlenül te írtál (a legutóbbi üzenetét a felhasználó küldte), végzett: a köre véget
+ért, és sem neki, sem a leszármazottainak nincs futó vagy sorban álló köre. Így Maestro akkor
+jelez, amikor az agentjei után ő is végzett; egy lead által indított worker soha. Kikapcsolás:
+`orch config desktop-notifications off` vagy a **Modellek és effort** ablakban (alapból `on`).
+
 ### Modell és effort szintenként
 
 Három szint állítható külön, providerenként (Claude / Codex): az **orchestrator**, a
@@ -390,6 +415,8 @@ src/orchestrator/
   roles.py         szerepek betöltése; roles/*.md a beépített szerepek
   settings.py      modell/effort szintenként: globális + projekt felülírás
   keep_awake.py    alvásgátló a futó körök idejére (caffeinate / systemd-inhibit)
+  decisions.py     a tulajdonostól kért döntések (request_decision, orch decide, Döntések ablak)
+  desktop.py       asztali értesítés macOS-en (osascript)
   loadout.py       mit tölt be egy agent (eszközök, MCP, setting források); loadout.toml
   memory_guard.py  PreToolUse hook: a `memory` kulcs Write/Edit-je csak a memóriamappába ír
   providers/       base.py: Provider protokoll · claude.py · codex.py

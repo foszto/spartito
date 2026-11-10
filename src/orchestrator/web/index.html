@@ -20,6 +20,7 @@
   <div class="brand">
     <div class="logo" data-icon="logo"></div>
     <h1>{{project_name}}</h1>
+    <button class="btn ghost icon count-button" id="decisionsButton" type="button" title="Decisions waiting for you" aria-label="Decisions waiting for you" data-icon="ask"><span class="badge" hidden></span></button>
     <button class="btn ghost icon" id="settingsButton" type="button" title="Models and effort" aria-label="Models and effort" data-icon="sliders"></button>
     <button class="btn ghost icon" id="themeButton" type="button" title="Switch theme" aria-label="Switch theme" data-icon="moon"></button>
   </div>
@@ -145,6 +146,17 @@
       <button class="btn" value="cancel">Cancel</button>
       <button class="btn primary" value="ok" data-ok></button></div>
   </form>
+</dialog>
+<!-- A list dialog (app.js: LIST_DIALOGS): no form around it, so each item may have its own. -->
+<dialog id="decisionsDialog" class="list-dialog">
+  <div class="shell">
+    <div class="dialog-head"><h3>Decisions</h3>
+      <button class="btn ghost icon" type="button" data-close aria-label="Close" data-icon="x"></button></div>
+    <div class="dialog-body">
+      <p class="about">Questions your agents wait for you to answer. Your answer reaches the agent as a message from you; meanwhile it goes on with what does not depend on it.</p>
+      <div class="list" data-list></div>
+    </div>
+  </div>
 </dialog>
 <div id="toast" hidden role="status"></div>
 <script src="/static/app.js"></script>

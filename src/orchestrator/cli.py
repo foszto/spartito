@@ -7,6 +7,7 @@ import os
 import shutil
 import time
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Annotated
 
 import typer
@@ -21,7 +22,13 @@ from .service import (
     OrchestratorError,
     cache_hint,
 )
-from .settings import ARCHIVE_AFTER, ARCHIVE_AFTER_DEFAULT, KEEP_AWAKE, TIERS
+from .settings import (
+    ARCHIVE_AFTER,
+    ARCHIVE_AFTER_DEFAULT,
+    DESKTOP_NOTIFICATIONS,
+    KEEP_AWAKE,
+    TIERS,
+)
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help=__doc__)
 project_app = typer.Typer(no_args_is_help=True, help="Manage projects (git repositories).")
@@ -341,6 +348,9 @@ def config_show(project: Annotated[str | None, typer.Option("--project", "-p")] 
         on = data.get(KEEP_AWAKE, True) is not False
         default = "" if KEEP_AWAKE in data else " (default)"
         typer.echo(f"  keep awake while agents work: {'on' if on else 'off'}{default}")
+        on = data.get(DESKTOP_NOTIFICATIONS, True) is not False
+        default = "" if DESKTOP_NOTIFICATIONS in data else " (default)"
+        typer.echo(f"  desktop notifications: {'on' if on else 'off'}{default}")
 
 
 def hours_text(hours: float) -> str:
@@ -417,6 +427,76 @@ def config_keep_awake(
     except OrchestratorError as exc:
         raise fail(exc) from None
     config_show(None)
+
+
+@config_app.command("desktop-notifications")
+def config_desktop_notifications(
+    value: Annotated[str, typer.Argument(help='"on" or "off"; "" clears (default: on).')],
+) -> None:
+    """Desktop notifications on this machine (default on; macOS only): a decision waits
+    for you, or an agent you messaged directly has finished."""
+    o = orch()
+    try:
+        data = o.settings()
+        data[DESKTOP_NOTIFICATIONS] = value
+        o.update_settings(data)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    config_show(None)
+
+
+# -- decisions --------------------------------------------------------------
+
+
+def age(timestamp: str) -> str:
+    try:
+        seconds = (datetime.now(UTC) - datetime.fromisoformat(timestamp)).total_seconds()
+    except ValueError:
+        return timestamp
+    minutes = max(0, int(seconds // 60))
+    if minutes < 60:
+        return f"{minutes}m"
+    return f"{minutes // 60}h" if minutes < 48 * 60 else f"{minutes // 1440}d"
+
+
+@app.command()
+def decisions(
+    all_: Annotated[bool, typer.Option("--all", "-a", help="Include closed ones.")] = False,
+) -> None:
+    """List the decisions agents wait for (answer with `orch decide`)."""
+    listed = orch().list_decisions(closed=all_)
+    if not listed:
+        typer.echo("no decisions" if all_ else "no open decisions")
+    for item in listed:
+        where = item["project"] or "-"
+        note = {"archived": " (archived: an answer restores it)", "gone": " (agent removed)"}
+        head = f"#{item['id']}  {where} · {item['agent_name']} · {age(item['created_at'])} ago"
+        typer.secho(head + note.get(item["agent_state"] or "", ""), bold=True, nl=False)
+        if item["state"] != "open":
+            typer.secho(f"  [{item['state']}]", fg=typer.colors.MAGENTA, nl=False)
+        typer.echo(f"\n  {item['question']}")
+        for number, option in enumerate(item["options"], 1):
+            typer.echo(f"    {number}) {option}")
+        if item["recommendation"]:
+            typer.echo(f"  recommends: {item['recommendation']}")
+        if item["answer"] is not None:
+            typer.echo(f"  answer: {item['answer']}")
+        if item["note"]:
+            typer.echo(f"  note: {item['note']}")
+
+
+@app.command()
+def decide(
+    decision_id: int,
+    answer: Annotated[str, typer.Argument(help="An option number, or free text.")],
+) -> None:
+    """Answer a decision; the agent receives it as a message from you."""
+    try:
+        result = orch().answer_decision(decision_id, answer)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    chosen = result["decision"]["answer"]
+    typer.echo(f"#{decision_id} answered: {chosen} -> {result['agent_id']}  run {result['run_id']}")
 
 
 # -- agents -----------------------------------------------------------------
