@@ -17,7 +17,7 @@ from mcp.server.mcpserver import MCPServer
 
 from . import roles
 from .models import Run, running_total
-from .service import Orchestrator, OrchestratorError, agent_state, run_usage
+from .service import Orchestrator, OrchestratorError, agent_state, result_file, run_usage
 
 MAX_WAIT_SECONDS = 1800
 RESULT_CHARS = 4000  # result text (or structured output) per agent in one reply
@@ -300,12 +300,13 @@ def spawn_agent(
     base: str | None = None,
     after: list[str] | None = None,
     output_schema: dict[str, Any] | None = None,
+    freeform: bool = False,
 ) -> dict[str, Any]:
     """Start a new agent on a task. Returns immediately; use wait_for_agents for the outcome.
 
     task: the full, self-contained brief. The agent knows nothing else. It may embed
       `{{result:<agent-id>}}`, replaced by that agent's final answer when this agent starts
-      (combine with `after`).
+      (combine with `after`); text is cut at 4000 chars, `{{result:<agent-id>:full}}` is not.
     name: short label, becomes part of the agent id and branch (`orch/<name>-xxxx`).
     role: see list_roles. `lead` agents can spawn their own sub-agents.
     provider: `claude` or `codex`; defaults to the project's default.
@@ -318,6 +319,7 @@ def spawn_agent(
     after: agent ids (or run ids) that must finish successfully first. If one fails, this
       agent is skipped.
     output_schema: JSON Schema; the final answer is then returned as `structured` data.
+      Default: the role's compact schema, if it has one; `freeform` for a prose answer.
     """
     orch = _orch()
     caller = _caller(orch)
@@ -334,6 +336,7 @@ def spawn_agent(
         base=base,
         after=after,
         output_schema=output_schema,
+        role_schema=not freeform,
         parent_id=caller.id if caller else None,
     )
     return _queued(orch, agent.id, run.id)
@@ -359,13 +362,15 @@ def send_message(
     message: str,
     after: list[str] | None = None,
     output_schema: dict[str, Any] | None = None,
+    freeform: bool = False,
 ) -> dict[str, Any]:
     """Send a follow-up to an existing agent; it continues its conversation with full memory.
 
     Messages to a busy agent queue up and run in order. Returns immediately.
+    `output_schema`/`freeform` as in spawn_agent.
     """
     orch = _orch()
-    run = orch.send(_own(orch, agent_id), message, after, output_schema)
+    run = orch.send(_own(orch, agent_id), message, after, output_schema, not freeform)
     return _queued(orch, agent_id, run.id)
 
 
@@ -406,8 +411,9 @@ def get_agent(
     max_commits: int = MAX_COMMITS,
     max_status: int = MAX_STATUS,
 ) -> dict[str, Any]:
-    """Full status of one agent: last result, the commits/changes in its worktree, the
-    explicit model/effort overrides, and tokens, cost and model of its last 10 runs.
+    """Full status of one agent: last result (`result_file`: all of it on disk), the
+    commits/changes in its worktree, the explicit model/effort overrides, and tokens,
+    cost and model of its last 10 runs.
 
     Result and error are cut to `result_chars` chars (0: all), the result from
     `result_offset`; `run_id` shows that run as `run` instead of `last_run`. Git output
@@ -434,6 +440,7 @@ def get_agent(
                 "started_at": run.started_at,
                 "ended_at": run.ended_at,
                 "usage": run_usage(orch.store.get_usage(run.id)),
+                "result_file": result_file(run.id),
             },
         )
     shown = view[key]

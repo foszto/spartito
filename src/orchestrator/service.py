@@ -38,6 +38,12 @@ def run_usage(usage: Usage | None) -> dict[str, Any]:
     return {"tokens": usage.tokens(), "cost_usd": usage.cost, "model": usage.model}
 
 
+def result_file(run_id: int) -> str | None:
+    """Where the runner wrote the run's full final answer, if it did."""
+    path = config.result_file(run_id)
+    return str(path) if path.is_file() else None
+
+
 def agent_state(runs: list[Run]) -> tuple[str, list[Run], Run | None]:
     """An agent's status from its runs, its queued/running runs and its latest finished run."""
     active = [run for run in runs if run.status.active]
@@ -165,9 +171,16 @@ class Orchestrator:
         message: str,
         after: list[str | int] | None = None,
         output_schema: dict[str, Any] | None = None,
+        role_schema: bool = False,
     ) -> Run:
-        """Queue a turn for an agent and start its runner. Returns immediately."""
+        """Queue a turn for an agent and start its runner. Returns immediately.
+
+        With `role_schema` and no `output_schema` the agent's role default schema applies.
+        """
         agent = self.agent(agent_id)
+        if output_schema is None and role_schema:
+            project = self.store.get_project(agent.project) if agent.project else None
+            output_schema = self.role_schema(agent.role, project.path if project else None)
         run = self.store.add_run(agent.id, message, self._resolve_after(after), output_schema)
         self._launch(run)
         return run
@@ -175,8 +188,22 @@ class Orchestrator:
     def spawn(self, project_name: str, task: str, **options: Any) -> tuple[Agent, Run]:
         after = options.pop("after", None)
         output_schema = options.pop("output_schema", None)
+        if options.pop("role_schema", False) and output_schema is None:
+            # Resolved before the agent exists, so a broken schema leaves no agent behind.
+            path = self.project(project_name).path
+            output_schema = self.role_schema(options.get("role") or "worker", path)
         agent = self.create_agent(project_name, **options)
         return agent, self.send(agent.id, task, after, output_schema)
+
+    @staticmethod
+    def role_schema(role: str, project_path: str | None) -> dict[str, Any] | None:
+        """The role's default output schema for agent-to-agent handoff (None: free text)."""
+        try:
+            return roles.output_schema(roles.load(role, project_path), project_path)
+        except KeyError as exc:
+            raise OrchestratorError(str(exc.args[0])) from None
+        except roles.SchemaError as exc:
+            raise OrchestratorError(str(exc)) from None
 
     def lead(self, project_name: str) -> Agent:
         """The project's own agent: works in the main checkout and may run sub-agents."""
@@ -273,8 +300,9 @@ class Orchestrator:
         `model`/`effort` are what the next turn runs with (explicit value, project setting,
         global setting, role); `cost_usd` and `tokens` (`in`, `out`, `cache_read`,
         `cache_write`; null when no run reported tokens) are the totals of all runs.
-        With `detail`: `model_override`/`effort_override` (the values set on the agent) and
-        `last_run.usage` (that run's own tokens, cost and reported model).
+        With `detail`: `model_override`/`effort_override` (the values set on the agent),
+        `last_run.usage` (that run's own tokens, cost and reported model) and
+        `last_run.result_file` (the full final answer on disk).
         """
         runs = self.store.runs_of(agent.id)
         usage = self.store.usage_of(agent.id)
@@ -317,6 +345,7 @@ class Orchestrator:
             view["effort_override"] = agent.effort
             if shown:
                 view["last_run"]["usage"] = run_usage(usage.get(shown.id))
+                view["last_run"]["result_file"] = result_file(shown.id)
         return view
 
     def run_history(self, agent: Agent, limit: int = 10) -> list[dict[str, Any]]:
