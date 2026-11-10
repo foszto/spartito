@@ -188,8 +188,14 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
                 end_turn(child, mark)
                 raise
             # EXITED: no relaunch; the turn fails below with the CLI's own error.
-            if outcome != EXITED:
-                note_hooks(store, run.id, agent.id, off=outcome == HOOKS_OFF)
+            if outcome == HOOKS_RAN:
+                note_hooks(store, run.id, agent.id, off=False)
+            elif outcome == HOOKS_OFF and invocation.canary.exists():
+                # It came while the CLI was being ended: a slow start, not hooks being off.
+                # This turn goes on without memory; the next one tries again.
+                store.add_event(run.id, agent.id, "info", MEMORY_SLOW)
+            elif outcome == HOOKS_OFF:
+                note_hooks(store, run.id, agent.id, off=True)
             if outcome == HOOKS_OFF:
                 for pipe in (child.stdin, child.stdout):
                     if pipe:
@@ -300,6 +306,10 @@ MEMORY_OFF = (
     "check again in a new session or after a day"
 )
 MEMORY_ON = "memory writes are on again: hooks run in this session"
+MEMORY_SLOW = (
+    "memory writes are off for this turn: the CLI started too slowly to prove that its hooks "
+    "run; the next turn tries again"
+)
 
 
 def _plain(provider: Any, ctx: RunContext) -> Invocation:
@@ -327,14 +337,16 @@ def hooks_known_off(agent: Agent) -> bool:
 
 
 def note_hooks(store: Store, run_id: int, agent_id: str, off: bool) -> None:
-    """Keep the record of the canary's outcome; the info event only when it changes."""
+    """Keep the record of the canary's outcome; the info event only when it changes.
+    Advisory only: a record that cannot be written or removed never fails the turn."""
     path = hooks_record(agent_id)
     was_off = path.exists()
-    if off:
-        path.parent.mkdir(exist_ok=True)
-        path.write_text(json.dumps({"checked": time.time()}), encoding="utf-8")
-    else:
-        path.unlink(missing_ok=True)
+    with contextlib.suppress(OSError):
+        if off:
+            path.parent.mkdir(exist_ok=True)
+            path.write_text(json.dumps({"checked": time.time()}), encoding="utf-8")
+        else:
+            path.unlink(missing_ok=True)
     if off != was_off:
         store.add_event(run_id, agent_id, "info", MEMORY_OFF if off else MEMORY_ON)
 

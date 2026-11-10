@@ -19,6 +19,7 @@ from orchestrator.runner import (
     HOOKS_RAN,
     MEMORY_OFF,
     MEMORY_ON,
+    MEMORY_SLOW,
     RECHECK_SECONDS,
     hooks_known_off,
     hooks_record,
@@ -173,3 +174,34 @@ def test_the_canary_tells_ran_off_and_exited_apart(tmp_path: Path) -> None:
         for child in (touching, silent, gone):
             child.kill()
             child.wait()
+
+
+def test_a_slow_start_turns_memory_off_for_one_turn_only(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_HOOKS", "slow")
+    lead = orch.lead(project)
+
+    assert turn(orch, lead.id, "LOADOUT").result == "plain"
+    assert infos(orch, lead.id) == [MEMORY_SLOW] and not hooks_record(lead.id).exists()
+
+    monkeypatch.delenv("FAKE_HOOKS")
+    assert turn(orch, lead.id, "LOADOUT").result == "memory"  # tried again at once
+    assert launches(lead.cwd) == ["memory", "plain", "memory"]
+
+
+@pytest.mark.parametrize("hooks", ["off", "on"])
+def test_a_record_that_cannot_be_kept_does_not_fail_the_turn(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch, hooks: str
+) -> None:
+    lead = orch.lead(project)
+    if hooks == "off":
+        monkeypatch.setenv("FAKE_HOOKS", "off")
+        (config.home() / "hooks-off").write_text("not a directory")  # cannot be written
+    else:
+        hooks_record(lead.id).mkdir(parents=True)  # cannot be removed
+
+    run = turn(orch, lead.id, "LOADOUT")
+
+    assert run.status is RunStatus.DONE
+    assert run.result == ("plain" if hooks == "off" else "memory")

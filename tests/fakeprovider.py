@@ -4,7 +4,8 @@ The prompt drives it: `FAIL` ends with an error result, `SLEEP <s>` delays, `TOU
 creates a file in the working directory, `WHOAMI` answers with `<model>/<effort>`, `LOADOUT`
 with `memory` or `plain`. With `memory` in the loadout it behaves like Claude with
 `--input-format stream-json`: starts a child, creates the canary (FAKE_HOOKS=off: none, it
-waits for input; FAKE_HOOKS=exit: fails with `Not logged in` first), then accepts exactly one
+waits for input; FAKE_HOOKS=slow: only when it is sent SIGTERM; FAKE_HOOKS=exit: fails
+with `Not logged in` first), then accepts exactly one
 stream-json user message up to EOF. Each launch appends its mode to `.fake-launches`. The answer echoes the prompt and whether the turn
 resumed an existing session.
 
@@ -54,7 +55,13 @@ if sys.argv[3] == "memory":  # like Claude with --input-format stream-json
         server.kill()
         print("Not logged in", file=sys.stderr)
         sys.exit(1)
-    if hooks != "off":
+    if hooks == "slow":  # the canary comes only as it is being ended
+        def late(signum, frame):
+            pathlib.Path(sys.argv[4]).touch()
+            server.kill()
+            sys.exit(0)
+        signal.signal(signal.SIGTERM, late)
+    elif hooks != "off":
         pathlib.Path(sys.argv[4]).touch()  # the SessionStart canary, before any input
     raw = sys.stdin.read()  # hooks off: waits here, like the real CLI, until it is ended
     try:
