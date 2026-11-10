@@ -2,64 +2,159 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 import pytest
+from test_turn_end import all_gone
 
-from orchestrator.models import RunStatus
-from orchestrator.runner import MEMORY_OFF, hooks_ran
+from orchestrator import config
+from orchestrator.models import Agent, RunStatus
+from orchestrator.runner import (
+    EXITED,
+    HOOKS_OFF,
+    HOOKS_RAN,
+    MEMORY_OFF,
+    MEMORY_ON,
+    RECHECK_SECONDS,
+    hooks_known_off,
+    hooks_record,
+    wait_for_canary,
+)
 from orchestrator.service import Orchestrator
 
 
-def answer(orch: Orchestrator, agent_id: str) -> str:
+@pytest.fixture(autouse=True)
+def short_canary_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ORCH_CANARY_SECONDS", "1")
+
+
+def turn(orch: Orchestrator, agent_id: str, prompt: str | None = None):
+    if prompt is not None:
+        orch.send(agent_id, prompt)
     done, _ = orch.wait([agent_id], timeout=30)
     assert done, "agent did not finish in time"
-    run = orch.store.runs_of(agent_id)[-1]
-    assert run.status is RunStatus.DONE, run.error
-    return run.result or ""
+    return orch.store.runs_of(agent_id)[-1]
 
 
 def infos(orch: Orchestrator, agent_id: str) -> list[str]:
     return [event.text for event in orch.store.events(agent_id) if event.kind == "info"]
 
 
+def launches(cwd: str) -> list[str]:
+    path = Path(cwd) / ".fake-launches"
+    return path.read_text().split() if path.exists() else []
+
+
+def pids(cwd: str) -> list[int]:
+    return [int(pid) for pid in (Path(cwd) / ".fake-pids").read_text().split()]
+
+
+def one_prompt_and_one_usage(orch: Orchestrator, agent_id: str, run_id: int) -> bool:
+    prompts = [e for e in orch.store.events(agent_id) if e.kind == "prompt" and e.run_id == run_id]
+    return len(prompts) == 1 and list(orch.store.usage_of(agent_id)) == [run_id]
+
+
+def age(agent_id: str) -> None:
+    stale = time.time() - RECHECK_SECONDS - 60
+    hooks_record(agent_id).write_text(json.dumps({"checked": stale}))
+
+
 def test_with_its_hooks_running_a_lead_keeps_memory(orch: Orchestrator, project: str) -> None:
     lead = orch.lead(project)
-    orch.send(lead.id, "LOADOUT")
 
-    assert answer(orch, lead.id) == "memory"
-    assert MEMORY_OFF not in infos(orch, lead.id)
+    run = turn(orch, lead.id, "LOADOUT")
+
+    assert run.status is RunStatus.DONE and run.result == "memory"
+    assert launches(lead.cwd) == ["memory"] and infos(orch, lead.id) == []
+    assert not hooks_record(lead.id).exists()
 
 
-def test_without_hooks_the_turn_runs_again_without_write_and_edit(
+def test_without_hooks_the_turn_runs_once_more_without_memory_and_that_is_remembered(
     orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("FAKE_HOOKS", "off")
     lead = orch.lead(project)
-    orch.send(lead.id, "LOADOUT")
 
-    assert answer(orch, lead.id) == "plain"  # the CLI actually run had no memory
-    assert MEMORY_OFF in infos(orch, lead.id)
+    first = turn(orch, lead.id, "LOADOUT TOKENS 10")
+
+    # The CLI that waited without a canary was ended with its child, before any input;
+    # the turn ran once, without memory, with one prompt and one usage record.
+    assert first.status is RunStatus.DONE and first.result == "plain"
+    assert launches(lead.cwd) == ["memory", "plain"]
+    assert len(pids(lead.cwd)) == 3 and all_gone(pids(lead.cwd))
+    assert one_prompt_and_one_usage(orch, lead.id, first.id)
+    assert infos(orch, lead.id) == [MEMORY_OFF] and hooks_record(lead.id).exists()
+
+    # A fresh record: no canary, no wait, no new event.
+    assert turn(orch, lead.id, "LOADOUT").result == "plain"
+    assert launches(lead.cwd) == ["memory", "plain", "plain"]
+
+    # After a day the canary is tried again; still off: no new event.
+    age(lead.id)
+    assert turn(orch, lead.id, "LOADOUT").result == "plain"
+    assert launches(lead.cwd)[3:] == ["memory", "plain"]
+    assert infos(orch, lead.id) == [MEMORY_OFF]
+
+    # Hooks back on: memory again, said once, the record gone.
+    monkeypatch.delenv("FAKE_HOOKS")
+    age(lead.id)
+    assert turn(orch, lead.id, "LOADOUT").result == "memory"
+    assert infos(orch, lead.id) == [MEMORY_OFF, MEMORY_ON]
+    assert not hooks_record(lead.id).exists()
 
 
-def test_a_role_without_memory_waits_for_nothing(
+def test_a_cli_that_exits_before_its_hooks_fails_once_with_its_own_error(
     orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("FAKE_HOOKS", "off")
-    worker, _ = orch.spawn(project, "LOADOUT")
+    monkeypatch.setenv("FAKE_HOOKS", "exit")
+    lead = orch.lead(project)
 
-    assert answer(orch, worker.id) == "plain"
-    assert MEMORY_OFF not in infos(orch, worker.id)
+    run = turn(orch, lead.id, "LOADOUT")
+
+    assert run.status is RunStatus.FAILED and "Not logged in" in (run.error or "")
+    assert launches(lead.cwd) == ["memory"]
+    assert MEMORY_OFF not in infos(orch, lead.id) and not hooks_record(lead.id).exists()
+
+
+def test_a_worker_with_memory_from_loadout_toml_gets_one_message_and_ends_at_eof(
+    orch: Orchestrator, project: str
+) -> None:
+    (config.home() / "loadout.toml").write_text("[worker]\nmemory = true\n")
+    worker, _ = orch.spawn(project, "LOADOUT TOKENS 10")
+
+    run = turn(orch, worker.id)
+
+    # The fake accepts nothing but one stream-json user message followed by EOF.
+    assert run.status is RunStatus.DONE and run.result == "memory"
+    assert launches(worker.cwd) == ["memory"]
+    assert one_prompt_and_one_usage(orch, worker.id, run.id)
+    assert all_gone(pids(worker.cwd))
+
+
+def test_a_record_counts_only_for_a_resumed_session_and_for_a_day(tmp_path: Path) -> None:
+    agent = Agent(id="lead-1", project="p", name="l", role="lead", provider="fake", cwd="/")
+    resumed = Agent(**{**agent.__dict__, "session_id": "s"})
+
+    assert not hooks_known_off(resumed)  # no record
+    hooks_record(agent.id).parent.mkdir(parents=True, exist_ok=True)
+    hooks_record(agent.id).write_text(json.dumps({"checked": time.time()}))
+    assert hooks_known_off(resumed)
+    assert not hooks_known_off(agent)  # a fresh session tries the canary again
+    age(agent.id)
+    assert not hooks_known_off(resumed)
+    hooks_record(agent.id).write_text("garbage")
+    assert not hooks_known_off(resumed)
 
 
 def sleeper(code: str) -> subprocess.Popen[str]:
     return subprocess.Popen([sys.executable, "-c", code], text=True, stdin=subprocess.PIPE)
 
 
-def test_the_canary_proves_hooks_only_when_it_appears(tmp_path: Path) -> None:
+def test_the_canary_tells_ran_off_and_exited_apart(tmp_path: Path) -> None:
     canary = tmp_path / "canary"
     touching = sleeper(
         f"import pathlib, time; pathlib.Path({str(canary)!r}).touch(); time.sleep(5)"
@@ -67,13 +162,13 @@ def test_the_canary_proves_hooks_only_when_it_appears(tmp_path: Path) -> None:
     silent = sleeper("import time; time.sleep(5)")
     gone = sleeper("pass")
     try:
-        assert hooks_ran(touching, canary, timeout=5)
+        assert wait_for_canary(touching, canary, timeout=5) == HOOKS_RAN
         canary.unlink()
         started = time.monotonic()
-        assert not hooks_ran(silent, canary, timeout=0.3)  # a CLI that waits without hooks
+        assert wait_for_canary(silent, canary, timeout=0.3) == HOOKS_OFF  # live, no canary
         assert time.monotonic() - started < 2
         gone.wait()
-        assert not hooks_ran(gone, canary, timeout=5)  # exited without hooks
+        assert wait_for_canary(gone, canary, timeout=5) == EXITED  # not a hooks verdict
     finally:
         for child in (touching, silent, gone):
             child.kill()

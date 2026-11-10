@@ -67,6 +67,13 @@ def memory_settings(canary: Path) -> dict:
     }
 
 
+def stream_json_prompt(prompt: str) -> str:
+    """The prompt as the single user message of `--input-format stream-json`."""
+    message = {"role": "user", "content": [{"type": "text", "text": prompt}]}
+    line = {"type": "user", "session_id": "", "message": message, "parent_tool_use_id": None}
+    return json.dumps(line) + "\n"
+
+
 def loadout_flags(loadout: Loadout, canary: Path | None = None) -> list[str]:
     """CLI flags for a loadout. Needed on every turn: `--resume` does not remember them.
 
@@ -126,14 +133,7 @@ class ClaudeProvider:
         stdin = ctx.prompt
         if canary:  # read only once the runner has seen the canary
             argv += ["--input-format", "stream-json"]
-            message = {"role": "user", "content": [{"type": "text", "text": ctx.prompt}]}
-            line = {
-                "type": "user",
-                "session_id": "",
-                "message": message,
-                "parent_tool_use_id": None,
-            }
-            stdin = json.dumps(line) + "\n"
+            stdin = stream_json_prompt(ctx.prompt)
         return Invocation(
             argv=argv,
             stdin=stdin,

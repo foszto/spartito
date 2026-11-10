@@ -169,7 +169,10 @@ tulajdonos ott futó interaktív sessionjeivel. A korlát csak a `Write`/`Edit` 
 vonatkozik, a `Bash`-re nem. Csak akkor lép életbe, ha a session hookjai bizonyítottan futnak:
 a runner a promptot csak a hook által létrehozott jelzőfájl után küldi el; ha a hookok ki
 vannak kapcsolva (`disableAllHooks`, policy `allowManagedHooksOnly`), a kör `Write`/`Edit`
-nélkül indul újra, és ezt egy `info` esemény jelzi. Az `orch chat` ezért nem kapja meg. Ha a
+nélkül indul újra. Ezt az agent megjegyzi (`~/.orchestrator/hooks-off/<agent>.json`): a
+következő körök várakozás nélkül így indulnak, új sessionben vagy egy nap után újra
+próbálja; az állapotváltást egy `info` esemény jelzi. Ha a CLI a jelzőfájl előtt kilép (pl.
+lejárt login), a kör a saját hibájával bukik el, újraindítás nélkül. Az `orch chat` ezért nem kapja meg. Ha a
 memóriamappa helye nem állapítható meg biztosan (szimlinkelt `.git`, a mappát áthelyező
 környezeti változók), minden írást elutasít; `autoMemoryDirectory` mellett csak az
 alapértelmezett mappa írható, az áthelyezett nem.
