@@ -125,29 +125,53 @@ def context_view(record: Usage | None) -> dict[str, Any] | None:
 
 def compaction_left(
     runs: list[Run], usage: dict[int, Usage], compactions: Collection[int], session_id: str | None
-) -> int | None:
-    """The context size the agent's most recent compaction left, if known: that of its
-    latest ended compaction run (the size measured after it, else the size the CLI reported
-    after compacting; for one that did not succeed, the size before it), or of a compaction
-    the CLI did on its own in a later turn (the size it reported). Runs in the order they
-    ran (models.turn_order)."""
+) -> tuple[int | None, int] | None:
+    """What the agent's most recent compaction really left, as measured: (tokens, the run
+    that measured it); (None, the compaction's run) while nothing measured it yet; None
+    without a compaction. Runs in the order they ran (models.turn_order).
+
+    The most recent compaction is the latest compaction run that started and ended (in any
+    way: one that never started compacted nothing) or turn in which the CLI compacted on its
+    own. The CLI's own figure after compacting is not used (Claude's leaves out the system
+    prompt and tools; Codex has none). A compaction run that measured the size after
+    compacting tells it itself; otherwise the first later run that measured anything: the
+    size at its first model request (Claude: what the compaction left, prompt and tools
+    included), or where that is not reported (Codex) the size at its end, which can only
+    be larger: conservative."""
     ordered = sorted(runs, key=turn_order)
+    # Only the current session: from after the last run recorded in another one.
     for index in range(len(ordered) - 1, -1, -1):
-        run = ordered[index]
+        other = usage.get(ordered[index].id)
+        if other is not None and other.session_id not in (None, session_id):
+            ordered = ordered[index + 1 :]
+            break
+
+    def measured(run: Run) -> Usage | None:
         record = usage.get(run.id)
-        if run.id not in compactions:
-            if record and record.compact_trigger and record.session_id == session_id:
-                return record.compact_post_tokens
+        return record if record is not None and record.session_id == session_id else None
+
+    last = None
+    for index, run in enumerate(ordered):
+        if run.id in compactions:
+            if run.started_at and not run.status.active:
+                last = index
+        elif (record := measured(run)) and record.compact_trigger:
+            last = index
+    if last is None or not session_id:
+        return None
+    compaction = ordered[last]
+    record = measured(compaction)
+    if compaction.id in compactions and record and record.context_tokens is not None:
+        return record.context_tokens, compaction.id
+    for run in ordered[last + 1 :]:
+        record = measured(run)
+        if run.id in compactions or record is None:
             continue
-        if run.status.active:
-            continue
-        if record and record.context_tokens is not None:
-            return record.context_tokens
-        if run.status is RunStatus.DONE:
-            return record.compact_post_tokens if record else None
-        before = context_now(ordered[:index], usage, session_id)
-        return before.context_tokens if before else None
-    return None
+        first = record.first_context_tokens
+        size = first if first is not None else record.context_tokens
+        if size is not None:
+            return size, run.id
+    return None, compaction.id
 
 
 def result_file(run_id: int) -> str | None:
@@ -366,8 +390,8 @@ class Orchestrator:
         when the context is above the threshold (settings.compact_at); it goes ahead of the
         agent's queued messages (Store.may_start). Not after a compaction, not while one is
         queued or running, not while paused (compaction_paused: the last compaction left
-        the context above the threshold, which compaction_ended reported), and quietly not
-        when the agent cannot be compacted (compact_refusal)."""
+        the context above the threshold; the turn that measured it says so in the log), and
+        quietly not when the agent cannot be compacted (compact_refusal)."""
         run = self.store.get_run(run_id)
         if run is None or self.store.meta(run_id).kind == COMPACT:
             return None
@@ -380,7 +404,15 @@ class Orchestrator:
         tokens = record.context_tokens if record else None
         if tokens is None or tokens <= threshold:
             return None
-        if self.compaction_paused(agent, threshold) is not None or self.compact_refusal(agent):
+        left = compaction_left(runs, usage, self.store.compactions(agent.id), agent.session_id)
+        if left is not None and left[0] is None:
+            return None  # nothing measured since the last compaction: the size is not known
+        paused = self.compaction_paused(agent, threshold)
+        if paused is not None:
+            if paused[1] == run_id:  # this turn measured it: say so once
+                self._note_paused(run_id, agent, paused[0], threshold)
+            return None
+        if self.compact_refusal(agent):
             return None
         try:
             prompt = self.compact_prompt(agent, None)
@@ -389,50 +421,58 @@ class Orchestrator:
         queued = self.store.add_auto_compaction(agent.id, prompt)
         if queued is None:
             return None
-        self.store.add_event(
-            queued.id,
-            agent.id,
-            "info",
-            f"automatic compaction: context {kilo(tokens)} is above the threshold of"
-            f" {kilo(threshold)}",
-        )
-        try:
+        try:  # also a stop of the finishing turn meanwhile leaves no compaction behind
+            self.store.add_event(
+                queued.id,
+                agent.id,
+                "info",
+                f"automatic compaction: context {kilo(tokens)} is above the threshold of"
+                f" {kilo(threshold)}",
+            )
             self._launch(queued)
         except BaseException:
             self.store.delete_run(queued.id)
             raise
         return queued
 
-    def compaction_paused(self, agent: Agent, threshold: int | None = None) -> int | None:
-        """The context size the agent's most recent compaction left (compaction_left) when
-        it is above the threshold: then no automatic compaction is queued for the agent
-        until a compaction gets it below, or the threshold is raised. None otherwise."""
+    def compaction_paused(
+        self, agent: Agent, threshold: int | None = None
+    ) -> tuple[int | None, int] | None:
+        """What the agent's most recent compaction left (compaction_left: tokens, measuring
+        run) when that is above the threshold: then no automatic compaction is queued for
+        the agent until a compaction gets it below, or the threshold is raised above it.
+        None otherwise."""
         if threshold is None:
             threshold = settings.compact_at(self.store, agent.project)
         runs = self.store.runs_of(agent.id)
         left = compaction_left(
             runs, self.store.usage_of(agent.id), self.store.compactions(agent.id), agent.session_id
         )
-        return left if threshold and left is not None and left > threshold else None
+        paused = threshold and left is not None and left[0] is not None and left[0] > threshold
+        return left if paused else None
 
     def compaction_ended(self, run_id: int) -> None:
-        """After a compaction run ended in whatever way: say in the agent's log when it left
-        the context above the threshold, which pauses automatic compaction."""
+        """After a compaction run ended: when it measured the size it left itself and that
+        pauses automatic compaction, say so in the agent's log (otherwise the turn that
+        measures it does, see auto_compact)."""
         run = self.store.get_run(run_id)
         agent = self.store.get_agent(run.agent_id) if run and not run.status.active else None
         if agent is None:
             return
         threshold = settings.compact_at(self.store, agent.project)
-        left = self.compaction_paused(agent, threshold)
-        if left is not None:
-            self.store.add_event(
-                run_id,
-                agent.id,
-                "info",
-                f"automatic compaction paused: the context is {kilo(left)} after this compaction,"
-                f" above the threshold of {kilo(threshold)}; a compaction that gets it below"
-                f" (orch compact {agent.id}) or a higher threshold resumes it",
-            )
+        paused = self.compaction_paused(agent, threshold)
+        if paused is not None and paused[1] == run_id:
+            self._note_paused(run_id, agent, paused[0], threshold)
+
+    def _note_paused(self, run_id: int, agent: Agent, left: int, threshold: int) -> None:
+        self.store.add_event(
+            run_id,
+            agent.id,
+            "info",
+            f"automatic compaction paused: the last compaction left the context at"
+            f" {kilo(left)}, above the threshold of {kilo(threshold)}; a compaction that gets"
+            f" it below (orch compact {agent.id}) or a higher threshold resumes it",
+        )
 
     def compact_refusal(self, agent: Agent) -> str | None:
         """Why the agent's conversation cannot be compacted now; None when it can."""
@@ -794,8 +834,9 @@ class Orchestrator:
         if context is not None:
             threshold = settings.compact_at(self.store, agent.project)
             left = compaction_left(runs, usage, compactions, agent.session_id)
+            paused = threshold and left is not None and left[0] is not None and left[0] > threshold
             context["compact_at"] = threshold
-            context["compact_paused"] = left if threshold and left and left > threshold else None
+            context["compact_paused"] = left[0] if paused else None
         return context
 
     def run_history(self, agent: Agent, limit: int = 10) -> list[dict[str, Any]]:

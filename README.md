@@ -250,12 +250,19 @@ vagy leállított kör után, ha már áll vagy fut egy tömörítés, vagy ha a
 `wait_for_agents` a tömörítés végét is megvárja, és a gyerek valódi válaszát adja, nem a
 tömörítését.
 
-Egymás után kétszer nem: ha az agent legutóbbi tömörítése (sikertelen tömörítésnél: az előtte
-mért méret) a küszöb fölött hagyta a kontextust, nem kerül sorba újabb automatikus tömörítés;
-ezt a tömörítés végén egy `info` esemény jelzi (`automatic compaction paused: …`), a
-`context.compact_paused` mező, az `orch status` és a felület kontextus-jelzése mutatja. Egy
-sikeres (kézi) tömörítés vagy egy magasabb küszöb feloldja. Claude-nál a tömörítés utáni méret
-a CLI által jelentett `post_tokens`, ami a rendszerpromptot és az eszközöket nem tartalmazza.
+Egymás után kétszer nem: azt, hogy a legutóbbi tömörítés (amely elindult; a sosem indult,
+leállított vagy visszavont nem számít, akárcsak a CLI saját, kör közbeni tömörítése) mekkora
+kontextust hagyott, a ténylegesen mért méret dönti el, nem a CLI tömörítés utáni számja (a
+Claude `post_tokens` értéke a rendszerpromptot és az eszközöket nem tartalmazza, a Codex nem
+ad ilyet): ha maga a tömörítő kör mért méretet utána, az; különben a következő kör első
+modellkérésének mérete (`run_usage.first_context_tokens`, Claude), vagy ahol ez nincs (Codex),
+óvatosan annak a körnek a végén mért méret. Ha ez a küszöb fölött van, az automatikus tömörítés
+az agentnél szünetel: a mérő kör egyszer `info` eseményt ír (`automatic compaction paused: …`),
+és a `context.compact_paused` mező, az `orch status` és a felület kontextus-jelzése mutatja.
+Egy olyan tömörítés, amely után a mért méret a küszöb alatt van, vagy a mért méretnél magasabb
+küszöb feloldja. Amíg a legutóbbi tömörítés óta semmi nem mért méretet, nem kerül sorba
+automatikus tömörítés. Ha a kör leállítása (`orch stop`) a tömörítés sorba állítása közben vagy
+után érkezik, a kör `stopped` lesz, és a sorba állított tömörítést visszavonja.
 
 A küszöb globálisan és projektenként állítható (a projekt felülírja), a felület beállítási
 ablakában is; az érték a következő kör végén érvényesül. Codexnél ugyanúgy működik, mint a kézi

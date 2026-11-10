@@ -83,6 +83,7 @@ CONTEXT_FIELDS = (
     "compact_trigger",
     "compact_pre_tokens",
     "compact_post_tokens",
+    "first_context_tokens",
 )
 
 
@@ -115,6 +116,9 @@ class Usage:
     compact_trigger: str | None = None
     compact_pre_tokens: int | None = None
     compact_post_tokens: int | None = None
+    # The conversation's size at the run's first model request (Claude): after a compaction,
+    # what it really left, system prompt and tools included. Unknown for Codex.
+    first_context_tokens: int | None = None
 
     def __add__(self, other: Usage) -> Usage:
         def add(a: Any, b: Any) -> Any:

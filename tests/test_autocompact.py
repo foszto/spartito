@@ -11,7 +11,7 @@ import pytest
 from starlette.testclient import TestClient
 from typer.testing import CliRunner
 
-from orchestrator import cli, config, mcp_server, notify, settings
+from orchestrator import cli, config, mcp_server, notify, runner, settings
 from orchestrator.models import Run, RunStatus, Usage
 from orchestrator.providers.codex import COMPACT_PROMPT
 from orchestrator.service import LEAD_KEEP, Orchestrator, compaction_left
@@ -111,9 +111,11 @@ def test_no_automatic_compaction_after_a_failed_turn(orch: Orchestrator, project
     assert compaction_runs(orch, agent.id) == []
 
 
-def done_turn(orch: Orchestrator, agent_id: str, usage: Usage, kind: str = MESSAGE) -> Run:
+def done_turn(
+    orch: Orchestrator, agent_id: str, usage: Usage, kind: str = MESSAGE, at: str = "00"
+) -> Run:
     run = orch.store.add_run(agent_id, "x", kind=kind)
-    orch.store.update_run(run.id, status="running", started_at="2026-01-01T00:00:00+00:00")
+    orch.store.update_run(run.id, status="running", started_at=f"2026-01-01T00:00:{at}+00:00")
     orch.store.set_usage(run.id, agent_id, usage)
     orch.store.finish_run(run.id, RunStatus.DONE, result="ok")
     return orch.store.get_run(run.id)
@@ -155,53 +157,140 @@ def test_an_agent_that_cannot_be_compacted_is_skipped_quietly(
 # -- not twice in a row ----------------------------------------------------------------
 
 
-def test_a_compaction_that_leaves_the_context_above_the_threshold_pauses_it(
-    orch: Orchestrator, project: str
-) -> None:
-    set_threshold(orch, 500)  # the fake compaction leaves 901 tokens
-    agent, _ = orch.spawn(project, "CONTEXT 780", worktree=False)
-    settle(orch, agent.id)
-    (compaction,) = compaction_runs(orch, agent.id)
-    paused = [text for text in infos(orch, agent.id) if text.startswith("automatic compaction p")]
-    assert paused == [
-        "automatic compaction paused: the context is 901 after this compaction, above the"
-        f" threshold of 500; a compaction that gets it below (orch compact {agent.id}) or a"
-        " higher threshold resumes it"
+def paused_notes(orch: Orchestrator, agent_id: str) -> list[tuple[int, str]]:
+    return [
+        (e.run_id, e.text)
+        for e in orch.store.events(agent_id)
+        if e.kind == "info" and e.text.startswith("automatic compaction paused")
     ]
 
-    orch.send(agent.id, "CONTEXT 800")
+
+def paused_text(agent_id: str, left: str, threshold: str) -> str:
+    return (
+        f"automatic compaction paused: the last compaction left the context at {left}, above"
+        f" the threshold of {threshold}; a compaction that gets it below (orch compact"
+        f" {agent_id}) or a higher threshold resumes it"
+    )
+
+
+def test_a_threshold_below_the_fixed_overhead_compacts_once_then_pauses(
+    orch: Orchestrator, project: str
+) -> None:
+    """The review's case: system prompt and tools alone are above the threshold, while the
+    CLI reports a small size after compacting (the fake: 901). Judged by what the next
+    turn's first request measured, not by that figure: one compaction, then paused."""
+    set_threshold(orch, "20k")
+    agent, _ = orch.spawn(project, "CONTEXT 25000", worktree=False)
+    settle(orch, agent.id)
+    (compaction,) = compaction_runs(orch, agent.id)
+    assert orch.view(orch.agent(agent.id))["context"]["compact_paused"] is None  # not yet known
+
+    second = orch.send(agent.id, "CONTEXT 25000 CONTEXT 26000")  # first request, end
     view = settle(orch, agent.id)
+    third = orch.send(agent.id, "CONTEXT 26000 CONTEXT 27000")
+    settle(orch, agent.id)
 
-    assert compaction_runs(orch, agent.id) == [compaction]  # not again
-    assert view["context"]["compact_paused"] == 901
+    assert compaction_runs(orch, agent.id) == [compaction]  # never again
+    assert paused_notes(orch, agent.id) == [(second.id, paused_text(agent.id, "25k", "20k"))]
+    assert view["context"]["compact_paused"] == 25000
+    assert orch.store.get_usage(third.id).first_context_tokens == 26000
     shown = CliRunner().invoke(cli.app, ["status", agent.id]).output
-    assert "automatic compaction paused: the last compaction left 901" in shown
+    assert "automatic compaction paused: the last compaction left 25k" in shown
 
-    set_threshold(orch, 1000)  # a higher threshold resumes it
+    set_threshold(orch, "30k")  # a higher threshold resumes it
     assert orch.view(orch.agent(agent.id))["context"]["compact_paused"] is None
-    orch.send(agent.id, "CONTEXT 1200")
+    orch.send(agent.id, "CONTEXT 27000 CONTEXT 31000")
     settle(orch, agent.id)
     assert len(compaction_runs(orch, agent.id)) == 2
 
 
-def test_what_the_last_compaction_left() -> None:
-    def run(n: int, status: RunStatus = RunStatus.DONE) -> Run:
-        return Run(id=n, agent_id="a", prompt="x", status=status, started_at=f"t{n:02}")
+def test_a_conversation_that_grows_again_after_an_effective_compaction_is_compacted_again(
+    orch: Orchestrator, project: str
+) -> None:
+    set_threshold(orch, "2k")
+    agent, _ = orch.spawn(project, "CONTEXT 5000", worktree=False)
+    settle(orch, agent.id)
+    orch.send(agent.id, "CONTEXT 1000 CONTEXT 1500")  # what the compaction left: 1000
+    settle(orch, agent.id)
+    assert len(compaction_runs(orch, agent.id)) == 1
 
-    turn = Usage(context_tokens=5000, session_id="s")
-    runs, usage = [run(1)], {1: turn}
+    orch.send(agent.id, "CONTEXT 1500 CONTEXT 3000")  # grown above it again
+    settle(orch, agent.id)
+
+    assert len(compaction_runs(orch, agent.id)) == 2
+    assert paused_notes(orch, agent.id) == []
+
+
+def test_codex_without_a_size_after_compacting_pauses_on_the_next_turn_above(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex reports neither a size after compacting nor a first request: the size at the
+    end of the next turn decides (conservative)."""
+    monkeypatch.setattr(Orchestrator, "_launch", lambda self, run: None)
+    set_threshold(orch, "20k")
+    agent = orch.create_agent(project, worktree=False, provider="codex")
+    orch.store.set_session(agent.id, "s")
+    turn = done_turn(orch, agent.id, Usage(context_tokens=30_000, session_id="s"))
+    compaction = orch.auto_compact(turn.id)
+    assert compaction is not None
+    orch.store.update_run(compaction.id, started_at="2026-01-01T00:00:01+00:00")
+    record = Usage(compact_trigger="auto", compact_pre_tokens=30_000, session_id="s")
+    orch.store.set_usage(compaction.id, agent.id, record)
+    orch.store.finish_run(compaction.id, RunStatus.DONE, result="compacted 30k -> ? tokens")
+    after = done_turn(orch, agent.id, Usage(context_tokens=24_000, session_id="s"), at="02")
+
+    assert orch.auto_compact(after.id) is None
+    assert paused_notes(orch, agent.id) == [(after.id, paused_text(agent.id, "24k", "20k"))]
+    later = done_turn(orch, agent.id, Usage(context_tokens=25_000, session_id="s"), at="03")
+    assert orch.auto_compact(later.id) is None
+    assert len(paused_notes(orch, agent.id)) == 1  # said once
+
+
+def test_a_compaction_that_never_started_pauses_nothing(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Orchestrator, "_launch", lambda self, run: None)
+    set_threshold(orch, "20k")
+    agent = orch.create_agent(project, worktree=False)
+    orch.store.set_session(agent.id, "s")
+    turn = done_turn(orch, agent.id, Usage(context_tokens=30_000, session_id="s"))
+    stopped = orch.auto_compact(turn.id)
+    orch.store.finish_run(stopped.id, RunStatus.STOPPED, error="stopped")  # while queued
+    after = done_turn(orch, agent.id, Usage(context_tokens=31_000, session_id="s"), at="02")
+
+    assert orch.auto_compact(after.id) is not None
+
+
+def test_what_the_last_compaction_left() -> None:
+    def run(n: int, status: RunStatus = RunStatus.DONE, started: bool = True) -> Run:
+        when = f"t{n:02}" if started else None
+        return Run(id=n, agent_id="a", prompt="x", status=status, started_at=when)
+
+    def measure(end: int | None, first: int | None = None, **more: object) -> Usage:
+        return Usage(context_tokens=end, first_context_tokens=first, session_id="s", **more)
+
+    runs, usage = [run(1)], {1: measure(5000)}
     assert compaction_left(runs, usage, set(), "s") is None
-    runs.append(run(2, RunStatus.FAILED))  # a failed compaction left the size before it
-    assert compaction_left(runs, usage, {2}, "s") == 5000
-    runs.append(run(3))  # a manual one that worked: what the CLI reported
-    usage[3] = Usage(compact_trigger="manual", compact_post_tokens=100, session_id="s")
-    assert compaction_left(runs, usage, {2, 3}, "s") == 100
-    runs.append(run(4))
-    usage[4] = Usage(context_tokens=9000, compact_trigger="auto", compact_post_tokens=300)
-    usage[4].session_id = "s"  # the CLI compacted on its own in a later turn
-    assert compaction_left(runs, usage, {2, 3}, "s") == 300
-    runs.append(run(5, RunStatus.WAITING))  # a queued one has left nothing yet
-    assert compaction_left(runs, usage, {2, 3, 5}, "s") == 300
+    runs.append(run(2, RunStatus.FAILED))
+    assert compaction_left(runs, usage, {2}, "s") == (None, 2)  # nothing measured it yet
+    runs.append(run(3))  # the turn after it: its first request tells
+    usage[3] = measure(7000, first=6000)
+    assert compaction_left(runs, usage, {2}, "s") == (6000, 3)
+    runs.append(run(4))  # a compaction that measured the size after compacting itself
+    usage[4] = measure(800, compact_trigger="manual", compact_post_tokens=100)
+    assert compaction_left(runs, usage, {2, 4}, "s") == (800, 4)
+    runs.append(run(5))  # the CLI compacted on its own in a turn; a turn without a first
+    usage[5] = measure(9000, first=9500, compact_trigger="auto", compact_post_tokens=300)
+    runs.append(run(6))  # request (Codex) tells by its end
+    usage[6] = measure(1200)
+    assert compaction_left(runs, usage, {2, 4}, "s") == (1200, 6)
+    runs.append(run(7, RunStatus.STOPPED, started=False))  # never started: compacted nothing
+    runs.append(run(8, RunStatus.WAITING, started=False))  # queued: nothing yet
+    assert compaction_left(runs, usage, {2, 4, 7, 8}, "s") == (1200, 6)
+    assert compaction_left(runs, usage, {2, 4}, "other") is None  # another session
+    runs.append(run(9))  # a new session: what came before it no longer counts
+    usage[9] = Usage(context_tokens=50, session_id="new")
+    assert compaction_left(runs, usage, {2, 4, 7, 8}, "new") is None
 
 
 # -- order with queued messages --------------------------------------------------------
@@ -232,7 +321,7 @@ def test_it_runs_ahead_of_a_queued_message_and_the_message_still_runs(
         orch.send(agent.id, "CONTEXT 6000")
         settle(orch, agent.id)
         assert compaction_runs(orch, agent.id) == [orch.store.get_run(compaction.id)]
-        assert orch.view(orch.agent(agent.id))["context"]["compact_paused"] == 5000
+        assert orch.view(orch.agent(agent.id))["context"]["compact_paused"] == 6000
 
 
 def test_store_order_an_automatic_compaction_goes_first_and_never_holds_a_message(
@@ -442,3 +531,41 @@ def test_an_existing_run_meta_gets_the_auto_column_and_old_inserts_still_work(
         )
     assert store.meta(8).auto == 0
     Store(path)  # opening it again changes nothing
+
+
+# -- a stop at the end of the turn ----------------------------------------------------------
+
+
+def test_a_stop_while_queueing_goes_through_and_leaves_no_compaction(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    set_threshold(orch, "20k")
+    agent = orch.create_agent(project, worktree=False)
+    orch.store.set_session(agent.id, "s")
+    turn = done_turn(orch, agent.id, Usage(context_tokens=30_000, session_id="s"))
+
+    def stopped(self: Orchestrator, run: Run) -> None:
+        raise runner.Stopped
+
+    monkeypatch.setattr(Orchestrator, "_launch", stopped)  # the stop arrives while launching
+    with pytest.raises(runner.Stopped):
+        runner.queue_auto_compaction(orch.store, turn.id)
+    assert compaction_runs(orch, agent.id) == []
+
+    monkeypatch.setattr(Orchestrator, "_launch", lambda self, run: None)
+    runner.queue_auto_compaction(orch.store, turn.id)  # queued; then the stop arrives
+    (queued,) = compaction_runs(orch, agent.id)
+    assert runner.auto_queued == [queued.id]
+    runner.withdraw_auto_queued(orch.store)  # what take_turn does on a stop
+    assert compaction_runs(orch, agent.id) == [] and runner.auto_queued == []
+
+
+def test_other_errors_while_queueing_never_fail_the_turn(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(self: Orchestrator, run_id: int) -> None:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(Orchestrator, "auto_compact", broken)
+    runner.queue_auto_compaction(orch.store, 1)  # no exception
+    assert runner.auto_queued == []

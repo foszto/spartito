@@ -169,6 +169,7 @@ RUN_USAGE_ADDED = (
     ("compact_trigger", "TEXT"),
     ("compact_pre_tokens", "INTEGER"),
     ("compact_post_tokens", "INTEGER"),
+    ("first_context_tokens", "INTEGER"),
 )
 ARCHIVE_MANUAL, ARCHIVE_AUTO = "manual", "auto"
 RESTORE_SQL = (
