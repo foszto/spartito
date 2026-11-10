@@ -206,6 +206,31 @@ def test_a_leads_compaction_ends_with_its_empty_result(orch: Orchestrator, proje
     assert view["context"]["compacted"]
 
 
+@pytest.mark.parametrize("instructions", [None, "NOOP"])  # NOOP: the compaction fails
+def test_a_parents_notification_reports_the_answer_not_a_compaction_after_it(
+    orch: Orchestrator, project: str, instructions: str | None
+) -> None:
+    lead = orch.create_agent(project, name="boss", role="lead", worktree=False)
+    child, work = orch.spawn(
+        project, "SLEEP 1.5 work", worktree=False, parent_id=lead.id, sender=lead.id
+    )
+    while orch.agent(child.id).session_id is None:  # it works on the message
+        time.sleep(0.05)
+    compaction = orch.compact(child.id, instructions)  # by the user, ending after the answer
+    finished(orch, child.id)
+    finished(orch, lead.id)
+
+    expected = RunStatus.FAILED if instructions else RunStatus.DONE
+    assert orch.store.get_run(compaction.id).status is expected
+    (notice,) = [r for r in orch.store.runs_of(lead.id) if r.prompt.startswith("[orch notif")]
+    body = json.loads(notice.prompt[len(notify.HEADER) :])
+    (entry,) = body["agents"]
+    assert entry["status"] == "done" and entry["last_run"]["id"] == work.id
+    assert entry["last_run"]["result"] == "echo[new]: SLEEP 1.5 work"
+    assert "earlier_run_ids" not in entry
+    assert "compact" not in json.dumps(body)  # neither its summary nor its error
+
+
 def test_a_compaction_reaches_no_parent(orch: Orchestrator, project: str) -> None:
     lead = orch.create_agent(project, name="boss", role="lead", worktree=False)
     child, _ = orch.spawn(project, "CONTEXT 10", worktree=False, parent_id=lead.id)

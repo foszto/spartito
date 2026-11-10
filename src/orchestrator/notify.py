@@ -27,7 +27,7 @@ from typing import Any, Literal
 
 from .models import ACTIVE, Run, RunStatus
 from .replies import run_reply
-from .store import MESSAGE, NOTIFICATION, Store, now, subtree_sql
+from .store import COMPACT, MESSAGE, NOTIFICATION, Store, now, subtree_sql
 
 SETTLE_SECONDS = 5.0  # a starting notification waits this long for more completions
 SETTLE_ENV = "ORCH_NOTIFY_DELAY"  # overrides SETTLE_SECONDS (tests set 0)
@@ -321,16 +321,19 @@ def _text(shown: list[dict[str, Any]], unshown: list[dict[str, Any]], running: l
 
 def render(conn: sqlite3.Connection, kids: list[Child], due_now: list[Child]) -> str:
     """The notification text, at most MESSAGE_CHARS: header, then compact JSON per reported
-    agent (its latest finished run with an answer of at most AGENT_CHARS, ids of earlier
-    undelivered runs), the agents that did not fit (by id and status) and the children
-    still running, both lists capped at LISTED_AGENTS with a count of the rest."""
+    agent (its latest finished run that is not a compaction, with an answer of at most
+    AGENT_CHARS, ids of earlier undelivered runs), the agents that did not fit (by id and
+    status) and the children still running, both lists capped at LISTED_AGENTS with a count
+    of the rest."""
     running = [kid.id for kid in kids if not kid.settled]
     latest = {}
     for kid in due_now:
+        # Its latest answer: never a compaction (housekeeping, see models.answers).
         row = conn.execute(
             f"SELECT * FROM runs WHERE agent_id = ? AND status NOT IN {_ACTIVE_SQL}"
+            " AND id NOT IN (SELECT run_id FROM run_meta WHERE agent_id = ? AND kind = ?)"
             " ORDER BY id DESC LIMIT 1",
-            (kid.id,),
+            (kid.id, kid.id, COMPACT),
         ).fetchone()
         latest[kid.id] = Store.run_from_row(row)
     shorts = {kid.id: {"id": kid.id, "status": latest[kid.id].status.value} for kid in due_now}
