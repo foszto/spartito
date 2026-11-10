@@ -8,6 +8,8 @@ queued the run (CLI, MCP server) may exit immediately.
 
 from __future__ import annotations
 
+import contextlib
+import dataclasses
 import json
 import os
 import re
@@ -21,6 +23,7 @@ from typing import Any
 from . import config, git, loadout, providers, roles, settings
 from .models import Agent, Event, Project, Run, RunStatus, Usage, running_total
 from .providers import McpServer, RunContext
+from .providers.base import NOTIFICATION_RESULT
 from .store import Store, now
 
 POLL_SECONDS = 0.5
@@ -136,6 +139,7 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
             system_prompt=system_prompt(agent, project, role),
             scratch=scratch,
             mcp=mcp_server(agent) if role.lead else None,
+            lead=role.lead,
             output_schema=run.output_schema,
             writable_dirs=writable,
             loadout=loadout.resolve(
@@ -150,7 +154,8 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
     env.update(invocation.env)
 
     stderr_path = scratch / "stderr.log"
-    last_text, result, errors, reported_model, session_id = "", None, [], None, None
+    last_text, results, errors, reported_model, session_id = "", [], [], None, None
+    answered = False  # a result answering the prompt (not a background-task notification)
     with (
         open(scratch / "stream.jsonl", "w", encoding="utf-8") as raw,
         open(stderr_path, "w", encoding="utf-8") as stderr,
@@ -163,6 +168,8 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
             stdout=subprocess.PIPE,
             stderr=stderr,
             text=True,
+            # Its own group, so whatever it starts (background shells) can be ended with it.
+            process_group=0,
         )
         try:
             assert child.stdin and child.stdout
@@ -178,23 +185,28 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
                     if event.kind == "session":
                         reported_model = event.model or reported_model
                         continue
-                    if event.kind == "result":
-                        result = event
+                    if event.kind in ("result", NOTIFICATION_RESULT):
+                        results.append(event)
+                        answered = answered or event.kind == "result"
                         continue
                     if event.kind == "text":
                         last_text = event.text
                     if event.kind == "error":
                         errors.append(event.text)
                     store.add_event(run.id, agent.id, event.kind, event.text)
-            code = child.wait()
+                if answered and role.lead:
+                    # A lead's turn ends with its answer: a background command it left
+                    # running must not keep it unreachable (the CLI would stay alive and
+                    # answer again when the command ends).
+                    break
+            code = finish_lead_cli(child) if answered and role.lead else child.wait()
         except BaseException:
-            child.terminate()
-            try:
-                child.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                child.kill()
+            end_process_group(child)
             raise
+        finally:
+            child.stdout.close()
 
+    result = combine_results(results)
     usage = record_usage(store, run, agent, result, reported_model, session_id)
     cost = usage.cost_usd if usage else None
     if result and not result.is_error and code == 0:
@@ -220,6 +232,116 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
     store.add_event(run.id, agent.id, "error", error)
     write_result(store, run, scratch, last_text or error, None)
     store.finish_run(run.id, RunStatus.FAILED, error=error, result=last_text or None, cost_usd=cost)
+
+
+LEAD_EXIT_GRACE_SECONDS = 5.0  # a lead's CLI may exit on its own after its first result
+TERM_GRACE_SECONDS = 3.0  # between SIGTERM and SIGKILL; well below service.STOP_GRACE_SECONDS
+
+
+def finish_lead_cli(child: subprocess.Popen[str]) -> int:
+    """After a lead's first result: give the CLI a moment to exit, then end it and all
+    it started. Returns the exit code, or 0 when it had to be ended: the turn is complete.
+    A stop (SIGTERM to the runner) during the grace period only ends it sooner."""
+    try:
+        code = child.wait(timeout=LEAD_EXIT_GRACE_SECONDS)
+    except subprocess.TimeoutExpired, Stopped:
+        code = 0
+    end_process_group(child)
+    return code
+
+
+def _process_table() -> list[tuple[int, int, int]]:
+    """(pid, ppid, pgid) of every process; empty when ps is unavailable."""
+    try:
+        out = subprocess.run(
+            ["ps", "-A", "-o", "pid=,ppid=,pgid="], capture_output=True, text=True, timeout=10
+        ).stdout
+    except OSError, subprocess.SubprocessError:
+        return []
+    table = []
+    for line in out.splitlines():
+        fields = line.split()
+        if len(fields) == 3 and all(field.isdigit() for field in fields):
+            table.append((int(fields[0]), int(fields[1]), int(fields[2])))
+    return table
+
+
+def _descendants(root: int) -> tuple[set[int], set[int]]:
+    """Pids below `root`, and the process groups they lead (children that left the group)."""
+    table = _process_table()
+    children: dict[int, list[int]] = {}
+    for pid, ppid, _ in table:
+        children.setdefault(ppid, []).append(pid)
+    found, todo = set(), [root]
+    while todo:
+        for pid in children.get(todo.pop(), []):
+            if pid not in found:
+                found.add(pid)
+                todo.append(pid)
+    groups = {pgid for pid, _, pgid in table if pid in found and pgid in found}
+    return found, groups
+
+
+def _targets(group: int, pids: set[int], groups: set[int]) -> list[tuple[Any, int]]:
+    return [(os.killpg, g) for g in (group, *groups)] + [(os.kill, pid) for pid in pids]
+
+
+def end_process_group(child: subprocess.Popen[str]) -> None:
+    """End the CLI (leader of its own process group) and everything it started: its group,
+    and descendants that moved to a group of their own. SIGTERM, then SIGKILL to whatever
+    is left after TERM_GRACE_SECONDS. A no-op when nothing is left."""
+    pids, groups = _descendants(child.pid) if child.poll() is None else (set(), set())
+    targets = _targets(child.pid, pids, groups)
+    for kill, target in targets:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            kill(target, signal.SIGTERM)
+    deadline = time.monotonic() + TERM_GRACE_SECONDS
+    while time.monotonic() < deadline:
+        child.poll()  # reap the CLI so that it does not count as alive
+        if not any(_exists(kill, target) for kill, target in targets):
+            return
+        time.sleep(0.1)
+    if child.poll() is None:  # it may have started more in the meantime
+        more, more_groups = _descendants(child.pid)
+        targets = _targets(child.pid, pids | more, groups | more_groups)
+    for kill, target in targets:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            kill(target, signal.SIGKILL)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        child.wait(timeout=TERM_GRACE_SECONDS)
+
+
+def _exists(kill: Any, target: int) -> bool:
+    try:
+        kill(target, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def combine_results(results: list[Event]) -> Event | None:
+    """One result for a run whose CLI reported several (it answered again after a
+    background command ended): text, status and structured output of the last; usage
+    summed when the provider reports it per result, the last when it reports session
+    totals."""
+    if not results:
+        return None
+    last = results[-1]
+    if len(results) == 1:
+        return last
+    if last.usage is not None and last.usage.cumulative:
+        return last
+    reported = [
+        r.usage or Usage(cost_usd=r.cost_usd)
+        for r in results
+        if r.usage is not None or r.cost_usd is not None
+    ]
+    if not reported:
+        return last
+    usage = sum(reported[1:], reported[0])
+    return dataclasses.replace(last, usage=usage, cost_usd=usage.cost_usd)
 
 
 def write_result(store: Store, run: Run, scratch: Path, text: str, structured: Any) -> None:
