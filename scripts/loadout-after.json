@@ -24,9 +24,10 @@
         "Read"
       ],
       "mcp_servers": 1,
-      "mcp_server_names": [
-        "orch:connected"
-      ],
+      "mcp_server_status": {
+        "connected": 1
+      },
+      "orch_connected": true,
       "skills": 19,
       "slash_commands": 54,
       "plugins": 5,
@@ -66,9 +67,10 @@
         "Read"
       ],
       "mcp_servers": 1,
-      "mcp_server_names": [
-        "orch:connected"
-      ],
+      "mcp_server_status": {
+        "connected": 1
+      },
+      "orch_connected": true,
       "skills": 19,
       "slash_commands": 54,
       "plugins": 5,
@@ -110,7 +112,8 @@
         "WebSearch"
       ],
       "mcp_servers": 0,
-      "mcp_server_names": [],
+      "mcp_server_status": {},
+      "orch_connected": false,
       "skills": 19,
       "slash_commands": 54,
       "plugins": 5,
@@ -150,7 +153,8 @@
         "Read"
       ],
       "mcp_servers": 0,
-      "mcp_server_names": [],
+      "mcp_server_status": {},
+      "orch_connected": false,
       "skills": 19,
       "slash_commands": 54,
       "plugins": 5,
@@ -192,7 +196,8 @@
         "Write"
       ],
       "mcp_servers": 0,
-      "mcp_server_names": [],
+      "mcp_server_status": {},
+      "orch_connected": false,
       "skills": 19,
       "slash_commands": 54,
       "plugins": 5,
@@ -234,7 +239,8 @@
         "Write"
       ],
       "mcp_servers": 0,
-      "mcp_server_names": [],
+      "mcp_server_status": {},
+      "orch_connected": false,
       "skills": 19,
       "slash_commands": 54,
       "plugins": 5,

@@ -49,9 +49,11 @@
         "Write"
       ],
       "mcp_servers": 26,
-      "mcp_server_names": [
-        "orch:connected"
-      ],
+      "mcp_server_status": {
+        "connected": 4,
+        "needs-auth": 22
+      },
+      "orch_connected": true,
       "skills": 49,
       "slash_commands": 90,
       "plugins": 6,
@@ -116,9 +118,11 @@
         "Write"
       ],
       "mcp_servers": 26,
-      "mcp_server_names": [
-        "orch:connected"
-      ],
+      "mcp_server_status": {
+        "connected": 4,
+        "needs-auth": 22
+      },
+      "orch_connected": true,
       "skills": 49,
       "slash_commands": 90,
       "plugins": 6,
@@ -180,7 +184,8 @@
         "Write"
       ],
       "mcp_servers": 0,
-      "mcp_server_names": [],
+      "mcp_server_status": {},
+      "orch_connected": false,
       "skills": 49,
       "slash_commands": 89,
       "plugins": 6,
@@ -242,7 +247,11 @@
         "Write"
       ],
       "mcp_servers": 25,
-      "mcp_server_names": [],
+      "mcp_server_status": {
+        "needs-auth": 22,
+        "pending": 3
+      },
+      "orch_connected": false,
       "skills": 49,
       "slash_commands": 89,
       "plugins": 6,
@@ -304,7 +313,8 @@
         "Write"
       ],
       "mcp_servers": 0,
-      "mcp_server_names": [],
+      "mcp_server_status": {},
+      "orch_connected": false,
       "skills": 49,
       "slash_commands": 89,
       "plugins": 6,
@@ -366,7 +376,8 @@
         "Write"
       ],
       "mcp_servers": 0,
-      "mcp_server_names": [],
+      "mcp_server_status": {},
+      "orch_connected": false,
       "skills": 49,
       "slash_commands": 89,
       "plugins": 6,
