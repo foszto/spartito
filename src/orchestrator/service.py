@@ -20,7 +20,18 @@ from pathlib import Path
 from typing import Any
 
 from . import config, git, notify, providers, roles, settings
-from .models import Agent, Project, Run, RunStatus, Usage, answers, context_now, running_total
+from .models import (
+    Agent,
+    Project,
+    Run,
+    RunStatus,
+    Usage,
+    answers,
+    context_now,
+    running_total,
+    turn_order,
+)
+from .runner import kilo
 from .store import (
     ANYONE,
     ARCHIVE_AUTO,
@@ -39,6 +50,12 @@ QUEUE_PREVIEW_CHARS = 120
 QUEUE_LISTED = 20  # waiting runs in the detail view's `queue`; `queued_runs` has the count
 WAIT_POLL_SECONDS = 1.0
 WITHDRAWN_PREVIEW_CHARS = 80  # of a withdrawn message, in the agent's info event
+# What the summary of a lead role's compaction (the orchestrator, project leads) keeps when
+# no instructions are given: by an automatic compaction or `orch compact` without any.
+LEAD_KEEP = (
+    "Keep: the owner's standing rules and preferences; the current state; open decisions and"
+    " open items; work in flight with its agent ids, branches and run ids."
+)
 # The automatic archive check runs from the listings (dashboard poll, `orch ps`,
 # list_agents), at most once per AUTO_ARCHIVE_EVERY seconds across all processes, and stops
 # checking further agents once it has spent AUTO_ARCHIVE_BUDGET seconds (the rest: next time).
@@ -104,6 +121,33 @@ def context_view(record: Usage | None) -> dict[str, Any] | None:
     tokens, window = record.context_tokens, record.context_window
     percent = round(100 * tokens / window) if tokens is not None and window else None
     return {"tokens": tokens, "window": window, "percent": percent, "compacted": tokens is None}
+
+
+def compaction_left(
+    runs: list[Run], usage: dict[int, Usage], compactions: Collection[int], session_id: str | None
+) -> int | None:
+    """The context size the agent's most recent compaction left, if known: that of its
+    latest ended compaction run (the size measured after it, else the size the CLI reported
+    after compacting; for one that did not succeed, the size before it), or of a compaction
+    the CLI did on its own in a later turn (the size it reported). Runs in the order they
+    ran (models.turn_order)."""
+    ordered = sorted(runs, key=turn_order)
+    for index in range(len(ordered) - 1, -1, -1):
+        run = ordered[index]
+        record = usage.get(run.id)
+        if run.id not in compactions:
+            if record and record.compact_trigger and record.session_id == session_id:
+                return record.compact_post_tokens
+            continue
+        if run.status.active:
+            continue
+        if record and record.context_tokens is not None:
+            return record.context_tokens
+        if run.status is RunStatus.DONE:
+            return record.compact_post_tokens if record else None
+        before = context_now(ordered[:index], usage, session_id)
+        return before.context_tokens if before else None
+    return None
 
 
 def result_file(run_id: int) -> str | None:
@@ -290,14 +334,105 @@ class Orchestrator:
         refusal = self.compact_refusal(agent)
         if refusal:
             raise OrchestratorError(f"cannot compact {agent.id}: {refusal}")
-        compact_prompt = providers.get(agent.provider).compact_prompt  # type: ignore[attr-defined]
         try:
-            prompt = compact_prompt(instructions)
+            prompt = self.compact_prompt(agent, instructions)
         except ValueError as exc:
             raise OrchestratorError(f"cannot compact {agent.id}: {exc}") from None
         run = self.store.add_run(agent.id, prompt, kind=COMPACT)
         self._launch(run)
         return run
+
+    def compact_prompt(self, agent: Agent, instructions: str | None) -> str:
+        """The prompt of a compaction of the agent. Without instructions a lead role gets
+        LEAD_KEEP, where its provider takes instructions. Raises ValueError."""
+        compact_prompt = providers.get(agent.provider).compact_prompt  # type: ignore[attr-defined]
+        if (instructions or "").strip() or not self._is_lead(agent):
+            return compact_prompt(instructions)
+        try:
+            return compact_prompt(LEAD_KEEP)
+        except ValueError:  # e.g. Codex, which takes no instructions
+            return compact_prompt(None)
+
+    def _is_lead(self, agent: Agent) -> bool:
+        project = self.store.get_project(agent.project) if agent.project else None
+        try:
+            return roles.load(agent.role, project.path if project else None).lead
+        except KeyError:
+            return False
+
+    def auto_compact(self, run_id: int) -> Run | None:
+        """At the end of a turn that succeeded (its runner calls this before it marks the
+        run done, so no queued run can take the turn first): queue an automatic compaction
+        when the context is above the threshold (settings.compact_at); it goes ahead of the
+        agent's queued messages (Store.may_start). Not after a compaction, not while one is
+        queued or running, not while paused (compaction_paused: the last compaction left
+        the context above the threshold, which compaction_ended reported), and quietly not
+        when the agent cannot be compacted (compact_refusal)."""
+        run = self.store.get_run(run_id)
+        if run is None or self.store.meta(run_id).kind == COMPACT:
+            return None
+        agent = self.agent(run.agent_id)
+        threshold = settings.compact_at(self.store, agent.project)
+        if not threshold:
+            return None
+        runs, usage = self.store.runs_of(agent.id), self.store.usage_of(agent.id)
+        record = context_now(runs, usage, agent.session_id)
+        tokens = record.context_tokens if record else None
+        if tokens is None or tokens <= threshold:
+            return None
+        if self.compaction_paused(agent, threshold) is not None or self.compact_refusal(agent):
+            return None
+        try:
+            prompt = self.compact_prompt(agent, None)
+        except ValueError:
+            return None
+        queued = self.store.add_auto_compaction(agent.id, prompt)
+        if queued is None:
+            return None
+        self.store.add_event(
+            queued.id,
+            agent.id,
+            "info",
+            f"automatic compaction: context {kilo(tokens)} is above the threshold of"
+            f" {kilo(threshold)}",
+        )
+        try:
+            self._launch(queued)
+        except BaseException:
+            self.store.delete_run(queued.id)
+            raise
+        return queued
+
+    def compaction_paused(self, agent: Agent, threshold: int | None = None) -> int | None:
+        """The context size the agent's most recent compaction left (compaction_left) when
+        it is above the threshold: then no automatic compaction is queued for the agent
+        until a compaction gets it below, or the threshold is raised. None otherwise."""
+        if threshold is None:
+            threshold = settings.compact_at(self.store, agent.project)
+        runs = self.store.runs_of(agent.id)
+        left = compaction_left(
+            runs, self.store.usage_of(agent.id), self.store.compactions(agent.id), agent.session_id
+        )
+        return left if threshold and left is not None and left > threshold else None
+
+    def compaction_ended(self, run_id: int) -> None:
+        """After a compaction run ended in whatever way: say in the agent's log when it left
+        the context above the threshold, which pauses automatic compaction."""
+        run = self.store.get_run(run_id)
+        agent = self.store.get_agent(run.agent_id) if run and not run.status.active else None
+        if agent is None:
+            return
+        threshold = settings.compact_at(self.store, agent.project)
+        left = self.compaction_paused(agent, threshold)
+        if left is not None:
+            self.store.add_event(
+                run_id,
+                agent.id,
+                "info",
+                f"automatic compaction paused: the context is {kilo(left)} after this compaction,"
+                f" above the threshold of {kilo(threshold)}; a compaction that gets it below"
+                f" (orch compact {agent.id}) or a higher threshold resumes it",
+            )
 
     def compact_refusal(self, agent: Agent) -> str | None:
         """Why the agent's conversation cannot be compacted now; None when it can."""
@@ -459,11 +594,15 @@ class Orchestrator:
             raise OrchestratorError("the orchestrator tier can only be set globally")
         if project and settings.KEEP_AWAKE in cleaned:
             raise OrchestratorError(f"{settings.KEEP_AWAKE} can only be set globally")
-        if not project and isinstance(data, dict) and settings.KEEP_AWAKE not in data:
-            # Kept when not named (the settings dialog sends only its own fields).
-            stored = self.store.get_settings(settings.GLOBAL).get(settings.KEEP_AWAKE)
-            cleaned.update({} if stored is None else {settings.KEEP_AWAKE: stored})
-        self.store.set_settings(self.project(project).name if project else settings.GLOBAL, cleaned)
+        scope = self.project(project).name if project else settings.GLOBAL
+        # Kept when not named (the settings dialog sends only its own fields; a page from
+        # before compact_at_tokens existed does not send that).
+        kept = (settings.COMPACT_AT,) if project else (settings.KEEP_AWAKE, settings.COMPACT_AT)
+        for key in kept:
+            if isinstance(data, dict) and key not in data:
+                stored = self.store.get_settings(scope).get(key)
+                cleaned.update({} if stored is None else {key: stored})
+        self.store.set_settings(scope, cleaned)
         return cleaned
 
     def effective(self, agent: Agent) -> dict[str, str | None]:
@@ -561,10 +700,11 @@ class Orchestrator:
         `last_run.result_file` (the full final answer on disk) and `queue` (the waiting
         runs: id, kind, sender, created_at, prompt preview).
         `children_running` is how many descendants have a queued or running turn.
-        `context`: how full the conversation is (see context_view), null when unknown.
+        `context`: how full the conversation is (see context_view and _context: with the
+        automatic compaction threshold), null when unknown.
         A compaction run is never `last_run` nor the status (see agent_state); with
         `detail`, `last_compaction` is the latest one that ended (id, status, result, error,
-        ended_at), `last_run.kind` is `message` or `notification`, and `compact_refusal`
+        ended_at, automatic), `last_run.kind` is `message` or `notification`, and `compact_refusal`
         says why `compact` is not possible now (null: it is).
         """
         runs = self.store.runs_of(agent.id)
@@ -597,7 +737,7 @@ class Orchestrator:
             "runs": len(runs),
             "cost_usd": totals.cost or 0,
             "tokens": totals.tokens(),
-            "context": context_view(context_now(runs, usage, agent.session_id)),
+            "context": self._context(agent, runs, usage, compactions),
             "last_run": shown
             and {
                 "id": shown.id,
@@ -620,6 +760,7 @@ class Orchestrator:
                     "result": last.result,
                     "error": last.error,
                     "ended_at": last.ended_at,
+                    "automatic": bool(self.store.meta(last.id).auto),
                 }
             view["model_override"] = agent.model
             view["effort_override"] = agent.effort
@@ -642,6 +783,20 @@ class Orchestrator:
                 for run in [run for run in active if run.status is RunStatus.WAITING][:QUEUE_LISTED]
             ]
         return view
+
+    def _context(
+        self, agent: Agent, runs: list[Run], usage: dict[int, Usage], compactions: set[int]
+    ) -> dict[str, Any] | None:
+        """context_view, with `compact_at` (the automatic compaction threshold; 0: off) and
+        `compact_paused` (the size the last compaction left while that pauses automatic
+        compaction, see compaction_paused; else null)."""
+        context = context_view(context_now(runs, usage, agent.session_id))
+        if context is not None:
+            threshold = settings.compact_at(self.store, agent.project)
+            left = compaction_left(runs, usage, compactions, agent.session_id)
+            context["compact_at"] = threshold
+            context["compact_paused"] = left if threshold and left and left > threshold else None
+        return context
 
     def run_history(self, agent: Agent, limit: int = 10) -> list[dict[str, Any]]:
         """The agent's latest runs with their kind, own tokens, cost and reported model."""

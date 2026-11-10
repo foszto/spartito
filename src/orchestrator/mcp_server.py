@@ -150,12 +150,15 @@ def _agent_runs(shown: Run | None, claimed: list[Run], limit: int) -> dict[str, 
 def _delivery_floor(orch: Orchestrator, caller: str, agent_id: str) -> int:
     """The first run of an agent a wait_for_agents call may deliver to `caller`: the one
     after the last run it already got, or, for a caller that never got one, the oldest
-    run active when the call started (else the latest finished one)."""
+    run active when the call started that is not a compaction (else the latest finished
+    one: a compaction after the answer, e.g. an automatic one, never hides it)."""
     last = orch.store.last_delivered(caller, agent_id)
     if last is not None:
         return last + 1
     runs = orch.store.runs_of(agent_id)
-    _, active, shown = agent_state(runs, orch.store.compactions(agent_id))
+    compactions = orch.store.compactions(agent_id)
+    _, active, shown = agent_state(runs, compactions)
+    active = [run for run in active if run.id not in compactions]
     if active:
         return active[0].id
     return shown.id if shown else 0

@@ -150,7 +150,7 @@ function tokenText(counts) {
 }
 
 // How full an agent's conversation is against its model's window (`context` of the view).
-const CONTEXT_WARN = 80;  // percent from which it is shown in a warning colour
+const CONTEXT_WARN = 80;  // percent from which it is shown in a warning colour (without a compaction threshold)
 function short(n) {
   return n < 1000 ? String(n) : n < 1e6 ? `${Math.round(n / 1000)}k` : `${+(n / 1e6).toFixed(1)}M`;
 }
@@ -160,12 +160,27 @@ function contextText(context) {
   if (!context.window) return `${short(context.tokens)} ctx`;
   return `${short(context.tokens)}/${short(context.window)} ${context.percent}%`;
 }
-const contextWarn = context => Boolean(context && context.percent >= CONTEXT_WARN);
+// Above the automatic compaction threshold (`compact_at`, when on), else from CONTEXT_WARN.
+function contextWarn(context) {
+  if (!context) return false;
+  if (context.compact_at) return context.tokens > context.compact_at || Boolean(context.compact_paused);
+  return context.percent >= CONTEXT_WARN;
+}
+function compactAtTitle(context) {
+  if (!context || context.compact_at === undefined) return '';
+  if (!context.compact_at) return '\nAutomatic compaction: off';
+  if (context.compact_paused) {
+    return `\nAutomatic compaction paused: the last compaction left ${short(context.compact_paused)}, above the `
+      + `threshold of ${short(context.compact_at)}; compact it by hand or raise the threshold`;
+  }
+  return `\nAutomatic compaction after a turn that ends above ${short(context.compact_at)} tokens`;
+}
 function contextTitle(context) {
   if (!context) return 'Context size not known yet: it is measured after a turn';
-  if (context.compacted) return 'The conversation was compacted; its size is known after the next turn';
+  if (context.compacted) return 'The conversation was compacted; its size is known after the next turn' + compactAtTitle(context);
   return `Conversation: ${context.tokens.toLocaleString()} tokens`
-    + (context.window ? ` of a ${context.window.toLocaleString()}-token window (${context.percent}%)` : '');
+    + (context.window ? ` of a ${context.window.toLocaleString()}-token window (${context.percent}%)` : '')
+    + compactAtTitle(context);
 }
 
 function inline(text, parent) {
@@ -485,6 +500,7 @@ function renderHeader(agent, setupFreshness = true) {
       bar.append(fill); node.append(bar);
     }
     node.append(contextText(context) || 'context ?');
+    if (context?.compact_at) node.append(el('span', 'threshold', context.compact_paused ? 'auto-compact paused' : `auto-compact ${short(context.compact_at)}`));
     node.title = contextTitle(context);
     tail.append(node);
   }
@@ -1150,6 +1166,23 @@ function renderSettings() {
   const row = el('div', 'tier-row'); row.append(el('span', 'who', 'hours'), field);
   box.append(row);
   rows.append(box);
+  rows.append(compactAtBox(scope, data));
+}
+
+function compactAtBox(scope, data) {
+  const key = state.compact_at_key, box = el('div', 'tier');
+  const field = el('input', 'input'), global = state.settings.global?.[key];
+  box.append(el('h4', '', 'Automatic compaction'), el('p', 'about',
+    'When a turn ends with the context above this many tokens, the conversation is compacted before the next turn '
+    + '(ahead of a queued message). Leads keep their rules, state and open work. Not again while the last '
+    + 'compaction left it above. 0 or “off”: never.'));
+  field.name = key; field.autocomplete = 'off';
+  field.value = data?.[key] ?? '';
+  field.placeholder = scope ? `${global ?? state.compact_at_default} (global)` : `${state.compact_at_default} (default)`;
+  field.setAttribute('aria-label', 'Compact above context tokens');
+  const row = el('div', 'tier-row'); row.append(el('span', 'who', 'tokens'), field);
+  box.append(row);
+  return box;
 }
 
 function openSettings() {
@@ -1162,7 +1195,7 @@ function openSettings() {
     for (const [name, value] of form) {
       const [tier, providerName, key] = name.split('.');
       if (key) ((data[tier] ??= {})[providerName] ??= {})[key] = value;
-      else if (name === state.archive_after_key) data[name] = value;
+      else if (name === state.archive_after_key || name === state.compact_at_key) data[name] = value;
     }
     await call('/api/settings', { project: form.get('scope') || null, data });
     toast('Settings saved'); await refresh();

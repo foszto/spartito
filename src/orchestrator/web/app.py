@@ -27,7 +27,7 @@ from starlette.staticfiles import StaticFiles
 from .. import config, providers, roles
 from ..providers.base import model_choices
 from ..service import ORCHESTRATOR_ID, NeedsConfirmation, Orchestrator, OrchestratorError
-from ..settings import ARCHIVE_AFTER, ARCHIVE_AFTER_DEFAULT, TIERS
+from ..settings import ARCHIVE_AFTER, ARCHIVE_AFTER_DEFAULT, COMPACT_AT, COMPACT_AT_DEFAULT, TIERS
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
@@ -117,6 +117,8 @@ def state(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
         "archived": sorted(orch.store.archived()),
         "archive_after_default": ARCHIVE_AFTER_DEFAULT,
         "archive_after_key": ARCHIVE_AFTER,
+        "compact_at_default": COMPACT_AT_DEFAULT,
+        "compact_at_key": COMPACT_AT,
         "settings": {
             "global": orch.settings(),
             "projects": {p.name: orch.settings(p.name) for p in orch.store.list_projects()},

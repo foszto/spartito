@@ -25,11 +25,12 @@ from orchestrator.runner import (
     record_usage,
     render_prompt,
 )
-from orchestrator.service import Orchestrator, OrchestratorError, agent_state
+from orchestrator.service import LEAD_KEEP, Orchestrator, OrchestratorError, agent_state
 from orchestrator.store import COMPACT, Store
 from orchestrator.web.app import app
 
 ORIGIN = {"origin": "http://localhost"}
+AUTO = {"compact_at": 256_000, "compact_paused": None}  # the default threshold, not paused
 
 
 def finished(orch: Orchestrator, agent_id: str) -> dict:
@@ -48,7 +49,13 @@ def test_the_context_after_a_turn_is_stored_and_shown(orch: Orchestrator, projec
 
     view = finished(orch, agent.id)
 
-    assert view["context"] == {"tokens": 780, "window": 1000, "percent": 78, "compacted": False}
+    assert view["context"] == {
+        "tokens": 780,
+        "window": 1000,
+        "percent": 78,
+        "compacted": False,
+        **AUTO,
+    }
     usage = orch.store.get_usage(run.id)
     assert (usage.context_tokens, usage.context_window, usage.compact_trigger) == (780, 1000, None)
     assert usage.input_tokens == 10  # the run's own usage is unchanged
@@ -78,7 +85,13 @@ def test_a_compaction_queues_the_clis_own_command_verbatim_and_stores_a_summary(
     assert seen["slash_commands"] is True and seen["output_schema"] is None
     done = orch.store.get_run(run.id)
     assert (done.status, done.result) == (RunStatus.DONE, "compacted 48k -> 901 tokens")
-    assert view["context"] == {"tokens": None, "window": None, "percent": None, "compacted": True}
+    assert view["context"] == {
+        "tokens": None,
+        "window": None,
+        "percent": None,
+        "compacted": True,
+        **AUTO,
+    }
     usage = orch.store.get_usage(run.id)
     assert (usage.compact_trigger, usage.compact_pre_tokens, usage.compact_post_tokens) == (
         "manual",
@@ -201,7 +214,8 @@ def test_a_leads_compaction_ends_with_its_empty_result(orch: Orchestrator, proje
 
     done = orch.store.get_run(run.id)
     assert (done.status, done.result) == (RunStatus.DONE, "compacted 48k -> 901 tokens")
-    assert seen_by_provider(run.id)["prompt"] == "/compact"
+    # Without instructions a lead keeps its rules, state and open work (LEAD_KEEP).
+    assert seen_by_provider(run.id)["prompt"] == f"/compact {LEAD_KEEP}"
     assert (Path(lead.cwd) / ".fake-launches").read_text().split() == ["memory", "memory"]
     assert view["context"]["compacted"]
 
@@ -623,5 +637,11 @@ def test_a_run_without_a_result_keeps_the_known_window(orch: Orchestrator, proje
     assert orch.store.get_run(run.id).status is RunStatus.FAILED
     usage = orch.store.get_usage(run.id)
     assert (usage.context_tokens, usage.context_window) == (960, 1000)
-    assert view["context"] == {"tokens": 960, "window": 1000, "percent": 96, "compacted": False}
+    assert view["context"] == {
+        "tokens": 960,
+        "window": 1000,
+        "percent": 96,
+        "compacted": False,
+        **AUTO,
+    }
     assert "960/1k 96%" in CliRunner().invoke(cli.app, ["ps"]).output

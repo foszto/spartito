@@ -342,6 +342,8 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
         if text != last_text:  # otherwise the activity log already ends with it
             store.add_event(run.id, agent.id, "result", text)
         write_result(store, run, scratch, text, structured)
+        if not compact:  # queued while this turn still holds the agent: nothing comes first
+            queue_auto_compaction(store, run.id)
         store.finish_run(run.id, RunStatus.DONE, result=text, structured=structured, cost_usd=cost)
         return
     stderr_tail = stderr_path.read_text(encoding="utf-8", errors="replace").strip()[-1500:]
@@ -772,7 +774,13 @@ def record_usage(
             other_session = recorded[other.id].session_id if other.id in recorded else None
             return not session_id or other_session in (None, session_id)
 
-        earlier = [o for o in store.runs_of(agent.id) if o.id < run.id and same_session(o)]
+        # The runs that took their turn before this one: those that have ended (one run of
+        # an agent at a time; an automatic compaction runs ahead of lower ids).
+        earlier = [
+            o
+            for o in store.runs_of(agent.id)
+            if o.id != run.id and not o.status.active and same_session(o)
+        ]
         usage = usage.since(running_total(earlier, recorded))
     usage.model = model or usage.model
     usage.session_id = session_id
@@ -800,6 +808,11 @@ def main(run_id: int) -> None:
         # Whatever happened, the run is over: maybe a parent is now due a notification.
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         signal.signal(signal.SIGINT, signal.SIG_IGN)
+        if kind == COMPACT:
+            try:
+                orch.compaction_ended(run_id)
+            except Exception as exc:
+                print(f"checking the compaction's outcome failed: {exc!r}", file=sys.stderr)
         orch.run_ended(run_id, run.agent_id)
 
 
@@ -845,6 +858,16 @@ def take_turn(store: Store, run: Run, kind: str) -> None:
             store.finish_run(run_id, RunStatus.FAILED, error=message)
     finally:
         keep_awake.release(inhibitor, store, run_id, run.agent_id)
+
+
+def queue_auto_compaction(store: Store, run_id: int) -> None:
+    """Orchestrator.auto_compact, which must never fail the turn whose end calls it."""
+    from .service import Orchestrator  # the service launches runners; import it lazily
+
+    try:
+        Orchestrator(store).auto_compact(run_id)
+    except Exception as exc:
+        print(f"queueing an automatic compaction failed: {exc!r}", file=sys.stderr)
 
 
 def hold_awake(store: Store, run_id: int, agent_id: str) -> Any:

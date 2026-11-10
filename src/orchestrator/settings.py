@@ -19,6 +19,10 @@ the global one; without either it is ARCHIVE_AFTER_DEFAULT.
 
 And `keep_awake`, global only: whether a turn keeps the machine from sleeping on idle
 (keep_awake.py); on unless set to false.
+
+And `compact_at_tokens`: when a turn ends with the agent's context above this many tokens,
+an automatic compaction is queued (Orchestrator.auto_compact; 0: never). A project's value
+overrides the global one; without either it is COMPACT_AT_DEFAULT.
 """
 
 from __future__ import annotations
@@ -36,6 +40,8 @@ FIELDS = ("model", "effort")
 ARCHIVE_AFTER = "archive_after_hours"
 ARCHIVE_AFTER_DEFAULT = 24.0
 KEEP_AWAKE = "keep_awake"
+COMPACT_AT = "compact_at_tokens"
+COMPACT_AT_DEFAULT = 256_000
 
 
 MODEL_MAX_CHARS = 200
@@ -116,6 +122,38 @@ def keep_awake(store: Store) -> bool:
         return True
 
 
+def compact_tokens(value: Any) -> int | None:
+    """A `compact_at_tokens` value: tokens (>= 0, also `256k` or `1M`; 0 or "off": never),
+    None for empty (inherit). Raises ValueError."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{COMPACT_AT} must be a number of tokens or 'off'")
+    text = str(value).strip().lower().replace("_", "")
+    if text == "off":
+        return 0
+    scale = {"k": 1000, "m": 1_000_000}.get(text[-1:], 1)
+    try:
+        tokens = float(text[:-1] if scale > 1 else text) * scale
+    except ValueError:
+        raise ValueError(f"{COMPACT_AT} must be a number of tokens or 'off'") from None
+    if not 0 <= tokens < float("inf") or not tokens.is_integer():
+        raise ValueError(f"{COMPACT_AT} must be a whole number of tokens, 0 or more ('off': never)")
+    return int(tokens)
+
+
+def compact_at(store: Store, project: str | None) -> int:
+    """Context tokens above which a finished turn queues an automatic compaction; 0: never."""
+    for scope in ([project] if project else []) + [GLOBAL]:
+        value = store.get_settings(scope).get(COMPACT_AT)
+        if value is not None:
+            try:
+                return compact_tokens(value) or 0
+            except ValueError:
+                return 0  # unreadable: do not compact
+    return COMPACT_AT_DEFAULT
+
+
 def clean(data: Any) -> dict[str, Any]:
     """Validate a settings document and drop empty values. Raises ValueError."""
     if not isinstance(data, dict):
@@ -126,6 +164,11 @@ def clean(data: Any) -> dict[str, Any]:
             hours = archive_hours(per_provider)
             if hours is not None:
                 result[ARCHIVE_AFTER] = int(hours) if hours.is_integer() else hours
+            continue
+        if tier == COMPACT_AT:
+            tokens = compact_tokens(per_provider)
+            if tokens is not None:
+                result[COMPACT_AT] = tokens
             continue
         if tier == KEEP_AWAKE:
             on = on_off(per_provider)
