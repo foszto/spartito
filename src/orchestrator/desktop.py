@@ -9,7 +9,9 @@ Two occasions, each from the process where it happens:
   the agent and all its descendants are now settled (notify.settled), and its latest
   message run was queued by the user (run_meta.sender NULL; notification and compaction
   runs do not count). So the orchestrator answering after its agents finished notifies; a
-  worker spawned by a lead never does.
+  worker spawned by a lead never does. A turn that queued an automatic compaction leaves
+  the agent busy: the one notification comes once that compaction has ended, and tells
+  how the turn ended (the compaction is housekeeping; its own outcome is in the log).
 
 `osascript` gets the texts as arguments of its run handler, never inside the script source
 (they come from agents). It is started and left alone: a reaper thread kills it after
@@ -27,7 +29,7 @@ from collections.abc import Callable
 
 from . import config, notify, settings
 from .models import RunStatus
-from .store import MESSAGE, Store
+from .store import COMPACT, MESSAGE, Store
 
 SCRIPT = (
     "on run argv",
@@ -112,8 +114,10 @@ def finished_for_owner(store: Store, run_id: int, agent_id: str) -> str | None:
         return None
     if not notify.settled(store, agent_id):
         return None
+    meta = store.meta(run_id)
+    housekeeping = meta.kind == COMPACT and meta.auto  # queued after a turn that was done
     name = display_name(store, agent_id)
-    return f"{name} finished" if run.status is RunStatus.DONE else f"{name} failed"
+    return f"{name} finished" if run.status is RunStatus.DONE or housekeeping else f"{name} failed"
 
 
 def turn_ended(store: Store, run_id: int, agent_id: str) -> None:

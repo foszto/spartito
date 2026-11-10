@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 from starlette.testclient import TestClient
+from test_autocompact import compaction_runs, set_threshold
 from test_notifications import lead, notifications, running, settle, until
 from test_store import OLD_RUN_COLUMNS, OLD_SCHEMA, columns
 from typer.testing import CliRunner
@@ -463,6 +464,50 @@ def test_the_latest_message_decides_and_compactions_do_not_count(
     conn.close()
     (old,) = orch.store.runs_of(legacy)
     assert desktop.finished_for_owner(orch.store, old.id, legacy) is None
+
+
+def test_a_turn_that_queued_an_automatic_compaction_notifies_once_it_has_run(
+    orch: Orchestrator, project: str
+) -> None:
+    agent_id = lead(orch, project)
+    run = orch.store.add_run(agent_id, "task")
+    with orch.store.transaction() as conn:
+        orch.store.start_run(conn, run.id)
+    compaction = orch.store.add_auto_compaction(agent_id, "/compact")  # as the runner does
+    orch.store.finish_run(run.id, RunStatus.DONE, result="ok")
+    orch.store.mark_checked(run.id)
+    assert desktop.finished_for_owner(orch.store, run.id, agent_id) is None  # not idle yet
+
+    for status in (RunStatus.DONE, RunStatus.FAILED):  # its own outcome is housekeeping
+        with orch.store.transaction() as conn:
+            orch.store.start_run(conn, compaction.id)
+        orch.store.finish_run(compaction.id, status, result="compacted")
+        orch.store.mark_checked(compaction.id)
+        assert desktop.finished_for_owner(orch.store, compaction.id, agent_id) == (
+            f"{agent_id} finished"
+        )
+        compaction = orch.store.add_auto_compaction(agent_id, "/compact")
+    orch.store.delete_run(compaction.id)
+    manual = turn(orch, agent_id, kind="compact", status=RunStatus.FAILED)  # the user's own
+    assert desktop.finished_for_owner(orch.store, manual, agent_id) == f"{agent_id} failed"
+
+
+@on_macos
+def test_one_finished_notification_for_a_turn_above_the_compaction_threshold(
+    orch: Orchestrator, project: str, fake_osascript: Path, macos: None
+) -> None:
+    set_threshold(orch, "2k")
+    agent_id = lead(orch, project)
+    brief = orch.send(agent_id, "CONTEXT 5000 from the user")
+
+    settle(orch, agent_id)
+
+    (compaction,) = compaction_runs(orch, agent_id)
+    assert compaction.id > brief.id and orch.store.meta(compaction.id).auto == 1
+    assert orch.store.get_run(compaction.id).status is RunStatus.DONE
+    until(lambda: calls(fake_osascript), what="the notification")
+    time.sleep(0.5)
+    assert bodies(fake_osascript) == [f"{agent_id} finished"]
 
 
 @on_macos
