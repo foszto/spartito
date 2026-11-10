@@ -14,7 +14,13 @@ import typer
 from . import config, loadout, providers, roles
 from .models import Agent
 from .providers.claude import loadout_flags
-from .service import NeedsConfirmation, Orchestrator, OrchestratorError, cache_hint
+from .service import (
+    ORCHESTRATOR_ID,
+    NeedsConfirmation,
+    Orchestrator,
+    OrchestratorError,
+    cache_hint,
+)
 from .settings import ARCHIVE_AFTER, ARCHIVE_AFTER_DEFAULT, KEEP_AWAKE, TIERS
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help=__doc__)
@@ -127,6 +133,13 @@ def waiting_turns(view: dict) -> int:
     return view["queued_runs"] - (view["status"] == "running")
 
 
+def shown_name(agent_id: str) -> str:
+    """The orchestrator agent by its display name, the id still there for commands."""
+    if agent_id == ORCHESTRATOR_ID:
+        return f"{config.ORCHESTRATOR_NAME} ({ORCHESTRATOR_ID})"
+    return agent_id
+
+
 def sender_label(run: dict) -> str:
     """Who queued a run: an agent id, `user`, or `system` for a notification."""
     return run["sender"] or ("system" if run["kind"] == "notification" else "user")
@@ -216,7 +229,7 @@ def chat(
     if resume:
         argv.append("--continue")
     else:
-        argv += ["--name", "orchestrator"]
+        argv += ["--name", config.ORCHESTRATOR_NAME]  # a display label: --continue goes by cwd
     if model:
         argv += ["--model", model]
     if effort:
@@ -524,7 +537,8 @@ def ps(
             setup_text = setup(view, agents.get(view["id"]) or o.store.get_agent(view["id"]))
             context = context_text(view["context"]) and context_styled(view["context"])
             extra = "  ".join(filter(None, (setup_text, context, tokens(view["tokens"]), cost)))
-            typer.secho(f"{view['id']}  {status}  {extra}", bold=True)
+            label = shown_name(view["id"])
+            typer.secho(f"{label}  {status}  {extra}", bold=True)
     for item in o.store.list_projects():
         if project and item.name != project:
             continue
@@ -567,6 +581,8 @@ def status(agent_id: str) -> None:
     context, refusal = view.pop("context"), view.pop("compact_refusal")
     compaction = view.pop("last_compaction")
     queue, working = view.pop("queue"), view.pop("children_running")
+    if view["id"] == ORCHESTRATOR_ID:
+        view["name"] = config.ORCHESTRATOR_NAME  # the id line keeps `orchestrator`
     if mark := view.pop("archived", None):
         view["archived"] = f"{mark['archived_at']} ({mark['how']}; orch restore {agent_id})"
     for key in ("model", "effort"):

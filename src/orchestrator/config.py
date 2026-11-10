@@ -5,6 +5,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+# Display names only: ids, the role, the `orch` command and the package keep "orchestrator".
+PROJECT_NAME = "Kotta"  # the tool itself (Hungarian: sheet music, the score everyone plays from)
+ORCHESTRATOR_NAME = "Maestro"  # the top-level orchestrator agent
+
 
 def home() -> Path:
     path = Path(os.environ.get("ORCH_HOME", "~/.orchestrator")).expanduser()

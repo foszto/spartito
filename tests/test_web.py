@@ -51,6 +51,15 @@ def test_writes_from_another_origin_or_as_a_form_are_refused(
     assert client.get("/api/state").json()["projects"] == []
 
 
+def test_the_page_and_the_state_carry_the_display_names(client: TestClient) -> None:
+    page = client.get("/").text
+    state = client.get("/api/state").json()
+
+    assert f"<title>{config.PROJECT_NAME}</title>" in page
+    assert f"<h1>{config.PROJECT_NAME}</h1>" in page and "{{" not in page
+    assert (state["project_name"], state["orchestrator_name"]) == ("Kotta", "Maestro")
+
+
 def test_project_and_agent_lifecycle_over_the_api(
     client: TestClient, orch: Orchestrator, repo: Path
 ) -> None:

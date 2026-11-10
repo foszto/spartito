@@ -26,7 +26,7 @@ const ICONS = {
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5"/>',
 };
 const TIER_INFO = {
-  orchestrator: ['Orchestrator', 'The top-level agent you talk to here.'],
+  orchestrator: ['Orchestrator', () => `${state.orchestrator_name}, the top-level agent you talk to here.`],
   lead: ['Project lead', 'Plans the work of one project and runs its agents.'],
   worker: ['Workers', 'Every other role: worker, planner, reviewer, tester.'],
 };
@@ -248,7 +248,7 @@ function renderNav() {
   nav.replaceChildren();
 
   const orch = state.orchestrator;
-  const top = navItem(ORCH, ORCH, orch ? stateOf(orch).cls : '', 'Orchestrator',
+  const top = navItem(ORCH, ORCH, orch ? stateOf(orch).cls : '', state.orchestrator_name,
     orch ? `${stateOf(orch).label} · talks to every project` : 'Tell it what you want built', 0, orch?.context);
   top.classList.add('orchestrator');
   nav.append(top);
@@ -398,7 +398,7 @@ function renderWelcome(agent, leadProject) {
   welcome.replaceChildren();
   const isOrch = selected === ORCH;
   welcome.append(avatar(isOrch ? ORCH : agent ? agent.provider : 'claude'),
-    el('h3', '', isOrch ? 'Talk to the orchestrator' : leadProject ? `Lead of ${leadProject}` : 'No messages yet'),
+    el('h3', '', isOrch ? `Talk to ${state.orchestrator_name}` : leadProject ? `Lead of ${leadProject}` : 'No messages yet'),
     el('p', '', isOrch
       ? 'It registers projects, briefs project leads and starts agents in their own worktrees. You stay in one conversation.'
       : leadProject ? 'The lead knows the codebase, plans the work and runs its own worker agents. Send a goal to start it.'
@@ -417,7 +417,7 @@ function renderWelcome(agent, leadProject) {
 function renderHeader(agent, setupFreshness = true) {
   const leadProject = selected.startsWith('lead:') ? selected.slice(5) : null;
   const title = $('title'), chips = $('chips');
-  const name = agent ? (agent.id === ORCH ? 'Orchestrator' : agent.id) : leadProject ? `${leadProject} lead` : 'Orchestrator';
+  const name = agent ? (agent.id === ORCH ? state.orchestrator_name : agent.id) : leadProject ? `${leadProject} lead` : state.orchestrator_name;
   const face = avatar(selected === ORCH ? ORCH : agent ? agent.provider : 'claude');
   face.id = 'face'; $('face').replaceWith(face);
   const now = stateOf(agent);
@@ -1114,7 +1114,7 @@ function renderSettings() {
   for (const tier of state.tiers) {
     if (scope && tier === 'orchestrator') continue;
     const box = el('div', 'tier'), [title, about] = TIER_INFO[tier] || [tier, ''];
-    box.append(el('h4', '', title), el('p', 'about', about));
+    box.append(el('h4', '', title), el('p', 'about', typeof about === 'function' ? about() : about));
     for (const p of state.providers) {
       if (tier === 'orchestrator' && p.name !== 'claude') continue;
       const row = el('div', 'tier-row'), who = el('span', 'who');
@@ -1141,7 +1141,7 @@ function renderSettings() {
   const field = el('input', 'input'), global = state.settings.global?.[key];
   box.append(el('h4', '', 'Archive'), el('p', 'about',
     'Finished agents are archived after this many idle hours, if their work is safe (no worktree of their own, '
-    + 'or merged and clean). Never project leads or the orchestrator. 0 or “off”: never.'));
+    + `or merged and clean). Never project leads or ${state.orchestrator_name}. 0 or “off”: never.`));
   field.name = key; field.autocomplete = 'off'; field.inputMode = 'decimal';
   field.value = data?.[key] ?? '';
   field.placeholder = scope ? `${global ?? state.archive_after_default} (global)` : `${state.archive_after_default} (default)`;

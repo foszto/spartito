@@ -9,6 +9,7 @@ form cannot send).
 from __future__ import annotations
 
 from dataclasses import asdict
+from html import escape
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,7 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from .. import providers, roles
+from .. import config, providers, roles
 from ..providers.base import model_choices
 from ..service import ORCHESTRATOR_ID, NeedsConfirmation, Orchestrator, OrchestratorError
 from ..settings import ARCHIVE_AFTER, ARCHIVE_AFTER_DEFAULT, TIERS
@@ -88,13 +89,17 @@ def queued(agent_id: str, run_id: int) -> dict[str, Any]:
 
 def index(request: Request) -> HTMLResponse:
     page = resources.files("orchestrator.web") / "index.html"
-    return HTMLResponse(page.read_text(encoding="utf-8"))
+    html = page.read_text(encoding="utf-8")
+    return HTMLResponse(html.replace("{{project_name}}", escape(config.PROJECT_NAME)))
 
 
 def state(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
     agents = orch.overview()
     top = next((a for a in agents if a["id"] == ORCHESTRATOR_ID), None)
     return {
+        # Display names; the ids, roles and API paths stay "orchestrator".
+        "project_name": config.PROJECT_NAME,
+        "orchestrator_name": config.ORCHESTRATOR_NAME,
         "orchestrator": top,
         # Its model and effort before the first message, so they can be chosen up front.
         "orchestrator_setup": None if top else orch.setup(ORCHESTRATOR_ID),

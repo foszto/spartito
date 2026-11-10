@@ -1,4 +1,6 @@
-# Orchestrator
+# Kotta
+
+A *kotta* (angolul sheet music) a partitúra, amiből mindenki játszik; a legfelső agent neve Maestro. A parancs továbbra is `orch`.
 
 Egyszerű orchestrator kódoló agentek (Claude Code, Codex) vezérlésére. Egy orchestrator
 agenttel beszélsz; ő projekteket, projekt-lead agenteket és azok alatt worktree-ben dolgozó
@@ -33,7 +35,7 @@ orch web                                  # webes felület: http://127.0.0.1:878
 
 Az `orch web` felületéről minden irányítható:
 
-- **Orchestrator** (bal felül): beszélgetés a legfelső szintű orchestrator agenttel, amely
+- **Maestro** (bal felül): beszélgetés a legfelső szintű orchestrator agenttel, amely
   projekteket regisztrál, lead agenteket brieffel lát el és agenteket indít.
 - **Projekt hozzáadása** (**+** a Projects mellett): mappaválasztóból jelölöd ki a repót (a git
   repók meg vannak jelölve); a projekt melletti **✕** törli a regisztrációt.

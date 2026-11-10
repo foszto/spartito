@@ -12,9 +12,9 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from orchestrator import cli, mcp_server
+from orchestrator import cli, config, mcp_server, roles
 from orchestrator.models import RunStatus, Usage
-from orchestrator.service import QUEUE_LISTED, Orchestrator
+from orchestrator.service import ORCHESTRATOR_ID, QUEUE_LISTED, Orchestrator
 from orchestrator.store import NOTIFICATION
 
 
@@ -98,6 +98,25 @@ def test_cli_ps_and_status_show_tokens_cost_and_the_effective_setup(
     assert "fake-model-1" in status.output
 
 
+def test_ps_and_status_show_the_orchestrator_by_its_display_name(orch: Orchestrator) -> None:
+    orch.orchestrator()
+    runner = CliRunner()
+
+    ps = runner.invoke(cli.app, ["ps"])
+    status = runner.invoke(cli.app, ["status", ORCHESTRATOR_ID])
+
+    assert ps.exit_code == 0 and status.exit_code == 0, ps.output + status.output
+    assert ps.output.startswith(f"{config.ORCHESTRATOR_NAME} ({ORCHESTRATOR_ID})  ")
+    assert f"id           {ORCHESTRATOR_ID}\n" in status.output
+    assert f"name         {config.ORCHESTRATOR_NAME}\n" in status.output
+
+
+def test_the_orchestrator_prompt_names_itself_and_the_tool() -> None:
+    prompt = roles.load(ORCHESTRATOR_ID).prompt
+
+    assert config.ORCHESTRATOR_NAME in prompt and config.PROJECT_NAME in prompt
+
+
 @pytest.fixture
 def exec_argv(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     calls: list[list[str]] = []
@@ -128,6 +147,7 @@ def test_chat_runs_with_the_orchestrator_tier_settings(
     assert plain.exit_code == 0 and chosen.exit_code == 0
     (tier, explicit) = exec_argv
     assert (option(tier, "--model"), option(tier, "--effort")) == ("opus", "high")
+    assert option(tier, "--name") == config.ORCHESTRATOR_NAME
     assert (option(explicit, "--model"), option(explicit, "--effort")) == ("sonnet", "low")
     assert bad.exit_code == 1 and "no effort 'extreme'" in bad.output
 
