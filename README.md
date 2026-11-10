@@ -44,13 +44,14 @@ Az `orch web` felületéről minden irányítható:
 - Bármely agentre kattintva látod a beszélgetést és az eszközhívásokat, írhatsz neki
   (Enter küld), leállíthatod (**Stop**) vagy törölheted (**Remove**).
 - **Modell és effort az agent fejlécében** (minden agentnél, az orchestratornál és a leadeknél
-  is): a lenyílóban a provider modelljei, `other…` alatt tetszőleges név, és az
-  `inherit (…)` sor, amely a saját értéket törli (zárójelben, ami akkor érvényes: a szint-
-  beállítás vagy `CLI default`). A saját érték kiemelt és `own` jelölést kap. A változás a
-  következő körtől érvényes, a futó kört nem érinti. Meglévő sessionnél a modellváltás (Claude-nál
-  az effort váltása is) új prompt cache-t kezd: a következő kör a teljes beszélgetést teljes áron
-  olvassa újra. A Codex folytatott sessionben is átvált (`codex exec resume -m`, és a saját
-  figyelmeztetést ír a naplóba), az effort váltásánál a cache megmarad.
+  is): a lenyílóban a provider modelljei, `other…` alatt tetszőleges név (Enterrel érvényes, Esc
+  vagy a mező elhagyása elveti), és az `inherit (…)` sor, amely a saját értéket törli
+  (zárójelben, ami akkor érvényes: a szint-beállítás vagy `CLI default`). A saját érték kiemelt és `own` jelölést kap. A változás a
+  következő körtől érvényes, a futó kört nem érinti. Meglévő sessionnél a modellváltás új prompt
+  cache-t kezd (Claude-nál és Codexnél mérve): a következő kör a teljes beszélgetést teljes áron
+  olvassa újra. Az effort váltása Codexnél megtartja a cache-t, Claude-nál újat kezdhet (nem
+  mértük). A Codex folytatott sessionben is modellt vált (`codex exec resume -m`; a saját
+  figyelmeztetését a naplóba írja).
 - Az **idle · 3 agents working** állapot azt jelenti, hogy az agent nem dolgozik, csak az általa
   indított agentek: most is írhatsz neki, és értesítést kap, amikor azok végeznek. A várakozó
   üzenetek a **Queued** listában látszanak, az értesítések (`notification`) halvány rendszer-
@@ -115,7 +116,8 @@ orch model orchestrator --effort high       # az orchestratort is (első haszná
 ```
 
 A modell bármilyen név lehet, de egyetlen szó: szóköz, vezérlőkarakter, `-` kezdet és 200
-karakternél hosszabb név nem adható meg. Webes API: `POST /api/agents/<id>/model`
+karakternél hosszabb név nem adható meg (az `orch spawn`, az `orch config set` és az MCP
+`spawn_agent` is így ellenőriz; a korábban eltárolt értékek továbbra is olvashatók). Webes API: `POST /api/agents/<id>/model`
 `{"model": "...", "effort": null}` (a `null` töröl, a hiányzó kulcs nem változik).
 
 Az `orch chat` az **orchestrator** szint globális Claude beállításával indul; `--model` és
