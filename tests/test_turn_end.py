@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -16,10 +17,19 @@ from orchestrator.models import Agent, RunStatus
 from orchestrator.providers import RunContext, get
 from orchestrator.providers.base import NOTIFICATION_RESULT
 from orchestrator.providers.claude import NO_BACKGROUND_ENV
-from orchestrator.runner import RUNNER_ARGV, _send, combine_results, turn_processes
+from orchestrator.runner import (
+    RUNNER_ARGV,
+    _send,
+    combine_results,
+    end_turn,
+    turn_processes,
+)
 from orchestrator.service import Orchestrator
 
 FIXTURES = Path(__file__).parent / "fixtures"
+# A mark no process carries. Never a fixed text: a shell whose command line contains the
+# mark (one that runs these tests, say) would be part of the "turn" and be signalled.
+NO_MARK = f"ORCH_TURN={uuid.uuid4().hex}"
 
 
 def finished(orch: Orchestrator, agent_id: str, timeout: float = 30) -> dict:
@@ -221,8 +231,8 @@ def test_turn_processes_follow_the_session_of_a_shell_that_has_exited() -> None:
     try:
         known = {shell.pid: (shell.pid, shell.pid)}
 
-        assert orphan in turn_processes(shell.pid, "ORCH_TURN=none", known)
-        assert orphan not in turn_processes(shell.pid, "ORCH_TURN=none", {})
+        assert orphan in turn_processes(shell.pid, NO_MARK, known)
+        assert orphan not in turn_processes(shell.pid, NO_MARK, {})
     finally:
         os.kill(orphan, signal.SIGKILL)
 
@@ -232,7 +242,7 @@ def test_a_reused_pid_is_neither_selected_nor_signalled() -> None:
     try:
         stale = {other.pid: (1, 1)}  # recorded for an earlier process with that pid
 
-        assert other.pid not in turn_processes(-1, "ORCH_TURN=none", stale)
+        assert other.pid not in turn_processes(-1, NO_MARK, stale)
         _send(stale, signal.SIGKILL)
         assert other.poll() is None
     finally:
@@ -242,7 +252,8 @@ def test_a_reused_pid_is_neither_selected_nor_signalled() -> None:
 
 def test_other_runners_and_their_sessions_are_not_part_of_a_turn() -> None:
     """A sub-agent's runner inherits the lead's environment through its MCP server."""
-    env = {**os.environ, "ORCH_TURN": "lead-turn"}
+    token = uuid.uuid4().hex
+    env = {**os.environ, "ORCH_TURN": token}
     ours = sleeper(env=env)
     runner = subprocess.Popen(
         [
@@ -260,7 +271,7 @@ def test_other_runners_and_their_sessions_are_not_part_of_a_turn() -> None:
     try:
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
-            procs = turn_processes(-1, "ORCH_TURN=lead-turn")
+            procs = turn_processes(-1, f"ORCH_TURN={token}")
             if ours.pid in procs:
                 break
             time.sleep(0.1)
@@ -272,6 +283,53 @@ def test_other_runners_and_their_sessions_are_not_part_of_a_turn() -> None:
         runner.wait()
         ours.kill()
         ours.wait()
+
+
+class ExitedCli:
+    """A CLI that has exited and been reaped; its pid now belongs to another process."""
+
+    def __init__(self, pid: int) -> None:
+        self.pid, self.returncode = pid, 0
+
+    def poll(self) -> int:
+        return 0
+
+    def wait(self, timeout: float | None = None) -> int:
+        return 0
+
+
+def test_a_reused_pid_of_an_exited_cli_is_left_alone() -> None:
+    """E.g. a terminal tab's shell, a new session leader, got the dead CLI's pid."""
+    other = sleeper(start_new_session=True)
+    try:
+        assert other.pid not in turn_processes(None, NO_MARK)
+
+        end_turn(ExitedCli(other.pid), NO_MARK)
+
+        assert other.poll() is None
+    finally:
+        other.kill()
+        other.wait()
+
+
+def test_a_sub_agents_runner_does_not_pass_on_the_leads_mark(
+    orch: Orchestrator,
+    project: str,
+    repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Its runner inherits the lead's environment; its git hooks must not carry the mark."""
+    seen = tmp_path / "hook-env"
+    hook = repo / ".git" / "hooks" / "post-checkout"
+    hook.write_text(f'#!/bin/sh\necho "mark=$ORCH_TURN" > {seen}\n')
+    hook.chmod(0o755)
+    monkeypatch.setenv("ORCH_TURN", "lead-turn")  # as in the lead's MCP server
+
+    agent, _ = orch.spawn(project, "task")
+    finished(orch, agent.id)
+
+    assert seen.read_text() == "mark=\n"
 
 
 @pytest.mark.parametrize(("mode", "tokens"), [("", 200), ("CUMULATIVE ", 100)])
