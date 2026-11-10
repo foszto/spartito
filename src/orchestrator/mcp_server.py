@@ -131,8 +131,10 @@ def _run_reply(run: Run, budget: int | None, answer: bool = True) -> tuple[dict[
         if left is not None and left <= 0:
             reply["more"] = f"get_agent run_id={run.id}"
             continue
-        if structured and (left is None or len(json.dumps(structured.structured)) <= left):
+        size = len(json.dumps(structured.structured)) if structured else 0
+        if structured and (left is None or size <= left):
             reply[key] = structured.structured
+            left = None if left is None else left - size
         elif left is None:
             reply[key] = text
         elif chars := _fitting(text, left):
@@ -164,6 +166,7 @@ def _fitting(text: str, budget: int) -> int:
 
 EARLIER_WITH_TEXT = 2  # undelivered runs before the latest that wait_for_agents shows
 LISTED_RUNS = 20  # further undelivered runs it lists by id and status
+LISTED_IDS = 200  # and beyond those, by id only
 
 
 def _agent_runs(shown: Run | None, claimed: list[Run], limit: int) -> dict[str, Any]:
@@ -195,11 +198,14 @@ def _agent_runs(shown: Run | None, claimed: list[Run], limit: int) -> dict[str, 
     if with_text:
         parts["earlier_runs"] = with_text[::-1]
     if listed:
-        unlisted = len(listed) - LISTED_RUNS
         parts["other_runs"] = listed[:LISTED_RUNS][::-1]
-        parts["other_runs_note"] = "results not shown; get_agent run_id=<id> reads one" + (
-            f"; {unlisted} older runs not listed" if unlisted > 0 else ""
-        )
+        note = "results not shown; get_agent run_id=<id> reads one"
+        if older := [run["id"] for run in listed[LISTED_RUNS:]]:
+            parts["older_run_ids"] = older[:LISTED_IDS][::-1]
+            note += "; older ones in older_run_ids"
+            if len(older) > LISTED_IDS:
+                note += f" (newest {LISTED_IDS}; {len(older) - LISTED_IDS} before not listed)"
+        parts["other_runs_note"] = note
     return {**parts, "last_run": last}
 
 
