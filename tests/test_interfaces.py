@@ -33,24 +33,36 @@ def test_mcp_list_agents_is_compact_and_get_agent_lists_recent_runs(
     detail = mcp_server.get_agent(busy_agent)
 
     assert (listed["model"], listed["effort"]) == ("fake-small", "high")
-    assert (listed["model_override"], listed["effort_override"]) == (None, "high")
-    assert listed["usage"] == {
-        "input_tokens": 1200,
-        "output_tokens": 340,
-        "cache_read_tokens": 56000,
-        "cache_creation_tokens": 7800,
-        "cost_usd": 0.0123,
-    }
-    assert listed["last_run"]["usage"]["model"] == "fake-model-1"
-    assert "recent_runs" not in listed
+    assert listed["tokens"] == {"in": 1200, "out": 340, "cache_read": 56000, "cache_write": 7800}
+    assert listed["cost_usd"] == 0.0123
+    for key in ("recent_runs", "model_override", "effort_override"):
+        assert key not in listed
+    assert "usage" not in listed["last_run"]
+    assert (detail["model_override"], detail["effort_override"]) == (None, "high")
+    assert detail["last_run"]["usage"]["model"] == "fake-model-1"
     first, second = detail["recent_runs"]
-    assert (first["status"], first["cost_usd"], "input_tokens" in first) == ("done", None, False)
-    assert (second["input_tokens"], second["model"], second["cost_usd"]) == (
+    assert (first["status"], first["cost_usd"], first["tokens"]) == ("done", None, None)
+    assert (second["tokens"]["in"], second["model"], second["cost_usd"]) == (
         1200,
         "fake-model-1",
         0.0123,
     )
-    assert json.loads(json.dumps(detail))["usage"]["output_tokens"] == 340
+    assert json.loads(json.dumps(detail))["tokens"]["out"] == 340
+
+
+def test_usage_keeps_the_default_view_small(orch: Orchestrator, busy_agent: str) -> None:
+    run = orch.store.last_run(busy_agent)
+    big = Usage(12_345_678, 1_234_567, 98_765_432, 7_654_321, cost_usd=123.4567, model="m")
+    orch.store.set_usage(run.id, busy_agent, big)
+
+    view = orch.view(orch.agent(busy_agent), result_limit=400)
+    without = {key: value for key, value in view.items() if key != "tokens"}
+
+    # Everything else existed before usage: model/effort were there (as null) and cost_usd.
+    assert len(json.dumps(view)) - len(json.dumps(without)) <= 120
+    assert set(view["last_run"]) == {
+        "id", "status", "result", "structured", "error", "started_at", "ended_at"
+    }  # fmt: skip
 
 
 def test_mcp_get_agent_shows_at_most_ten_runs(orch: Orchestrator, busy_agent: str) -> None:

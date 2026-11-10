@@ -85,13 +85,15 @@ CREATE TABLE IF NOT EXISTS run_usage (
     cache_creation_tokens INTEGER,
     cost_usd REAL,
     model TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    session_id TEXT
 );
 CREATE INDEX IF NOT EXISTS runs_agent ON runs(agent_id, id);
 CREATE INDEX IF NOT EXISTS events_agent ON events(agent_id, id);
 """
 
 EVENT_TEXT_LIMIT = 4000
+WAL_WAIT_SECONDS = 3.0
 
 
 def now() -> str:
@@ -119,24 +121,36 @@ class Store:
             columns = conn.execute("PRAGMA table_info(agents)").fetchall()
             if not any(column["name"] == "effort" for column in columns):
                 conn.execute("ALTER TABLE agents ADD COLUMN effort TEXT")
+            usage_columns = conn.execute("PRAGMA table_info(run_usage)").fetchall()
+            if not any(column["name"] == "session_id" for column in usage_columns):
+                try:  # run_usage tables from before session ids were recorded
+                    conn.execute("ALTER TABLE run_usage ADD COLUMN session_id TEXT")
+                except sqlite3.OperationalError as exc:  # another process was quicker
+                    if "duplicate column" not in str(exc):
+                        raise
         if any(column["name"] == "project" and column["notnull"] for column in columns):
             self._make_agent_project_nullable()
 
     def _use_wal(self) -> None:
-        """Switch the database to WAL once; the mode is stored in the file.
+        """Switch the database to WAL; the mode is stored in the file, so this is a no-op
+        for a database that is in WAL already.
 
-        Switching needs a moment with no other connection and, unlike ordinary writes,
-        does not wait for one, so several processes opening a new database at once retry.
+        Switching needs a moment in which no other connection uses the file, and SQLite
+        may report "locked" at once instead of waiting, so it is retried with a short busy
+        timeout for at most WAL_WAIT_SECONDS. If it still does not succeed the database
+        stays usable in its current mode and the next open tries again.
         """
-        conn = sqlite3.connect(self.path, timeout=30)
+        deadline = time.monotonic() + WAL_WAIT_SECONDS
+        conn = sqlite3.connect(self.path, timeout=0.2)
         try:
-            for attempt in range(100):
+            while True:
                 try:
                     if conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal":
                         return
                 except sqlite3.OperationalError:
-                    if attempt == 99:
-                        raise
+                    pass
+                if time.monotonic() >= deadline:
+                    return
                 time.sleep(0.05)
         finally:
             conn.close()
@@ -360,8 +374,8 @@ class Store:
         with self._conn() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO run_usage (run_id, agent_id, input_tokens, output_tokens,"
-                " cache_read_tokens, cache_creation_tokens, cost_usd, model, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " cache_read_tokens, cache_creation_tokens, cost_usd, model, created_at,"
+                " session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     run_id,
                     agent_id,
@@ -369,6 +383,7 @@ class Store:
                     usage.cost_usd,
                     usage.model,
                     now(),
+                    usage.session_id,
                 ),
             )
 

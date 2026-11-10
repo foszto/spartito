@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field, fields
 from enum import StrEnum
 from typing import Any
@@ -94,6 +95,7 @@ class Usage:
     cost_usd: float | None = None
     model: str | None = None  # the model the CLI says it used
     cumulative: bool = False
+    session_id: str | None = None  # session/thread the run belonged to, when reported
 
     def __add__(self, other: Usage) -> Usage:
         def add(a: Any, b: Any) -> Any:
@@ -105,10 +107,10 @@ class Usage:
         )
 
     def since(self, earlier: Usage) -> Usage:
-        """Per-run figures from a session total and the total stored before this run.
+        """Per-run figures from a session total and the running total before this run.
 
-        Falls back to the reported figures when they are lower than what was stored before
-        (the session or thread was started over).
+        Never negative: when a reported figure is lower than what came before (the session
+        or thread was started over) the reported figures are taken as this run's own.
         """
         keys = (*TOKEN_FIELDS, "cost_usd")
         delta = {key: (getattr(self, key), getattr(earlier, key) or 0) for key in keys}
@@ -121,9 +123,35 @@ class Usage:
             values["cost_usd"] = round(values["cost_usd"], 8)
         return Usage(**values, model=self.model)
 
-    def as_dict(self) -> dict[str, Any]:
-        cost = None if self.cost_usd is None else round(self.cost_usd, 4)
-        return {**{key: getattr(self, key) for key in TOKEN_FIELDS}, "cost_usd": cost}
+    def tokens(self) -> dict[str, int] | None:
+        """The four token counts with short keys, or None when none were reported."""
+        if all(getattr(self, key) is None for key in TOKEN_FIELDS):
+            return None
+        short = ("in", "out", "cache_read", "cache_write")
+        return {
+            name: getattr(self, key) or 0 for name, key in zip(short, TOKEN_FIELDS, strict=True)
+        }
+
+    @property
+    def cost(self) -> float | None:
+        return None if self.cost_usd is None else round(self.cost_usd, 4)
+
+
+def running_total(runs: Iterable[Run], usage: dict[int, Usage]) -> Usage:
+    """Tokens and cost of an agent's runs so far, walking them in id order.
+
+    A run with a usage record adds its own figures. A run without one but with a cost was
+    written by code from before usage records (possibly still running next to newer code):
+    its `cost_usd` is Claude's running total for the session, so it raises the total to at
+    least that value instead of adding to it.
+    """
+    total = Usage()
+    for run in sorted(runs, key=lambda run: run.id):
+        if run.id in usage:
+            total = total + usage[run.id]
+        elif run.cost_usd:
+            total.cost_usd = max(total.cost_usd or 0, run.cost_usd)
+    return total
 
 
 def from_row[T](cls: type[T], row: Any) -> T:
