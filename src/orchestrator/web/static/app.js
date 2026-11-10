@@ -94,15 +94,22 @@ const leadOf = project => project.agents.find(a => a.role === 'lead' && (!a.pare
 const provider = name => state.providers.find(p => p.name === name) || { name, models: [], efforts: [] };
 const isActive = agent => agent && (agent.status === 'running' || agent.status === 'waiting');
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
-// No own turn, but its agents still work: it takes a message now and is notified when they finish.
-const isIdle = agent => Boolean(agent && !isActive(agent) && agent.children_running > 0);
-// CSS class and label of an agent's state; queued turns behind the current one count as "+N queued".
+// No own turn, the last one went fine (or there was none), but its agents still work: it takes a
+// message now and is notified when they finish. A failed or stopped last turn keeps its status.
+const isIdle = agent => Boolean(agent && ['done', 'new'].includes(agent.status) && agent.children_running > 0);
+// CSS class and label of an agent's state, with the agents working below it and the turns
+// queued behind the current one ("+N queued").
 function stateOf(agent) {
   if (!agent) return { cls: '', label: 'not started' };
-  if (isIdle(agent)) return { cls: 'idle', label: `idle · ${plural(agent.children_running, 'agent')} working` };
+  const cls = isIdle(agent) ? 'idle' : agent.status;
+  const parts = [cls];
+  if (agent.children_running) parts.push(`${plural(agent.children_running, 'agent')} working`);
   const more = isActive(agent) ? agent.queued_runs - 1 : 0;
-  return { cls: agent.status, label: more > 0 ? `${agent.status} · +${more} queued` : agent.status };
+  if (more > 0) parts.push(`+${more} queued`);
+  return { cls, label: parts.join(' · ') };
 }
+// Who queued a run: an agent id, the user, or the system for a notification.
+const senderOf = run => run.sender || (run.kind === 'notification' ? 'system' : 'user');
 
 function select(id) {
   selected = id; location.hash = encodeURIComponent(id); shown = null; refresh();
@@ -369,9 +376,10 @@ function renderHeader(agent) {
     busy.append(dots, 'working…');
   } else if (agent && agent.status === 'waiting') {
     busy.append('queued — waiting for its turn or for the agents it depends on');
-  } else if (isIdle(agent)) {
-    busy.append(el('span', 'idle-mark'),
-      `idle while ${agent.children_running === 1 ? '1 agent works' : `${agent.children_running} agents work`}`
+  } else if (agent && agent.children_running) {
+    const n = agent.children_running, work = n === 1 ? '1 agent works' : `${n} agents work`;
+    if (isIdle(agent)) busy.append(el('span', 'idle-mark'));
+    busy.append(`${isIdle(agent) ? 'idle' : `last turn ${agent.status}`} while ${work}`
       + ' — it can take a message now and is notified when they finish');
   }
   renderQueue(agent);
@@ -413,15 +421,17 @@ function renderQueue(agent) {
   queue.hidden = !items.length;
   queue.replaceChildren();
   if (!items.length) return;
-  queue.append(el('div', 'queue-head', `Queued (${items.length})`));
+  // `queue` may be capped; `queued_runs` counts every active turn, the running one too.
+  const waiting = Math.max(agent.queued_runs - (agent.status === 'running' ? 1 : 0), items.length);
+  queue.append(el('div', 'queue-head', `Queued (${waiting})`));
   for (const run of items) {
     const row = el('div', `queued ${run.kind}`);
-    const sender = run.sender || (run.kind === 'notification' ? 'orchestrator' : 'you');
-    row.append(el('span', 'kind', run.kind), el('span', 'from', sender), el('span', 'when', clock(run.created_at)),
+    row.append(el('span', 'kind', run.kind), el('span', 'from', senderOf(run)), el('span', 'when', clock(run.created_at)),
       el('span', 'preview', run.prompt.replace(/\s+/g, ' ')));
     row.title = `#${run.id}: ${run.prompt}`;
     queue.append(row);
   }
+  if (waiting > items.length) queue.append(el('div', 'queued more', `+${waiting - items.length} more`));
 }
 
 function appendEvents(events) {

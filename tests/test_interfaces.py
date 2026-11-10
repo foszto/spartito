@@ -9,6 +9,7 @@ from typing import Any
 
 import click
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from orchestrator import cli, mcp_server
@@ -188,11 +189,17 @@ def until(predicate: Callable[[], Any], timeout: float = 30) -> Any:
     raise AssertionError("timed out")
 
 
-def ps_line(agent_id: str) -> str:
+def ps_lines(*agent_ids: str) -> list[str]:
+    """The `orch ps` rows of these agents, from one listing."""
     result = CliRunner().invoke(cli.app, ["ps"])
     assert result.exit_code == 0, result.output
-    (line,) = [row for row in result.output.splitlines() if f" {agent_id} " in row]
-    return click.unstyle(line)
+    rows = click.unstyle(result.output).splitlines()
+    return [next(row for row in rows if f" {agent_id} " in row) for agent_id in agent_ids]
+
+
+def ps_line(agent_id: str) -> str:
+    (line,) = ps_lines(agent_id)
+    return line
 
 
 def test_ps_tells_an_idle_parent_with_working_children_from_a_running_one(
@@ -207,7 +214,7 @@ def test_ps_tells_an_idle_parent_with_working_children_from_a_running_one(
         until(lambda: orch.view(lead)["status"] == "running")
         busy = ps_line(lead.id)
         orch.send(lead.id, "later")
-        queued = ps_line(lead.id)
+        queued, kid = ps_lines(lead.id, child.id)
     finally:
         orch.stop(child.id)
         orch.stop(lead.id)
@@ -215,8 +222,8 @@ def test_ps_tells_an_idle_parent_with_working_children_from_a_running_one(
     assert " idle·1↓ " in idle and "lead" in idle
     assert " running·1↓ " in busy and "+" not in busy.split()[1]
     assert " running·1↓ +1 " in queued
-    # The state column keeps its width, so the role column stays aligned.
-    assert idle.index(" lead ") == busy.index(" lead ") == queued.index(" lead ")
+    # The state column is as wide as the longest state, so the role column stays aligned.
+    assert queued.index(" lead ") == kid.index(" worker ")
 
 
 def test_status_lists_working_children_and_the_queue(orch: Orchestrator, project: str) -> None:
@@ -237,7 +244,7 @@ def test_status_lists_working_children_and_the_queue(orch: Orchestrator, project
     (two,) = [line for line in lines if f"#{second.id} " in line]
     (three,) = [line for line in lines if f"#{third.id} " in line]
     assert "message" in one and " user " in one and "please review the branch" in one
-    assert "notification" in two and " orch " in two
+    assert "notification" in two and " system " in two
     assert f" {child.id} " in three and "from a peer" in three
     assert "[{" not in result.output and "'kind'" not in result.output
 
@@ -256,3 +263,69 @@ def test_status_of_an_idle_parent_says_its_agents_work(orch: Orchestrator, proje
     assert "idle while its agents work (last run: done)" in status.output
     assert "children     2 agents working" in status.output and "\nqueue " not in status.output
     assert " idle·2↓ " in ps
+
+
+def test_a_failed_last_turn_is_not_shown_as_idle_while_children_work(
+    orch: Orchestrator, project: str
+) -> None:
+    lead = orch.create_agent(project, name="boss", role="lead", worktree=False)
+    orch.send(lead.id, "FAIL")
+    until(lambda: orch.view(lead)["status"] == "failed")
+    child = orch.create_agent(project, name="kid", worktree=False, parent_id=lead.id)
+    orch.store.add_run(child.id, "work")  # queued, never started: counts as working
+
+    result = CliRunner().invoke(cli.app, ["ps"], color=True)
+    status = CliRunner().invoke(cli.app, ["status", lead.id])
+
+    (line,) = [row for row in result.output.splitlines() if f" {lead.id} " in row]
+    assert " failed·1↓ " in click.unstyle(line) and "idle" not in line
+    assert typer.style("failed·1↓", fg=typer.colors.RED) in line
+    assert "\nstatus       failed\n" in status.output and "1 agent working" in status.output
+
+
+def test_ps_keeps_columns_aligned_with_two_digit_counts(orch: Orchestrator, project: str) -> None:
+    lead = orch.create_agent(project, name="boss", role="lead", worktree=False)
+    plain = orch.create_agent(project, name="plain", worktree=False)
+    for n in range(12):
+        child = orch.create_agent(project, name=f"kid{n}", worktree=False, parent_id=lead.id)
+        orch.store.add_run(child.id, "work")
+    for n in range(11):
+        orch.store.add_run(lead.id, f"message {n}")
+
+    busy, calm = ps_lines(lead.id, plain.id)
+
+    assert " waiting·12↓ +10 " in busy
+    assert busy.index(" lead ") == calm.index(" worker ")
+
+
+def test_status_of_a_parent_that_never_ran_has_no_last_run(
+    orch: Orchestrator, project: str
+) -> None:
+    lead = orch.create_agent(project, name="boss", role="lead", worktree=False)
+    child = orch.create_agent(project, name="kid", worktree=False, parent_id=lead.id)
+    orch.store.add_run(child.id, "work")
+
+    result = CliRunner().invoke(cli.app, ["status", lead.id])
+
+    assert "\nstatus       idle while its agents work\n" in result.output
+    assert " idle·1↓ " in ps_line(lead.id)
+
+
+def test_status_counts_queued_runs_beyond_a_capped_queue(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent = orch.create_agent(project, name="busy", worktree=False)
+    for n in range(3):
+        orch.store.add_run(agent.id, f"message {n}")
+    full_view = Orchestrator.view
+
+    def capped(self: Orchestrator, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        view = full_view(self, *args, **kwargs)
+        if "queue" in view:
+            view["queue"] = view["queue"][:1]
+        return view
+
+    monkeypatch.setattr(Orchestrator, "view", capped)
+    result = CliRunner().invoke(cli.app, ["status", agent.id])
+
+    assert "queue        3 waiting" in result.output and "\n  +2 more\n" in result.output

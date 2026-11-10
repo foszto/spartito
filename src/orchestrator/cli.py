@@ -79,8 +79,9 @@ def setup(view: dict, agent: Agent | None) -> str:
 
 
 def idle_with_children(view: dict) -> bool:
-    """No own turn queued or running, but descendants still work."""
-    return view["status"] not in ("running", "waiting") and view["children_running"] > 0
+    """No own turn queued or running, the last one went fine (or there was none), and
+    descendants still work. A failed or stopped last turn keeps its status."""
+    return view["status"] in ("done", "new") and view["children_running"] > 0
 
 
 def queued_after(view: dict) -> int:
@@ -88,9 +89,20 @@ def queued_after(view: dict) -> int:
     return max(view["queued_runs"] - 1, 0)
 
 
+def waiting_turns(view: dict) -> int:
+    """Turns waiting to start (`queued_runs` also counts the running one)."""
+    return view["queued_runs"] - (view["status"] == "running")
+
+
+def sender_label(run: dict) -> str:
+    """Who queued a run: an agent id, `user`, or `system` for a notification."""
+    return run["sender"] or ("system" if run["kind"] == "notification" else "user")
+
+
 def state_label(view: dict) -> tuple[str, str | None]:
-    """Short state for listings and its colour: `running`, `waiting`, `idle·3↓` (idle while
-    3 descendants work) or the last run's status; `+N`: N more turns queued behind."""
+    """Short state for listings and its colour: `running`, `waiting`, `idle` or the last
+    run's status; `·3↓`: 3 descendants work (`idle·3↓`: only they do); `+N`: N more turns
+    queued behind."""
     status = "idle" if idle_with_children(view) else view["status"]
     text = status
     if view["children_running"]:
@@ -378,10 +390,13 @@ def ps(project: Annotated[str | None, typer.Option("--project", "-p")] = None) -
     """List agents as a tree: project -> agent -> sub-agents.
 
     `idle·3↓`: no own turn, 3 sub-agents still working (it is notified when they finish);
-    `running +2`: two more turns queued behind the running one.
+    `failed·3↓`: its last turn failed while they work; `running +2`: two more turns queued
+    behind the running one.
     """
     o = orch()
     views = o.overview(project)
+    width = max((len(state_label(view)[0]) for view in views), default=0)
+    width = max(width, 8)
     agents = {agent.id: agent for agent in o.store.list_agents(project)}
     children: dict[str | None, list[dict]] = {}
     home = {view["id"]: view["project"] for view in views}
@@ -393,7 +408,7 @@ def ps(project: Annotated[str | None, typer.Option("--project", "-p")] = None) -
     def show(project_name: str, parent: str | None, depth: int) -> None:
         for view in children.get((project_name, parent), []):
             text, color = state_label(view)
-            status = typer.style(f"{text:<14}", fg=color)
+            status = typer.style(f"{text:<{width}}", fg=color)
             label = "  " * depth + view["id"]
             cost = f"${view['cost_usd']:.2f}" if view["cost_usd"] else ""
             typer.echo(
@@ -434,21 +449,24 @@ def status(agent_id: str) -> None:
     for key in ("model", "effort"):
         override = view.pop(f"{key}_override")
         view[key] = f"{view[key] or 'default'}" + (" (set on the agent)" if override else "")
-    if working and view["status"] not in ("running", "waiting"):
-        view["status"] = f"idle while its agents work (last run: {view['status']})"
+    if idle_with_children({**view, "children_running": working}):
+        last_run = "" if view["status"] == "new" else f" (last run: {view['status']})"
+        view["status"] = f"idle while its agents work{last_run}"
     for key, value in view.items():
         typer.echo(f"{key:<12} {value}")
     plural = "agent" if working == 1 else "agents"
     typer.echo(f"{'children':<12} {f'{working} {plural} working' if working else 'none working'}")
     typer.echo(f"{'usage':<12} {usage_line(counts, cost)}")
     if queue:
-        typer.echo(f"{'queue':<12} {len(queue)} waiting")
+        waiting = max(waiting_turns(view), len(queue))
+        typer.echo(f"{'queue':<12} {waiting} waiting")
         for run in queue:
-            sender = run["sender"] or ("orch" if run["kind"] == "notification" else "user")
             typer.echo(
                 f"  #{run['id']:<6} {run['created_at'][11:19]}  {run['kind']:<12}"
-                f" {sender:<20} {one_line(run['prompt'])}"
+                f" {sender_label(run):<20} {one_line(run['prompt'])}"
             )
+        if waiting > len(queue):
+            typer.echo(f"  +{waiting - len(queue)} more")
     typer.echo(f"{'changes':<12} {changes.replace(chr(10), chr(10) + ' ' * 13)}")
     if last:
         typer.secho(f"\nlast run {last['id']}: {last['status']}", bold=True)

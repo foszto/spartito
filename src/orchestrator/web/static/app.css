@@ -171,6 +171,7 @@ code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, m
 .queued .kind { flex: none; font-weight: 600; color: var(--waiting); }
 .queued.notification .kind { color: var(--idle); }
 .queued .from, .queued .when { flex: none; color: var(--faint); }
+.queued.more { background: none; border-color: transparent; color: var(--faint); }
 .queued .preview { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 .idle-mark { width: 9px; height: 9px; border-radius: 50%; box-shadow: inset 0 0 0 2px var(--idle); flex: none; }
 #busy { max-width: 908px; width: 100%; margin: 0 auto; padding: 0 24px; min-height: 24px; color: var(--muted); font-size: 13px;
