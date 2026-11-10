@@ -288,3 +288,16 @@ dialog form { display: flex; flex-direction: column; max-height: calc(100vh - 50
 div.folder { padding: 2px 4px 2px 8px; }
 div.folder > button.folder:hover { background: none; }
 .project-head .actions { opacity: .5; }
+
+/* archive */
+.avatar.archive svg { width: 16px; height: 16px; }
+.nav-item.archive-entry { margin-top: 12px; }
+.pill.archived { color: var(--muted); background: none; box-shadow: inset 0 0 0 1px var(--line); }
+.archive-view { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+.archive-list { flex: 1; min-height: 0; overflow: auto; padding: 16px 24px; max-width: 900px; width: 100%; margin: 0 auto; box-sizing: border-box; }
+.archive-project { margin: 16px 0 6px; font-size: 13px; color: var(--muted); }
+.archived-row { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; }
+.archived-row:hover { background: var(--sunken); }
+.archived-row .label { flex: 1; min-width: 0; text-align: left; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; padding: 0; }
+.archived-row .name { display: block; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.archived-row .sub { display: block; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }

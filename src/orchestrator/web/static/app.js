@@ -16,6 +16,8 @@ const ICONS = {
   send: '<path d="M12 19V5M5 12l7-7 7 7"/>',
   stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
   trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
+  archive: '<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11h14V8M10 12h4"/>',
+  restore: '<path d="M4 12a8 8 0 1 0 2.5-5.8M4 4v4h4"/>',
   pencil: '<path d="M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
   sliders: '<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>',
@@ -27,15 +29,18 @@ const TIER_INFO = {
   lead: ['Project lead', 'Plans the work of one project and runs its agents.'],
   worker: ['Workers', 'Every other role: worker, planner, reviewer, tester.'],
 };
+const ARCHIVE = 'archive:';  // the selection that shows the archive
 const SUGGESTIONS = [
   'Which projects and agents exist, and what is each of them doing?',
   'In project <name>: plan the following feature, split it into tasks and implement them with workers: ',
   'Review the unmerged agent branches in project <name> and tell me which are ready to merge.',
 ];
 
-let state = { orchestrator: null, projects: [], providers: [], roles: [], tiers: [], settings: { global: {}, projects: {} } };
+let state = { orchestrator: null, projects: [], providers: [], roles: [], tiers: [], archived: [], settings: { global: {}, projects: {} } };
 let selected = decodeURIComponent(location.hash.slice(1)) || ORCH;
 let shown = null, lastEvent = 0, refreshing = false, again = false, toolGroup = null;
+let shownAgent = null, archiveList = [], archiveKey = '';
+const findArchived = id => archiveList.find(agent => agent.id === id);
 
 // -- small helpers -----------------------------------------------------------
 
@@ -64,7 +69,9 @@ function button(cls, iconName, label, onclick, title) {
 }
 function avatar(provider, status) {
   const node = el('span', `avatar ${provider === ORCH ? 'orch' : provider} ${status || ''}`);
-  if (provider === ORCH) node.append(icon('logo')); else node.append((provider || '?').slice(0, 2).replace(/^./, c => c.toUpperCase()));
+  if (provider === ORCH) node.append(icon('logo'));
+  else if (provider === 'archive') node.append(icon('archive'));
+  else node.append((provider || '?').slice(0, 2).replace(/^./, c => c.toUpperCase()));
   if (status !== undefined) node.append(el('span', 'dot'));
   return node;
 }
@@ -91,6 +98,7 @@ function toast(message, isError, duration) {
 
 const allAgents = () => state.projects.flatMap(p => p.agents).concat(state.orchestrator || []);
 const findAgent = id => allAgents().find(agent => agent.id === id);
+const isArchived = id => (state.archived || []).includes(id);
 const leadOf = project => project.agents.find(a => a.role === 'lead' && (!a.parent_id || a.parent_id === ORCH));
 const provider = name => state.providers.find(p => p.name === name) || { name, models: [], efforts: [] };
 // A provider's models as {value, label}: the value goes to the CLI, the label (with the version
@@ -213,7 +221,7 @@ let navKey = '';
 function renderNav() {
   // Rebuild only on change: replacing a button between mousedown and mouseup swallows the click.
   const collapsed = stored('orch-collapsed', []);
-  const key = JSON.stringify([state.orchestrator, state.projects, selected, collapsed]);
+  const key = JSON.stringify([state.orchestrator, state.projects, state.archived, selected, collapsed]);
   if (key === navKey) return;
   navKey = key;
   const nav = $('nav');
@@ -252,6 +260,7 @@ function renderNav() {
     actions.append(
       button('ghost icon', 'chat', '', () => select(leadOf(project)?.id || `lead:${project.name}`), 'Talk to the project lead'),
       button('ghost icon', 'plus', '', () => openAgentDialog(project), 'New agent'),
+      button('ghost icon', 'archive', '', () => archiveSafe(project), 'Archive every finished agent whose work is safe'),
       button('ghost icon', 'x', '', () => removeProject(project), 'Remove project'));
     head.append(toggle, actions);
     const agents = el('div', 'agents');
@@ -269,6 +278,12 @@ function renderNav() {
     if (!project.agents.length) agents.append(el('div', 'empty-note', 'No agents yet.'));
     box.append(head, agents);
     nav.append(box);
+  }
+  const archived = (state.archived || []).length;
+  if (archived || selected === ARCHIVE) {
+    const entry = navItem(ARCHIVE, 'archive', '', 'Archive', `${plural(archived, 'agent')} · restore or delete`, 0);
+    entry.classList.add('archive-entry');
+    nav.append(entry);
   }
   $('summary').textContent = `${total} agents · ${busy} active · ${count(used[0] + used[1])} tokens · $${cost.toFixed(2)} spent`;
 }
@@ -303,9 +318,12 @@ function buildView() {
   who.append(title, chips, note);
   const detailsButton = button('ghost', 'info', 'Details', () => { $('details').hidden = !$('details').hidden; });
   const stop = button('danger', 'stop', 'Stop', stopAgent);
-  const remove = button('ghost icon', 'trash', '', removeAgent, 'Remove agent');
-  detailsButton.id = 'detailsButton'; stop.id = 'stop'; remove.id = 'remove';
-  top.append(face, who, detailsButton, stop, remove);
+  const archive = button('ghost', 'archive', 'Archive', () => archiveAgent(selected));
+  const restore = button('ghost', 'restore', 'Restore', () => restoreAgent(selected));
+  const remove = button('ghost icon', 'trash', '', () => removeAgent(selected), 'Delete agent for good');
+  detailsButton.id = 'detailsButton'; stop.id = 'stop'; archive.id = 'archive'; restore.id = 'restore'; remove.id = 'remove';
+  archive.title = 'Hide it from the lists; everything is kept and it can be restored';
+  top.append(face, who, detailsButton, stop, archive, restore, remove);
 
   const details = el('div'); details.id = 'details'; details.hidden = true;
   const facts = el('dl'); facts.id = 'facts';
@@ -379,14 +397,20 @@ function renderHeader(agent, setupFreshness = true) {
   face.id = 'face'; $('face').replaceWith(face);
   const now = stateOf(agent);
   title.replaceChildren(name, el('span', `pill ${now.cls}`, now.label));
+  if (agent?.archived) title.append(el('span', 'pill archived', 'archived'));
   $('stop').hidden = !isActive(agent);
-  $('remove').hidden = !agent;
+  $('archive').hidden = !agent || Boolean(agent.archived) || agent.id === ORCH;
+  $('restore').hidden = !agent?.archived;
+  $('remove').hidden = !agent?.archived;  // only archived agents are deleted
   $('detailsButton').hidden = !agent;
   renderWelcome(agent, leadProject);
 
   const busy = $('busy');
   busy.replaceChildren();
-  if (agent && agent.status === 'running') {
+  if (agent?.archived) {
+    busy.append(`Archived ${new Date(agent.archived.archived_at).toLocaleString()}`
+      + `${agent.archived.how === 'auto' ? ' automatically' : ''} — a message or Restore brings it back`);
+  } else if (agent && agent.status === 'running') {
     const dots = el('span', 'typing'); dots.append(el('i'), el('i'), el('i'));
     busy.append(dots, 'working…');
   } else if (agent && agent.status === 'waiting') {
@@ -730,18 +754,61 @@ async function stopAgent() {
   catch (error) { toast(error.message, true); }
 }
 
-function removeAgent() {
-  const id = selected, agent = findAgent(id);
+function removeAgent(id = selected, branch = undefined) {
+  if (branch === undefined) branch = shownAgent?.id === id ? shownAgent.branch : findArchived(id)?.branch;
   confirmDialog({
-    title: `Remove ${id}?`,
-    text: agent?.branch
-      ? 'Its turns are stopped and its worktree is deleted. Uncommitted work in the worktree is lost.'
-      : 'Its turns are stopped and its conversation is removed from the orchestrator.',
-    option: agent?.branch ? `Also delete branch ${agent.branch}` : null,
-    ok: 'Remove',
+    title: `Delete ${id} for good?`,
+    text: branch
+      ? 'Its record, conversation and logs are deleted, and its worktree too: uncommitted work in it is lost. This cannot be undone.'
+      : 'Its record, conversation and logs are deleted. This cannot be undone.',
+    option: branch ? `Also delete branch ${branch}` : null,
+    ok: 'Delete',
     action: async option => {
       await call(`/api/agents/${encodeURIComponent(id)}/remove`, { delete_branch: option });
-      toast('Agent removed'); select(ORCH);
+      toast('Agent deleted');
+      if (selected === id) select(ARCHIVE); else await refresh();
+    },
+  });
+}
+
+async function archiveAgent(id) {
+  try {
+    const result = await call(`/api/agents/${encodeURIComponent(id)}/archive`, {});
+    if (result.confirm) {
+      confirmDialog({
+        title: `Archive ${id} with unmerged work?`,
+        text: `${result.confirm}. Archiving keeps all of it (branch, worktree, conversation); it only hides the agent.`,
+        ok: 'Archive anyway',
+        action: async () => { await call(`/api/agents/${encodeURIComponent(id)}/archive`, { confirm: true }); archived(id); },
+      });
+      return;
+    }
+    archived(id);
+  } catch (error) { toast(error.message, true); }
+}
+
+function archived(id) {
+  toast(`${id} archived; restore it from the Archive`);
+  refresh();
+}
+
+async function restoreAgent(id) {
+  try { await call(`/api/agents/${encodeURIComponent(id)}/restore`, {}); toast(`${id} restored`); }
+  catch (error) { toast(error.message, true); }
+  archiveKey = ''; await refresh();
+}
+
+function archiveSafe(project) {
+  confirmDialog({
+    title: `Archive finished agents of ${project.name}?`,
+    text: 'Every agent that is not working and whose work is safe: no worktree of its own, or its branch merged into '
+      + `${project.base_branch} and no uncommitted changes. The project lead stays. Archived agents can be restored.`,
+    ok: 'Archive',
+    action: async () => {
+      const result = await call(`/api/projects/${encodeURIComponent(project.name)}/archive`, {});
+      const kept = Object.keys(result.kept).length;
+      toast(`${plural(result.archived.length, 'agent')} archived${kept ? `; ${kept} kept with unmerged work` : ''}`, false, kept ? 6000 : 0);
+      await refresh();
     },
   });
 }
@@ -756,6 +823,48 @@ function removeProject(project) {
       toast('Project removed'); await refresh();
     },
   });
+}
+
+// -- archive -----------------------------------------------------------------
+
+async function renderArchive() {
+  if (shown !== ARCHIVE) {
+    const page = el('div', 'archive-view'), head = el('div', 'top-bar'), who = el('div', 'who');
+    const face = avatar('archive'); face.id = 'face';
+    who.append(el('h2', '', 'Archive'), el('div', 'setup-note',
+      'Archived agents are hidden from the lists; their conversation, branch and worktree are kept. '
+      + 'A message to one restores it. Only here can an agent be deleted for good.'));
+    head.append(face, who);
+    const list = el('div', 'archive-list'); list.id = 'archiveList';
+    page.append(head, list);
+    $('view').replaceChildren(page);
+    shown = ARCHIVE; archiveKey = '';
+  }
+  const data = await call('/api/archive');
+  if (selected !== ARCHIVE) return;
+  archiveList = data.agents;
+  const key = JSON.stringify(archiveList);
+  if (key === archiveKey) return;  // unchanged: keep the buttons (and their focus)
+  archiveKey = key;
+  const list = $('archiveList');
+  list.replaceChildren();
+  if (!archiveList.length) { list.append(el('div', 'empty-note', 'Nothing is archived.')); return; }
+  for (const name of [...new Set(archiveList.map(agent => agent.project))].sort()) {
+    list.append(el('h4', 'archive-project', name));
+    for (const agent of archiveList.filter(a => a.project === name)) {
+      const row = el('div', 'archived-row'), label = el('button', 'label');
+      label.type = 'button'; label.onclick = () => select(agent.id);
+      label.title = 'Open its conversation';
+      const now = stateOf(agent);
+      const when = `${new Date(agent.archived_at).toLocaleString()}${agent.archived_how === 'auto' ? ' · automatically' : ''}`;
+      label.append(el('span', 'name', agent.id),
+        el('span', 'sub', [agent.role, now.label, agent.branch, `archived ${when}`].filter(Boolean).join(' · ')));
+      row.append(avatar(agent.provider, now.cls), label,
+        button('ghost', 'restore', 'Restore', () => restoreAgent(agent.id)),
+        button('ghost icon', 'trash', '', () => removeAgent(agent.id, agent.branch), `Delete ${agent.id} for good`));
+      list.append(row);
+    }
+  }
 }
 
 // -- dialogs -----------------------------------------------------------------
@@ -966,6 +1075,18 @@ function renderSettings() {
     }
     rows.append(box);
   }
+  const key = state.archive_after_key, box = el('div', 'tier');
+  const field = el('input', 'input'), global = state.settings.global?.[key];
+  box.append(el('h4', '', 'Archive'), el('p', 'about',
+    'Finished agents are archived after this many idle hours, if their work is safe (no worktree of their own, '
+    + 'or merged and clean). Never project leads or the orchestrator. 0 or “off”: never.'));
+  field.name = key; field.autocomplete = 'off'; field.inputMode = 'decimal';
+  field.value = data?.[key] ?? '';
+  field.placeholder = scope ? `${global ?? state.archive_after_default} (global)` : `${state.archive_after_default} (default)`;
+  field.setAttribute('aria-label', 'Archive after idle hours');
+  const row = el('div', 'tier-row'); row.append(el('span', 'who', 'hours'), field);
+  box.append(row);
+  rows.append(box);
 }
 
 function openSettings() {
@@ -978,6 +1099,7 @@ function openSettings() {
     for (const [name, value] of form) {
       const [tier, providerName, key] = name.split('.');
       if (key) ((data[tier] ??= {})[providerName] ??= {})[key] = value;
+      else if (name === state.archive_after_key) data[name] = value;
     }
     await call('/api/settings', { project: form.get('scope') || null, data });
     toast('Settings saved'); await refresh();
@@ -1006,7 +1128,8 @@ async function refresh() {
     }
     renderNav();
     const target = selected;
-    const exists = Boolean(findAgent(target));
+    if (target === ARCHIVE) { await renderArchive(); return; }
+    const exists = Boolean(findAgent(target)) || isArchived(target);
     const virtual = !exists && (target === ORCH || target.startsWith('lead:'));
     if (!exists && !virtual) {
       const gone = el('div', 'welcome'); gone.append(el('h3', '', 'This agent no longer exists'));
@@ -1016,6 +1139,7 @@ async function refresh() {
     if (virtual) { renderHeader(null, setupFresh(ticket, target)); return; }
     const data = await call(`/api/agents/${encodeURIComponent(target)}/events?after=${lastEvent}`);
     if (target !== selected || shown !== target) return;  // the selection changed meanwhile
+    shownAgent = data.agent;
     renderHeader(data.agent, setupFresh(ticket, target));
     appendEvents(data.events);
   } catch (error) {
