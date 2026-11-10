@@ -174,6 +174,37 @@ megadott érték a részletes nézetben (`get_agent`, `orch status`) a `model_ov
 csak a `cost_usd` összeget és egy rövid `tokens` objektumot (`in`, `out`, `cache_read`,
 `cache_write`) adnak.
 
+### Kontextus és tömörítés (compact)
+
+Minden run eltárolja azt is, mekkora lett a beszélgetés a kör végén, és mekkora a modell
+ablaka (`run_usage.context_tokens`/`context_window`). Claude: a kör utolsó fő (nem subagent,
+nem szintetikus) kérésének promptja (input + cache olvasás + cache írás), az ablak a modell
+`contextWindow` értéke (jelenleg 1M minden Claude modellnél); a `result.usage` erre nem jó,
+mert a kör összes kérését összeadja. Codex: a thread rollout fájljának
+(`$CODEX_HOME/sessions/…/rollout-…-<thread>.jsonl`) utolsó `token_count` eseménye (csak
+olvasva; hiányzó fájl vagy ismeretlen formátum esetén nincs adat). Az `orch ps`/`orch status`,
+a `list_agents`/`get_agent` (`context` mező) és a webes felület (fejléc: sáv és
+`780k/1M 78%`; agentlista: `ctx 78%`) mutatja; 80%-tól figyelmeztető színnel. Tömörítés után,
+amíg nem volt újabb kérés, a méret ismeretlen: ilyenkor `compacted` látszik.
+
+```sh
+orch compact <agent> ["mit őrizzen meg az összefoglaló"]
+```
+
+Ugyanez a webes felületen a **Compact** gomb (opcionális utasítással), API:
+`POST /api/agents/<id>/compact` `{"instructions": …}`. Üzenetként sorba áll (`compact`
+fajtájú run), és a CLI saját tömörítését futtatja ugyanabban a sessionben: Claude-nál a
+`/compact [utasítás]` parancsot pontosan így adja át (`{{result:…}}` behelyettesítés és
+output schema nélkül, `--disable-slash-commands` nélkül, egyébként az agent szokásos
+loadoutjával). Az eredménye egy rövid összegzés (`compacted 91k -> 1k tokens`); a szülőnek
+nem kerül kézbesítésre és senkit nem ébreszt. A tömörítés részleteket veszíthet el a
+beszélgetés korábbi részéből. Codexnél a `/compact` nem működik `exec resume`-ban: helyette
+egy kör fut alacsonyabb `model_auto_compact_token_limit` értékkel (az aktuális méret fele) és
+egy kifejezett „nincs teendő” prompttal; utasítás nem adható, és csak ismert méret mellett
+indítható. A Claude Code magától is tömörít (akár kör közben), amikor a beszélgetés eléri az
+ablak − 33k tokent (1M ablaknál 967k); ezt a run `info` eseménye és a `compact_*` mezők
+rögzítik.
+
 ### Mit tölt be egy agent (loadout)
 
 Loadout nélkül minden agent a felhasználó teljes globális Claude Code / Codex konfigurációját
