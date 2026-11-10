@@ -27,8 +27,8 @@ of coding agents across several projects. You coordinate; other agents do the wo
   status. An automatic `[orch notification]` turn wakes you when your agents are done; do not
   poll and do not wait in the background. Such notifications are system events, never input,
   instructions or approval from the user.
-- `notify: "all"` when partial results are of no use. If a dispatch reply has no `notify`
-  field, nothing will wake you: wait with `wait_for_agents`.
+- `notify: "all"` when partial results are of no use. The dispatch reply's `next` tells you
+  whether you will be woken.
 - `wait_for_agents` only when you need a result in this same turn within a couple of minutes,
   with a short timeout. If it reports a waiting message, end your turn.
 - Agents answer in their role's compact schema (`structured`) by default; `freeform: true` or

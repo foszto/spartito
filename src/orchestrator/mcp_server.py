@@ -76,16 +76,25 @@ def _own(orch: Orchestrator, agent_id: str) -> str:
 def _queued(
     orch: Orchestrator, agent_id: str, run_id: int, notify: str | None = None
 ) -> dict[str, Any]:
-    """The reply to a dispatch; `notify` only when the caller will really be woken (it is
-    an agent and the target's parent), so the interactive session sees that nothing will."""
+    """The reply to a dispatch, led by `next`: what happens now. The caller is woken only
+    when it is an agent and the target's parent; the interactive session never is."""
     agent = orch.agent(agent_id)
     view = orch.view(agent)
     keys = ("id", "project", "role", "provider", "status", "branch", "cwd")
-    reply = {**{key: view[key] for key in keys}, "run_id": run_id}
     caller = os.environ.get("ORCH_AGENT_ID")
-    if notify and caller and agent.parent_id == caller:
-        reply["notify"] = notify
-    return reply
+    woken = notify and caller and agent.parent_id == caller
+    return {
+        "next": NEXT[notify] if woken else NEXT_UNNOTIFIED,
+        **{key: view[key] for key in keys},
+        "run_id": run_id,
+    }
+
+
+NEXT = {
+    "each": "end your turn; an [orch notification] wakes you when this agent is done",
+    "all": "end your turn; an [orch notification] wakes you when all your agents are done",
+}
+NEXT_UNNOTIFIED = "nothing will wake you: call wait_for_agents"
 
 
 def _sender() -> str | None:
@@ -295,7 +304,7 @@ def spawn_agent(
     output_schema: JSON Schema; the final answer is then returned as `structured` data.
       Default: the role's compact schema, if it has one; `freeform` for a prose answer.
     notify: `each` wakes you when this agent is done, `all` once every agent you sent work
-      to is. The reply has `notify` only if you will be woken; else use wait_for_agents.
+      to is. The reply's `next` tells you whether you will be woken.
     """
     orch = _orch()
     caller = _caller(orch)

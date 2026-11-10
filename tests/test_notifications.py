@@ -189,6 +189,14 @@ def test_a_user_message_runs_while_the_child_works_and_the_result_follows(
     assert len(notifications(orch, parent)) == 1 and not orch.store.active_runs(parent)
 
 
+def test_the_dispatch_reply_says_in_words_what_happens_next() -> None:
+    assert mcp_server.NEXT == {
+        "each": "end your turn; an [orch notification] wakes you when this agent is done",
+        "all": "end your turn; an [orch notification] wakes you when all your agents are done",
+    }
+    assert mcp_server.NEXT_UNNOTIFIED == "nothing will wake you: call wait_for_agents"
+
+
 def test_the_dispatch_reply_says_whether_the_caller_will_be_woken(
     orch: Orchestrator, project: str, as_agent: Callable
 ) -> None:
@@ -199,8 +207,9 @@ def test_the_dispatch_reply_says_whether_the_caller_will_be_woken(
     as_agent(None)
     interactive = mcp_server.spawn_agent("z", project=project, worktree=False)
 
-    assert mine["notify"] == "all"
-    assert "notify" not in to_other and "notify" not in interactive
+    assert next(iter(mine)) == "next" and "notify" not in mine
+    assert mine["next"] == mcp_server.NEXT["all"]
+    assert to_other["next"] == interactive["next"] == mcp_server.NEXT_UNNOTIFIED
     assert orch.store.meta(mine["run_id"]).sender == parent
     assert orch.store.meta(interactive["run_id"]).sender is None
     settle(orch, parent, other, interactive["id"])
@@ -871,7 +880,7 @@ def test_the_headless_orchestrator_adopts_a_lead_without_parent(
     reply = mcp_server.ask_project_lead(project, "from the orchestrator")
 
     assert orch.agent(old_lead.id).parent_id == ORCHESTRATOR_ID
-    assert reply["id"] == old_lead.id and reply["notify"] == "each"
+    assert reply["id"] == old_lead.id and reply["next"] == mcp_server.NEXT["each"]
 
 
 def test_views_show_running_descendants_and_a_capped_queue(

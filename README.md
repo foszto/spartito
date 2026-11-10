@@ -238,8 +238,8 @@ a még futó gyerekek listájával.
   gyerek azon értesítési körei kerülnek bele, amelyek a szülőnek végzett munkáról szólnak (amit
   a gyerek a szülő megbízása közben indított); a CLI-ből, webről kért munka és a régi runok nem.
 - `notify: "each"` (alapértelmezés): szól, amint ez az agent kész; `notify: "all"`: csak ha
-  minden agent kész, amelynek a szülő munkát küldött. A válaszban csak akkor van `notify` mező, ha a hívót tényleg
-  felébresztik (az interaktív `orch chat` sessiont semmi nem ébreszti: ott `wait_for_agents`).
+  minden agent kész, amelynek a szülő munkát küldött. A válasz első mezője, a `next` megmondja,
+  felébresztik-e a hívót (az interaktív `orch chat` sessiont soha: ott `wait_for_agents`).
 - Az értesítés szövege az induláskor készül, egy rövid várakozás után
   (`ORCH_NOTIFY_DELAY`, alapból 5 mp), így az egyszerre érkező eredmények egy körbe kerülnek; ha
   addigra nincs mit jelenteni, vagy el sem indul (leállítás, elhalt runner), a run nyom nélkül
