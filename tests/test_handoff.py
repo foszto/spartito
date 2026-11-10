@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from orchestrator import cli, config, mcp_server, roles
+from orchestrator import cli, config, mcp_server, providers, roles
 from orchestrator.models import RunStatus
 from orchestrator.runner import RESULT_CHARS, render_prompt
 from orchestrator.service import Orchestrator, OrchestratorError
@@ -411,7 +411,7 @@ def test_list_view_gives_structured_output_once_and_bounded(
     for view in listed:
         assert "structured" not in view["last_run"]
         assert view["last_run"]["result"].startswith('{"summary":"plan ')
-        assert view["last_run"]["result"].endswith("[truncated; get_agent gives all of it]")
+        assert view["last_run"]["result"].endswith("… [truncated]")
 
 
 def test_get_agent_gives_the_answer_once(orch: Orchestrator, project: str) -> None:
@@ -436,16 +436,48 @@ def test_a_failing_result_write_keeps_the_run_outcome(
     def unwritable(*args: Any) -> None:
         raise OSError(28, "No space left on device")
 
+    fake = providers.get("fake")
+    parse = fake.parse
+
+    def with_structured(line: str) -> list:
+        events = parse(line)
+        for event in events:
+            event.structured = {"ok": True} if event.kind == "result" else None
+        return events
+
     agent = orch.create_agent(project, name="w", worktree=False)
     run = orch.store.add_run(agent.id, "hello")
+    monkeypatch.setattr(fake, "parse", with_structured)
     monkeypatch.setattr(runner.os, "replace", unwritable)
     runner.main(run.id)
 
     stored = orch.store.get_run(run.id)
     events = orch.store.events(agent.id, tail=None)
     assert (stored.status, stored.result) == (RunStatus.DONE, "echo[new]: hello")
+    assert stored.structured == {"ok": True}
     assert events[-1].kind == "error" and "No space left" in events[-1].text
     assert not config.result_file(run.id).exists()
+
+
+@pytest.mark.parametrize("prompt", ("hello", "FAIL"))
+def test_the_result_file_exists_when_the_run_is_marked_finished(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch, prompt: str
+) -> None:
+    from orchestrator import runner
+
+    seen = []
+    finish = runner.Store.finish_run
+
+    def recording(self: Any, run_id: int, *args: Any, **kwargs: Any) -> None:
+        seen.append(config.result_file(run_id).is_file())
+        finish(self, run_id, *args, **kwargs)
+
+    agent = orch.create_agent(project, name="w", worktree=False)
+    run = orch.store.add_run(agent.id, prompt)
+    monkeypatch.setattr(runner.Store, "finish_run", recording)
+    runner.main(run.id)
+
+    assert seen == [True]
 
 
 def test_the_result_file_is_written_without_leftovers(orch: Orchestrator, project: str) -> None:
@@ -478,3 +510,14 @@ def test_a_runner_error_leaves_no_result_file(orch: Orchestrator, project: str, 
     detail = mcp_server.get_agent(agent.id)["last_run"]
     assert detail["status"] == "failed" and "LoadoutError" in detail["error"]
     assert detail["result_file"] is None
+
+
+def test_cli_wait_prints_the_full_text_of_a_structured_run(
+    orch: Orchestrator, project: str
+) -> None:
+    text = json.dumps(big_plan(2), indent=2)
+    agent_id = finished_agent(orch, project, text, structured=big_plan(2))
+
+    printed = CliRunner().invoke(cli.app, ["wait", agent_id, "--timeout", "5"])
+
+    assert printed.exit_code == 0 and text in printed.output

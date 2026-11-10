@@ -317,7 +317,7 @@ class Orchestrator:
             # The answer once: structured output as compact JSON instead of the text.
             result = json.dumps(shown.structured, ensure_ascii=False, separators=(",", ":"))
         if result and result_limit and len(result) > result_limit:
-            result = result[:result_limit] + "… [truncated; get_agent gives all of it]"
+            result = result[:result_limit] + "… [truncated]"
         totals = running_total(runs, usage)
         view = {
             "id": agent.id,
@@ -387,9 +387,10 @@ class Orchestrator:
             time.sleep(1)
 
     def wait(self, agent_ids: list[str], timeout: float = 600) -> tuple[bool, list[dict[str, Any]]]:
-        """Block like wait_idle, then return whether they are idle and their full views."""
+        """Block like wait_idle, then return whether they are idle and their detail views
+        (the last run's full text in `result`, structured output in `structured`)."""
         idle = self.wait_idle(agent_ids, timeout)
-        return idle, [self.view(self.agent(agent_id)) for agent_id in agent_ids]
+        return idle, [self.view(self.agent(agent_id), detail=True) for agent_id in agent_ids]
 
     def changes(
         self, agent_id: str, max_commits: int | None = None, max_status: int | None = None

@@ -207,8 +207,8 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
                 structured = None
         if text != last_text:  # otherwise the activity log already ends with it
             store.add_event(run.id, agent.id, "result", text)
-        store.finish_run(run.id, RunStatus.DONE, result=text, structured=structured, cost_usd=cost)
         write_result(store, run, scratch, text, structured)
+        store.finish_run(run.id, RunStatus.DONE, result=text, structured=structured, cost_usd=cost)
         return
     stderr_tail = stderr_path.read_text(encoding="utf-8", errors="replace").strip()[-1500:]
     error = (
@@ -218,16 +218,17 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
         or f"{invocation.argv[0]} exited with code {code} without a result"
     )
     store.add_event(run.id, agent.id, "error", error)
-    store.finish_run(run.id, RunStatus.FAILED, error=error, result=last_text or None, cost_usd=cost)
     write_result(store, run, scratch, last_text or error, None)
+    store.finish_run(run.id, RunStatus.FAILED, error=error, result=last_text or None, cost_usd=cost)
 
 
 def write_result(store: Store, run: Run, scratch: Path, text: str, structured: Any) -> None:
     """Write the full final answer to result.md (a failed run: its last text, else the
     error) and structured output to result.json, each atomically.
 
-    A side channel: the run's outcome is already stored, so a failed write only adds an
-    event and leaves the run's status alone.
+    Called before the run is marked finished, so whoever sees it finished (a dependent
+    run, get_agent) finds the file. A side channel: a failed write only adds an event and
+    the run's outcome is stored as usual.
     """
     files = [("result.md", text)]
     if structured is not None:
