@@ -227,13 +227,18 @@ válaszával (agentenként 4000, összesen 10000 karakterig; a többi `get_agent
 a még futó gyerekek listájával.
 
 - Csak a szülő által küldött (MCP `spawn_agent`, `send_message`, `ask_project_lead`) runok és a
-  gyerek saját értesítési körei kerülnek bele; a CLI-ből, webről küldött és a régi runok nem.
-- `notify: "each"` (alapértelmezés): szól, amint ez az agent kész; `notify: "all"`: csak ha a
-  szülő minden agentje kész. A válaszban csak akkor van `notify` mező, ha a hívót tényleg
+  gyerek azon értesítési körei kerülnek bele, amelyek a szülőnek végzett munkáról szólnak (amit
+  a gyerek a szülő megbízása közben indított); a CLI-ből, webről kért munka és a régi runok nem.
+- `notify: "each"` (alapértelmezés): szól, amint ez az agent kész; `notify: "all"`: csak ha
+  minden agent kész, amelynek a szülő munkát küldött. A válaszban csak akkor van `notify` mező, ha a hívót tényleg
   felébresztik (az interaktív `orch chat` sessiont semmi nem ébreszti: ott `wait_for_agents`).
 - Az értesítés szövege az induláskor készül, egy rövid várakozás után
   (`ORCH_NOTIFY_DELAY`, alapból 5 mp), így az egyszerre érkező eredmények egy körbe kerülnek; ha
-  addigra nincs mit jelenteni, a run nyom nélkül törlődik.
+  addigra nincs mit jelenteni, vagy el sem indul (leállítás, elhalt runner), a run nyom nélkül
+  törlődik. Ha az értesítési kör elbukik, az eredményei újra kézbesíthetők: a következő
+  értesítéssel jönnek (automatikus újrapróbálás nincs), addig `wait_for_agents` adja őket.
+- Értesítést csak egy run vége vált ki, várakozás (`orch wait`, `wait_for_agents`) soha; egy
+  leállított agent így csendben marad a következő valódi befejezésig.
 - Minden eredmény egyszer jut el a szülőhöz: amit `wait_for_agents` már visszaadott, nem jön
   értesítésben, és az értesítésben kapott eredményt egy későbbi `wait_for_agents`
   `already_delivered`-ként jelzi. A `wait_for_agents` (alapból 120 mp) az al-agentekre is vár,
