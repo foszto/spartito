@@ -445,11 +445,14 @@ const SETUP_SETTLE_MS = 350;
 // page goes away, so none is dropped.
 const pendingSetup = new Map();
 const savingSetup = new Map();  // saves in flight, by agent and setting: count
-// A poll asked for while a save was in flight, or before one ended, may carry the old values:
-// such answers leave the controls alone (`setupFresh` false).
-let setupEpoch = 0;
-const setupTicket = () => ({ epoch: setupEpoch, saving: savingSetup.size > 0 });
-const setupFresh = ticket => !ticket.saving && ticket.epoch === setupEpoch;
+// A poll asked for while a save of that agent was in flight, or before one ended, may carry its
+// old values: such answers leave its controls alone (`setupFresh` false). Kept per agent, so a
+// save for one agent never holds up the controls of another.
+const setupEpochs = new Map();  // agent id -> saves started and ended
+const setupTicket = () => ({
+  epochs: new Map(setupEpochs), saving: new Set([...savingSetup.keys()].map(slot => slot.split('\u0000')[0])) });
+const setupFresh = (ticket, id) => !ticket.saving.has(id) && (ticket.epochs.get(id) || 0) === (setupEpochs.get(id) || 0);
+const bumpSetup = id => setupEpochs.set(id, (setupEpochs.get(id) || 0) + 1);
 const setupSlot = (id, key) => `${id}\u0000${key}`;
 const setupBusy = (id, key) => pendingSetup.has(setupSlot(id, key)) || savingSetup.has(setupSlot(id, key));
 const inherits = value => value || 'CLI default';
@@ -463,7 +466,8 @@ function flushSetup(keepalive) {
 // a half-typed name) is never rebuilt; it is updated in place and rebuilt once the focus leaves.
 function renderSetup(data, fresh = true) {
   const box = $('setup'), note = $('setupNote');
-  if (!box || !fresh) return;
+  // A stale answer does not touch controls that are there; a view without any still gets them.
+  if (!box || (!fresh && box.childElementCount)) return;
   setupData = data;
   if (!data) { box.replaceChildren(); note.textContent = ''; note.hidden = true; return; }
   const notes = [];
@@ -572,7 +576,7 @@ function editModel(select, data) {
 async function saveSetup(id, key, value, keepalive) {
   const slot = setupSlot(id, key);
   savingSetup.set(slot, (savingSetup.get(slot) || 0) + 1);
-  setupEpoch++;
+  bumpSetup(id);
   let failed = false;
   try {
     const result = await call(`/api/agents/${encodeURIComponent(id)}/model`, { [key]: value }, keepalive);
@@ -588,7 +592,7 @@ async function saveSetup(id, key, value, keepalive) {
   } finally {
     const left = savingSetup.get(slot) - 1;
     if (left > 0) savingSetup.set(slot, left); else savingSetup.delete(slot);
-    setupEpoch++;
+    bumpSetup(id);
   }
   if (setupData?.id !== id) return;
   const control = $('setup')?.querySelector(`[data-control=${key}]`);
@@ -943,10 +947,10 @@ async function refresh() {
       $('view').replaceChildren(gone); shown = null; return;
     }
     if (shown !== target) buildView();
-    if (virtual) { renderHeader(null, setupFresh(ticket)); return; }
+    if (virtual) { renderHeader(null, setupFresh(ticket, target)); return; }
     const data = await call(`/api/agents/${encodeURIComponent(target)}/events?after=${lastEvent}`);
     if (target !== selected || shown !== target) return;  // the selection changed meanwhile
-    renderHeader(data.agent, setupFresh(ticket));
+    renderHeader(data.agent, setupFresh(ticket, target));
     appendEvents(data.events);
   } catch (error) {
     $('summary').textContent = `Disconnected: ${error.message}`;

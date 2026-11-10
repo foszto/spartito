@@ -331,3 +331,18 @@ def test_two_changes_at_once_do_not_undo_each_other(
     orch.set_overrides(agent.id, {"model": "fake-large"})
 
     assert own(orch, agent.id) == ("fake-large", "high")
+
+
+def test_a_stored_unsafe_tier_model_is_named_when_saving_its_scope(orch: Orchestrator) -> None:
+    """Saving validates the scope's whole document: the error says where the bad value is."""
+    orch.store.set_settings("", {"worker": {"claude": {"model": "old one"}}})
+
+    result = CliRunner().invoke(
+        cli.app, ["config", "set", "lead", "--provider", "codex", "--effort", "low"]
+    )
+
+    assert result.exit_code == 1
+    assert "worker/claude: model 'old one' must be one word" in result.output
+    assert orch.settings() == {"worker": {"claude": {"model": "old one"}}}
+    with pytest.raises(OrchestratorError, match="lead/fake: fake has no effort 'extreme'"):
+        orch.update_settings({"lead": {"fake": {"effort": "extreme"}}})

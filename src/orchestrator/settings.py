@@ -72,12 +72,17 @@ def clean(data: Any) -> dict[str, dict[str, dict[str, str]]]:
                 for key in FIELDS
                 if str((values or {}).get(key) or "").strip()
             }
+            where = f"{tier}/{provider_name}"
             if "model" in kept:
-                check_model(kept["model"])
+                try:
+                    check_model(kept["model"])
+                except ValueError as exc:
+                    raise ValueError(f"{where}: {exc}") from None
             effort = kept.get("effort")
             if effort and effort not in provider.efforts:
                 raise ValueError(
-                    f"{provider_name} has no effort '{effort}' (use: {', '.join(provider.efforts)})"
+                    f"{where}: {provider_name} has no effort '{effort}'"
+                    f" (use: {', '.join(provider.efforts)})"
                 )
             if kept:
                 result.setdefault(tier, {})[provider_name] = kept
