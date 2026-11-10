@@ -71,6 +71,7 @@ def read_stream(path: Path) -> dict[str, Any]:
         servers = init.get("mcp_servers") or []
         out.update(
             model=init.get("model"),
+            api_key_source=init.get("apiKeySource"),  # "none": subscription login
             tools=len(tools),
             mcp_tools=sum(1 for t in tools if str(t).startswith("mcp__")),
             builtin_tools=sorted(t for t in tools if not str(t).startswith("mcp__")),

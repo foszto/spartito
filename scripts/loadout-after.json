@@ -1,0 +1,259 @@
+{
+  "claude_version": "2.1.322 (Claude Code)",
+  "requested_model": null,
+  "effort": "low",
+  "prompt": "Reply with the single word: ok",
+  "measured_at": "2026-11-10T13:40:19+0100",
+  "roles": {
+    "orchestrator": {
+      "agent": "orchestrator",
+      "run": 1,
+      "status": "done",
+      "error": null,
+      "reply": "ok",
+      "seconds": 6.1,
+      "init_seen": true,
+      "model": "claude-fable-5-2",
+      "api_key_source": "none",
+      "tools": 16,
+      "mcp_tools": 12,
+      "builtin_tools": [
+        "Bash",
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "mcp_servers": 1,
+      "mcp_server_names": [
+        "orch:connected"
+      ],
+      "skills": 19,
+      "slash_commands": 54,
+      "plugins": 5,
+      "agents": 5,
+      "other_lists": {
+        "terminal_slash_commands": 4,
+        "capabilities": 15,
+        "additional_directories": 0
+      },
+      "first_request_input": 12200,
+      "first_usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 12198,
+        "cache_read_input_tokens": 0
+      },
+      "cost_usd": 0.19534400000000002,
+      "turns": 1,
+      "result_subtype": "success",
+      "is_error": false
+    },
+    "lead": {
+      "agent": "lead-d1f1",
+      "run": 2,
+      "status": "done",
+      "error": null,
+      "reply": "ok",
+      "seconds": 6.1,
+      "init_seen": true,
+      "model": "claude-fable-5-2",
+      "api_key_source": "none",
+      "tools": 16,
+      "mcp_tools": 12,
+      "builtin_tools": [
+        "Bash",
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "mcp_servers": 1,
+      "mcp_server_names": [
+        "orch:connected"
+      ],
+      "skills": 19,
+      "slash_commands": 54,
+      "plugins": 5,
+      "agents": 5,
+      "other_lists": {
+        "terminal_slash_commands": 4,
+        "capabilities": 15,
+        "additional_directories": 0
+      },
+      "first_request_input": 12238,
+      "first_usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 4618,
+        "cache_read_input_tokens": 7618
+      },
+      "cost_usd": 0.07558759999999999,
+      "turns": 1,
+      "result_subtype": "success",
+      "is_error": false
+    },
+    "planner": {
+      "agent": "planner-f4e4",
+      "run": 3,
+      "status": "done",
+      "error": null,
+      "reply": "ok",
+      "seconds": 5.1,
+      "init_seen": true,
+      "model": "claude-fable-5-2",
+      "api_key_source": "none",
+      "tools": 6,
+      "mcp_tools": 0,
+      "builtin_tools": [
+        "Bash",
+        "Glob",
+        "Grep",
+        "Read",
+        "WebFetch",
+        "WebSearch"
+      ],
+      "mcp_servers": 0,
+      "mcp_server_names": [],
+      "skills": 19,
+      "slash_commands": 54,
+      "plugins": 5,
+      "agents": 5,
+      "other_lists": {
+        "terminal_slash_commands": 4,
+        "capabilities": 15,
+        "additional_directories": 0
+      },
+      "first_request_input": 9820,
+      "first_usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 4396,
+        "cache_read_input_tokens": 5422
+      },
+      "cost_usd": 0.07159639999999999,
+      "turns": 1,
+      "result_subtype": "success",
+      "is_error": false
+    },
+    "reviewer": {
+      "agent": "reviewer-11cb",
+      "run": 4,
+      "status": "done",
+      "error": null,
+      "reply": "ok",
+      "seconds": 4.1,
+      "init_seen": true,
+      "model": "claude-fable-5-2",
+      "api_key_source": "none",
+      "tools": 4,
+      "mcp_tools": 0,
+      "builtin_tools": [
+        "Bash",
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "mcp_servers": 0,
+      "mcp_server_names": [],
+      "skills": 19,
+      "slash_commands": 54,
+      "plugins": 5,
+      "agents": 5,
+      "other_lists": {
+        "terminal_slash_commands": 4,
+        "capabilities": 15,
+        "additional_directories": 0
+      },
+      "first_request_input": 8891,
+      "first_usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 4316,
+        "cache_read_input_tokens": 4573
+      },
+      "cost_usd": 0.0701466,
+      "turns": 1,
+      "result_subtype": "success",
+      "is_error": false
+    },
+    "tester": {
+      "agent": "tester-c066",
+      "run": 5,
+      "status": "done",
+      "error": null,
+      "reply": "ok",
+      "seconds": 4.1,
+      "init_seen": true,
+      "model": "claude-fable-5-2",
+      "api_key_source": "none",
+      "tools": 6,
+      "mcp_tools": 0,
+      "builtin_tools": [
+        "Bash",
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "mcp_servers": 0,
+      "mcp_server_names": [],
+      "skills": 19,
+      "slash_commands": 54,
+      "plugins": 5,
+      "agents": 5,
+      "other_lists": {
+        "terminal_slash_commands": 4,
+        "capabilities": 15,
+        "additional_directories": 0
+      },
+      "first_request_input": 9800,
+      "first_usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 4641,
+        "cache_read_input_tokens": 5157
+      },
+      "cost_usd": 0.0754634,
+      "turns": 1,
+      "result_subtype": "success",
+      "is_error": false
+    },
+    "worker": {
+      "agent": "worker-69f9",
+      "run": 6,
+      "status": "done",
+      "error": null,
+      "reply": "ok",
+      "seconds": 5.1,
+      "init_seen": true,
+      "model": "claude-fable-5-2",
+      "api_key_source": "none",
+      "tools": 6,
+      "mcp_tools": 0,
+      "builtin_tools": [
+        "Bash",
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Write"
+      ],
+      "mcp_servers": 0,
+      "mcp_server_names": [],
+      "skills": 19,
+      "slash_commands": 54,
+      "plugins": 5,
+      "agents": 5,
+      "other_lists": {
+        "terminal_slash_commands": 4,
+        "capabilities": 15,
+        "additional_directories": 0
+      },
+      "first_request_input": 9831,
+      "first_usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 4539,
+        "cache_read_input_tokens": 5290
+      },
+      "cost_usd": 0.073858,
+      "turns": 1,
+      "result_subtype": "success",
+      "is_error": false
+    }
+  }
+}
