@@ -28,6 +28,26 @@ GLOBAL = ""
 FIELDS = ("model", "effort")
 
 
+MODEL_MAX_CHARS = 200
+
+
+def check_model(value: Any) -> str:
+    """A model name an agent may be set to: any name the provider might accept, but one
+    safe as the single argument after `--model`/`-m`. Raises ValueError."""
+    if not isinstance(value, str):
+        raise ValueError("model must be a string (or null to inherit)")
+    shown = repr(value[:40] + ("…" if len(value) > 40 else ""))
+    if not value:
+        raise ValueError("model must not be empty; clear it to inherit the default instead")
+    if len(value) > MODEL_MAX_CHARS:
+        raise ValueError(f"model {shown} is too long (at most {MODEL_MAX_CHARS} characters)")
+    if any(char.isspace() for char in value) or not value.isprintable():
+        raise ValueError(f"model {shown} must be one word, without spaces or control characters")
+    if value.startswith("-"):
+        raise ValueError(f"model {shown} must not start with '-'")
+    return value
+
+
 def tier_of(agent: Agent, role: Role) -> str:
     if agent.project is None:
         return "orchestrator"

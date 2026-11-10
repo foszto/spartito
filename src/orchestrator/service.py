@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,14 @@ STOP_GRACE_SECONDS = 8
 QUEUE_PREVIEW_CHARS = 120
 QUEUE_LISTED = 20  # waiting runs in the detail view's `queue`; `queued_runs` has the count
 WAIT_POLL_SECONDS = 1.0
+# What starts a fresh prompt cache when it changes in a resumed session (the next turn
+# re-reads the whole conversation uncached). Checked with real turns: Claude 2.x re-wrote
+# the cache after a model switch on --resume; codex-cli 0.155.1 read 0 cached tokens after
+# `-m` changed on `exec resume` but kept the cache (12k of 14k cached) when only
+# model_reasoning_effort did. Claude's effort is assumed to reset it (thinking settings
+# are part of the cached request).
+CACHE_KEYS = {"codex": ("model",)}
+CACHE_KEYS_DEFAULT = ("model", "effort")
 
 
 class OrchestratorError(Exception):
@@ -261,19 +270,21 @@ class Orchestrator:
         It belongs to no project, works in the orchestrator workspace and reaches every
         project through the MCP tools. `orch chat` is a separate, interactive session.
         """
-        agent = self.store.get_agent(ORCHESTRATOR_ID)
-        if agent:
-            return agent
+        return self.store.get_agent(ORCHESTRATOR_ID) or self.store.add_agent(
+            self._orchestrator_draft()
+        )
+
+    @staticmethod
+    def _orchestrator_draft() -> Agent:
+        """The orchestrator agent as it is created on first use (not stored)."""
         role = roles.load(ORCHESTRATOR_ID)
-        return self.store.add_agent(
-            Agent(
-                id=ORCHESTRATOR_ID,
-                project=None,
-                name=ORCHESTRATOR_ID,
-                role=ORCHESTRATOR_ID,
-                provider=role.provider or "claude",
-                cwd=str(config.workspace_dir()),
-            )
+        return Agent(
+            id=ORCHESTRATOR_ID,
+            project=None,
+            name=ORCHESTRATOR_ID,
+            role=ORCHESTRATOR_ID,
+            provider=role.provider or "claude",
+            cwd=str(config.workspace_dir()),
         )
 
     def _resolve_after(self, after: list[str | int] | None) -> list[int]:
@@ -351,6 +362,73 @@ class Orchestrator:
         except KeyError:  # the role file was removed; the next turn would fail anyway
             return {"model": agent.model, "effort": agent.effort}
         return settings.resolve(self.store, agent, role)
+
+    def inherited(self, agent: Agent) -> dict[str, str | None]:
+        """Model and effort the agent's next turn would use without its own values."""
+        return self.effective(replace(agent, model=None, effort=None))
+
+    def setup(self, agent_id: str) -> dict[str, Any]:
+        """An agent's model and effort: what its next turn uses (`effective`), the values
+        set on the agent itself (`model_override`/`effort_override`; null: inherited) and
+        what applies without them (`inherited`); `running`: a turn is running (a change
+        applies from the next one); `cache_keys`: which of the two start a fresh prompt cache
+        when changed in an existing session. The orchestrator is shown before its first use
+        too (`exists` false)."""
+        agent = self._agent_or_orchestrator_draft(agent_id)
+        return {
+            "agent_id": agent.id,
+            "provider": agent.provider,
+            "exists": self.store.get_agent(agent.id) is not None,
+            "effective": self.effective(agent),
+            "model_override": agent.model,
+            "effort_override": agent.effort,
+            "inherited": self.inherited(agent),
+            "session_id": agent.session_id,
+            "running": self.store.running_run(agent.id) is not None,
+            "cache_keys": list(CACHE_KEYS.get(agent.provider, CACHE_KEYS_DEFAULT)),
+        }
+
+    def set_overrides(self, agent_id: str, changes: dict[str, Any]) -> dict[str, Any]:
+        """Set or clear an agent's own model and/or effort; returns its `setup`.
+
+        `changes` holds `model` and/or `effort`; a string sets the value, None clears it
+        (back to the tier default), a missing key keeps it. The values are resolved when a
+        turn starts, so a running turn is not affected; the next one uses them. The
+        orchestrator is created on first use, like a message to it does.
+        """
+        if not isinstance(changes, dict):
+            raise OrchestratorError("expected an object with 'model' and/or 'effort'")
+        unknown = sorted(set(changes) - set(settings.FIELDS))
+        if unknown:
+            raise OrchestratorError(f"cannot set {', '.join(unknown)} (use: model, effort)")
+        if not changes:
+            raise OrchestratorError("nothing to change: give 'model' and/or 'effort'")
+        agent = self._agent_or_orchestrator_draft(agent_id)
+        model, effort = agent.model, agent.effort
+        if "model" in changes:
+            try:
+                model = None if changes["model"] is None else settings.check_model(changes["model"])
+            except ValueError as exc:
+                raise OrchestratorError(str(exc)) from None
+        if "effort" in changes:
+            effort = changes["effort"]
+            try:
+                allowed = providers.get(agent.provider).efforts
+            except KeyError as exc:
+                raise OrchestratorError(str(exc.args[0])) from None
+            if effort is not None and effort not in allowed:
+                raise OrchestratorError(
+                    f"{agent.provider} has no effort {effort!r} (use: {', '.join(allowed)})"
+                )
+        if agent.id == ORCHESTRATOR_ID:
+            self.orchestrator()
+        self.store.set_overrides(agent.id, model, effort)
+        return self.setup(agent.id)
+
+    def _agent_or_orchestrator_draft(self, agent_id: str) -> Agent:
+        if agent_id == ORCHESTRATOR_ID:
+            return self.store.get_agent(ORCHESTRATOR_ID) or self._orchestrator_draft()
+        return self.agent(agent_id)
 
     # -- observation ------------------------------------------------------
 

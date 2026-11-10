@@ -526,6 +526,50 @@ def wait(
         raise typer.Exit(1)
 
 
+@app.command("model")
+def model_command(
+    agent_id: str,
+    model: Annotated[
+        str | None, typer.Option(help='The agent\'s own model; "" clears it (inherit).')
+    ] = None,
+    effort: Annotated[
+        str | None, typer.Option(help='The agent\'s own effort; "" clears it (inherit).')
+    ] = None,
+) -> None:
+    """Show, set or clear an agent's own model and effort.
+
+    Without options it shows them. A cleared value falls back to the tier default
+    (`orch config`). A change applies from the agent's next turn; a running one keeps its
+    model. In an existing session it starts a fresh prompt cache, so the next turn reads
+    the whole conversation again at full price.
+    """
+    changes = {
+        key: value or None
+        for key, value in (("model", model), ("effort", effort))
+        if value is not None
+    }
+    o = orch()
+    try:
+        setup = o.set_overrides(agent_id, changes) if changes else o.setup(agent_id)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    typer.secho(f"{setup['agent_id']}  {setup['provider']}", bold=True)
+    for key in ("model", "effort"):
+        value = setup["effective"][key] or "default"
+        own, inherited = setup[f"{key}_override"], setup["inherited"][key] or "default"
+        source = f"own (inherited: {inherited})" if own else "inherited"
+        typer.echo(f"  {key:<7} {value:<20} {source}")
+    if not changes:
+        return
+    notes = []
+    if setup["running"]:
+        notes.append("a turn is running: it keeps its model; the change applies from the next one")
+    if setup["session_id"] and set(changes) & set(setup["cache_keys"]):
+        notes.append("the next turn starts a fresh prompt cache and reads the whole conversation")
+    for note in notes:
+        typer.echo(f"note: {note}")
+
+
 @app.command()
 def stop(agent_id: str) -> None:
     """Stop an agent's running and queued turns; the agent and its worktree stay."""

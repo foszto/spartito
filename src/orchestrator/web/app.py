@@ -92,8 +92,11 @@ def index(request: Request) -> HTMLResponse:
 
 def state(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
     agents = orch.overview()
+    top = next((a for a in agents if a["id"] == ORCHESTRATOR_ID), None)
     return {
-        "orchestrator": next((a for a in agents if a["id"] == ORCHESTRATOR_ID), None),
+        "orchestrator": top,
+        # Its model and effort before the first message, so they can be chosen up front.
+        "orchestrator_setup": None if top else orch.setup(ORCHESTRATOR_ID),
         "projects": [
             {**asdict(project), "agents": [a for a in agents if a["project"] == project.name]}
             for project in orch.store.list_projects()
@@ -124,6 +127,7 @@ def events(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
             **orch.view(agent, detail=True),
             "changes": orch.changes(agent.id),
             "effective": orch.effective(agent),
+            "inherited": orch.inherited(agent),
             "recent_runs": orch.run_history(agent, limit=10),
         },
         "events": [
@@ -216,6 +220,12 @@ def message_lead(orch: Orchestrator, request: Request, body: dict) -> dict[str, 
     return queued(lead.id, orch.send(lead.id, required(body, "message")).id)
 
 
+def set_agent_model(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """Set (a string) or clear (null) the agent's own `model` and/or `effort`; a missing
+    key keeps the value. Creates the orchestrator on first use, like a message does."""
+    return orch.set_overrides(request.path_params["agent_id"], body)
+
+
 def save_settings(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
     return orch.update_settings(body.get("data") or {}, optional(body, "project"))
 
@@ -244,6 +254,7 @@ app = Starlette(
         Route("/api/settings", api(save_settings), methods=["POST"]),
         Route("/api/agents", api(spawn_agent), methods=["POST"]),
         Route("/api/agents/{agent_id}/messages", api(message_agent), methods=["POST"]),
+        Route("/api/agents/{agent_id}/model", api(set_agent_model), methods=["POST"]),
         Route("/api/agents/{agent_id}/stop", api(stop_agent), methods=["POST"]),
         Route("/api/agents/{agent_id}/remove", api(remove_agent), methods=["POST"]),
     ],

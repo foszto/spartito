@@ -403,6 +403,13 @@ class Store:
         with self._conn() as conn:
             conn.execute("UPDATE agents SET session_id = ? WHERE id = ?", (session_id, agent_id))
 
+    def set_overrides(self, agent_id: str, model: str | None, effort: str | None) -> None:
+        """Set the agent's own model and effort (None: inherit from the settings)."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE agents SET model = ?, effort = ? WHERE id = ?", (model, effort, agent_id)
+            )
+
     def delete_agent(self, agent_id: str) -> None:
         with self._conn() as conn:
             conn.execute("DELETE FROM events WHERE agent_id = ?", (agent_id,))
