@@ -185,7 +185,9 @@ tools = "Bash,Read,Glob,Grep,Skill"
 
 A zászlókat minden kör megkapja, a `--resume`/`exec resume` körök is. Az `orch chat` az
 `orchestrator` szerep loadoutját használja (csak a home szintű `loadout.toml` hat rá), és a
-`Bash` mindig benne marad az `orch` parancsokhoz. A Codex a `tools`/`mcp`/`setting_sources`/
+`Bash` mindig benne marad az `orch` parancsokhoz; a slash parancsokat viszont sosem kapcsolja
+ki (a `--disable-slash-commands` az interaktív `/compact`, `/clear`, `/model`, `/context`
+parancsokat is elvenné), csak a headless agenteknél hat a `slash_commands`. A Codex a `tools`/`mcp`/`setting_sources`/
 `slash_commands` kulcsokat nem ismeri; `codex_user_config = false` mellett a user
 konfiguráció modellje, MCP szerverei és pluginjei sem töltődnek be (a modell a Codex saját
 alapértéke, ha nincs beállítva), a lead szerepek `orch` eszközei pedig jóváhagyás nélkül

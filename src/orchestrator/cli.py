@@ -130,6 +130,9 @@ def chat(
         raise fail(str(exc)) from None
     if chosen.tools is not None and "Bash" not in chosen.tools:
         chosen = replace(chosen, tools=(*chosen.tools, "Bash"))  # for `orch wait` and co.
+    # A person works in this session: --disable-slash-commands would also take away the
+    # built-in /compact, /clear, /model and /context. Headless agents keep the setting.
+    chosen = replace(chosen, slash_commands=True)
     argv = [
         "claude",
         "--mcp-config", mcp_config(),

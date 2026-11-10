@@ -142,7 +142,9 @@ def test_chat_loads_the_orchestrator_loadout_and_keeps_bash_for_orch(
     runner = CliRunner()
     plain = runner.invoke(cli.app, ["chat", "--here"])
     home = cli.config.home()
-    (home / "loadout.toml").write_text('[orchestrator]\ntools = "Read"\nmcp = "inherit"\n')
+    (home / "loadout.toml").write_text(
+        '[orchestrator]\ntools = "Read"\nmcp = "inherit"\nslash_commands = false\n'
+    )
     overridden = runner.invoke(cli.app, ["chat", "--here"])
     (home / "loadout.toml").write_text("[orchestrator\n")
     broken = runner.invoke(cli.app, ["chat", "--here"])
@@ -153,6 +155,8 @@ def test_chat_loads_the_orchestrator_loadout_and_keeps_bash_for_orch(
     assert option(argv, "--setting-sources") == "project,local"
     assert "--strict-mcp-config" in argv and "Bash(orch *)" in argv and "--mcp-config" in argv
     assert option(custom, "--tools") == "Read,Bash" and "--strict-mcp-config" not in custom
+    # The orchestrator role turns slash commands off; the interactive session keeps them.
+    assert "--disable-slash-commands" not in argv and "--disable-slash-commands" not in custom
     assert broken.exit_code == 1 and "invalid TOML" in broken.output
 
 
@@ -166,4 +170,5 @@ def test_a_continued_chat_keeps_the_orchestrator_loadout(
     assert "--continue" in argv and "--name" not in argv
     assert option(argv, "--tools") == "Bash,Read,Glob,Grep" and "--strict-mcp-config" in argv
     assert option(argv, "--setting-sources") == "project,local"
-    assert "--disable-slash-commands" in argv
+    # Skills and commands stay on in the interactive session (/compact, /clear, ...).
+    assert "--disable-slash-commands" not in argv
