@@ -329,8 +329,14 @@ def list_board(orch: Orchestrator, request: Request, body: dict) -> dict[str, An
 
 
 def add_board_item(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """One request: the item with its optional `agent`/`branch` links, or nothing."""
     item = orch.add_board_item(
-        required(body, "project"), body.get("title"), body.get("description"), body.get("state")
+        required(body, "project"),
+        body.get("title"),
+        body.get("description"),
+        body.get("state"),
+        body.get("agent"),
+        body.get("branch"),
     )
     return item.to_dict()
 
@@ -358,8 +364,9 @@ def move_board_item(orch: Orchestrator, request: Request, body: dict) -> dict[st
 
 
 def dispatch_board(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
-    """The project's ready items to its lead as one message; none ready: nothing is sent."""
-    return orch.dispatch_board(required(body, "project"))
+    """The project's ready items to its lead as one message; `ids`: only those (the ones the
+    owner confirmed) that are still ready. None of them ready: nothing is sent."""
+    return orch.dispatch_board(required(body, "project"), body.get("ids"))
 
 
 app = Starlette(

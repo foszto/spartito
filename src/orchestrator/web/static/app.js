@@ -1071,7 +1071,8 @@ async function renderBoard() {
   const ready = items.filter(item => item.state === 'ready').length, dispatch = dialog.querySelector('[data-dispatch]');
   dispatch.textContent = ready ? `Dispatch ${plural(ready, 'ready item')}` : 'Dispatch ready items';
   dispatch.disabled = !ready;
-  dispatch.dataset.ready = String(ready);
+  // The ids shown now: the confirmation names them and only they are dispatched.
+  dispatch.dataset.ids = JSON.stringify(items.filter(item => item.state === 'ready').map(item => item.id));
 }
 function boardItem(item) {
   const node = el('div', 'list-item board-item'), head = el('div', 'item-head'), tools = el('div', 'item-tools');
@@ -1119,9 +1120,7 @@ const boardFields = data => ({ title: data.get('title'), description: data.get('
 function addBoardItem() {
   const project = boardProject, dialog = boardItemForm(`New item in ${project}`, {});
   openDialog(dialog, async data => {
-    const { agent, branch, ...fields } = boardFields(data);
-    const item = await call('/api/board/add', { project, ...fields });
-    if (agent || branch) await call(`/api/board/${item.id}`, { agent, branch });
+    const item = await call('/api/board/add', { project, ...boardFields(data) });  // all or nothing
     toast(`#${item.id} added`); await renderBoard();
   });
   dialog.querySelector('[name=title]').focus();
@@ -1129,22 +1128,29 @@ function addBoardItem() {
 function editBoardItem(item) {
   const dialog = boardItemForm(`Edit #${item.id}`, item);
   openDialog(dialog, async data => {
-    await call(`/api/board/${item.id}`, boardFields(data));
+    // Only what the owner changed: a state or link set meanwhile by an agent stays.
+    const was = { title: item.title, description: item.description, state: item.state,
+      agent: item.agent_id || '', branch: item.branch || '' };
+    const changed = Object.fromEntries(Object.entries(boardFields(data)).filter(([key, value]) => value !== was[key]));
+    if (!Object.keys(changed).length) return;
+    await call(`/api/board/${item.id}`, changed);
     toast(`#${item.id} saved`); await renderBoard();
   });
   dialog.querySelector('[name=title]').focus();
 }
 function dispatchBoard() {
-  const project = boardProject, ready = Number($('boardDialog').querySelector('[data-dispatch]').dataset.ready || 0);
-  if (!ready) return;
+  const project = boardProject, ids = JSON.parse($('boardDialog').querySelector('[data-dispatch]').dataset.ids || '[]');
+  if (!ids.length) return;
   confirmDialog({
-    title: `Dispatch ${plural(ready, 'ready item')} of ${project}?`,
-    text: 'They go to the project lead as one message from you, and become in progress, linked to the lead. '
-      + 'The lead updates their states as the work proceeds.',
+    title: `Dispatch ${plural(ids.length, 'ready item')} of ${project}?`,
+    text: `${ids.map(id => `#${id}`).join(', ')} go to the project lead as one message from you, and become in progress, `
+      + 'linked to the lead. The lead updates their states as the work proceeds.',
     ok: 'Dispatch',
     action: async () => {
-      const result = await call('/api/board/dispatch', { project });
-      toast(result.items.length ? `${plural(result.items.length, 'item')} sent to ${result.agent_id}` : 'No ready items; nothing sent');
+      const result = await call('/api/board/dispatch', { project, ids });
+      const sent = result.items.length, gone = ids.length - sent;
+      toast(sent ? `${plural(sent, 'item')} sent to ${result.agent_id}${gone ? `; ${gone} no longer ready, not sent` : ''}`
+        : 'None of them is ready any more; nothing sent', false, gone ? 6000 : 0);
       await refresh(); await renderBoard();
     },
   });

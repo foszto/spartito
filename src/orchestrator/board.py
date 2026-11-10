@@ -109,18 +109,39 @@ def listing(store: Store, project: str | None = None, state: str | None = None) 
         return [Item.from_row(row) for row in conn.execute(query, args).fetchall()]
 
 
-def add(store: Store, project: str, title: Any, description: Any = "", state: Any = IDEA) -> Item:
-    """A new item at the end of its state. `project` must be registered (the caller checks).
-    Raises ValueError."""
+def add(
+    store: Store,
+    project: str,
+    title: Any,
+    description: Any = "",
+    state: Any = IDEA,
+    agent_id: Any = None,
+    branch: Any = None,
+) -> Item:
+    """A new item at the end of its state, with its links checked first (as in `cleaned`):
+    either it is stored whole or not at all. `project` must be registered (the caller
+    checks). Raises ValueError."""
     title = _text(title, "title", TITLE_CHARS, required=True)
     description = _text(description, "description", DESCRIPTION_CHARS)
     state = check_state(state or IDEA)
+    given = {"agent_id": agent_id, "branch": branch}
+    links = cleaned(store, Item(0, project, title), {k: v for k, v in given.items() if v})
     with store.transaction() as conn:
         stamp = now()
         cursor = conn.execute(
             "INSERT INTO board_items (project, title, description, state, position,"
-            " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (project, title, description, state, _end(conn, project, state), stamp, stamp),
+            " agent_id, branch, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                project,
+                title,
+                description,
+                state,
+                _end(conn, project, state),
+                links.get("agent_id"),
+                links.get("branch"),
+                stamp,
+                stamp,
+            ),
         )
         item = _get(conn, cursor.lastrowid)
     assert item is not None
@@ -219,18 +240,24 @@ def message(project: str, items: list[Item]) -> str:
 
 
 def dispatch(
-    store: Store, project: str, lead_id: str, send: Callable[[str, str], int]
+    store: Store,
+    project: str,
+    lead_id: str,
+    send: Callable[[str, str], int],
+    ids: list[int] | None = None,
 ) -> tuple[list[Item], int | None]:
-    """Hand the project's `ready` items to its lead: mark them `in_progress` and linked to
-    `lead_id`, then send them as one message with `send(lead_id, text)` (returns the run
-    id). No ready item: nothing is sent (run id None). If sending fails, the items are
-    restored as they were."""
+    """Hand the project's `ready` items (with `ids`: only those of them, the ones the owner
+    confirmed) to its lead: mark them `in_progress` and linked to `lead_id`, then send them
+    as one message with `send(lead_id, text)` (returns the run id). No such item: nothing
+    is sent (run id None). If sending fails, the items are restored as they were."""
     with store.transaction() as conn:  # claimed at once: a second dispatch finds none
         rows = conn.execute(
             "SELECT * FROM board_items WHERE project = ? AND state = ? ORDER BY position, id",
             (project, READY),
         ).fetchall()
         before = [Item.from_row(row) for row in rows]
+        if ids is not None:
+            before = [item for item in before if item.id in set(ids)]
         start, stamp = _end(conn, project, IN_PROGRESS), now()
         for offset, item in enumerate(before):
             conn.execute(

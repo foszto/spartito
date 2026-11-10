@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import subprocess
 from collections.abc import Callable
@@ -166,6 +167,17 @@ def test_links_to_an_agent_and_a_branch_are_set_and_cleared(
     assert (cleared.agent_id, cleared.branch) == (None, None)
 
 
+def test_an_item_is_added_with_its_links_or_not_at_all(orch: Orchestrator, project: str) -> None:
+    lead_id = lead(orch, project)
+    item = orch.add_board_item(project, "x", "", "ready", lead_id, "orch/x")
+    assert (item.agent_id, item.branch, item.state) == (lead_id, "orch/x", "ready")
+    with pytest.raises(OrchestratorError, match="no agent 'lead-typo'"):
+        orch.add_board_item(project, "y", agent_id="lead-typo")
+    with pytest.raises(OrchestratorError, match="branch is too long"):
+        orch.add_board_item(project, "y", branch="b" * 201)
+    assert [i.id for i in orch.board_items(project)] == [item.id]
+
+
 def test_an_old_database_opens_with_the_board_table(tmp_path: Path) -> None:
     path = tmp_path / "old.db"
     with sqlite3.connect(path) as conn:
@@ -193,10 +205,10 @@ def test_mcp_tools_add_list_and_update(orch: Orchestrator, project: str) -> None
     mcp_server.add_board_item(project, "Fix CI", state="ready")
 
     listed = mcp_server.list_board(project)
-    assert listed["project"] == project and listed["counts"] == {"idea": 1, "ready": 1}
-    first, second = listed["items"]
+    assert listed["project"] == project and listed["counts"] == {"ready": 1, "idea": 1}
+    second, first = listed["items"]  # ready before idea
     assert first["id"] == added["id"] and first["state"] == "idea"
-    assert len(first["description"]) < 300 and "cut at 200 of 500" in first["description"]
+    assert first["description"] == "x" * 159 + "…" and "note" not in listed
     assert second == {"id": second["id"], "state": "ready", "title": "Fix CI"}
     assert mcp_server.list_board(project, "ready")["items"] == [second]
 
@@ -209,15 +221,30 @@ def test_mcp_tools_add_list_and_update(orch: Orchestrator, project: str) -> None
         mcp_server.update_board_item(added["id"])
 
 
-def test_list_board_is_bounded(orch: Orchestrator, project: str) -> None:
-    for n in range(mcp_server.BOARD_ITEMS + 5):
-        orch.add_board_item(project, f"item {n}", "d" * 4000, state="done" if n % 2 else "idea")
+def test_list_board_is_short_and_shows_the_active_work_first(
+    orch: Orchestrator, project: str
+) -> None:
+    for n in range(60):
+        orch.add_board_item(project, f"idea {n} " + "t" * 190, "d" * 4000)
+    for n in range(3):
+        orch.add_board_item(project, f"done {n}", state="done")
+    going = [
+        orch.add_board_item(project, f"going {n}", "x" * 4000, "in_progress") for n in range(5)
+    ]
+    ready = orch.add_board_item(project, "next up", state="ready")
 
     reply = mcp_server.list_board(project)
-    assert len(reply["items"]) == mcp_server.BOARD_ITEMS
-    assert reply["counts"] == {"idea": 28, "done": 27}
-    assert "5 more not shown" in reply["note"]
-    assert len(str(reply)) < mcp_server.BOARD_ITEMS * 400
+    assert len(json.dumps(reply)) <= mcp_server.LOG_CHARS
+    assert reply["counts"] == {"in_progress": 5, "ready": 1, "idea": 60, "done": 3}
+    shown = [item["id"] for item in reply["items"]]
+    assert shown[:6] == [item.id for item in going] + [ready.id]
+    assert all(len(item.get("title", "")) <= 100 for item in reply["items"])
+    hidden = 69 - len(shown)
+    ideas = 60 - (len(shown) - 6)
+    assert reply["note"] == f"{hidden} not shown (idea {ideas}, done 3); state= lists one state"
+    done = mcp_server.list_board(project, "done")
+    assert [item["title"] for item in done["items"]] == ["done 0", "done 1", "done 2"]
+    assert "note" not in done
 
 
 def test_a_lead_is_confined_to_its_own_project(
@@ -286,9 +313,35 @@ def test_dispatch_sends_the_ready_items_to_the_lead_in_one_message(
     settle(orch, lead_id)
 
 
+def test_dispatch_sends_only_the_confirmed_items_still_ready(
+    orch: Orchestrator, project: str
+) -> None:
+    one = orch.add_board_item(project, "one", state="ready")
+    two = orch.add_board_item(project, "two", state="ready")
+    shown = [one.id, two.id]  # what the owner saw and confirmed
+    orch.update_board_item(two.id, {"state": "idea"})  # meanwhile: no longer ready
+    late = orch.add_board_item(project, "late", state="ready")  # and one more is
+
+    result = orch.dispatch_board(project, shown)
+    assert [item["id"] for item in result["items"]] == [one.id]
+    (text,) = messages(orch, result["agent_id"])
+    assert "(1 item)" in text and f"#{late.id} late" not in text
+    assert orch.board_item(late.id).state == "ready" and orch.board_item(two.id).state == "idea"
+
+    nothing = orch.dispatch_board(project, [one.id, two.id])  # none of them ready now
+    assert nothing == {"items": [], "agent_id": None, "run_id": None}
+    assert len(messages(orch, result["agent_id"])) == 1
+    with pytest.raises(OrchestratorError, match="ids must be a list"):
+        orch.dispatch_board(project, "all")
+    with pytest.raises(OrchestratorError, match="ids must be a list"):
+        orch.dispatch_board(project, [True])
+    settle(orch, result["agent_id"])
+
+
 def test_nothing_ready_sends_nothing_and_creates_no_lead(orch: Orchestrator, project: str) -> None:
-    orch.add_board_item(project, "just an idea")
+    item = orch.add_board_item(project, "just an idea")
     assert orch.dispatch_board(project) == {"items": [], "agent_id": None, "run_id": None}
+    assert orch.dispatch_board(project, [item.id])["items"] == []
     assert orch.store.list_agents(project) == []
     with pytest.raises(OrchestratorError, match="unknown project"):
         orch.dispatch_board("nope")
@@ -401,4 +454,37 @@ def test_api_lists_adds_edits_moves_and_dispatches(orch: Orchestrator, project: 
     assert all(item["state"] == "in_progress" for item in sent["items"])
     again = client.post("/api/board/dispatch", json={"project": project}, headers=ORIGIN).json()
     assert again["items"] == [] and len(messages(orch, lead_id)) == 1
+    settle(orch, lead_id)
+
+
+def test_api_adds_with_links_edits_only_what_is_sent_and_dispatches_ids(
+    orch: Orchestrator, project: str
+) -> None:
+    client = TestClient(app, base_url="http://localhost")
+    lead_id = lead(orch, project)
+    post = lambda path, body: client.post(path, json=body, headers=ORIGIN)  # noqa: E731
+
+    typo = post("/api/board/add", {"project": project, "title": "Login", "agent": "lead-dmeo"})
+    assert typo.status_code == 400 and "no agent 'lead-dmeo'" in typo.json()["error"]
+    assert orch.board_items(project) == []  # nothing stored by the failed save
+    added = post(
+        "/api/board/add",
+        {"project": project, "title": "Login", "state": "ready", "agent": lead_id, "branch": "b"},
+    ).json()
+    assert (added["agent_id"], added["branch"], added["state"]) == (lead_id, "b", "ready")
+    assert len(orch.board_items(project)) == 1
+
+    # Meanwhile the lead finishes it; the owner's save names the title only.
+    orch.update_board_item(added["id"], {"state": "done", "branch": "orch/login"})
+    saved = post(f"/api/board/{added['id']}", {"title": "Login page"}).json()
+    assert (saved["title"], saved["state"], saved["branch"]) == ("Login page", "done", "orch/login")
+    assert saved["agent_id"] == lead_id
+
+    one = post("/api/board/add", {"project": project, "title": "one", "state": "ready"}).json()
+    late = post("/api/board/add", {"project": project, "title": "late", "state": "ready"}).json()
+    sent = post("/api/board/dispatch", {"project": project, "ids": [one["id"]]}).json()
+    assert [item["id"] for item in sent["items"]] == [one["id"]]
+    assert orch.board_item(late["id"]).state == "ready"
+    bad = post("/api/board/dispatch", {"project": project, "ids": "all"})
+    assert bad.status_code == 400 and "ids must be a list" in bad.json()["error"]
     settle(orch, lead_id)

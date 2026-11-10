@@ -512,10 +512,18 @@ class Orchestrator:
             raise OrchestratorError(str(exc)) from None
 
     def add_board_item(
-        self, project: str, title: Any, description: Any = "", state: Any = board.IDEA
+        self,
+        project: str,
+        title: Any,
+        description: Any = "",
+        state: Any = board.IDEA,
+        agent_id: Any = None,
+        branch: Any = None,
     ) -> board.Item:
+        """A new item, with its optional links; all of it is checked before it is stored."""
+        name = self.project(project).name
         try:
-            return board.add(self.store, self.project(project).name, title, description, state)
+            return board.add(self.store, name, title, description, state, agent_id, branch)
         except ValueError as exc:
             raise OrchestratorError(str(exc)) from None
 
@@ -532,15 +540,19 @@ class Orchestrator:
         except ValueError as exc:
             raise OrchestratorError(str(exc)) from None
 
-    def dispatch_board(self, project: str) -> dict[str, Any]:
-        """Send the project's ready items to its lead as one user message (none: nothing is
-        sent); they become in_progress and linked to the lead."""
+    def dispatch_board(self, project: str, ids: Any = None) -> dict[str, Any]:
+        """Send the project's ready items (with `ids`: only those of them that are still
+        ready) to its lead as one user message (none: nothing is sent); they become
+        in_progress and linked to the lead."""
         name = self.project(project).name
-        if not board.listing(self.store, name, board.READY):
+        if ids is not None and (not isinstance(ids, list) or not all(type(i) is int for i in ids)):
+            raise OrchestratorError("ids must be a list of board item ids")
+        ready = [item.id for item in board.listing(self.store, name, board.READY)]
+        if not [i for i in ready if ids is None or i in ids]:
             return {"items": [], "agent_id": None, "run_id": None}
         lead = self.lead(name)
         items, run_id = board.dispatch(
-            self.store, name, lead.id, lambda agent_id, text: self.send(agent_id, text).id
+            self.store, name, lead.id, lambda agent_id, text: self.send(agent_id, text).id, ids
         )
         return {"items": [item.to_dict() for item in items], "agent_id": lead.id, "run_id": run_id}
 

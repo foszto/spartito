@@ -620,34 +620,47 @@ def withdraw_decision(decision_id: int) -> dict[str, Any]:
     return {"withdrawn": orch.withdraw_decision(decision_id, caller).id}
 
 
-BOARD_ITEMS = 50  # items in one list_board reply
-BOARD_DESCRIPTION_CHARS = 200  # of each item's description there
+# list_board: the whole reply within LOG_CHARS; the active work first.
+BOARD_ORDER = (board.IN_PROGRESS, board.READY, board.IDEA, board.DONE)
+BOARD_CLIPS = {"title": 100, "description": 160, "agent_id": 80, "branch": 80}
+
+
+def _short(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def _board_line(item: Any) -> dict[str, Any]:
-    line = {"id": item.id, "state": item.state, "title": item.title}
-    if item.description:
-        line["description"] = clip(item.description, BOARD_DESCRIPTION_CHARS, paged=False)
-    line.update({key: getattr(item, key) for key in ("agent_id", "branch") if getattr(item, key)})
+    line: dict[str, Any] = {"id": item.id, "state": item.state}
+    for key, limit in BOARD_CLIPS.items():
+        if value := getattr(item, key):
+            line[key] = _short(value, limit)
     return line
 
 
 @server.tool()
 def list_board(project: str, state: str | None = None) -> dict[str, Any]:
-    """The project's task board (ideas and tasks kept across sessions), by state
-    (idea, ready, in_progress, done) and order; `state` lists one state only. At most 50
-    items, descriptions cut to 200 chars. Leads: their own project only."""
+    """The project's task board (ideas and tasks kept across sessions): in_progress, ready,
+    idea, then done, each in its order; `state` lists one state only. Short: titles and
+    descriptions are cut, and what does not fit in about 6000 chars is only counted
+    (`counts` has every state's total). Leads: their own project only."""
     orch = _orch()
     name = _project(orch, project)
     items = orch.board_items(name, state)
-    counts = {key: sum(item.state == key for item in items) for key in board.STATES}
-    reply: dict[str, Any] = {
-        "project": name,
-        "counts": {key: n for key, n in counts.items() if n},
-        "items": [_board_line(item) for item in items[:BOARD_ITEMS]],
-    }
-    if len(items) > BOARD_ITEMS:
-        reply["note"] = f"{len(items) - BOARD_ITEMS} more not shown; pass state= to list one state"
+    items.sort(key=lambda item: BOARD_ORDER.index(item.state))  # stable: keeps the order
+    counts = {key: n for key in BOARD_ORDER if (n := sum(i.state == key for i in items))}
+    reply: dict[str, Any] = {"project": name, "counts": counts, "items": []}
+    left = LOG_CHARS - len(json.dumps(reply)) - 200  # room for the note
+    for item in items:
+        line = _board_line(item)
+        left -= len(json.dumps(line)) + 2
+        if left < 0:
+            break
+        reply["items"].append(line)
+    hidden = items[len(reply["items"]) :]
+    if hidden:
+        by_state = {key: sum(i.state == key for i in hidden) for key in BOARD_ORDER}
+        where = ", ".join(f"{key} {n}" for key, n in by_state.items() if n)
+        reply["note"] = f"{len(hidden)} not shown ({where}); state= lists one state"
     return reply
 
 
