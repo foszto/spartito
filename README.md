@@ -1,6 +1,6 @@
-# Kotta
+# Spartito
 
-A *kotta* (angolul sheet music) a partitúra, amiből mindenki játszik; a legfelső agent neve Maestro. A parancs továbbra is `orch`.
+A *spartito* olaszul kottát jelent (angolul sheet music): a partitúra, amiből mindenki játszik; a legfelső agent neve Maestro. A parancs továbbra is `orch`.
 
 Egyszerű orchestrator kódoló agentek (Claude Code, Codex) vezérlésére. Egy orchestrator
 agenttel beszélsz; ő projekteket, projekt-lead agenteket és azok alatt worktree-ben dolgozó
