@@ -417,24 +417,31 @@ class Store:
 
     # -- deliveries -------------------------------------------------------
 
-    def delivered(self, caller: str, run_ids: list[int]) -> set[int]:
-        """The run ids among `run_ids` whose result was already returned to `caller`."""
-        if not run_ids:
-            return set()
-        marks = ", ".join("?" * len(run_ids))
+    def claim(self, caller: str, run_ids: list[int]) -> set[int]:
+        """Record that the results of `run_ids` go to `caller`; returns the run ids this
+        call recorded. Ids recorded before (by any process) are left out, so of several
+        concurrent claims of a run exactly one gets it."""
+        claimed = set()
         with self._conn() as conn:
-            rows = conn.execute(
-                f"SELECT run_id FROM deliveries WHERE caller = ? AND run_id IN ({marks})",
-                (caller, *run_ids),
-            ).fetchall()
-        return {row["run_id"] for row in rows}
+            for run_id in run_ids:
+                cursor = conn.execute(
+                    "INSERT OR IGNORE INTO deliveries (caller, run_id, delivered_at)"
+                    " VALUES (?, ?, ?)",
+                    (caller, run_id, now()),
+                )
+                if cursor.rowcount == 1:
+                    claimed.add(run_id)
+        return claimed
 
-    def mark_delivered(self, caller: str, run_ids: list[int]) -> None:
+    def last_delivered(self, caller: str, agent_id: str) -> int | None:
+        """The newest run of `agent_id` whose result went to `caller`, if any."""
         with self._conn() as conn:
-            conn.executemany(
-                "INSERT OR IGNORE INTO deliveries (caller, run_id, delivered_at) VALUES (?, ?, ?)",
-                [(caller, run_id, now()) for run_id in run_ids],
-            )
+            row = conn.execute(
+                "SELECT MAX(d.run_id) AS run_id FROM deliveries d JOIN runs r ON r.id = d.run_id"
+                " WHERE d.caller = ? AND r.agent_id = ?",
+                (caller, agent_id),
+            ).fetchone()
+        return row["run_id"]
 
     # -- events -----------------------------------------------------------
 

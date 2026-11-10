@@ -6,6 +6,7 @@ import functools
 import json
 import sqlite3
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -153,6 +154,99 @@ def test_a_failed_run_reports_its_error(orch: Orchestrator, project: str) -> Non
     assert outcome["last_run"] == {"id": run.id, "status": "failed", "error": "boom"}
 
 
+def test_concurrent_waits_of_one_caller_deliver_a_result_once(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent_id = worker(orch, project, "RESULT")
+    barrier = threading.Barrier(2, timeout=10)
+    claim = Store.claim
+
+    def claim_together(self: Store, caller: str, run_ids: list[int]) -> set[int]:
+        barrier.wait()  # both calls have read everything and decided what is new
+        return claim(self, caller, run_ids)
+
+    monkeypatch.setattr(Store, "claim", claim_together)
+    replies: list[dict] = []
+    threads = [threading.Thread(target=lambda: replies.append(wait(agent_id))) for _ in "ab"]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    runs = [reply["agents"][0]["last_run"] for reply in replies]
+    assert sorted(run.get("result", "") for run in runs) == ["", "RESULT"]
+    assert sum("already_delivered" in run for run in runs) == 1
+
+
+@pytest.mark.parametrize("status", [RunStatus.FAILED, RunStatus.SKIPPED])
+def test_an_error_is_shown_again_on_a_repeat_call(
+    orch: Orchestrator, project: str, status: RunStatus
+) -> None:
+    agent_id = orch.create_agent(project, name="w", worktree=False).id
+    run = orch.store.add_run(agent_id, "task")
+    orch.store.finish_run(run.id, status, error="boom")
+
+    first, again = wait(agent_id), wait(agent_id)
+
+    assert first["agents"][0]["last_run"]["error"] == "boom"
+    assert again["agents"][0]["last_run"]["error"] == "boom"
+    assert "already_delivered" in again["agents"][0]["last_run"]
+
+
+def test_every_new_run_is_delivered_in_order(orch: Orchestrator, project: str) -> None:
+    agent_id = worker(orch, project, "one")
+    wait(agent_id)
+    second = finish(orch, agent_id, "two")
+    third = finish(orch, agent_id, "three")
+
+    (outcome,) = wait(agent_id)["agents"]
+
+    assert outcome["earlier_runs"] == [{"id": second, "status": "done", "result": "two"}]
+    assert outcome["last_run"] == {"id": third, "status": "done", "result": "three"}
+
+
+def test_a_run_finishing_after_the_idle_check_is_delivered_too(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent_id = orch.create_agent(project, name="w", worktree=False).id
+    waited_for = orch.store.add_run(agent_id, "running when the wait starts")
+    idle = Orchestrator.wait_idle
+
+    def idle_then_another_run(self: Orchestrator, *args: Any) -> bool:
+        self.store.finish_run(waited_for.id, RunStatus.DONE, result="first")
+        result = idle(self, *args)
+        finish(self, agent_id, "second")  # sent and finished before the reply is built
+        return result
+
+    monkeypatch.setattr(Orchestrator, "wait_idle", idle_then_another_run)
+    (outcome,) = wait(agent_id)["agents"]
+
+    assert [run["result"] for run in outcome["earlier_runs"]] == ["first"]
+    assert outcome["last_run"]["result"] == "second"
+    detail = mcp_server.get_agent(agent_id, run_id=waited_for.id)
+    assert detail["run"]["result"] == "first" and "last_run" not in detail
+
+
+def test_a_run_queued_after_the_idle_check_means_not_finished(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent_id = worker(orch, project, "first")
+    idle = Orchestrator.wait_idle
+
+    def idle_then_queued(self: Orchestrator, *args: Any) -> bool:
+        result = idle(self, *args)
+        self.store.add_run(agent_id, "queued meanwhile")
+        return result
+
+    monkeypatch.setattr(Orchestrator, "wait_idle", idle_then_queued)
+    reply = wait(agent_id)
+
+    assert reply == {
+        "finished": False,
+        "agents": [{"id": agent_id, "status": "waiting", "queued_runs": 1}],
+    }
+
+
 # -- get_agent --------------------------------------------------------------
 
 
@@ -192,6 +286,45 @@ def test_get_agent_caps_the_git_output(orch: Orchestrator, project: str) -> None
     assert "c0\n" in cli_status and cli_status.count("?? file") == 35  # humans see it all
 
 
+def test_get_agent_pages_structured_output(orch: Orchestrator, project: str) -> None:
+    data = {"items": [LONG[:2985]]}  # 3000 chars of JSON
+    agent_id = worker(orch, project, "x", structured=data)
+    text = json.dumps(data)
+
+    cut = wait(agent_id, result_chars=2000)["agents"][0]["last_run"]["structured"]
+    rest = mcp_server.get_agent(agent_id, result_offset=2000)["last_run"]["structured"]
+    whole = mcp_server.get_agent(agent_id)["last_run"]["structured"]
+    past = mcp_server.get_agent(agent_id, result_offset=5000)["last_run"]["structured"]
+
+    assert len(text) == 3000 and cut.split("…")[0] == text[:2000]
+    assert "result_offset=2000" in cut
+    assert rest == f"[chars 2000-3000 of 3000] {text[2000:]}"
+    assert whole == data
+    assert past == "[result_offset 5000 is past the end: 3000 chars]"
+
+
+def test_get_agent_limits_the_error_and_gives_it_in_full(orch: Orchestrator, project: str) -> None:
+    agent_id = orch.create_agent(project, name="w", worktree=False).id
+    run = orch.store.add_run(agent_id, "task")
+    orch.store.finish_run(run.id, RunStatus.FAILED, error=LONG)
+
+    cut = mcp_server.get_agent(agent_id)["last_run"]["error"]
+    full = mcp_server.get_agent(agent_id, result_chars=0)["last_run"]["error"]
+    waited = wait(agent_id)["agents"][0]["last_run"]["error"]
+
+    assert cut.split("…")[0] == LONG[:4000] and len(cut) < 4100
+    assert "result_chars=0 for all" in cut and "result_offset" not in cut
+    assert waited == cut
+    assert full == LONG
+
+
+def test_get_agent_refuses_a_run_of_another_agent(orch: Orchestrator, project: str) -> None:
+    mine, other = worker(orch, project), worker(orch, project)
+
+    with pytest.raises(OrchestratorError, match="has no run"):
+        mcp_server.get_agent(mine, run_id=orch.store.last_run(other).id)
+
+
 # -- agent_log --------------------------------------------------------------
 
 
@@ -208,7 +341,7 @@ def test_agent_log_stays_under_the_cap_and_returns_an_event_in_full(
     (one,) = mcp_server.agent_log(agent_id, event_id=newest.id)
     everything = mcp_server.agent_log(agent_id, tail=100, event_chars=0, max_chars=0)
 
-    assert len(json.dumps(reply)) <= 6000
+    assert sum(map(len, reply)) <= 6000
     assert reply[0].startswith("[") and "older events omitted" in reply[0]
     assert reply[-1].startswith(f"#{newest.id} ") and "event 99 " in reply[-1]
     assert "… [+" in reply[-1] and len(reply[-1]) < 400
@@ -223,6 +356,41 @@ def test_agent_log_refuses_another_agents_event(orch: Orchestrator, project: str
 
     with pytest.raises(OrchestratorError, match="has no event"):
         mcp_server.agent_log(mine, event_id=event.id)
+
+
+@pytest.mark.parametrize("event_chars", [0, 10, 300])
+@pytest.mark.parametrize("max_chars", [1, 30, 100, 359, 500, 4100])
+def test_agent_log_respects_any_cap(
+    orch: Orchestrator, project: str, event_chars: int, max_chars: int
+) -> None:
+    agent_id = worker(orch, project)
+    run_id = orch.store.last_run(agent_id).id
+    for n in range(5):
+        orch.store.add_event(run_id, agent_id, "text", f"event {n} " + "y" * 4000)
+
+    reply = mcp_server.agent_log(agent_id, event_chars=event_chars, max_chars=max_chars)
+
+    assert reply and sum(map(len, reply)) <= max_chars
+    if max_chars >= 200:
+        assert "event 4" in reply[-1]
+
+
+def test_agent_log_refuses_an_event_of_another_project(
+    orch: Orchestrator, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    other_repo = tmp_path / "other"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(other_repo)], check=True)
+    other_project = orch.add_project(str(other_repo), "other", "fake").name
+    foreign = worker(orch, other_project)
+    orch.store.add_event(orch.store.last_run(foreign).id, foreign, "text", "secret")
+    (event,) = orch.store.events(foreign)
+    mine = worker(orch, project)
+    monkeypatch.setenv("ORCH_AGENT_ID", lead(orch, project))
+
+    with pytest.raises(OrchestratorError, match="has no event"):
+        mcp_server.agent_log(mine, event_id=event.id)
+    with pytest.raises(OrchestratorError, match="outside project"):
+        mcp_server.agent_log(foreign, event_id=event.id)
 
 
 # -- humans and old databases -----------------------------------------------
@@ -251,7 +419,7 @@ def test_an_old_database_gets_deliveries_and_wait_works(project_free_home: Path)
 
     assert reply["agents"][0]["last_run"]["id"] == 2
     assert "already_delivered" in again["agents"][0]["last_run"]
-    assert store.delivered("", [1, 2]) == {2}
+    assert store.last_delivered("", "a-1") == 2
     with sqlite3.connect(config.db_path()) as conn:
         assert [row[1] for row in conn.execute("PRAGMA table_info(runs)")] == OLD_RUN_COLUMNS
     conn.close()
@@ -259,12 +427,12 @@ def test_an_old_database_gets_deliveries_and_wait_works(project_free_home: Path)
 
 def test_removing_an_agent_removes_its_deliveries(project_free_home: Path) -> None:
     store = Store(config.db_path())
-    store.mark_delivered("", [1, 2])
-    store.mark_delivered("a-1", [7])
+    store.claim("", [1, 2])
+    store.claim("a-1", [7])
 
     store.delete_agent("a-1")
 
-    assert store.delivered("", [1, 2]) == set() and store.delivered("a-1", [7]) == set()
+    assert store.claim("", [1, 2]) == {1, 2} and store.claim("a-1", [7]) == {7}
 
 
 @pytest.fixture
