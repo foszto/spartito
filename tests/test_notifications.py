@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import functools
 import json
+import os
 import signal
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -909,3 +911,87 @@ def test_an_old_database_gets_run_metadata(tmp_path: Path) -> None:
     with sqlite3.connect(path) as conn:
         assert [row[1] for row in conn.execute("PRAGMA table_info(runs)")] == OLD_RUN_COLUMNS
     conn.close()
+
+
+# -- follow-ups of a failed notification, lost triggers, first-version databases -----------
+
+
+def test_a_released_result_comes_back_after_the_agents_next_successful_message(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launched: list[int] = []
+    monkeypatch.setattr(Orchestrator, "_launch", lambda self, run: launched.append(run.id))
+    parent = lead(orch, project)
+    child, run_id = finished_child(orch, project, parent)
+    failed = notify.start(orch.store, notify.queue_if_due(orch.store, parent))
+    orch.store.finish_run(failed.id, RunStatus.FAILED, error="rate limited")
+
+    orch.run_ended(failed.id, parent)  # its own end never checks the agent again
+    assert notifications(orch, parent) == [orch.store.get_run(failed.id)] and launched == []
+    later = orch.store.add_run(parent, "a later message from the user")
+    orch.store.finish_run(later.id, RunStatus.DONE, result="ok")
+    orch.run_ended(later.id, parent)
+
+    (again,) = [run for run in notifications(orch, parent) if run.id != failed.id]
+    assert launched == [again.id]
+    assert [kid.id for kid in notify.reportable(_children(orch, parent))] == [child]
+
+
+def _children(orch: Orchestrator, parent: str) -> list[notify.Child]:
+    with orch.store.connection() as conn:
+        return notify.children(conn, parent)
+
+
+def test_an_unchecked_run_with_a_reused_pid_is_repaired_after_a_while(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Orchestrator, "_launch", lambda self, run: None)
+    parent = lead(orch, project)
+    child = orch.create_agent(project, name="c", worktree=False, parent_id=parent).id
+    recent, old = (orch.store.add_run(child, "task", sender=parent) for _ in range(2))
+    alive = os.getpid()  # a live process that is not the run's runner
+    orch.store.finish_run(recent.id, RunStatus.DONE, result="r", pid=alive)
+    orch.store.update_run(old.id, status="done", pid=alive, ended_at="2000-01-01T00:00:00+00:00")
+
+    orch.store.reconcile()
+
+    assert not orch.store.meta(recent.id).checked  # its runner may still be at it
+    assert orch.store.meta(old.id).checked and len(notifications(orch, parent)) == 1
+
+
+FIRST_RUN_META = """
+CREATE TABLE run_meta (run_id INTEGER PRIMARY KEY, agent_id TEXT NOT NULL, kind TEXT NOT NULL,
+    sender TEXT, notify TEXT NOT NULL DEFAULT 'each');
+INSERT INTO agents (id, project, parent_id, name, role, provider, cwd, created_at)
+    VALUES ('lead-1', 'p', NULL, 'lead', 'lead', 'claude', '/w', 't');
+UPDATE agents SET parent_id = 'lead-1' WHERE id = 'a-1';
+INSERT INTO run_meta VALUES (1, 'a-1', 'message', 'lead-1', 'each'),
+    (2, 'a-1', 'message', 'lead-1', 'each');
+"""
+
+
+def test_a_first_version_run_meta_is_completed_without_waking_anyone(tmp_path: Path) -> None:
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as conn:
+        conn.executescript(OLD_SCHEMA + FIRST_RUN_META)
+    conn.close()
+    script = "import sys; from orchestrator.store import Store; Store(sys.argv[1])"
+    procs = [subprocess.Popen([sys.executable, "-c", script, str(path)]) for _ in range(4)]
+    assert [proc.wait() for proc in procs] == [0] * 4
+
+    store = Store(path)
+    launched: list[Run] = []
+    orch = Orchestrator(store)
+    orch._launch = launched.append  # type: ignore[method-assign]
+    store.reconcile()
+    new = store.add_run("a-1", "three", sender="lead-1")
+
+    assert launched == [] and store.runs_of("lead-1") == []
+    assert [store.meta(run_id).checked for run_id in (1, 2, new.id)] == [1, 1, 0]
+    assert store.meta(new.id).origin == "lead-1"
+    with sqlite3.connect(path) as conn:
+        names = [row[1] for row in conn.execute("PRAGMA table_info(run_meta)")]
+        indexes = [row[1] for row in conn.execute("PRAGMA index_list(run_meta)")]
+    conn.close()
+    assert names[-4:] == ["origin", "cause_run", "claimed", "checked"]
+    assert "run_meta_unchecked" in indexes
