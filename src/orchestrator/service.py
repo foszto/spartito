@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from . import config, decisions, desktop, git, notify, providers, roles, settings
+from . import board, config, decisions, desktop, git, notify, providers, roles, settings
 from .models import Agent, Project, Run, RunStatus, Usage, answers, context_now, running_total
 from .store import (
     ANYONE,
@@ -490,6 +490,59 @@ class Orchestrator:
         except ValueError as exc:
             raise OrchestratorError(str(exc)) from None
         return {"decision": decision.to_dict(), "agent_id": decision.agent_id, "run_id": run_id}
+
+    # -- task board (board.py) --------------------------------------------
+
+    def board_items(self, project: str | None = None, state: str | None = None) -> list[board.Item]:
+        """A project's items (None: every registered project's), optionally of one state.
+        A removed project's items are kept: registering it again brings them back."""
+        try:
+            items = board.listing(self.store, project and self.project(project).name, state)
+        except ValueError as exc:
+            raise OrchestratorError(str(exc)) from None
+        if project:
+            return items
+        known = {p.name for p in self.store.list_projects()}
+        return [item for item in items if item.project in known]
+
+    def board_item(self, item_id: int) -> board.Item:
+        try:
+            return board.get(self.store, item_id)
+        except ValueError as exc:
+            raise OrchestratorError(str(exc)) from None
+
+    def add_board_item(
+        self, project: str, title: Any, description: Any = "", state: Any = board.IDEA
+    ) -> board.Item:
+        try:
+            return board.add(self.store, self.project(project).name, title, description, state)
+        except ValueError as exc:
+            raise OrchestratorError(str(exc)) from None
+
+    def update_board_item(self, item_id: int, changes: dict[str, Any]) -> board.Item:
+        """Change title, description, state, agent_id or branch ("" clears a link)."""
+        try:
+            return board.update(self.store, item_id, changes)
+        except ValueError as exc:
+            raise OrchestratorError(str(exc)) from None
+
+    def move_board_item(self, item_id: int, direction: str) -> board.Item:
+        try:
+            return board.move(self.store, item_id, direction)
+        except ValueError as exc:
+            raise OrchestratorError(str(exc)) from None
+
+    def dispatch_board(self, project: str) -> dict[str, Any]:
+        """Send the project's ready items to its lead as one user message (none: nothing is
+        sent); they become in_progress and linked to the lead."""
+        name = self.project(project).name
+        if not board.listing(self.store, name, board.READY):
+            return {"items": [], "agent_id": None, "run_id": None}
+        lead = self.lead(name)
+        items, run_id = board.dispatch(
+            self.store, name, lead.id, lambda agent_id, text: self.send(agent_id, text).id
+        )
+        return {"items": [item.to_dict() for item in items], "agent_id": lead.id, "run_id": run_id}
 
     # -- settings ---------------------------------------------------------
 

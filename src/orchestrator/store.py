@@ -158,6 +158,22 @@ CREATE TABLE IF NOT EXISTS decisions (
     note TEXT
 );
 CREATE INDEX IF NOT EXISTS decisions_state ON decisions(state, id);
+-- The task board of each project (board.py); a table of its own, unknown to older code.
+-- state: 'idea' | 'ready' | 'in_progress' | 'done'; position: order within one state of one
+-- project; agent_id, branch: optional links (plain text, no foreign key).
+CREATE TABLE IF NOT EXISTS board_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'idea',
+    position INTEGER NOT NULL DEFAULT 0,
+    agent_id TEXT,
+    branch TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS board_items_order ON board_items(project, state, position);
 CREATE INDEX IF NOT EXISTS runs_agent ON runs(agent_id, id);
 CREATE INDEX IF NOT EXISTS events_agent ON events(agent_id, id);
 """

@@ -15,7 +15,7 @@ from typing import Any
 import anyio
 from mcp.server.mcpserver import MCPServer
 
-from . import roles
+from . import board, roles
 from .models import Run, answers, running_total
 from .replies import clip, run_reply, structured_page
 from .service import Orchestrator, OrchestratorError, agent_state, result_file, run_usage
@@ -618,6 +618,78 @@ def withdraw_decision(decision_id: int) -> dict[str, Any]:
     orch = _orch()
     caller = os.environ.get("ORCH_AGENT_ID") or ""
     return {"withdrawn": orch.withdraw_decision(decision_id, caller).id}
+
+
+BOARD_ITEMS = 50  # items in one list_board reply
+BOARD_DESCRIPTION_CHARS = 200  # of each item's description there
+
+
+def _board_line(item: Any) -> dict[str, Any]:
+    line = {"id": item.id, "state": item.state, "title": item.title}
+    if item.description:
+        line["description"] = clip(item.description, BOARD_DESCRIPTION_CHARS, paged=False)
+    line.update({key: getattr(item, key) for key in ("agent_id", "branch") if getattr(item, key)})
+    return line
+
+
+@server.tool()
+def list_board(project: str, state: str | None = None) -> dict[str, Any]:
+    """The project's task board (ideas and tasks kept across sessions), by state
+    (idea, ready, in_progress, done) and order; `state` lists one state only. At most 50
+    items, descriptions cut to 200 chars. Leads: their own project only."""
+    orch = _orch()
+    name = _project(orch, project)
+    items = orch.board_items(name, state)
+    counts = {key: sum(item.state == key for item in items) for key in board.STATES}
+    reply: dict[str, Any] = {
+        "project": name,
+        "counts": {key: n for key, n in counts.items() if n},
+        "items": [_board_line(item) for item in items[:BOARD_ITEMS]],
+    }
+    if len(items) > BOARD_ITEMS:
+        reply["note"] = f"{len(items) - BOARD_ITEMS} more not shown; pass state= to list one state"
+    return reply
+
+
+@server.tool()
+def add_board_item(
+    project: str, title: str, description: str = "", state: str = "idea"
+) -> dict[str, Any]:
+    """Put an idea or task on the project's board (at the end of its state). `title` at most
+    200 chars, `description` at most 4000; `state`: idea (default), ready, in_progress, done.
+    Leads: their own project only."""
+    orch = _orch()
+    item = orch.add_board_item(_project(orch, project), title, description, state)
+    return {"id": item.id, "project": item.project, "state": item.state}
+
+
+@server.tool()
+def update_board_item(
+    item_id: int,
+    state: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
+    agent: str | None = None,
+    branch: str | None = None,
+) -> dict[str, Any]:
+    """Change a board item: its state (idea, ready, in_progress, done; it goes to the end
+    of that state), title, description, or the agent id / branch working on it ("" clears
+    one). Leads: items of their own project only."""
+    orch = _orch()
+    _project(orch, orch.board_item(item_id).project)  # a lead stays within its project
+    given = {
+        "state": state,
+        "title": title,
+        "description": description,
+        "agent_id": agent,
+        "branch": branch,
+    }
+    changes = {key: value for key, value in given.items() if value is not None}
+    if not changes:
+        raise OrchestratorError(
+            "nothing to change: pass state, title, description, agent or branch"
+        )
+    return _board_line(orch.update_board_item(item_id, changes))
 
 
 def main() -> None:

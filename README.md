@@ -163,6 +163,33 @@ akinek közvetlenül te írtál (a legutóbbi üzenetét a felhasználó küldte
 jelez, amikor az agentjei után ő is végzett; egy lead által indított worker soha. Kikapcsolás:
 `orch config desktop-notifications off` vagy a **Modellek és effort** ablakban (alapból `on`).
 
+### Feladattábla (board)
+
+Az ötletek és az összegyűjtött feladatok projektenként egy tartós táblán vannak, nem csak az
+orchestrator beszélgetésében: új munkamenetben is megmaradnak. Minden elem egy regisztrált
+projekthez tartozik, és négy állapot egyikében van: `idea`, `ready`, `in_progress`, `done`;
+állapoton belül sorrendje van (új elem és állapotot váltó elem a végére kerül). Egy elem
+megnevezheti az agentet és a branchet, amelyik rajta dolgozik. Az orchestrator és a lead-ek a
+`list_board(project, state)`, `add_board_item(project, title, description, state)` és
+`update_board_item(item_id, state, title, description, agent, branch)` MCP eszközökkel
+használják (a lead csak a saját projektjéét). A webes felületen a projekt sorában a tábla gomb
+nyitja meg: állapotonként egy lista, új elem, szerkesztés, fel/le mozgatás, állapotváltás.
+Parancssorból:
+
+```bash
+orch board -p demo [--state ready]               # a tábla (-p nélkül minden projekté)
+orch board add -p demo "Login oldal" -d "OAuth-val" [--state idea]
+orch board edit 7 --state ready [--title …] [--description …] [--agent …] [--branch …]
+orch board move 7 up                              # vagy down, az állapotán belül
+orch board dispatch -p demo                      # a ready elemek a lead-nek
+```
+
+A **Dispatch** (felületen megerősítés után) a projekt összes `ready` elemét **egy** üzenetben
+küldi el a projekt lead-jének, mintha te írtad volna (elemenként azonosító, cím, leírás, és a
+kérés, hogy az állapotokat `update_board_item`-mel vezesse); az elemek `in_progress` állapotba
+kerülnek, a lead-hez kötve, így egy újabb dispatch nem küldi el őket újra. Ha nincs `ready`
+elem, nem megy semmi. Magától soha nem indul dispatch.
+
 ### Modell és effort szintenként
 
 Három szint állítható külön, providerenként (Claude / Codex): az **orchestrator**, a
@@ -415,6 +442,7 @@ src/orchestrator/
   roles.py         szerepek betöltése; roles/*.md a beépített szerepek
   settings.py      modell/effort szintenként: globális + projekt felülírás
   keep_awake.py    alvásgátló a futó körök idejére (caffeinate / systemd-inhibit)
+  board.py         a projektek feladattáblája (list_board, orch board, tábla ablak, dispatch)
   decisions.py     a tulajdonostól kért döntések (request_decision, orch decide, Döntések ablak)
   desktop.py       asztali értesítés macOS-en (osascript)
   loadout.py       mit tölt be egy agent (eszközök, MCP, setting források); loadout.toml
