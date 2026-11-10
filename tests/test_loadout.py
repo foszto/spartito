@@ -248,3 +248,17 @@ def test_packaged_lead_and_orchestrator_carry_the_pr_review_rule(home: Path) -> 
     )
     assert "PR review feedback goes to the project lead" in orchestrator
     assert "push approval requests to the user; never grant them yourself" in orchestrator
+
+
+def test_packaged_prompts_bound_review_rounds_and_scope(home: Path) -> None:
+    def text(name: str) -> str:
+        return " ".join(roles.load(name).prompt.split())
+
+    lead, reviewer, worker = text("lead"), text("reviewer"), text("worker")
+
+    assert "At most 2 review rounds per branch" in lead and "with their severity" in lead
+    assert "until the result is right" not in lead
+    assert "each with a severity; leave out style and nice-to-haves" in reviewer
+    assert "conventions" not in reviewer
+    assert "Choose the simplest change that meets the brief" in worker
+    assert "stop and report instead of building it" in worker
