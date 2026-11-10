@@ -4,6 +4,9 @@ run open, and a CLI that answers more than once is stored correctly."""
 from __future__ import annotations
 
 import os
+import signal
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -13,7 +16,7 @@ from orchestrator.models import Agent, RunStatus
 from orchestrator.providers import RunContext, get
 from orchestrator.providers.base import NOTIFICATION_RESULT
 from orchestrator.providers.claude import NO_BACKGROUND_ENV
-from orchestrator.runner import combine_results
+from orchestrator.runner import RUNNER_ARGV, _send, combine_results, turn_processes
 from orchestrator.service import Orchestrator
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -29,13 +32,16 @@ def last_run(orch: Orchestrator, agent_id: str):
     return orch.store.runs_of(agent_id)[-1]
 
 
-def fake_pids(cwd: str, timeout: float = 15) -> list[int]:
-    """Pids of a lingering fake CLI and its child, once it has written them."""
+def fake_pids(cwd: str, count: int = 2, timeout: float = 15) -> list[int]:
+    """Pids of the fake CLI and its children, once it has written `count` of them."""
     path = Path(cwd) / ".fake-pids"
     deadline = time.monotonic() + timeout
-    while not path.exists() and time.monotonic() < deadline:
+    while time.monotonic() < deadline:
+        pids = [int(pid) for pid in path.read_text().split()] if path.exists() else []
+        if len(pids) >= count:
+            return pids
         time.sleep(0.05)
-    return [int(pid) for pid in path.read_text().split()]
+    raise AssertionError(f"the fake CLI wrote {pids}, expected {count} pids")
 
 
 def alive(pid: int) -> bool:
@@ -89,7 +95,7 @@ def test_stop_during_the_grace_period_ends_everything_and_keeps_the_answer(
 ) -> None:
     lead = orch.lead(project)
     orch.send(lead.id, "LINGER 30")
-    pids = fake_pids(lead.cwd)  # written after the answer: the runner is in its grace period
+    pids = fake_pids(lead.cwd)  # the child's comes after the answer: the grace period
     time.sleep(0.5)
 
     started = time.monotonic()
@@ -138,6 +144,134 @@ def test_other_roles_wait_for_the_process_and_stop_still_ends_it(
     assert orch.stop(agent.id) == 1
     assert orch.store.get_run(run.id).status is RunStatus.STOPPED
     assert all_gone(pids)
+
+
+def test_killing_the_runners_process_group_ends_the_cli(orch: Orchestrator, project: str) -> None:
+    """stop() falls back to SIGKILL for the runner's group: the CLI must be in it."""
+    agent, run = orch.spawn(project, "SLEEP 30", worktree=False)
+    (cli,) = fake_pids(agent.cwd, count=1)
+
+    os.killpg(orch.store.get_run(run.id).pid, signal.SIGKILL)
+
+    assert all_gone([cli])
+
+
+@pytest.mark.parametrize("apart", ["", "NEWSESSION "])
+def test_a_lead_leaves_no_orphans_behind_a_cli_that_exited(
+    orch: Orchestrator, project: str, apart: str
+) -> None:
+    """Like `nohup server &` in a tool shell: the shell is gone before the answer, the
+    server re-parented, in the shell's process group (and session); the CLI exits."""
+    lead = orch.lead(project)
+    orch.send(lead.id, f"ORPHAN 30 {apart}TOKENS 1")
+
+    finished(orch, lead.id)
+
+    assert last_run(orch, lead.id).status is RunStatus.DONE
+    assert all_gone(fake_pids(lead.cwd))
+
+
+def test_a_stop_during_the_cleanup_keeps_the_answer(orch: Orchestrator, project: str) -> None:
+    lead = orch.lead(project)
+    orch.send(lead.id, "LINGER 30 STUBBORN TOKENS 10")
+    pids = fake_pids(lead.cwd)
+    time.sleep(6.5)  # grace period (5 s) over; the child ignores SIGTERM for 3 s
+
+    assert orch.stop(lead.id) == 1
+
+    run = last_run(orch, lead.id)
+    assert run.status is RunStatus.DONE and run.result == "echo[new]: LINGER 30 STUBBORN TOKENS 10"
+    assert orch.store.get_usage(run.id).input_tokens == 10
+    assert all_gone(pids)
+
+
+@pytest.mark.parametrize("role", ["lead", "worker"])
+def test_a_cli_that_died_while_its_stdout_is_held_open_fails_soon(
+    orch: Orchestrator, project: str, role: str
+) -> None:
+    if role == "lead":
+        agent = orch.lead(project)
+        orch.send(agent.id, "DIE")
+    else:
+        agent, _ = orch.spawn(project, "DIE", worktree=False)
+    started = time.monotonic()
+
+    finished(orch, agent.id)
+
+    assert time.monotonic() - started < 15
+    run = last_run(orch, agent.id)
+    assert run.status is RunStatus.FAILED and run.result == "working"
+    assert all_gone(fake_pids(agent.cwd))
+
+
+def sleeper(*args: str, **kwargs) -> subprocess.Popen:
+    return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", *args], **kwargs)
+
+
+def test_turn_processes_follow_the_session_of_a_shell_that_has_exited() -> None:
+    """The snapshot at the answer names the shell; its orphan is found by that id later."""
+    shell = subprocess.Popen(
+        ["/bin/sh", "-c", "/bin/sleep 30 >/dev/null 2>&1 & echo $!"],
+        stdout=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    orphan = int(shell.stdout.readline())
+    shell.wait()
+    try:
+        known = {shell.pid: (shell.pid, shell.pid)}
+
+        assert orphan in turn_processes(shell.pid, "ORCH_TURN=none", known)
+        assert orphan not in turn_processes(shell.pid, "ORCH_TURN=none", {})
+    finally:
+        os.kill(orphan, signal.SIGKILL)
+
+
+def test_a_reused_pid_is_neither_selected_nor_signalled() -> None:
+    other = sleeper()
+    try:
+        stale = {other.pid: (1, 1)}  # recorded for an earlier process with that pid
+
+        assert other.pid not in turn_processes(-1, "ORCH_TURN=none", stale)
+        _send(stale, signal.SIGKILL)
+        assert other.poll() is None
+    finally:
+        other.kill()
+        other.wait()
+
+
+def test_other_runners_and_their_sessions_are_not_part_of_a_turn() -> None:
+    """A sub-agent's runner inherits the lead's environment through its MCP server."""
+    env = {**os.environ, "ORCH_TURN": "lead-turn"}
+    ours = sleeper(env=env)
+    runner = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import subprocess, sys, time; "
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+            "time.sleep(30)",
+            *RUNNER_ARGV.split(),
+            "7",
+        ],
+        env=env,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            procs = turn_processes(-1, "ORCH_TURN=lead-turn")
+            if ours.pid in procs:
+                break
+            time.sleep(0.1)
+
+        assert ours.pid in procs
+        assert not [pid for pid, (_, sid) in procs.items() if sid == runner.pid]
+    finally:
+        os.killpg(runner.pid, signal.SIGKILL)
+        runner.wait()
+        ours.kill()
+        ours.wait()
 
 
 @pytest.mark.parametrize(("mode", "tokens"), [("", 200), ("CUMULATIVE ", 100)])

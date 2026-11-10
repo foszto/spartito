@@ -11,8 +11,16 @@ running total of the session instead, like `codex exec resume` does.
 `STALE` first reports a result of its own for a background task (like Claude on resume
 after its previous process was ended with a background command running). `TWICE` reports
 a second result after the answer (like Claude when a background command ends), with the
-same usage again; `LINGER <s>` keeps the process alive for s seconds after the answer,
-with a child in a process group of its own; it writes both pids to `.fake-pids`.
+same usage again.
+
+Processes, for ending a turn: the script appends its pid and those of the children named
+below to `.fake-pids` in the working directory, one per line, its own first.
+`LINGER <s>` keeps it alive for s seconds after the answer, with a child in a session of
+its own (as Claude starts its shells); with `STUBBORN` that child ignores SIGTERM.
+`ORPHAN <s>` before the answer starts a shell-like helper (in a process group of its own,
+with `NEWSESSION` in a session of its own) that starts a child living s seconds and exits
+at once, like `nohup server &`; then the script answers and exits. `DIE` starts a child
+that keeps the script's stdout open for an hour and kills the script before it answers.
 """
 
 from __future__ import annotations
@@ -24,7 +32,11 @@ from orchestrator.models import Agent, Event, Usage
 from orchestrator.providers.base import NOTIFICATION_RESULT, Invocation, RunContext
 
 SCRIPT = r"""
-import json, os, pathlib, subprocess, sys, time
+import json, os, pathlib, signal, subprocess, sys, time
+def note(pid):
+    with open(".fake-pids", "a") as pids:
+        pids.write(f"{pid}\n")
+note(os.getpid())
 resumed = sys.argv[1]
 prompt = sys.stdin.read()
 print(json.dumps({"session": "fake-session", "model": "fake-model-1"}), flush=True)
@@ -49,6 +61,19 @@ extra = {"usage": usage, "cumulative": cumulative} if usage else {}
 if "STALE" in words:
     print(json.dumps({"result": "", "notification": True, **extra}), flush=True)
 print(json.dumps({"text": "working"}), flush=True)
+if "DIE" in words:
+    note(subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3600)"]).pid)
+    os.kill(os.getpid(), signal.SIGKILL)
+for flag, value in zip(words, words[1:]):
+    if flag == "ORPHAN":
+        helper = (  # like `nohup server >/dev/null 2>&1 &`
+            "import subprocess, sys; sleep = 'import time; time.sleep(" + value + ")'; "
+            "child = subprocess.Popen([sys.executable, '-c', sleep], stdin=subprocess.DEVNULL, "
+            "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); "
+            "open('.fake-pids', 'a').write(f'{child.pid}\\n')"
+        )
+        apart = {"start_new_session": True} if "NEWSESSION" in words else {"process_group": 0}
+        subprocess.run([sys.executable, "-c", helper], **apart)
 if "WHOAMI" in words:
     print(json.dumps({"result": sys.argv[2], **extra}), flush=True)
 elif "FAIL" in words:
@@ -61,10 +86,9 @@ if "TWICE" in words:
     print(json.dumps({"result": "second answer", "notification": True, **extra}), flush=True)
 for flag, value in zip(words, words[1:]):
     if flag == "LINGER":
-        child = subprocess.Popen(
-            [sys.executable, "-c", f"import time; time.sleep({value})"], process_group=0
-        )
-        pathlib.Path(".fake-pids").write_text(f"{os.getpid()} {child.pid}")
+        ignore = "import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        code = ("STUBBORN" in words) * ignore + f"import time; time.sleep({value})"
+        note(subprocess.Popen([sys.executable, "-c", code], start_new_session=True).pid)
         time.sleep(float(value))
 """
 
