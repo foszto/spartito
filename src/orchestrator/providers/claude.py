@@ -7,7 +7,7 @@ import uuid
 
 from ..loadout import Loadout
 from ..models import Agent, Event, Usage
-from .base import Invocation, RunContext, brief
+from .base import NOTIFICATION_RESULT, Invocation, RunContext, brief
 
 # Set by a parent Claude Code session; a child must not believe it is that session.
 PARENT_SESSION_ENV = [
@@ -23,6 +23,11 @@ PARENT_SESSION_ENV = [
 ]
 
 DEFAULT_PERMISSION = "auto"
+
+# Removes `run_in_background` from the Bash tool and keeps commands in the foreground
+# (verified with Claude Code 2.1.322). Set for leads: a background command keeps the CLI
+# alive after its answer, and a lead must stay reachable between turns.
+NO_BACKGROUND_ENV = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}
 
 
 def loadout_flags(loadout: Loadout) -> list[str]:
@@ -69,7 +74,12 @@ class ClaudeProvider:
             argv += ["--allowedTools", "mcp__orch"]
         if ctx.output_schema:
             argv += ["--json-schema", json.dumps(ctx.output_schema)]
-        return Invocation(argv=argv, stdin=ctx.prompt, unset_env=PARENT_SESSION_ENV)
+        return Invocation(
+            argv=argv,
+            stdin=ctx.prompt,
+            env=dict(NO_BACKGROUND_ENV) if ctx.lead else {},
+            unset_env=PARENT_SESSION_ENV,
+        )
 
     def parse(self, line: str) -> list[Event]:
         try:
@@ -89,9 +99,13 @@ class ClaudeProvider:
             if failed and not text:
                 text = "; ".join(data.get("errors") or []) or data.get("subtype", "error")
             usage = self._usage(data)
+            origin = data.get("origin")
+            # A turn the CLI took for a background task notification (after its answer, or
+            # on resume for a task the previous process left behind) has an origin.
+            by_notification = isinstance(origin, dict) and origin.get("kind") == "task-notification"
             return [
                 Event(
-                    "result",
+                    NOTIFICATION_RESULT if by_notification else "result",
                     text,
                     session_id=data.get("session_id"),
                     cost_usd=usage.cost_usd if usage else data.get("total_cost_usd"),

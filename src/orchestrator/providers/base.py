@@ -14,6 +14,12 @@ from typing import Any, Protocol
 from ..loadout import Loadout
 from ..models import Agent, Event
 
+# Event kind of a result the CLI produced on its own rather than in answer to the prompt:
+# a background command it had started ended (or, on resume, was found stopped) and it took
+# another turn to report that. The runner counts it as a result, but it does not end a
+# lead's turn the way the answer to the prompt does.
+NOTIFICATION_RESULT = "notification_result"
+
 
 @dataclass
 class McpServer:
@@ -31,6 +37,7 @@ class RunContext:
     system_prompt: str
     scratch: Path  # per-run directory for files the CLI needs (schemas, configs)
     mcp: McpServer | None = None
+    lead: bool = False  # the role runs sub-agents and must stay reachable between turns
     output_schema: dict[str, Any] | None = None
     model: str | None = None  # resolved from the agent and the settings
     effort: str | None = None

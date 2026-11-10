@@ -101,14 +101,24 @@ CREATE TABLE IF NOT EXISTS deliveries (
 -- What kind of turn a run is and who queued it; its own table for the same reasons as
 -- run_usage. Runs without a row (queued by older code) are messages of unknown sender.
 -- kind: 'message' | 'notification'; sender: the agent whose MCP server queued the run
--- (NULL: user, CLI, dashboard); notify: 'each' | 'all', how the sender wants to be woken.
+-- (NULL: user, CLI, dashboard); notify: 'each' | 'all', how the sender wants to be woken;
+-- origin: whom the turn answers (a message: its sender; a notification: the parent, when
+-- the work it reports was done for that parent); cause_run: the run of the parent during
+-- whose turn this one was queued (a notification: that of the work it reports);
+-- claimed: JSON list of the runs a notification reported (released if its turn fails);
+-- checked: 1 once the run has ended and its parents were checked for a notification.
 CREATE TABLE IF NOT EXISTS run_meta (
     run_id INTEGER PRIMARY KEY,
     agent_id TEXT NOT NULL,
     kind TEXT NOT NULL,
     sender TEXT,
-    notify TEXT NOT NULL DEFAULT 'each'
+    notify TEXT NOT NULL DEFAULT 'each',
+    origin TEXT,
+    cause_run INTEGER,
+    claimed TEXT,
+    checked INTEGER NOT NULL DEFAULT 0
 );
+CREATE INDEX IF NOT EXISTS run_meta_unchecked ON run_meta(checked);
 CREATE INDEX IF NOT EXISTS runs_agent ON runs(agent_id, id);
 CREATE INDEX IF NOT EXISTS events_agent ON events(agent_id, id);
 """
@@ -144,6 +154,10 @@ class RunMeta:
     kind: str = MESSAGE
     sender: str | None = None
     notify: str = "each"
+    origin: str | None = None
+    cause_run: int | None = None
+    claimed: str | None = None  # JSON list of run ids
+    checked: int = 0
     known: bool = True  # False: queued by code from before run metadata
 
     @classmethod
@@ -160,9 +174,11 @@ def subtree_sql(column: str = "?") -> str:
 
 
 class Store:
-    # Called with an agent id whenever this store ends a run on its own (reconcile);
-    # the Orchestrator sets it so parents get notified.
-    on_run_end: Callable[[str], None] | None = None
+    # Called as on_run_end(run_id, agent_id, recheck) when reconcile ended a run (or
+    # deleted a notification that never started: recheck, the agent may still be due one)
+    # or found an ended run whose runner died before checking the parents. The
+    # Orchestrator sets it so parents get notified.
+    on_run_end: Callable[[int, str, bool], None] | None = None
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or config.db_path()
@@ -383,10 +399,11 @@ class Store:
         kind: str = MESSAGE,
         sender: str | None = None,
         notify: str = "each",
+        cause_run: int | None = None,
     ) -> Run:
         with self._conn() as conn:
             run_id = self.insert_run(
-                conn, agent_id, prompt, depends_on, output_schema, kind, sender, notify
+                conn, agent_id, prompt, depends_on, output_schema, kind, sender, notify, cause_run
             )
         run = self.get_run(run_id)
         assert run is not None
@@ -402,8 +419,10 @@ class Store:
         kind: str = MESSAGE,
         sender: str | None = None,
         notify: str = "each",
+        cause_run: int | None = None,
     ) -> int:
-        """Insert a waiting run and its metadata on `conn`; returns the run id."""
+        """Insert a waiting run and its metadata on `conn`; returns the run id. A message's
+        origin is its sender; a notification's is set when it starts."""
         if notify not in NOTIFY_MODES:
             raise ValueError(f"notify must be one of {', '.join(NOTIFY_MODES)}")
         cursor = conn.execute(
@@ -420,8 +439,17 @@ class Store:
         )
         run_id = cursor.lastrowid
         conn.execute(
-            "INSERT INTO run_meta (run_id, agent_id, kind, sender, notify) VALUES (?, ?, ?, ?, ?)",
-            (run_id, agent_id, kind, sender, notify),
+            "INSERT INTO run_meta (run_id, agent_id, kind, sender, notify, origin, cause_run)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                run_id,
+                agent_id,
+                kind,
+                sender,
+                notify,
+                sender if kind == MESSAGE else None,
+                cause_run,
+            ),
         )
         return run_id
 
@@ -448,16 +476,54 @@ class Store:
             ).fetchall()
         return {row["run_id"]: from_row(RunMeta, row) for row in rows}
 
-    def waiting_messages(self, agent_id: str) -> list[int]:
-        """Ids of the agent's waiting runs that are messages (not notifications)."""
+    def ready_messages(self, agent_id: str) -> list[int]:
+        """Ids of the agent's waiting message runs (not notifications) that could start once
+        the agent's turn is free: none of their dependencies is still active."""
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT r.id FROM runs r LEFT JOIN run_meta m ON m.run_id = r.id"
+                "SELECT r.id, r.depends_on FROM runs r LEFT JOIN run_meta m ON m.run_id = r.id"
                 " WHERE r.agent_id = ? AND r.status = ? AND COALESCE(m.kind, ?) = ?"
                 " ORDER BY r.id",
                 (agent_id, RunStatus.WAITING.value, MESSAGE, MESSAGE),
             ).fetchall()
-        return [row["id"] for row in rows]
+            return [
+                row["id"] for row in rows if not self._blocked(conn, json.loads(row["depends_on"]))
+            ]
+
+    def running_run(self, agent_id: str) -> Run | None:
+        """The agent's running run, if any (there is at most one)."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM runs WHERE agent_id = ? AND status = ? ORDER BY id LIMIT 1",
+                (agent_id, RunStatus.RUNNING.value),
+            ).fetchone()
+        return self.run_from_row(row) if row else None
+
+    def set_parent(self, agent_id: str, parent_id: str) -> None:
+        with self._conn() as conn:
+            conn.execute("UPDATE agents SET parent_id = ? WHERE id = ?", (parent_id, agent_id))
+
+    def mark_checked(self, run_id: int) -> bool:
+        """Record that the ended run's parents were checked; False if that was done before."""
+        with self._conn() as conn:
+            cursor = conn.execute(
+                "UPDATE run_meta SET checked = 1 WHERE run_id = ? AND checked = 0", (run_id,)
+            )
+        return cursor.rowcount == 1
+
+    def unchecked(self, agent_ids: list[str]) -> bool:
+        """Whether one of the agents has an ended run whose parents were not checked yet."""
+        if not agent_ids:
+            return False
+        marks = ", ".join("?" * len(agent_ids))
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM run_meta m JOIN runs r ON r.id = m.run_id WHERE m.checked = 0"
+                f" AND r.status NOT IN ('{ACTIVE[0]}', '{ACTIVE[1]}') AND m.agent_id IN ({marks})"
+                " LIMIT 1",
+                agent_ids,
+            ).fetchone()
+        return row is not None
 
     def active_descendants(self, agent_id: str) -> int:
         """How many of the agent's descendants (not itself) have a waiting or running run."""
@@ -590,18 +656,35 @@ class Store:
         return [self.run_from_row(row) for row in rows]
 
     def reconcile(self) -> None:
-        """Fail active runs whose runner process no longer exists (crash, reboot)."""
-        ended = []
+        """Fail active runs whose runner process no longer exists (crash, reboot); a
+        notification that never started is deleted instead. Then hand every run ended this
+        way, and every ended run whose runner died before checking the parents, to
+        `on_run_end`, once (whoever marks it checked first)."""
+        ended: list[tuple[int, str, bool]] = []
         for run in self.active_runs():
             if run.pid is not None and not pid_alive(run.pid):
                 # Re-read: the runner may have finished between the query and the check.
                 fresh = self.get_run(run.id)
-                if fresh and fresh.status.active:
+                if not (fresh and fresh.status.active):
+                    continue
+                if fresh.started_at is None and self.meta(run.id).kind == NOTIFICATION:
+                    self.delete_run(run.id)
+                    ended.append((run.id, run.agent_id, True))
+                else:
                     self.finish_run(run.id, RunStatus.FAILED, error="runner process died")
-                    ended.append(run.agent_id)
+                    if self.mark_checked(run.id):
+                        ended.append((run.id, run.agent_id, False))
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT r.id, r.agent_id, r.pid FROM run_meta m JOIN runs r ON r.id = m.run_id"
+                f" WHERE m.checked = 0 AND r.status NOT IN ('{ACTIVE[0]}', '{ACTIVE[1]}')"
+            ).fetchall()
+        for row in rows:  # the trigger was lost with its runner
+            if not pid_alive(row["pid"]) and self.mark_checked(row["id"]):
+                ended.append((row["id"], row["agent_id"], False))
         if self.on_run_end:
-            for agent_id in dict.fromkeys(ended):
-                self.on_run_end(agent_id)
+            for run_id, agent_id, recheck in ended:
+                self.on_run_end(run_id, agent_id, recheck)
 
     # -- usage ------------------------------------------------------------
 
