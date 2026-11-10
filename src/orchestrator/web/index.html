@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orchestrator</title>
+<script>
+  // Before first paint, so the page never flashes the wrong theme.
+  (() => {
+    let theme = null;
+    try { theme = localStorage.getItem('orch-theme'); } catch (error) { /* storage unavailable */ }
+    document.documentElement.dataset.theme =
+      theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  })();
+</script>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<aside id="side">
+  <div class="brand">
+    <div class="logo" data-icon="logo"></div>
+    <h1>Orchestrator</h1>
+    <button class="btn ghost icon" id="settingsButton" type="button" title="Models and effort" aria-label="Models and effort" data-icon="sliders"></button>
+    <button class="btn ghost icon" id="themeButton" type="button" title="Switch theme" aria-label="Switch theme" data-icon="moon"></button>
+  </div>
+  <nav id="nav"></nav>
+  <div class="side-foot"><span id="summary"></span></div>
+</aside>
+<section id="view"></section>
+
+<dialog id="projectDialog">
+  <form method="dialog">
+    <div class="dialog-head"><h3>Add project</h3>
+      <button class="btn ghost icon" value="cancel" formnovalidate aria-label="Close" data-icon="x"></button></div>
+    <div class="dialog-body">
+      <div class="picker">
+        <div class="picker-bar">
+          <button class="btn ghost icon" type="button" id="pickerUp" title="Parent folder" aria-label="Parent folder" data-icon="up"></button>
+          <button class="btn ghost icon" type="button" id="pickerHome" title="Home folder" aria-label="Home folder" data-icon="home"></button>
+          <div class="crumbs" id="pickerCrumbs"></div>
+          <input class="picker-filter" id="pickerFilter" type="search" placeholder="Filter…" aria-label="Filter folders" autocomplete="off">
+        </div>
+        <div class="picker-list" id="pickerList"></div>
+        <div class="picker-here" id="pickerHere" hidden>
+          <span>This folder is a git repository.</span>
+          <button class="btn" type="button" id="pickerUseHere">Use this folder</button>
+        </div>
+      </div>
+      <label class="field"><span class="label">Repository</span>
+        <input class="input mono" name="path" required placeholder="Pick a repository above, or paste a path" autocomplete="off">
+        <span class="help">Git repositories are marked. Click one to select it; use the arrow to look inside a folder.</span></label>
+      <div class="grid-2">
+        <label class="field"><span class="label">Project name</span>
+          <input class="input" name="name" placeholder="defaults to the folder name" autocomplete="off"></label>
+        <div class="field"><span class="label">Default agent</span>
+          <div class="segmented" data-segment="provider"></div></div>
+      </div>
+    </div>
+    <div class="dialog-foot"><span class="error"></span>
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" value="ok">Add project</button></div>
+  </form>
+</dialog>
+
+<dialog id="agentDialog">
+  <form method="dialog">
+    <div class="dialog-head"><h3>New agent in <span data-project></span></h3>
+      <button class="btn ghost icon" value="cancel" formnovalidate aria-label="Close" data-icon="x"></button></div>
+    <div class="dialog-body">
+      <label class="field"><span class="label">Task</span>
+        <textarea class="input" name="task" rows="5" required placeholder="A self-contained brief: goal, relevant files, constraints, what done means."></textarea></label>
+      <div class="field"><span class="label">Role</span><div class="cards" data-cards="role"></div></div>
+      <div class="grid-2">
+        <div class="field"><span class="label">Agent</span><div class="segmented" data-segment="provider"></div></div>
+        <label class="field"><span class="label">Name</span>
+          <input class="input" name="name" placeholder="optional, e.g. login-api" autocomplete="off"></label>
+        <label class="field"><span class="label">Model</span>
+          <input class="input" name="model" list="agentModels" autocomplete="off"><datalist id="agentModels"></datalist></label>
+        <label class="field"><span class="label">Effort</span><select class="input" name="effort"></select></label>
+      </div>
+      <label class="field"><span class="label">Workspace</span><select class="input" name="workspace"></select></label>
+      <div class="field" data-after-field><span class="label">Start after</span>
+        <div class="checks" data-checks="after"></div>
+        <span class="help">The agent starts once these have finished successfully.</span></div>
+    </div>
+    <div class="dialog-foot"><span class="error"></span>
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" value="ok">Start agent</button></div>
+  </form>
+</dialog>
+
+<dialog id="settingsDialog">
+  <form method="dialog">
+    <div class="dialog-head"><h3>Models and effort</h3>
+      <button class="btn ghost icon" value="cancel" formnovalidate aria-label="Close" data-icon="x"></button></div>
+    <div class="dialog-body">
+      <label class="field"><span class="label">Applies to</span>
+        <select class="input" name="scope"></select>
+        <span class="help" id="settingsHelp"></span></label>
+      <div id="settingsRows"></div>
+    </div>
+    <div class="dialog-foot"><span class="error"></span>
+      <button class="btn" value="cancel" formnovalidate>Close</button>
+      <button class="btn primary" value="ok">Save</button></div>
+  </form>
+</dialog>
+
+<dialog id="confirmDialog">
+  <form method="dialog">
+    <div class="dialog-head"><h3 data-title></h3></div>
+    <div class="dialog-body">
+      <p data-text style="margin-top:0"></p>
+      <label class="field" data-option hidden><input type="checkbox" name="option"> <span></span></label>
+    </div>
+    <div class="dialog-foot"><span class="error"></span>
+      <button class="btn" value="cancel">Cancel</button>
+      <button class="btn primary" value="ok" data-ok></button></div>
+  </form>
+</dialog>
+<div id="toast" hidden role="status"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

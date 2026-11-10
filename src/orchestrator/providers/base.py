@@ -1,0 +1,71 @@
+"""The provider contract: how one coding-agent CLI is launched and how its output is read.
+
+Adding an agent (Cursor, opencode, ...) means implementing this protocol and registering
+the class in providers/__init__.py. Nothing else in the orchestrator knows provider details.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Protocol
+
+from ..models import Agent, Event
+
+
+@dataclass
+class McpServer:
+    """The orchestrator's own MCP server, handed to agents that may run sub-agents."""
+
+    command: str
+    args: list[str]
+    env: dict[str, str]
+
+
+@dataclass
+class RunContext:
+    agent: Agent
+    prompt: str
+    system_prompt: str
+    scratch: Path  # per-run directory for files the CLI needs (schemas, configs)
+    mcp: McpServer | None = None
+    output_schema: dict[str, Any] | None = None
+    model: str | None = None  # resolved from the agent and the settings
+    effort: str | None = None
+    writable_dirs: list[str] = field(default_factory=list)  # beyond the cwd, e.g. the shared .git
+
+
+@dataclass
+class Invocation:
+    argv: list[str]
+    stdin: str
+    env: dict[str, str] = field(default_factory=dict)
+    unset_env: list[str] = field(default_factory=list)
+
+
+class Provider(Protocol):
+    name: str
+    efforts: tuple[str, ...]  # reasoning-effort levels the CLI accepts
+
+    def models(self) -> list[str]:
+        """Model names worth offering in a picker; any other name is still accepted."""
+        ...
+
+    def invocation(self, ctx: RunContext) -> Invocation:
+        """Command line for one headless turn; resumes agent.session_id when it is set."""
+        ...
+
+    def parse(self, line: str) -> list[Event]:
+        """Translate one line of the CLI's output stream into normalised events."""
+        ...
+
+    def attach_command(self, agent: Agent) -> list[str]:
+        """Interactive command a person can run to take over the agent's conversation."""
+        ...
+
+
+def brief(value: Any, limit: int = 300) -> str:
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[:limit] + "…"
