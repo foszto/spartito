@@ -134,7 +134,7 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
     env.update(invocation.env)
 
     stderr_path = scratch / "stderr.log"
-    last_text, result, errors, reported_model = "", None, [], None
+    last_text, result, errors, reported_model, session_id = "", None, [], None, None
     with (
         open(scratch / "stream.jsonl", "w", encoding="utf-8") as raw,
         open(stderr_path, "w", encoding="utf-8") as stderr,
@@ -158,6 +158,7 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
                 for event in provider.parse(line):
                     if event.session_id:
                         store.set_session(agent.id, event.session_id)
+                        session_id = event.session_id
                     if event.kind == "session":
                         reported_model = event.model or reported_model
                         continue
@@ -178,7 +179,7 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
                 child.kill()
             raise
 
-    usage = record_usage(store, run, agent, result, reported_model)
+    usage = record_usage(store, run, agent, result, reported_model, session_id)
     cost = usage.cost_usd if usage else None
     if result and not result.is_error and code == 0:
         text = result.text or last_text
@@ -204,7 +205,12 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
 
 
 def record_usage(
-    store: Store, run: Run, agent: Agent, result: Event | None, model: str | None
+    store: Store,
+    run: Run,
+    agent: Agent,
+    result: Event | None,
+    model: str | None,
+    session_id: str | None = None,
 ) -> Usage | None:
     """Store the run's own tokens and cost; providers may report session totals instead."""
     if result is None:
@@ -217,14 +223,24 @@ def record_usage(
     if usage.cumulative:
         # The CLI reported totals for the whole session/thread (Codex always; Claude without
         # model_usage_since_last_result): this run's share is what exceeds the running total
-        # of the agent's earlier runs. Agent totals stay correct, but per-run values are off
-        # in two known cases: the first run under this code of an agent whose earlier runs
-        # had no usage records (old code) gets their tokens too (Claude's legacy session cost
-        # is known and subtracted, tokens are not), and the tokens of a turn that failed or
-        # was stopped without a result land in the agent's next run.
-        earlier = [other for other in store.runs_of(agent.id) if other.id < run.id]
-        usage = usage.since(running_total(earlier, store.usage_of(agent.id)))
+        # of the agent's earlier runs in the same session. Runs recorded under another
+        # session id are left out (the session was started over); runs without a recorded
+        # session id (old code, or none reported) count. Agent totals stay correct, but
+        # per-run values are off in two known cases: the first run under this code of an
+        # agent whose earlier runs had no usage records (old code) gets their tokens too
+        # (Claude's legacy session cost is known and subtracted, tokens are not), and the
+        # tokens of a turn that failed or was stopped without a result land in the agent's
+        # next run.
+        recorded = store.usage_of(agent.id)
+
+        def same_session(other: Run) -> bool:
+            other_session = recorded[other.id].session_id if other.id in recorded else None
+            return not session_id or other_session in (None, session_id)
+
+        earlier = [o for o in store.runs_of(agent.id) if o.id < run.id and same_session(o)]
+        usage = usage.since(running_total(earlier, recorded))
     usage.model = model or usage.model
+    usage.session_id = session_id
     store.set_usage(run.id, agent.id, usage)
     return usage
 
