@@ -404,10 +404,9 @@ class Orchestrator:
         if not changes:
             raise OrchestratorError("nothing to change: give 'model' and/or 'effort'")
         agent = self._agent_or_orchestrator_draft(agent_id)
-        model, effort = agent.model, agent.effort
-        if "model" in changes:
+        if changes.get("model") is not None:
             try:
-                model = None if changes["model"] is None else settings.check_model(changes["model"])
+                settings.check_model(changes["model"])
             except ValueError as exc:
                 raise OrchestratorError(str(exc)) from None
         if "effort" in changes:
@@ -422,7 +421,7 @@ class Orchestrator:
                 )
         if agent.id == ORCHESTRATOR_ID:
             self.orchestrator()
-        self.store.set_overrides(agent.id, model, effort)
+        self.store.set_overrides(agent.id, changes)
         return self.setup(agent.id)
 
     def _agent_or_orchestrator_draft(self, agent_id: str) -> Agent:

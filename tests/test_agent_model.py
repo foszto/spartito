@@ -263,3 +263,17 @@ def test_cli_model_notes_the_running_turn_and_the_cache(orch: Orchestrator, proj
     assert "applies from the next one" in result.output
     assert "fresh prompt cache" in result.output
     orch.stop(agent.id)
+
+
+def test_two_changes_at_once_do_not_undo_each_other(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dashboard saves model and effort in two requests that may overlap."""
+    agent = orch.create_agent(project, worktree=False)
+    stale = orch.agent(agent.id)  # read before the other request wrote its value
+    orch.set_overrides(agent.id, {"effort": "high"})
+    monkeypatch.setattr(orch, "_agent_or_orchestrator_draft", lambda agent_id: stale)
+
+    orch.set_overrides(agent.id, {"model": "fake-large"})
+
+    assert own(orch, agent.id) == ("fake-large", "high")

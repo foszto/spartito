@@ -403,11 +403,17 @@ class Store:
         with self._conn() as conn:
             conn.execute("UPDATE agents SET session_id = ? WHERE id = ?", (session_id, agent_id))
 
-    def set_overrides(self, agent_id: str, model: str | None, effort: str | None) -> None:
-        """Set the agent's own model and effort (None: inherit from the settings)."""
+    def set_overrides(self, agent_id: str, changes: dict[str, str | None]) -> None:
+        """Set the agent's own `model` and/or `effort` (None: inherit from the settings).
+        Only the given columns are written, so two changes at once do not undo each other."""
+        columns = [key for key in ("model", "effort") if key in changes]
+        if not columns:
+            return
+        assignments = ", ".join(f"{key} = ?" for key in columns)
         with self._conn() as conn:
             conn.execute(
-                "UPDATE agents SET model = ?, effort = ? WHERE id = ?", (model, effort, agent_id)
+                f"UPDATE agents SET {assignments} WHERE id = ?",
+                (*(changes[key] for key in columns), agent_id),
             )
 
     def delete_agent(self, agent_id: str) -> None:
