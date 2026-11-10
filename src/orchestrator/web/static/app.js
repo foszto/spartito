@@ -9,6 +9,8 @@ const ICONS = {
   chevron: '<path d="m6 9 6 6 6-6"/>',
   right: '<path d="m9 6 6 6-6 6"/>',
   up: '<path d="M12 19V5M5 12l7-7 7 7"/>',
+  down: '<path d="M12 5v14M5 12l7 7 7-7"/>',
+  board: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h8M8 17h4"/>',
   home: '<path d="M4 11 12 4l8 7M6 10v9h12v-9"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   branch: '<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10M18 10c0 4-6 3-6 7"/>',
@@ -297,6 +299,7 @@ function renderNav() {
     actions.append(
       button('ghost icon', 'chat', '', () => select(leadOf(project)?.id || `lead:${project.name}`), 'Talk to the project lead'),
       button('ghost icon', 'plus', '', () => openAgentDialog(project), 'New agent'),
+      button('ghost icon', 'board', '', () => openBoard(project.name), 'Task board'),
       button('ghost icon', 'archive', '', () => archiveSafe(project), 'Archive every finished agent whose work is safe'),
       button('ghost icon', 'x', '', () => removeProject(project), 'Remove project'));
     head.append(toggle, actions);
@@ -1049,6 +1052,132 @@ async function answerDecision(d, answer, controls) {
   }
 }
 
+// -- task board ----------------------------------------------------------------
+// One project's board in a list dialog: a list per state (syncList keeps the nodes; an item's
+// node is rebuilt when it changed), add/edit in boardItemDialog, dispatch after a confirmation.
+
+const BOARD_STATES = [['idea', 'Idea'], ['ready', 'Ready'], ['in_progress', 'In progress'], ['done', 'Done']];
+let boardProject = null, boardTicket = 0;
+function openBoard(name) {
+  boardProject = name;
+  const dialog = $('boardDialog');
+  dialog.querySelector('[data-project]').textContent = name;
+  for (const list of dialog.querySelectorAll('[data-list]')) list.replaceChildren();
+  if (!dialog.open) dialog.showModal();
+  renderBoard();
+}
+async function renderBoard() {
+  const dialog = $('boardDialog');
+  if (!dialog.open || !boardProject) return;
+  const ticket = ++boardTicket, project = boardProject;
+  let items;
+  try { items = (await call(`/api/board?project=${encodeURIComponent(project)}`)).items; }
+  catch (error) { if (ticket === boardTicket) toast(error.message, true); return; }
+  if (ticket !== boardTicket || project !== boardProject || !dialog.open) return;  // a newer pass runs
+  for (const section of dialog.querySelectorAll('.board-state')) {
+    const mine = items.filter(item => item.state === section.dataset.state), list = section.querySelector('[data-list]');
+    section.querySelector('.count').textContent = mine.length ? String(mine.length) : '';
+    syncList(list, mine, item => `${item.id}:${item.updated_at}`, boardItem, 'Nothing here.');
+    const nodes = [...list.querySelectorAll('.board-item')];
+    nodes.forEach((node, index) => {
+      node.querySelector('[data-up]').disabled = index === 0;
+      node.querySelector('[data-down]').disabled = index === nodes.length - 1;
+    });
+  }
+  const ready = items.filter(item => item.state === 'ready').length, dispatch = dialog.querySelector('[data-dispatch]');
+  dispatch.textContent = ready ? `Dispatch ${plural(ready, 'ready item')}` : 'Dispatch ready items';
+  dispatch.disabled = !ready;
+  // The ids shown now: the confirmation names them and only they are dispatched.
+  dispatch.dataset.ids = JSON.stringify(items.filter(item => item.state === 'ready').map(item => item.id));
+}
+function boardItem(item) {
+  const node = el('div', 'list-item board-item'), head = el('div', 'item-head'), tools = el('div', 'item-tools');
+  const stateSelect = el('select', 'input');
+  options(stateSelect, BOARD_STATES, item.state);
+  stateSelect.title = 'State'; stateSelect.setAttribute('aria-label', `State of item ${item.id}`);
+  stateSelect.onchange = () => boardChange(`/api/board/${item.id}`, { state: stateSelect.value });
+  const up = button('ghost icon', 'up', '', () => boardChange(`/api/board/${item.id}/move`, { direction: 'up' }), 'Move up');
+  const down = button('ghost icon', 'down', '', () => boardChange(`/api/board/${item.id}/move`, { direction: 'down' }), 'Move down');
+  up.dataset.up = ''; down.dataset.down = '';
+  tools.append(up, down, stateSelect, button('ghost icon', 'pencil', '', () => editBoardItem(item), 'Edit'));
+  head.append(el('span', 'chip', `#${item.id}`), el('span', 'title', item.title), tools);
+  node.append(head);
+  if (item.description) node.append(el('p', 'description', item.description));
+  if (item.agent_id || item.branch) {
+    const links = el('div', 'links');
+    if (item.agent_id) {
+      const agent = el('button', 'link', item.agent_id);
+      agent.type = 'button'; agent.title = 'Open its conversation';
+      agent.onclick = () => { $('boardDialog').close(); select(item.agent_id); };
+      links.append(agent);
+    }
+    if (item.branch) { const branch = el('span', 'chip mono'); branch.append(icon('branch'), item.branch); links.append(branch); }
+    node.append(links);
+  }
+  return node;
+}
+async function boardChange(path, body) {
+  try { await call(path, body); } catch (error) { toast(error.message, true); }
+  await renderBoard();
+}
+function boardItemForm(title, item) {
+  const dialog = $('boardItemDialog'), form = dialog.querySelector('form');
+  dialog.querySelector('[data-title]').textContent = title;
+  options(form.elements.state, BOARD_STATES);
+  const project = state.projects.find(p => p.name === boardProject);
+  $('boardAgents').replaceChildren(...(project ? project.agents : []).map(a => { const o = el('option'); o.value = a.id; return o; }));
+  form.elements.title.value = item.title || ''; form.elements.description.value = item.description || '';
+  form.elements.state.value = item.state || 'idea';
+  form.elements.agent.value = item.agent_id || ''; form.elements.branch.value = item.branch || '';
+  return dialog;
+}
+const boardFields = data => ({ title: data.get('title'), description: data.get('description'), state: data.get('state'),
+  agent: data.get('agent').trim(), branch: data.get('branch').trim() });
+function addBoardItem() {
+  const project = boardProject, dialog = boardItemForm(`New item in ${project}`, {});
+  openDialog(dialog, async data => {
+    const item = await call('/api/board/add', { project, ...boardFields(data) });  // all or nothing
+    toast(`#${item.id} added`); await renderBoard();
+  });
+  dialog.querySelector('[name=title]').focus();
+}
+function editBoardItem(item) {
+  const dialog = boardItemForm(`Edit #${item.id}`, item);
+  openDialog(dialog, async data => {
+    // Only what the owner changed: a state or link set meanwhile by an agent stays.
+    const was = { title: item.title, description: item.description, state: item.state,
+      agent: item.agent_id || '', branch: item.branch || '' };
+    const changed = Object.fromEntries(Object.entries(boardFields(data)).filter(([key, value]) => value !== was[key]));
+    if (!Object.keys(changed).length) return;
+    await call(`/api/board/${item.id}`, changed);
+    toast(`#${item.id} saved`); await renderBoard();
+  });
+  dialog.querySelector('[name=title]').focus();
+}
+function dispatchBoard() {
+  const project = boardProject, ids = JSON.parse($('boardDialog').querySelector('[data-dispatch]').dataset.ids || '[]');
+  if (!ids.length) return;
+  confirmDialog({
+    title: `Dispatch ${plural(ids.length, 'ready item')} of ${project}?`,
+    text: `${ids.map(id => `#${id}`).join(', ')} go to the project lead as one message from you, and become in progress, `
+      + 'linked to the lead. The lead updates their states as the work proceeds.',
+    ok: 'Dispatch',
+    action: async () => {
+      const result = await call('/api/board/dispatch', { project, ids });
+      const sent = result.items.length, gone = ids.length - sent;
+      toast(sent ? `${plural(sent, 'item')} sent to ${result.agent_id}${gone ? `; ${gone} no longer ready, not sent` : ''}`
+        : 'None of them is ready any more; nothing sent', false, gone ? 6000 : 0);
+      await refresh(); await renderBoard();
+    },
+  });
+}
+function setupBoard() {
+  const dialog = $('boardDialog');
+  dialog.querySelector('[data-close]').onclick = () => dialog.close();
+  dialog.querySelector('[data-add]').onclick = addBoardItem;
+  dialog.querySelector('[data-dispatch]').onclick = dispatchBoard;
+}
+
 // -- dialogs -----------------------------------------------------------------
 
 function openDialog(dialog, submit) {
@@ -1339,6 +1468,7 @@ async function refresh() {
     }
     renderNav();
     renderListDialogs();
+    renderBoard();
     const target = selected;
     if (target === ARCHIVE) { await renderArchive(); return; }
     const exists = Boolean(findAgent(target)) || isArchived(target);
@@ -1371,6 +1501,7 @@ $('themeButton').onclick = () => {
 };
 $('settingsButton').onclick = openSettings;
 for (const spec of Object.values(LIST_DIALOGS)) setupListDialog(spec);
+setupBoard();
 window.addEventListener('pagehide', () => flushSetup(true));
 window.addEventListener('hashchange', () => {
   const id = decodeURIComponent(location.hash.slice(1)) || ORCH;

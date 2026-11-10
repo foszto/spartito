@@ -560,6 +560,107 @@ def decide(
     typer.echo(f"#{decision_id} answered: {chosen} -> {result['agent_id']}  run {result['run_id']}")
 
 
+# -- task board -------------------------------------------------------------
+
+board_app = typer.Typer(help="The task board of each project: ideas and tasks.")
+app.add_typer(board_app, name="board")
+ProjectOption = Annotated[str | None, typer.Option("--project", "-p")]
+StateOption = Annotated[
+    str | None, typer.Option("--state", "-s", help="idea|ready|in_progress|done")
+]
+
+
+def board_line(item) -> str:
+    links = " ".join(f"[{link}]" for link in (item.agent_id, item.branch) if link)
+    return f"  #{item.id}  {item.title}" + (f"  {links}" if links else "")
+
+
+@board_app.callback(invoke_without_command=True)
+def board_list(
+    ctx: typer.Context, project: ProjectOption = None, state: StateOption = None
+) -> None:
+    """List the board by project and state (add, edit, move and dispatch below)."""
+    if ctx.invoked_subcommand:
+        return
+    try:
+        items = orch().board_items(project, state)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    if not items:
+        typer.echo("the board is empty")
+    heading = None
+    for item in items:
+        if (item.project, item.state) != heading:
+            heading = (item.project, item.state)
+            typer.secho(f"{item.project} · {item.state}", bold=True)
+        typer.echo(board_line(item))
+        if item.description:
+            typer.echo(f"      {item.description.splitlines()[0][:100]}")
+
+
+def board_fail(action):
+    try:
+        return action()
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+
+
+@board_app.command("add")
+def board_add(
+    title: str,
+    project: Annotated[str, typer.Option("--project", "-p")],
+    description: Annotated[str, typer.Option("--description", "-d")] = "",
+    state: Annotated[str, typer.Option("--state", "-s")] = "idea",
+) -> None:
+    """Put an item on a project's board."""
+    item = board_fail(lambda: orch().add_board_item(project, title, description, state))
+    typer.echo(f"#{item.id} added to {item.project} · {item.state}")
+
+
+@board_app.command("edit")
+def board_edit(
+    item_id: int,
+    title: Annotated[str | None, typer.Option("--title")] = None,
+    description: Annotated[str | None, typer.Option("--description", "-d")] = None,
+    state: StateOption = None,
+    agent: Annotated[str | None, typer.Option("--agent", help='An agent id; "" clears.')] = None,
+    branch: Annotated[str | None, typer.Option("--branch", help='"" clears.')] = None,
+) -> None:
+    """Change an item's title, description, state or links."""
+    given = {"title": title, "description": description, "state": state}
+    changes = {
+        key: value
+        for key, value in {**given, "agent_id": agent, "branch": branch}.items()
+        if value is not None
+    }
+    if not changes:
+        raise fail("nothing to change")
+    item = board_fail(lambda: orch().update_board_item(item_id, changes))
+    typer.echo(f"#{item.id} {item.project} · {item.state}")
+    typer.echo(board_line(item))
+
+
+@board_app.command("move")
+def board_move(item_id: int, direction: Annotated[str, typer.Argument(help="up or down")]) -> None:
+    """Move an item up or down within its state."""
+    o = orch()
+    item = board_fail(lambda: o.move_board_item(item_id, direction))
+    order = [other.id for other in o.board_items(item.project, item.state)]
+    place = f"{order.index(item.id) + 1} of {len(order)}"
+    typer.echo(f"#{item.id} is now {place} in {item.project} · {item.state}")
+
+
+@board_app.command("dispatch")
+def board_dispatch(project: Annotated[str, typer.Option("--project", "-p")]) -> None:
+    """Send the project's ready items to its lead as one message (they become in_progress)."""
+    result = board_fail(lambda: orch().dispatch_board(project))
+    if not result["items"]:
+        typer.echo(f"no ready items in {project}; nothing sent")
+        return
+    ids = ", ".join(f"#{item['id']}" for item in result["items"])
+    typer.echo(f"{ids} -> {result['agent_id']}  run {result['run_id']}")
+
+
 # -- agents -----------------------------------------------------------------
 
 

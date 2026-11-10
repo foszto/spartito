@@ -323,6 +323,54 @@ def answer_decision(orch: Orchestrator, request: Request, body: dict) -> dict[st
     return orch.answer_decision(request.path_params["decision_id"], body.get("answer"))
 
 
+def list_board(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """`?project=` (required) the project's items by state and position; `&state=` one state."""
+    project = required(dict(request.query_params), "project")
+    items = orch.board_items(project, request.query_params.get("state") or None)
+    return {"items": [item.to_dict() for item in items]}
+
+
+def add_board_item(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """One request: the item with its optional `agent`/`branch` links, or nothing."""
+    item = orch.add_board_item(
+        required(body, "project"),
+        body.get("title"),
+        body.get("description"),
+        body.get("state"),
+        body.get("agent"),
+        body.get("branch"),
+    )
+    return item.to_dict()
+
+
+BOARD_FIELDS = {
+    "title": "title",
+    "description": "description",
+    "state": "state",
+    "agent": "agent_id",
+    "branch": "branch",
+}
+
+
+def update_board_item(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """Changes the fields named in the body (`agent`/`branch` null or "" clear the link)."""
+    changes = {field: body[key] for key, field in BOARD_FIELDS.items() if key in body}
+    for field in ("agent_id", "branch"):
+        if field in changes and changes[field] is None:
+            changes[field] = ""
+    return orch.update_board_item(request.path_params["item_id"], changes).to_dict()
+
+
+def move_board_item(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    return orch.move_board_item(request.path_params["item_id"], body.get("direction")).to_dict()
+
+
+def dispatch_board(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """The project's ready items to its lead as one message; `ids`: only those (the ones the
+    owner confirmed) that are still ready. None of them ready: nothing is sent."""
+    return orch.dispatch_board(required(body, "project"), body.get("ids"))
+
+
 app = Starlette(
     routes=[
         Route("/", index),
@@ -350,6 +398,11 @@ app = Starlette(
         Route("/api/runs/{run_id:int}/edit", api(edit_run), methods=["POST"]),
         Route("/api/decisions", api(list_decisions)),
         Route("/api/decisions/{decision_id:int}/answer", api(answer_decision), methods=["POST"]),
+        Route("/api/board", api(list_board)),
+        Route("/api/board/add", api(add_board_item), methods=["POST"]),
+        Route("/api/board/dispatch", api(dispatch_board), methods=["POST"]),
+        Route("/api/board/{item_id:int}", api(update_board_item), methods=["POST"]),
+        Route("/api/board/{item_id:int}/move", api(move_board_item), methods=["POST"]),
     ],
     middleware=[Middleware(LocalOnly)],
 )

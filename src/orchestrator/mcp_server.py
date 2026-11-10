@@ -15,7 +15,7 @@ from typing import Any
 import anyio
 from mcp.server.mcpserver import MCPServer
 
-from . import roles
+from . import board, roles
 from .models import Run, answers, running_total
 from .replies import clip, run_reply, structured_page
 from .service import Orchestrator, OrchestratorError, agent_state, result_file, run_usage
@@ -621,6 +621,91 @@ def withdraw_decision(decision_id: int) -> dict[str, Any]:
     orch = _orch()
     caller = os.environ.get("ORCH_AGENT_ID") or ""
     return {"withdrawn": orch.withdraw_decision(decision_id, caller).id}
+
+
+# list_board: the whole reply within LOG_CHARS; the active work first.
+BOARD_ORDER = (board.IN_PROGRESS, board.READY, board.IDEA, board.DONE)
+BOARD_CLIPS = {"title": 100, "description": 160, "agent_id": 80, "branch": 80}
+
+
+def _short(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _board_line(item: Any) -> dict[str, Any]:
+    line: dict[str, Any] = {"id": item.id, "state": item.state}
+    for key, limit in BOARD_CLIPS.items():
+        if value := getattr(item, key):
+            line[key] = _short(value, limit)
+    return line
+
+
+@server.tool()
+def list_board(project: str, state: str | None = None) -> dict[str, Any]:
+    """The project's task board (ideas and tasks kept across sessions): in_progress, ready,
+    idea, then done, each in its order; `state` lists one state only. Short: titles and
+    descriptions are cut, and what does not fit in about 6000 chars is only counted
+    (`counts` has every state's total). Leads: their own project only."""
+    orch = _orch()
+    name = _project(orch, project)
+    items = orch.board_items(name, state)
+    items.sort(key=lambda item: BOARD_ORDER.index(item.state))  # stable: keeps the order
+    counts = {key: n for key in BOARD_ORDER if (n := sum(i.state == key for i in items))}
+    reply: dict[str, Any] = {"project": name, "counts": counts, "items": []}
+    left = LOG_CHARS - len(json.dumps(reply)) - 200  # room for the note
+    for item in items:
+        line = _board_line(item)
+        left -= len(json.dumps(line)) + 2
+        if left < 0:
+            break
+        reply["items"].append(line)
+    hidden = items[len(reply["items"]) :]
+    if hidden:
+        by_state = {key: sum(i.state == key for i in hidden) for key in BOARD_ORDER}
+        where = ", ".join(f"{key} {n}" for key, n in by_state.items() if n)
+        reply["note"] = f"{len(hidden)} not shown ({where}); state= lists one state"
+    return reply
+
+
+@server.tool()
+def add_board_item(
+    project: str, title: str, description: str = "", state: str = "idea"
+) -> dict[str, Any]:
+    """Put an idea or task on the project's board (at the end of its state). `title` at most
+    200 chars, `description` at most 4000; `state`: idea (default), ready, in_progress, done.
+    Leads: their own project only."""
+    orch = _orch()
+    item = orch.add_board_item(_project(orch, project), title, description, state)
+    return {"id": item.id, "project": item.project, "state": item.state}
+
+
+@server.tool()
+def update_board_item(
+    item_id: int,
+    state: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
+    agent: str | None = None,
+    branch: str | None = None,
+) -> dict[str, Any]:
+    """Change a board item: its state (idea, ready, in_progress, done; it goes to the end
+    of that state), title, description, or the agent id / branch working on it ("" clears
+    one). Leads: items of their own project only."""
+    orch = _orch()
+    _project(orch, orch.board_item(item_id).project)  # a lead stays within its project
+    given = {
+        "state": state,
+        "title": title,
+        "description": description,
+        "agent_id": agent,
+        "branch": branch,
+    }
+    changes = {key: value for key, value in given.items() if value is not None}
+    if not changes:
+        raise OrchestratorError(
+            "nothing to change: pass state, title, description, agent or branch"
+        )
+    return _board_line(orch.update_board_item(item_id, changes))
 
 
 def main() -> None:

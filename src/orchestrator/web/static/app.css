@@ -333,3 +333,18 @@ div.folder > button.folder:hover { background: none; }
 .list-item .options .btn { white-space: normal; height: auto; min-height: 30px; padding: 4px 10px; text-align: left; }
 .list-item form.answer { display: flex; flex-direction: row; gap: 8px; max-height: none; }
 .list-item .answer .input { flex: 1; padding: 6px 10px; }
+
+/* the task board of a project (a list dialog with one list per state) */
+.board-dialog { width: min(760px, calc(100vw - 32px)); }
+.board-state h4 { margin: 14px 0 8px; font-size: 13.5px; }
+.board-state h4 .count { color: var(--muted); font-weight: 500; }
+.board-state .empty-note { padding: 0 0 6px; }
+.list-item.board-item { padding: 8px 10px; margin-bottom: 6px; }
+.board-item .item-head .title { color: var(--text); font-size: 13.5px; font-weight: 500; overflow-wrap: anywhere; }
+.board-item .item-head .item-tools { margin-left: auto; display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.board-item .item-head .item-tools select { height: 26px; padding: 0 6px; width: auto; font-size: 12px; }
+.board-item .item-head .chip { flex-shrink: 0; }
+.board-item .description { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.board-item .links { display: flex; gap: 6px; margin-top: 4px; font-size: 12px; }
+.board-item .links .link { border: 0; background: none; padding: 0; color: var(--accent); font-weight: 500; }
+.board-item .links .link:hover { text-decoration: underline; }

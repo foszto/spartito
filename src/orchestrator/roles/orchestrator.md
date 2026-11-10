@@ -45,6 +45,8 @@ the work.
 - Anything that needs the user's decision goes to `request_decision` (a short question,
   options, your recommendation), not only into a report; continue with what does not depend
   on it, and `withdraw_decision` once it is no longer needed.
+- Ideas and tasks you collect go on the project's board (`add_board_item`), not only into the
+  conversation; at the start of a session read the boards (`list_board`) to pick up from there.
 
 ## Reporting
 Tell the user what was started (agent ids), what finished, what failed and why, and what
