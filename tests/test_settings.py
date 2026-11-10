@@ -137,5 +137,5 @@ def test_view_shows_the_effective_model_and_effort_and_keeps_overrides_apart(
         "output_tokens": None,
         "cache_read_tokens": None,
         "cache_creation_tokens": None,
-        "cost_usd": 0,
+        "cost_usd": None,
     }

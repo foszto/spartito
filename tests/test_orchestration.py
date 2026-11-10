@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from orchestrator import git
+from orchestrator.models import Usage
 from orchestrator.service import Orchestrator, OrchestratorError
 
 
@@ -265,3 +266,14 @@ def test_a_failed_run_keeps_its_usage_and_a_run_without_a_result_has_none(
     assert orch.store.get_run(failed.id).status.value == "failed"
     assert orch.store.get_usage(plain.id) is None
     assert view["usage"]["input_tokens"] == 10 and view["last_run"]["usage"] is None
+
+
+def test_codex_style_usage_without_cost_reports_no_cost(orch: Orchestrator, project: str) -> None:
+    agent, run = orch.spawn(project, "no usage", worktree=False)
+    finished(orch, agent.id)
+    orch.store.set_usage(run.id, agent.id, Usage(5, 1, 0, 0))
+
+    view = orch.view(agent)
+
+    assert view["usage"]["cost_usd"] is None and view["last_run"]["usage"]["cost_usd"] is None
+    assert view["usage"]["input_tokens"] == 5 and view["cost_usd"] == 0

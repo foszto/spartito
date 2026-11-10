@@ -285,6 +285,8 @@ class Orchestrator:
         if result and result_limit and len(result) > result_limit:
             result = result[:result_limit] + "… [truncated; use agent_log for more]"
         cost = total_cost(runs, usage)
+        totals = sum(usage.values(), Usage())
+        priced = totals.cost_usd is not None or any(run.cost_usd for run in runs)
         return {
             "id": agent.id,
             "project": agent.project,
@@ -303,7 +305,7 @@ class Orchestrator:
             "queued_runs": len(active),
             "runs": len(runs),
             "cost_usd": cost,
-            "usage": {**sum(usage.values(), Usage()).as_dict(), "cost_usd": cost},
+            "usage": {**totals.as_dict(), "cost_usd": cost if priced else None},
             "last_run": shown
             and {
                 "id": shown.id,
