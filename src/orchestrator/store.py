@@ -87,6 +87,14 @@ CREATE TABLE IF NOT EXISTS run_usage (
     model TEXT,
     created_at TEXT NOT NULL
 );
+-- Which run results wait_for_agents already returned to which caller ('' is `orch chat`),
+-- so a later wait does not repeat them. Its own table for the same reasons as run_usage.
+CREATE TABLE IF NOT EXISTS deliveries (
+    caller TEXT NOT NULL,
+    run_id INTEGER NOT NULL,
+    delivered_at TEXT NOT NULL,
+    PRIMARY KEY (caller, run_id)
+);
 CREATE INDEX IF NOT EXISTS runs_agent ON runs(agent_id, id);
 CREATE INDEX IF NOT EXISTS events_agent ON events(agent_id, id);
 """
@@ -271,6 +279,11 @@ class Store:
                 "DELETE FROM run_usage WHERE run_id IN (SELECT id FROM runs WHERE agent_id = ?)",
                 (agent_id,),
             )
+            conn.execute(
+                "DELETE FROM deliveries WHERE caller = ?"
+                " OR run_id IN (SELECT id FROM runs WHERE agent_id = ?)",
+                (agent_id, agent_id),
+            )
             conn.execute("DELETE FROM runs WHERE agent_id = ?", (agent_id,))
             conn.execute("UPDATE agents SET parent_id = NULL WHERE parent_id = ?", (agent_id,))
             conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
@@ -393,6 +406,27 @@ class Store:
             row = conn.execute("SELECT * FROM run_usage WHERE run_id = ?", (run_id,)).fetchone()
         return from_row(Usage, row) if row else None
 
+    # -- deliveries -------------------------------------------------------
+
+    def delivered(self, caller: str, run_ids: list[int]) -> set[int]:
+        """The run ids among `run_ids` whose result was already returned to `caller`."""
+        if not run_ids:
+            return set()
+        marks = ", ".join("?" * len(run_ids))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT run_id FROM deliveries WHERE caller = ? AND run_id IN ({marks})",
+                (caller, *run_ids),
+            ).fetchall()
+        return {row["run_id"] for row in rows}
+
+    def mark_delivered(self, caller: str, run_ids: list[int]) -> None:
+        with self._conn() as conn:
+            conn.executemany(
+                "INSERT OR IGNORE INTO deliveries (caller, run_id, delivered_at) VALUES (?, ?, ?)",
+                [(caller, run_id, now()) for run_id in run_ids],
+            )
+
     # -- events -----------------------------------------------------------
 
     def add_event(self, run_id: int, agent_id: str, kind: str, text: str) -> None:
@@ -403,6 +437,11 @@ class Store:
                 "INSERT INTO events (run_id, agent_id, ts, kind, text) VALUES (?, ?, ?, ?, ?)",
                 (run_id, agent_id, now(), kind, text),
             )
+
+    def get_event(self, event_id: int) -> Event | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+        return from_row(Event, row) if row else None
 
     def events(self, agent_id: str, after: int = 0, tail: int | None = None) -> list[Event]:
         with self._conn() as conn:

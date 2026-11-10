@@ -80,11 +80,27 @@ def remove_worktree(repo: str | Path, path: str | Path, branch: str | None = Non
         git(repo, "branch", "-D", branch)
 
 
-def summary(path: str | Path, base_ref: str) -> str:
-    """Commits and uncommitted changes of a worktree relative to its base."""
+def _cap(text: str, limit: int | None) -> str:
+    """At most `limit` lines (None or 0: all), then `(+N more)` for the rest."""
+    lines = text.splitlines()
+    if not limit or len(lines) <= limit:
+        return text
+    return "\n".join([*lines[:limit], f"(+{len(lines) - limit} more)"])
+
+
+def summary(
+    path: str | Path,
+    base_ref: str,
+    max_commits: int | None = None,
+    max_status: int | None = None,
+) -> str:
+    """Commits and uncommitted changes of a worktree relative to its base.
+
+    `max_commits`/`max_status` cap the commit and status lines (None or 0: all).
+    """
     try:
-        commits = git(path, "log", "--oneline", f"{base_ref}..HEAD")
-        dirty = git(path, "status", "--short")
+        commits = _cap(git(path, "log", "--oneline", f"{base_ref}..HEAD"), max_commits)
+        dirty = _cap(git(path, "status", "--short"), max_status)
     except GitError as exc:
         return str(exc)
     parts = []

@@ -38,6 +38,19 @@ def run_usage(usage: Usage | None) -> dict[str, Any]:
     return {"tokens": usage.tokens(), "cost_usd": usage.cost, "model": usage.model}
 
 
+def agent_state(runs: list[Run]) -> tuple[str, list[Run], Run | None]:
+    """An agent's status from its runs, its queued/running runs and its latest finished run."""
+    active = [run for run in runs if run.status.active]
+    finished = [run for run in runs if not run.status.active]
+    if any(run.status is RunStatus.RUNNING for run in active):
+        status = "running"
+    elif active:
+        status = "waiting"
+    else:
+        status = runs[-1].status.value if runs else "new"
+    return status, active, finished[-1] if finished else None
+
+
 class Orchestrator:
     def __init__(self, store: Store | None = None) -> None:
         self.store = store or Store()
@@ -266,16 +279,7 @@ class Orchestrator:
         runs = self.store.runs_of(agent.id)
         usage = self.store.usage_of(agent.id)
         effective = self.effective(agent)
-        active = [run for run in runs if run.status.active]
-        last = runs[-1] if runs else None
-        finished = [run for run in runs if not run.status.active]
-        if any(run.status is RunStatus.RUNNING for run in active):
-            status = "running"
-        elif active:
-            status = "waiting"
-        else:
-            status = last.status.value if last else "new"
-        shown = finished[-1] if finished else None
+        status, active, shown = agent_state(runs)
         result = shown.result if shown else None
         if result and result_limit and len(result) > result_limit:
             result = result[:result_limit] + "… [truncated; use agent_log for more]"
@@ -334,24 +338,34 @@ class Orchestrator:
         self.store.reconcile()
         return [self.view(agent, result_limit=400) for agent in self.store.list_agents(project)]
 
-    def wait(self, agent_ids: list[str], timeout: float = 600) -> tuple[bool, list[dict[str, Any]]]:
-        """Block until none of the agents has a queued or running turn, or until timeout."""
+    def wait_idle(self, agent_ids: list[str], timeout: float = 600) -> bool:
+        """Block until none of the agents has a queued or running turn (True), or until
+        timeout (False)."""
         agents = [self.agent(agent_id) for agent_id in agent_ids]
         deadline = time.monotonic() + timeout
         while True:
             self.store.reconcile()
             idle = not any(self.store.active_runs(agent.id) for agent in agents)
             if idle or time.monotonic() >= deadline:
-                return idle, [self.view(agent) for agent in agents]
+                return idle
             time.sleep(1)
 
-    def changes(self, agent_id: str) -> str:
+    def wait(self, agent_ids: list[str], timeout: float = 600) -> tuple[bool, list[dict[str, Any]]]:
+        """Block like wait_idle, then return whether they are idle and their full views."""
+        idle = self.wait_idle(agent_ids, timeout)
+        return idle, [self.view(self.agent(agent_id)) for agent_id in agent_ids]
+
+    def changes(
+        self, agent_id: str, max_commits: int | None = None, max_status: int | None = None
+    ) -> str:
+        """Commits and uncommitted changes; `max_commits`/`max_status` cap the lines."""
         agent = self.agent(agent_id)
         if agent.project is None:
             return ""
         if not Path(agent.cwd).exists():
             return "workspace not created yet"
-        return git.summary(agent.cwd, agent.base_ref or self.project(agent.project).base_branch)
+        base = agent.base_ref or self.project(agent.project).base_branch
+        return git.summary(agent.cwd, base, max_commits, max_status)
 
     # -- control ----------------------------------------------------------
 

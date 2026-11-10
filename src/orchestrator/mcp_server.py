@@ -8,6 +8,7 @@ for the interactive `orch chat` session) and may act everywhere.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
 
@@ -15,9 +16,14 @@ import anyio
 from mcp.server.mcpserver import MCPServer
 
 from . import roles
-from .service import Orchestrator, OrchestratorError
+from .service import Orchestrator, OrchestratorError, agent_state
 
 MAX_WAIT_SECONDS = 1800
+RESULT_CHARS = 4000  # result text (or structured output) per agent in one reply
+EVENT_CHARS = 300  # text of one agent_log line
+LOG_CHARS = 6000  # a whole agent_log reply
+MAX_COMMITS = 20
+MAX_STATUS = 30
 
 server = MCPServer(
     "orch",
@@ -67,6 +73,65 @@ def _queued(orch: Orchestrator, agent_id: str, run_id: int) -> dict[str, Any]:
     view = orch.view(orch.agent(agent_id))
     keys = ("id", "project", "role", "provider", "status", "branch", "cwd")
     return {**{key: view[key] for key in keys}, "run_id": run_id}
+
+
+def clip(text: str, limit: int, offset: int = 0) -> str:
+    """`limit` chars of `text` from `offset` (limit <= 0: all), saying what was left out."""
+    total = len(text)
+    offset = max(0, offset)
+    end = total if limit <= 0 else min(total, offset + limit)
+    if offset == 0 and end == total:
+        return text
+    if offset >= total:
+        return f"[result_offset {offset} is past the end: {total} chars]"
+    part = text[offset:end]
+    if offset:
+        part = f"[chars {offset}-{end} of {total}] {part}"
+    if end < total:
+        part += (
+            f"… [truncated at {end} of {total} chars; rest: get_agent with"
+            f" result_offset={end}, or result_chars=0 for all]"
+        )
+    return part
+
+
+def _structured(data: Any, limit: int, offset: int = 0) -> Any:
+    """Structured output as is when its JSON fits in `limit`, else that JSON clipped."""
+    text = json.dumps(data, ensure_ascii=False)
+    return data if limit <= 0 or len(text) <= limit else clip(text, limit, offset)
+
+
+def _answer(last_run: dict[str, Any], limit: int) -> dict[str, Any]:
+    """A finished run's answer: its structured output when it has one, else its text."""
+    if last_run["structured"] is not None:
+        return {"structured": _structured(last_run["structured"], limit)}
+    if last_run["result"] is not None:
+        return {"result": clip(last_run["result"], limit)}
+    return {}
+
+
+def _outcomes(orch: Orchestrator, agent_ids: list[str], limit: int) -> list[dict[str, Any]]:
+    """Finished agents for wait_for_agents: each latest result once per caller."""
+    caller = os.environ.get("ORCH_AGENT_ID", "")
+    views = [orch.view(orch.agent(agent_id)) for agent_id in agent_ids]
+    runs = [view["last_run"]["id"] for view in views if view["last_run"]]
+    delivered = orch.store.delivered(caller, runs)
+    outcomes = []
+    for view in views:
+        outcome = {key: view[key] for key in ("id", "status", "branch", "cost_usd", "tokens")}
+        last = view["last_run"]
+        if last:
+            run = {"id": last["id"], "status": last["status"]}
+            if last["error"]:
+                run["error"] = clip(last["error"], limit)
+            if last["id"] in delivered:
+                run["already_delivered"] = "get_agent reads it again"
+            else:
+                run.update(_answer(last, limit))
+            last = run
+        outcomes.append({**outcome, "last_run": last})
+    orch.store.mark_delivered(caller, [run for run in runs if run not in delivered])
+    return outcomes
 
 
 @server.tool()
@@ -188,16 +253,28 @@ def send_message(
 
 
 @server.tool()
-async def wait_for_agents(agent_ids: list[str], timeout_seconds: int = 600) -> dict[str, Any]:
-    """Block until all the given agents are idle, then return their status and final answers.
+async def wait_for_agents(
+    agent_ids: list[str], timeout_seconds: int = 600, result_chars: int = RESULT_CHARS
+) -> dict[str, Any]:
+    """Block until all the given agents are idle, then return each one's latest result.
 
-    If `finished` is false the timeout elapsed first: call again to keep waiting.
+    If `finished` is false the timeout elapsed first: only statuses; call again to keep
+    waiting. A result is returned once per caller, cut at `result_chars` (0: no limit);
+    later calls mark it `already_delivered`. get_agent reads any result again in full.
     """
     orch = _orch()
     ids = [_own(orch, agent_id) for agent_id in agent_ids]
     timeout = max(1, min(timeout_seconds, MAX_WAIT_SECONDS))
-    finished, views = await anyio.to_thread.run_sync(lambda: orch.wait(ids, timeout))
-    return {"finished": finished, "agents": views}
+    finished = await anyio.to_thread.run_sync(lambda: orch.wait_idle(ids, timeout))
+    if not finished:
+        states = [(agent_id, agent_state(orch.store.runs_of(agent_id))) for agent_id in ids]
+        agents = [
+            {"id": agent_id, "status": status, "queued_runs": len(active)}
+            for agent_id, (status, active, _) in states
+        ]
+        return {"finished": False, "agents": agents}
+    outcomes = await anyio.to_thread.run_sync(lambda: _outcomes(orch, ids, result_chars))
+    return {"finished": True, "agents": outcomes}
 
 
 @server.tool()
@@ -213,25 +290,76 @@ def list_agents(project: str | None = None) -> list[dict[str, Any]]:
 
 
 @server.tool()
-def get_agent(agent_id: str) -> dict[str, Any]:
+def get_agent(
+    agent_id: str,
+    result_chars: int = RESULT_CHARS,
+    result_offset: int = 0,
+    max_commits: int = MAX_COMMITS,
+    max_status: int = MAX_STATUS,
+) -> dict[str, Any]:
     """Full status of one agent: last result, the commits/changes in its worktree, the
-    explicit model/effort overrides, and tokens, cost and model of its last 10 runs."""
+    explicit model/effort overrides, and tokens, cost and model of its last 10 runs.
+
+    The result is cut to `result_chars` chars from `result_offset` (result_chars=0: all);
+    the git output to `max_commits` commit and `max_status` status lines (0: all).
+    """
     orch = _orch()
     orch.store.reconcile()
     agent = orch.agent(_own(orch, agent_id))
+    view = orch.view(agent, detail=True)
+    last = view["last_run"]
+    if last and last["result"] is not None:
+        last["result"] = clip(last["result"], result_chars, result_offset)
+    if last and last["structured"] is not None:
+        last["structured"] = _structured(last["structured"], result_chars, result_offset)
     return {
-        **orch.view(agent, detail=True),
-        "changes": orch.changes(agent_id),
+        **view,
+        "changes": orch.changes(agent_id, max_commits, max_status),
         "recent_runs": orch.run_history(agent, limit=10),
     }
 
 
 @server.tool()
-def agent_log(agent_id: str, tail: int = 40) -> list[str]:
-    """Recent activity of an agent (messages, tool calls, errors) — to see what a running agent is doing."""
+def agent_log(
+    agent_id: str,
+    tail: int = 40,
+    event_chars: int = EVENT_CHARS,
+    max_chars: int = LOG_CHARS,
+    event_id: int | None = None,
+) -> list[str]:
+    """Recent activity of an agent (messages, tool calls, errors), oldest first, one line
+    per event: `#<event id> <time> run <run id> [<kind>] <text>`.
+
+    Each text is cut at `event_chars` and the reply at `max_chars`, keeping the newest
+    events (0: no limit). `event_id` returns that one event's full text.
+    """
     orch = _orch()
-    events = orch.store.events(_own(orch, agent_id), tail=tail)
-    return [f"{event.ts} run {event.run_id} [{event.kind}] {event.text}" for event in events]
+    _own(orch, agent_id)
+    if event_id is not None:
+        event = orch.store.get_event(event_id)
+        if event is None or event.agent_id != agent_id:
+            raise OrchestratorError(f"agent '{agent_id}' has no event {event_id}")
+        return [_log_line(event, 0)]
+    lines = [_log_line(event, event_chars) for event in orch.store.events(agent_id, tail=tail)]
+    if max_chars <= 0:
+        return lines
+    kept: list[str] = []
+    budget = max_chars - 60  # room for the note on omitted events
+    for line in reversed(lines):
+        if kept and len(line) > budget:
+            break
+        kept.append(line)
+        budget -= len(line)
+    if omitted := len(lines) - len(kept):
+        kept.append(f"[{omitted} older events omitted; raise max_chars to see them]")
+    return kept[::-1]
+
+
+def _log_line(event: Any, limit: int) -> str:
+    text = event.text
+    if 0 < limit < len(text):
+        text = f"{text[:limit]}… [+{len(text) - limit} chars]"
+    return f"#{event.id} {event.ts} run {event.run_id} [{event.kind}] {text}"
 
 
 @server.tool()
