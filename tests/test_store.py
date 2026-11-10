@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from orchestrator import board, decisions
 from orchestrator.models import RunStatus, Usage
 from orchestrator.service import Orchestrator
 from orchestrator.store import Store
@@ -138,3 +139,41 @@ def test_removing_an_agent_removes_its_usage(old_db: Path) -> None:
     store.delete_agent("a-1")
 
     assert store.get_usage(run.id) is None
+
+
+MASTER_ERA_SCHEMA = Path(__file__).parent / "fixtures" / "master_era_schema.sql"
+
+
+def test_a_master_era_database_gets_every_new_table_and_column(tmp_path: Path) -> None:
+    path = tmp_path / "master.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute("PRAGMA journal_mode=wal")
+        conn.executescript(MASTER_ERA_SCHEMA.read_text())
+        conn.execute("INSERT INTO projects VALUES ('p', '/tmp/p', 'main', 'fake', 't')")
+        conn.execute(
+            "INSERT INTO agents (id, project, name, role, provider, cwd, created_at)"
+            " VALUES ('a-1', 'p', 'a', 'worker', 'fake', '/tmp/p', 't')"
+        )
+        conn.execute(
+            "INSERT INTO runs (agent_id, prompt, status, created_at, started_at, ended_at)"
+            " VALUES ('a-1', 'old', 'done', 't', 't', 't')"
+        )
+        conn.execute("INSERT INTO run_meta (run_id, agent_id, kind) VALUES (1, 'a-1', 'compact')")
+        conn.execute("INSERT INTO run_usage (run_id, agent_id, created_at) VALUES (1, 'a-1', 't')")
+    conn.close()
+    assert "auto" not in columns(path, "run_meta")
+
+    store = Store(path)
+
+    tables = {row[0] for row in sqlite3.connect(path).execute("SELECT name FROM sqlite_master")}
+    assert {"decisions", "board_items"} <= tables
+    assert "auto" in columns(path, "run_meta")
+    assert "first_context_tokens" in columns(path, "run_usage")
+    assert store.meta(1).auto == 0  # an old manual compaction stays manual
+    assert store.get_usage(1).first_context_tokens is None
+    agent = store.get_agent("a-1")
+    decision = decisions.record(store, agent, "Keep it?", ["yes"], None)
+    item = board.add(store, "p", "An idea")
+    assert decisions.listing(store) == [decision] and board.listing(store, "p") == [item]
+    Store(path)  # opening it again changes nothing
+    assert len(decisions.listing(store)) == len(board.listing(store, "p")) == 1
