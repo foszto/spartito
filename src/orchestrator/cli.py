@@ -12,7 +12,7 @@ from typing import Annotated
 
 import typer
 
-from . import config, loadout, providers, roles
+from . import autostart, config, loadout, providers, roles
 from .models import Agent
 from .providers.claude import loadout_flags
 from .service import (
@@ -313,6 +313,103 @@ def web(host: str = "127.0.0.1", port: int = 8787) -> None:
         )
     typer.echo(f"web UI: http://{host}:{port}")
     uvicorn.run(web_app, host=host, port=port, log_level="warning")
+
+
+# -- background service -----------------------------------------------------
+
+service_app = typer.Typer(
+    no_args_is_help=True,
+    rich_markup_mode=MARKUP,
+    help="Run `orch web` in the background: started at login and restarted when it dies"
+    " (macOS: a launchd agent; Linux: a systemd user unit).",
+)
+app.add_typer(service_app, name="service")
+LabelOption = Annotated[
+    str | None, typer.Option("--label", hidden=True, help="Service label (for tests).")
+]
+
+
+def autostart_fail(action):
+    try:
+        return action()
+    except autostart.AutostartError as exc:
+        raise fail(exc) from None
+
+
+def service_label(label: str | None) -> str:
+    """The --label given (checked before anything runs) or the home's default label."""
+    if label is not None:
+        return autostart_fail(lambda: autostart.check_label(label))
+    return autostart.default_label(autostart.home())
+
+
+@service_app.command("install")
+def service_install(
+    host: Annotated[str, typer.Option(help="As for `orch web`.")] = autostart.DEFAULT_HOST,
+    port: Annotated[int, typer.Option(help="As for `orch web`.")] = autostart.DEFAULT_PORT,
+    label: LabelOption = None,
+) -> None:
+    """Install the dashboard service and (re)start it. Running it again replaces it."""
+    from .web.app import LOOPBACK_HOSTS
+
+    svc = autostart.service(host, port, service_label(label))
+    unit = autostart_fail(lambda: autostart.install(svc))
+    if host not in LOOPBACK_HOSTS:
+        typer.secho(
+            "warning: the web UI has no authentication and can start agents that run code; "
+            "anyone who can reach this address controls them.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+    kind = autostart.platform_kind()
+    typer.echo(f"installed {svc.label}: http://{host}:{port}")
+    typer.echo(f"unit: {unit}")
+    typer.echo(f"logs: {autostart.logs_hint(svc.log, svc.label, kind)}")
+
+
+@service_app.command("uninstall")
+def service_uninstall(label: LabelOption = None) -> None:
+    """Stop the dashboard service and remove it."""
+    name = service_label(label)
+    unit = autostart_fail(lambda: autostart.uninstall(name))
+    typer.echo(f"removed {name}: {unit}" if unit else f"{name} is not installed")
+
+
+@service_app.command("status")
+def service_status(label: LabelOption = None) -> None:
+    """Whether the dashboard service is installed and running, and who answers on its port."""
+    name = service_label(label)
+    st = autostart_fail(lambda: autostart.status(name))
+    typer.echo(f"service: {st.label} ({st.platform})")
+    typer.echo(f"unit:    {st.unit}" + ("" if st.installed else " (not installed)"))
+    running = "loaded" if st.platform == "launchd" else "active"
+    state = f"{running}, pid {st.pid}" if st.pid else running if st.loaded else f"not {running}"
+    typer.echo(f"state:   {state}")
+    if st.host and st.port:
+        url = f"http://{st.host}:{st.port}"
+        answer = {
+            "ours": "answers",
+            "foreign": f"something else answers ({st.detail})",
+            "none": "nothing answers",
+        }[st.answer]
+        typer.echo(f"web UI:  {url}: {answer}")
+    typer.echo(f"logs:    {st.logs}")
+
+
+@service_app.command("logs")
+def service_logs(
+    lines: Annotated[int, typer.Option("--lines", "-n", help="Last lines shown (macOS).")] = 20,
+    label: LabelOption = None,
+) -> None:
+    """Where the service writes its output (macOS: its last lines too)."""
+    name = service_label(label)
+    kind = autostart_fail(autostart.platform_kind)
+    log = autostart.home() / "logs" / "web.log"
+    typer.echo(autostart.logs_hint(log, name, kind))
+    if kind == "launchd" and lines > 0 and log.exists():
+        with log.open(errors="replace") as handle:
+            tail = handle.readlines()[-lines:]
+        typer.echo("".join(tail), nl=False)
 
 
 # -- projects ---------------------------------------------------------------

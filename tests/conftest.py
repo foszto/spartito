@@ -82,6 +82,71 @@ def fake_osascript(
     return log
 
 
+# Stands in for the service managers, so no test touches the real launchd or systemd. Appends
+# one line per call to $FAKE_SYSTEM_DIR/calls.log: its name and arguments, each followed by
+# \x1f. Its subcommand is its first argument that is not an option: it prints
+# $FAKE_SYSTEM_DIR/<name>.<subcommand>.out if present and exits with the number in
+# <name>.<subcommand>.exit (0 without one).
+FAKE_SYSTEM_COMMAND = r"""#!/bin/sh
+name=$(basename "$0")
+sub=""
+for arg in "$@"; do case "$arg" in -*) ;; *) sub="$arg"; break ;; esac; done
+{ printf '%s\037' "$name"; for arg in "$@"; do printf '%s\037' "$arg"; done; printf '\n'; } \
+    >> "$FAKE_SYSTEM_DIR/calls.log"
+[ -f "$FAKE_SYSTEM_DIR/$name.$sub.out" ] && cat "$FAKE_SYSTEM_DIR/$name.$sub.out"
+[ -f "$FAKE_SYSTEM_DIR/$name.$sub.exit" ] && exit "$(cat "$FAKE_SYSTEM_DIR/$name.$sub.exit")"
+exit 0
+"""
+SYSTEM_COMMANDS = ("launchctl", "systemctl", "loginctl", "systemd-analyze")
+
+
+class FakeSystem:
+    """The fake service managers' control directory: a machine where nothing is installed
+    until a test says otherwise (`launchctl print` and `bootout` fail, nothing is active)."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.set("launchctl", "print", exit=113, out="Could not find service\n")
+        self.set("launchctl", "bootout", exit=5, out="Boot-out failed: 5: Input/output error\n")
+        self.set("systemctl", "is-active", exit=3, out="inactive\n")
+
+    def set(self, name: str, sub: str, exit: int = 0, out: str = "") -> None:
+        (self.path / f"{name}.{sub}.exit").write_text(str(exit))
+        (self.path / f"{name}.{sub}.out").write_text(out)
+
+    def calls(self) -> list[list[str]]:
+        log = self.path / "calls.log"
+        lines = log.read_text().splitlines() if log.exists() else []
+        return [line.split("\x1f")[:-1] for line in lines]
+
+    def clear(self) -> None:
+        (self.path / "calls.log").unlink(missing_ok=True)
+
+
+@pytest.fixture(autouse=True)
+def fake_system(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> FakeSystem:
+    """Fake launchctl, systemctl, loginctl and systemd-analyze first on PATH, and HOME and
+    XDG_CONFIG_HOME in temporary directories: no test reaches the real service managers or
+    ~/Library/LaunchAgents, ~/.config/systemd. Git keeps the real global configuration."""
+    bin_dir = tmp_path_factory.mktemp("fake-system")
+    for name in SYSTEM_COMMANDS:
+        path = bin_dir / name
+        path.write_text(FAKE_SYSTEM_COMMAND)
+        path.chmod(0o755)
+    xdg = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    git_config = [p for p in (Path.home() / ".gitconfig", xdg / "git" / "config") if p.is_file()]
+    if "GIT_CONFIG_GLOBAL" not in os.environ and git_config:
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(git_config[0]))
+    home = tmp_path_factory.mktemp("user-home")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.setenv("FAKE_SYSTEM_DIR", str(bin_dir))
+    return FakeSystem(bin_dir)
+
+
 CLAUDE_INITIALIZE = Path(__file__).parent / "fixtures" / "claude_initialize.jsonl"
 
 
