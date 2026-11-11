@@ -6,6 +6,7 @@
 - [Roles](#roles)
 - [Providers and permissions](#providers-and-permissions)
 - [Environment variables](#environment-variables)
+- [Files](#files)
 
 Settings are stored in the database (`~/.orchestrator/orch.db`). `orch config show` prints
 the global settings with their defaults, `orch config show -p <project>` a project's
@@ -116,11 +117,22 @@ suspends on its own timer.
 
 ### Desktop notifications: `desktop_notifications`
 
-macOS only (`osascript`); nothing is shown on other platforms. A notification is shown when a
-decision starts waiting for you, and when an agent whose latest message came from you has
-finished: its turn ended and neither it nor any of its descendants has a running or queued
-turn. So Maestro notifies you once its agents are done; an agent started by a lead does not
-notify you.
+A notification is shown when a decision starts waiting for you, and when an agent whose
+latest message came from you has finished: its turn ended and neither it nor any of its
+descendants has a running or queued turn. So Maestro notifies you once its agents are done; an
+agent started by a lead does not notify you.
+
+Each notification is recorded as a notice in the database (kept for one day). Who shows it:
+
+- an open dashboard page (a tab, the installed app, or the browser window of `orch app`) that
+  is allowed to show notifications: **Models and effort** › **Notifications** › **Allow in
+  this browser**. It shows them as Web Notifications, and a click opens the agent or the
+  decision. While such a page has polled within the last 15 seconds, notices are left to it;
+- otherwise, on macOS, `osascript` shows a plain notification without a click action; on
+  Linux none is shown.
+
+Off, nothing is recorded and nothing is shown. Details, including hidden tabs and the native
+window of `orch app`: [desktop.md](desktop.md#notifications-with-click-through).
 
 ### Review rounds
 
@@ -329,3 +341,27 @@ no declarative pipeline layer.
 | `ORCH_PROVIDERS` | extra providers, `name=package.module:Class`, comma-separated |
 | `ORCH_NOTIFY_DELAY` | seconds a notification turn waits to collect results (default 5) |
 | `CODEX_HOME` | read for Codex rollout files and `config.toml` (Codex's own variable) |
+| `PYWEBVIEW_GUI` | the pywebview backend of `orch app` on Linux (pywebview's own variable; default Qt) |
+
+The background service (`orch service install`) keeps only `PATH`, `LANG`, `LC_*`, `ORCH_*`,
+`CLAUDE_CONFIG_DIR` and `CODEX_HOME` from the shell it is installed from; run the install
+again after changing them. See [desktop.md](desktop.md#background-service).
+
+## Files
+
+The main files under `~/.orchestrator/` (or `$ORCH_HOME`):
+
+| path | contents |
+|---|---|
+| `orch.db` | the SQLite database: projects, agents, turns, events, settings, board, decisions, notices |
+| `worktrees/<project>/<agent-id>/` | agents' worktrees |
+| `workspace/` | the orchestrator's working directory |
+| `roles/`, `loadout.toml` | your roles and loadout overrides |
+| `logs/run-<id>/` | per turn: the CLI's output, stderr, `result.md`, `result.json` |
+| `logs/web.log` | output of the background service (macOS; emptied at install above 5 MB) |
+| `hooks-off/` | agents whose memory hook did not run (see [Loadout](#notes)) |
+| `run/web.json` | the running dashboard server: pid, host, port, start time |
+| `run/app.lock` | held by the open `orch app` window |
+| `run/page-notifier` | touched by a dashboard page that shows notifications |
+| `run/app-profile/` | the browser profile of `orch app` in Chromium app mode |
+| `run/app-webview/` | the native window's web storage (Linux; macOS WebKit keeps its own) |

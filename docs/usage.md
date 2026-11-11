@@ -48,6 +48,31 @@ orch mcp
 - `mcp` runs the `orch` MCP server on stdio. `orch chat` and the agents with a lead role
   start the same server themselves; there is no need to run it by hand.
 
+### Dashboard window, menu bar and background service
+
+```sh
+orch app [--port PORT]
+orch menubar
+orch service install [--host 127.0.0.1] [--port 8787]
+orch service status
+orch service logs [--lines|-n 20]
+orch service uninstall
+```
+
+- `app` shows the dashboard in its own window: a native one with the extra `app`, else a
+  Chromium-family browser in app mode, else the default browser. It uses the running
+  `orch web` (or service) of this home, or serves the dashboard on `127.0.0.1` (a free port,
+  or `--port`) until the window is closed. One window per home.
+- `menubar` (macOS, extra `menubar`) shows the running agents and open decisions of this home
+  in the menu bar; its menu opens a decision or `orch app`. One item per home.
+- `service install` runs `orch web --host … --port …` in the background, started at login and
+  restarted when it stops (macOS: launchd agent; Linux: systemd user unit). Running it again
+  replaces the unit and restarts the service. `status` shows whether it is installed and
+  running and whether the dashboard answers; `logs` shows where its output goes (on macOS
+  also the last lines); `uninstall` stops and removes it.
+
+Details: [desktop.md](desktop.md).
+
 ### Starting and talking to agents
 
 ```sh
@@ -205,6 +230,9 @@ folder picker that marks git repositories. The header has the **Decisions** butt
 number of open decisions), the **Models and effort** settings and the theme switch. The footer
 sums agents, tokens and cost.
 
+**Links.** `#<agent-id>` selects an agent and `#decision:<id>` opens the **Decisions** window
+on that decision, for example `http://127.0.0.1:8787/#decision:12`.
+
 **Conversation.** Selecting Maestro, a lead or an agent shows its conversation with tool calls
 and results; Enter sends a message. Notification turns appear as faint system messages.
 Messages that have not started yet are listed under **Queued**, where they can be edited
@@ -228,7 +256,9 @@ dependencies.
 
 **Models and effort** window: the tier settings per provider, the automatic compaction
 threshold and the archive hours, globally or for one project; keep-awake and desktop
-notifications globally.
+notifications globally. Under **Notifications**, **Allow in this browser** lets the page show
+the notifications itself, so that a click opens the agent or decision (see
+[desktop.md](desktop.md#notifications-with-click-through)).
 
 **Decisions** window: every open decision across projects with its project, agent, question,
 options, recommendation and age; answer with an option or free text.
@@ -241,8 +271,14 @@ answers only requests addressed to `127.0.0.1`, `localhost` or `::1`, and every 
 from the page itself (same origin, JSON body). Anyone who can reach a dashboard bound to
 another address can start agents that run code.
 
-**JSON API.** The page uses a small JSON API under `/api/` (see `web/app.py`). Two calls that
-are convenient from scripts:
+**Installing.** The page has a web app manifest: Chrome offers Install in the address bar,
+Safari **File › Add to Dock** ([desktop.md](desktop.md#installable-page)).
+
+**JSON API.** The page uses a small JSON API under `/api/` (see `web/app.py`). Calls that are
+convenient from scripts:
+
+- `GET /api/ping`: `{"tool": "orchestrator", "version": "…", "home": "…"}`, where `home` is a
+  digest of the resolved `ORCH_HOME`, never the path.
 
 - `POST /api/agents/<id>/model` with `{"model": "...", "effort": null}`: `null` clears a value,
   a missing key leaves it unchanged.
