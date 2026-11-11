@@ -3,7 +3,7 @@
 The modules are parsed, not imported. An import counts wherever it appears: at module level
 or inside a function ("lazy"); only `if TYPE_CHECKING:` blocks are skipped, as they never run.
 
-Both exception lists below may only shrink: a test fails when a count is higher than needed.
+The exception lists below may only shrink: a test fails when one holds more than needed.
 """
 
 from __future__ import annotations
@@ -73,6 +73,13 @@ STORE_ACCESS = {
     "mcp_server": 18,
     "web.app": 7,
 }
+
+# The reads of one agent's runs that timeline.AgentRuns takes together (Store.snapshot): no
+# function outside these modules calls two or more of them, it reads the snapshot instead.
+RUN_READS = {"runs_of", "meta_of", "usage_of", "compactions"}
+RUN_READ_MODULES = {"store", "timeline"}
+# "module:function" -> why it may still call two or more of RUN_READS.
+RUN_READ_EXCEPTIONS: dict[str, str] = {}
 
 
 @dataclass(frozen=True)
@@ -230,3 +237,44 @@ def test_interfaces_use_the_store_no_more_than_allowed():
         allowed = STORE_ACCESS.get(name, 0)
         assert used <= allowed, f"{name}: {used} `.store` uses, allowed {allowed}"
         assert used >= allowed, f"{name}: only {used} `.store` uses left; lower STORE_ACCESS"
+
+
+def run_reads(path: Path) -> dict[str, set[str]]:
+    """Which of RUN_READS each function (with what it nests) calls, by qualified name."""
+    found: dict[str, set[str]] = {}
+
+    def visit(node: ast.AST, prefix: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            name = prefix
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                name = f"{prefix}.{child.name}" if prefix else child.name
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
+                found[name] = {
+                    n.func.attr
+                    for n in ast.walk(child)
+                    if isinstance(n, ast.Call)
+                    and isinstance(n.func, ast.Attribute)
+                    and n.func.attr in RUN_READS
+                }
+            visit(child, name)
+
+    visit(ast.parse(path.read_text(), filename=str(path)), "")
+    return found
+
+
+def joined_run_reads() -> dict[str, set[str]]:
+    return {
+        f"{module}:{function}": reads
+        for module, path in modules().items()
+        if module.split(".")[0] not in RUN_READ_MODULES
+        for function, reads in run_reads(path).items()
+        if len(reads) >= 2
+    }
+
+
+def test_runs_are_read_through_the_timeline():
+    joined = joined_run_reads()
+    unexpected = {n: sorted(r) for n, r in joined.items() if n not in RUN_READ_EXCEPTIONS}
+    assert not unexpected, f"read these through timeline.AgentRuns: {unexpected}"
+    stale = sorted(set(RUN_READ_EXCEPTIONS) - set(joined))
+    assert not stale, f"remove these RUN_READ_EXCEPTIONS: {stale}"
