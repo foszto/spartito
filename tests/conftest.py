@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 from fakeprovider import FakeProvider
 
-from orchestrator import providers, service
+from orchestrator import providers
+from orchestrator.core import views
 from orchestrator.providers import claude
 from orchestrator.service import Orchestrator
 
@@ -96,7 +97,7 @@ def orch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Orchestrator:
     monkeypatch.setenv("ORCH_PROVIDERS", "fake=fakeprovider:FakeProvider")
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).parent))
     monkeypatch.setitem(providers.PROVIDERS, "fake", FakeProvider())
-    monkeypatch.setattr(service, "WAIT_POLL_SECONDS", 0.1)
+    monkeypatch.setattr(views, "WAIT_POLL_SECONDS", 0.1)
     return Orchestrator()
 
 

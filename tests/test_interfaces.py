@@ -13,8 +13,9 @@ import typer
 from typer.testing import CliRunner
 
 from orchestrator import cli, config, mcp_server, roles
+from orchestrator.core.views import QUEUE_LISTED
 from orchestrator.models import RunStatus, Usage
-from orchestrator.service import ORCHESTRATOR_ID, QUEUE_LISTED, Orchestrator
+from orchestrator.service import ORCHESTRATOR_ID, Orchestrator
 from orchestrator.store import NOTIFICATION
 
 

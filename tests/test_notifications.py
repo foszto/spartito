@@ -24,8 +24,8 @@ import anyio
 import pytest
 from test_store import OLD_RUN_COLUMNS, OLD_SCHEMA
 
-from orchestrator import mcp_server, notify, service
-from orchestrator.core import launcher
+from orchestrator import mcp_server, notify
+from orchestrator.core import launcher, views
 from orchestrator.models import Run, RunStatus
 from orchestrator.service import ORCHESTRATOR_ID, Orchestrator, OrchestratorError
 from orchestrator.store import NOTIFICATION, Store
@@ -898,7 +898,7 @@ def test_views_show_running_descendants_and_a_capped_queue(
 
     assert top_view["children_running"] == 1 and "queue" not in top_view
     assert detail["children_running"] == 0 and detail["queued_runs"] == 25
-    assert len(detail["queue"]) == service.QUEUE_LISTED
+    assert len(detail["queue"]) == views.QUEUE_LISTED
     first, second = detail["queue"][:2]
     assert (first["kind"], first["sender"], first["prompt"]) == ("message", None, "never launched")
     assert (second["sender"], len(second["prompt"])) == (top, 120)

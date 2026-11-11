@@ -7,8 +7,9 @@ import pytest
 from starlette.testclient import TestClient
 
 from orchestrator import config, notify
+from orchestrator.core.views import QUEUE_LISTED
 from orchestrator.models import RunStatus
-from orchestrator.service import ORCHESTRATOR_ID, QUEUE_LISTED, Orchestrator
+from orchestrator.service import ORCHESTRATOR_ID, Orchestrator
 from orchestrator.store import NOTIFICATION, Store
 from orchestrator.web.app import app
 
