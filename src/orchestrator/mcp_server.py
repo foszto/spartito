@@ -460,6 +460,11 @@ def _short(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _actor(access: Caller) -> board.Actor:
+    """The calling agent as the one who changes the board (no id: the `orch chat` session)."""
+    return board.Actor(board.AGENT_KIND, access.id or None)
+
+
 def _board_line(item: Any) -> dict[str, Any]:
     line: dict[str, Any] = {"id": item.id, "state": item.state}
     for key, limit in BOARD_CLIPS.items():
@@ -503,7 +508,10 @@ def add_board_item(
     200 chars, `description` at most 4000; `state`: idea (default), ready, in_progress, done.
     Leads: their own project only."""
     orch = _orch()
-    item = orch.add_board_item(Caller.from_env(orch).project(project), title, description, state)
+    access = Caller.from_env(orch)
+    item = orch.add_board_item(
+        access.project(project), title, description, state, actor=_actor(access)
+    )
     return {"id": item.id, "project": item.project, "state": item.state}
 
 
@@ -534,7 +542,7 @@ def update_board_item(
         raise OrchestratorError(
             "nothing to change: pass state, title, description, agent or branch"
         )
-    return _board_line(orch.update_board_item(item_id, changes))
+    return _board_line(orch.update_board_item(item_id, changes, _actor(access)))
 
 
 def main() -> None:

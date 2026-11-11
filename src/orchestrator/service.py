@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from . import board, decisions, desktop, git, providers
-from .core import access, compaction, delivery, dispatch, launcher, lifecycle, reads, views
+from .core import access, boards, compaction, delivery, dispatch, launcher, lifecycle, reads, views
 from .core import archive as archiving
 from .core import notices as page_notices
 from .core import setup as agent_setup
@@ -214,41 +214,48 @@ class Orchestrator:
         state: Any = board.IDEA,
         agent_id: Any = None,
         branch: Any = None,
+        actor: board.Actor | None = None,
     ) -> board.Item:
-        """A new item, with its optional links; all of it is checked before it is stored."""
+        """A new item, with its optional links; all of it is checked before it is stored.
+        `actor` (here and below): who makes the change; None is the owner."""
         name = self.project(project).name
         try:
-            return board.add(self.store, name, title, description, state, agent_id, branch)
+            return board.add(
+                self.store, name, title, description, state, agent_id, branch, actor or board.OWNER
+            )
         except ValueError as exc:
             raise OrchestratorError(str(exc)) from None
 
-    def update_board_item(self, item_id: int, changes: dict[str, Any]) -> board.Item:
+    def update_board_item(
+        self, item_id: int, changes: dict[str, Any], actor: board.Actor | None = None
+    ) -> board.Item:
         """Change title, description, state, agent_id or branch ("" clears a link)."""
         try:
-            return board.update(self.store, item_id, changes)
+            return board.update(self.store, item_id, changes, actor or board.OWNER)
         except ValueError as exc:
             raise OrchestratorError(str(exc)) from None
 
-    def move_board_item(self, item_id: int, direction: str) -> board.Item:
+    def move_board_item(
+        self, item_id: int, direction: str, actor: board.Actor | None = None
+    ) -> board.Item:
         try:
-            return board.move(self.store, item_id, direction)
+            return board.move(self.store, item_id, direction, actor or board.OWNER)
         except ValueError as exc:
             raise OrchestratorError(str(exc)) from None
 
-    def dispatch_board(self, project: str, ids: Any = None) -> dict[str, Any]:
+    def dispatch_board(
+        self, project: str, ids: Any = None, actor: board.Actor | None = None
+    ) -> dict[str, Any]:
         """Send the project's ready items (with `ids`: only those of them that are still
         ready) to its lead as one user message (none: nothing is sent); they become
-        in_progress and linked to the lead."""
+        in_progress and linked to the lead. An agent `actor` sends it as itself."""
         name = self.project(project).name
         if ids is not None and (not isinstance(ids, list) or not all(type(i) is int for i in ids)):
             raise OrchestratorError("ids must be a list of board item ids")
         ready = [item.id for item in board.listing(self.store, name, board.READY)]
         if not [i for i in ready if ids is None or i in ids]:
             return {"items": [], "agent_id": None, "run_id": None}
-        lead = self.lead(name)
-        items, run_id = board.dispatch(
-            self.store, name, lead.id, lambda agent_id, text: self.send(agent_id, text).id, ids
-        )
+        items, lead, run_id = boards.to_lead(self, name, ids, actor or board.OWNER)
         return {"items": [item.to_dict() for item in items], "agent_id": lead.id, "run_id": run_id}
 
     # -- settings (core/setup.py) ----------------------------------------

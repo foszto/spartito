@@ -25,6 +25,20 @@ TITLE_CHARS = 200
 DESCRIPTION_CHARS = 4000
 BRANCH_CHARS = 200
 FIELDS = ("title", "description", "state", "agent_id", "branch")
+OWNER_KIND, AGENT_KIND, AUTO_KIND = "owner", "agent", "auto"
+
+
+@dataclass(frozen=True)
+class Actor:
+    """Who changes the board: the owner (dashboard, CLI), an agent through the MCP server
+    (`name`: its id; None for the interactive `orch chat` session) or an automatic rule
+    (`name`: the rule)."""
+
+    kind: str = OWNER_KIND
+    name: str | None = None
+
+
+OWNER = Actor()
 
 
 @dataclass
@@ -66,6 +80,39 @@ def check_state(state: Any) -> str:
     if state not in STATES:
         raise ValueError(f"unknown state {state!r} (one of: {', '.join(STATES)})")
     return state
+
+
+def _diff(before: Item | None, after: Item, fields: tuple[str, ...]) -> dict[str, Any]:
+    """The fields that differ as {field: [old, new]}; the description only as "changed"."""
+    out: dict[str, Any] = {}
+    for key in fields:
+        old, new = getattr(before, key) if before else None, getattr(after, key)
+        if old != new:
+            out[key] = "changed" if key == "description" else [old, new]
+    return out
+
+
+def _run_of(store: Store, actor: Actor) -> int | None:
+    """The acting agent's running turn (read before the change's transaction)."""
+    if actor.kind != AGENT_KIND or not actor.name:
+        return None
+    run = store.running_run(actor.name)
+    return run.id if run else None
+
+
+def record(
+    conn: sqlite3.Connection,
+    item_id: int,
+    actor: Actor,
+    action: str,
+    changes: dict[str, Any],
+    stamp: str,
+    run_id: int | None = None,
+) -> None:
+    """Every change of an item comes here, in the transaction that makes it: who made it,
+    the action (add, edit, state, move, place, dispatch), what changed ({field: [old, new]},
+    see `_diff`), `stamp` (the item's new updated_at) and the run (a dispatch's, or the
+    acting agent's turn). Nothing is kept yet."""
 
 
 def _end(conn: sqlite3.Connection, project: str, state: str) -> int:
@@ -117,6 +164,7 @@ def add(
     state: Any = IDEA,
     agent_id: Any = None,
     branch: Any = None,
+    actor: Actor = OWNER,
 ) -> Item:
     """A new item at the end of its state, with its links checked first (as in `cleaned`):
     either it is stored whole or not at all. `project` must be registered (the caller
@@ -126,6 +174,7 @@ def add(
     state = check_state(state or IDEA)
     given = {"agent_id": agent_id, "branch": branch}
     links = cleaned(store, Item(0, project, title), {k: v for k, v in given.items() if v})
+    run_id = _run_of(store, actor)
     with store.transaction() as conn:
         stamp = now()
         cursor = conn.execute(
@@ -144,7 +193,9 @@ def add(
             ),
         )
         item = _get(conn, cursor.lastrowid)
-    assert item is not None
+        assert item is not None
+        changes = _diff(None, item, ("state", "agent_id", "branch"))
+        record(conn, item.id, actor, "add", changes, stamp, run_id)
     return item
 
 
@@ -172,11 +223,12 @@ def cleaned(store: Store, item: Item, changes: dict[str, Any]) -> dict[str, Any]
     return out
 
 
-def update(store: Store, item_id: int, changes: dict[str, Any]) -> Item:
+def update(store: Store, item_id: int, changes: dict[str, Any], actor: Actor = OWNER) -> Item:
     """Change some FIELDS of an item; a new state puts it at the end of that state.
     Raises ValueError."""
     item = get(store, item_id)
     fields = cleaned(store, item, changes)
+    run_id = _run_of(store, actor)
     with store.transaction() as conn:
         current = _get(conn, item_id)
         if current is None:
@@ -190,15 +242,20 @@ def update(store: Store, item_id: int, changes: dict[str, Any]) -> Item:
                 f"UPDATE board_items SET {assignments} WHERE id = ?", (*fields.values(), item_id)
             )
         item = _get(conn, item_id)
-    assert item is not None
+        assert item is not None
+        if fields:
+            diff = _diff(current, item, FIELDS)
+            action = "state" if set(diff) == {"state"} else "edit"
+            record(conn, item_id, actor, action, diff, item.updated_at, run_id)
     return item
 
 
-def move(store: Store, item_id: int, direction: str) -> Item:
+def move(store: Store, item_id: int, direction: str, actor: Actor = OWNER) -> Item:
     """Swap the item with its neighbour above (`up`) or below (`down`) in its state; at the
     edge nothing changes. The state's positions are renumbered 0, 1, … Raises ValueError."""
     if direction not in ("up", "down"):
         raise ValueError(f"direction must be 'up' or 'down', not {direction!r}")
+    run_id = _run_of(store, actor)
     with store.transaction() as conn:
         item = _get(conn, item_id)
         if item is None:
@@ -218,15 +275,18 @@ def move(store: Store, item_id: int, direction: str) -> Item:
             for position, moved in enumerate(ids):
                 conn.execute("UPDATE board_items SET position = ? WHERE id = ?", (position, moved))
             conn.execute("UPDATE board_items SET updated_at = ? WHERE id = ?", (stamp, item_id))
+            changes = {"position": [item.position, other]}
+            record(conn, item_id, actor, "move", changes, stamp, run_id)
         item = _get(conn, item_id)
     assert item is not None
     return item
 
 
-def message(project: str, items: list[Item]) -> str:
+def message(project: str, items: list[Item], actor: Actor = OWNER) -> str:
     """The one message that hands a project's ready items to its lead."""
     count = f"{len(items)} item" + ("" if len(items) == 1 else "s")
-    parts = [f"Board items ready for project {project} ({count}), dispatched by the owner:"]
+    by = actor.name if actor.kind == AGENT_KIND and actor.name else "the owner"
+    parts = [f"Board items ready for project {project} ({count}), dispatched by {by}:"]
     for item in items:
         parts.append(
             f"#{item.id} {item.title}" + (f"\n{item.description}" if item.description else "")
@@ -245,6 +305,7 @@ def dispatch(
     lead_id: str,
     send: Callable[[str, str], int],
     ids: list[int] | None = None,
+    actor: Actor = OWNER,
 ) -> tuple[list[Item], int | None]:
     """Hand the project's `ready` items (with `ids`: only those of them, the ones the owner
     confirmed) to its lead: mark them `in_progress` and linked to `lead_id`, then send them
@@ -268,7 +329,7 @@ def dispatch(
     if not before:
         return [], None
     try:
-        run_id = send(lead_id, message(project, before))
+        run_id = send(lead_id, message(project, before, actor))
     except BaseException:
         with store.connection() as conn:
             for item in before:
@@ -285,4 +346,10 @@ def dispatch(
                     ),
                 )
         raise
+    with store.transaction() as conn:  # only once it was sent: the run is known
+        for item in before:
+            changes = {"state": [item.state, IN_PROGRESS]}
+            if item.agent_id != lead_id:
+                changes["agent_id"] = [item.agent_id, lead_id]
+            record(conn, item.id, actor, "dispatch", changes, stamp, run_id)
     return [get(store, item.id) for item in before], run_id

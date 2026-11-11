@@ -1,0 +1,58 @@
+"""The task board's JSON API beyond the per-project dialog's (`/api/board*` in app.py): the
+board view across projects. `ROUTES` is mounted by app.py; the writes are guarded by its
+LocalOnly middleware like every other route.
+
+The handlers run as app.py's do: blocking, in a thread, an OrchestratorError (or a missing
+key) answered with 400 `{"error": …}`. The wrapper is repeated here because app.py imports
+this module (importing app.py back would be a cycle).
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import anyio
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
+
+from ..service import Orchestrator, OrchestratorError
+
+ROUTES: list[Route] = []
+
+
+def api(handler: Any) -> Any:
+    """Run a blocking handler(orch, request, body) in a thread; map errors to JSON."""
+
+    async def endpoint(request: Request) -> JSONResponse:
+        body = await request.json() if request.method == "POST" else {}
+        try:
+            result = await anyio.to_thread.run_sync(handler, Orchestrator(), request, body)
+        except (OrchestratorError, KeyError) as exc:
+            message = exc.args[0] if exc.args else str(exc)
+            return JSONResponse({"error": str(message)}, status_code=400)
+        return JSONResponse(result)
+
+    return endpoint
+
+
+def route(path: str, post: bool = False) -> Any:
+    """Add the handler below to ROUTES at `path` (GET; `post`: POST)."""
+
+    def add(handler: Any) -> Any:
+        ROUTES.append(Route(path, api(handler), methods=["POST"] if post else None))
+        return handler
+
+    return add
+
+
+# -- the board across projects ---------------------------------------------------------
+
+
+# -- placing an item -------------------------------------------------------------------
+
+
+# -- dispatching named items -----------------------------------------------------------
+
+
+# -- an item's history -----------------------------------------------------------------

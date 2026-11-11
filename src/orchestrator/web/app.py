@@ -29,6 +29,7 @@ from .. import __version__, config, providers, roles
 from ..providers.base import model_choices
 from ..service import ORCHESTRATOR_ID, NeedsConfirmation, Orchestrator, OrchestratorError
 from ..settings import ARCHIVE_AFTER, ARCHIVE_AFTER_DEFAULT, COMPACT_AT, COMPACT_AT_DEFAULT, TIERS
+from . import board_api
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
@@ -475,6 +476,7 @@ app = Starlette(
         Route("/api/board/dispatch", api(dispatch_board), methods=["POST"]),
         Route("/api/board/{item_id:int}", api(update_board_item), methods=["POST"]),
         Route("/api/board/{item_id:int}/move", api(move_board_item), methods=["POST"]),
+        *board_api.ROUTES,
     ],
     middleware=[Middleware(LocalOnly)],
 )
