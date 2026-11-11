@@ -220,24 +220,33 @@ def auto_archive(orch: Facade) -> list[str]:
     return archived
 
 
-def tidy(orch: Facade) -> list[str]:
-    """Run `auto_archive` if no process ran it in the last AUTO_ARCHIVE_EVERY seconds
-    (a stamp file under ORCH_HOME, taken under a lock, so concurrent callers skip).
-    Never raises; returns the ids archived."""
+def due(name: str, every: float) -> bool:
+    """Whether a periodic pass is due: True (and the stamp file `name` under ORCH_HOME
+    renewed) when no process stamped it in the last `every` seconds; False while another
+    process holds its lock (it is stamping right now). Never raises."""
     try:
-        with open(config.home() / "auto-archive.stamp", "a+") as stamp:
+        with open(config.home() / name, "a+") as stamp:
             fcntl.flock(stamp, fcntl.LOCK_EX | fcntl.LOCK_NB)  # held: another one checks
             stamp.seek(0)
             try:
                 elapsed = time.time() - float(stamp.read().strip() or 0)
             except ValueError:  # unreadable: check now and write a fresh one
-                elapsed = AUTO_ARCHIVE_EVERY
-            if abs(elapsed) < AUTO_ARCHIVE_EVERY:  # a clock set back far: check
-                return []
+                elapsed = every
+            if abs(elapsed) < every:  # a clock set back far: check
+                return False
             stamp.seek(0)
             stamp.truncate()
             stamp.write(f"{time.time():.3f}\n")
     except OSError:  # BlockingIOError too: another process is checking right now
+        return False
+    return True
+
+
+def tidy(orch: Facade) -> list[str]:
+    """Run `auto_archive` if no process ran it in the last AUTO_ARCHIVE_EVERY seconds
+    (a stamp file under ORCH_HOME, taken under a lock, so concurrent callers skip).
+    Never raises; returns the ids archived."""
+    if not due("auto-archive.stamp", AUTO_ARCHIVE_EVERY):
         return []
     try:
         return orch.auto_archive()

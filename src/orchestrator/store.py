@@ -216,6 +216,28 @@ CREATE TABLE IF NOT EXISTS board_history (
     run_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS board_history_item ON board_history(item_id, id);
+-- The last known git state of a board item's branch (core/board_git.py); a cache, a table of
+-- its own, unknown to older code. A row whose branch or base is not the item's current one is
+-- stale. ahead_tip: the branch's tip at the last check that saw it ahead of `base` (NULL again
+-- once its work is found not to be in the base); ahead_in_base: 1 once its work is found in
+-- the base; done_tip: the ahead_tip whose merge was acted on (the item moved to done) or
+-- noted; merged: 0 | 1, as git.branch_state tells it; error: why the last check failed (the
+-- rest is from before).
+CREATE TABLE IF NOT EXISTS board_git (
+    item_id INTEGER PRIMARY KEY,
+    branch TEXT NOT NULL,
+    base TEXT NOT NULL,
+    tip TEXT,
+    ahead INTEGER,
+    behind INTEGER,
+    dirty INTEGER,
+    ahead_tip TEXT,
+    ahead_in_base INTEGER NOT NULL DEFAULT 0,
+    done_tip TEXT,
+    merged INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    checked_at TEXT NOT NULL
+);
 """
 
 ANYONE = object()  # withdraw_queued/replace_queued: whoever queued the run
@@ -406,11 +428,12 @@ class Store:
         return self._conn()
 
     @contextmanager
-    def transaction(self) -> Iterator[sqlite3.Connection]:
+    def transaction(self, wait: float = 30) -> Iterator[sqlite3.Connection]:
         """One connection holding the write lock from the first statement on, so checks
         and the writes based on them are atomic across processes. Use only this
-        connection inside: another one that writes would wait for this lock."""
-        conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        connection inside: another one that writes would wait for this lock. `wait`:
+        seconds to wait for the lock (then sqlite3.OperationalError)."""
+        conn = sqlite3.connect(self.path, timeout=wait, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
         try:
@@ -1202,3 +1225,45 @@ class Store:
                     (agent_id, after),
                 ).fetchall()
         return [from_row(Event, row) for row in rows]
+
+    # -- board git (cache of core/board_git) -----------------------------------
+
+    BOARD_GIT_COLUMNS = (
+        "item_id",
+        "branch",
+        "base",
+        "tip",
+        "ahead",
+        "behind",
+        "dirty",
+        "ahead_tip",
+        "ahead_in_base",
+        "done_tip",
+        "merged",
+        "error",
+        "checked_at",
+    )
+
+    def board_git(self, item_ids: list[int] | None = None) -> dict[int, dict[str, Any]]:
+        """The cached git state rows by item id: all, or those of `item_ids`."""
+        query, args = "SELECT * FROM board_git", ()
+        if item_ids is not None:
+            query += " WHERE item_id IN (SELECT value FROM json_each(?))"
+            args = (json.dumps(list(item_ids)),)
+        with self._conn() as conn:
+            return {row["item_id"]: dict(row) for row in conn.execute(query, args)}
+
+    def save_board_git(
+        self, row: dict[str, Any], conn: sqlite3.Connection | None = None, wait: float = 30
+    ) -> None:
+        """Insert or replace one row (every column of BOARD_GIT_COLUMNS), in `conn` if given;
+        else waiting at most `wait` seconds for the write lock (then sqlite3.OperationalError)."""
+        names = ", ".join(self.BOARD_GIT_COLUMNS)
+        marks = ", ".join("?" for _ in self.BOARD_GIT_COLUMNS)
+        values = tuple(row[name] for name in self.BOARD_GIT_COLUMNS)
+        sql = f"INSERT OR REPLACE INTO board_git ({names}) VALUES ({marks})"
+        if conn is not None:
+            conn.execute(sql, values)
+            return
+        with self._conn(wait) as own:
+            own.execute(sql, values)
