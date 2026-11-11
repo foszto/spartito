@@ -64,9 +64,10 @@ orch --help
 
 Without installing, prefix every command with `uv run` inside the checkout (`uv run orch …`).
 
-The native window of `orch app` needs the optional extra `app` (on Linux it brings Qt and
-PyQt6, which are GPL-3 software; see [docs/desktop.md](docs/desktop.md#optional-dependencies)),
-the macOS menu-bar item the extra `menubar`:
+The native window of `orch app` needs the optional extra `app` (on Linux it brings PyQt6 and
+PyQt6-WebEngine, which are GPL-3.0-only, and the Qt libraries, LGPL-3.0; see
+[docs/desktop.md](docs/desktop.md#optional-dependencies)), the macOS menu-bar item the extra
+`menubar`:
 
 ```sh
 uv tool install --editable '.[app,menubar]'
@@ -241,7 +242,7 @@ The dashboard can also be used like a desktop application:
 | background service | launchd agent | systemd user unit |
 | installable page | Chrome, Safari | Chromium-family browsers |
 | notification click-through | in an open page; else `osascript`, no click | in an open page; else none |
-| `orch app` native window | Cocoa (WebKit), extra `app` | Qt WebEngine, extra `app` (GPL-3) |
+| `orch app` native window | Cocoa (WebKit), extra `app` | Qt WebEngine, extra `app` (PyQt6: GPL-3.0-only) |
 | `orch app` browser fallback | yes | yes |
 | menu-bar item | extra `menubar` | no |
 
