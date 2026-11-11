@@ -391,6 +391,24 @@ class Store:
         finally:
             conn.close()
 
+    @contextmanager
+    def _read(self) -> Iterator[sqlite3.Connection]:
+        """One connection whose reads all see the database as it was at the first one (a
+        read transaction; it takes no write lock)."""
+        conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        try:
+            conn.execute("BEGIN")
+            try:
+                yield conn
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            conn.execute("COMMIT")
+        finally:
+            conn.close()
+
     # -- projects ---------------------------------------------------------
 
     def add_project(self, project: Project) -> Project:
@@ -729,17 +747,25 @@ class Store:
     def meta_of(self, agent_id: str) -> dict[int, RunMeta]:
         """Metadata of an agent's runs, by run id. Runs without a row are absent."""
         with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM run_meta WHERE agent_id = ? ORDER BY run_id", (agent_id,)
-            ).fetchall()
+            return self._meta_of(conn, agent_id)
+
+    @staticmethod
+    def _meta_of(conn: sqlite3.Connection, agent_id: str) -> dict[int, RunMeta]:
+        rows = conn.execute(
+            "SELECT * FROM run_meta WHERE agent_id = ? ORDER BY run_id", (agent_id,)
+        ).fetchall()
         return {row["run_id"]: from_row(RunMeta, row) for row in rows}
 
     def compactions(self, agent_id: str) -> set[int]:
         """Ids of the agent's compaction runs (see models.answers)."""
         with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT run_id FROM run_meta WHERE agent_id = ? AND kind = ?", (agent_id, COMPACT)
-            ).fetchall()
+            return self._compactions(conn, agent_id)
+
+    @staticmethod
+    def _compactions(conn: sqlite3.Connection, agent_id: str) -> set[int]:
+        rows = conn.execute(
+            "SELECT run_id FROM run_meta WHERE agent_id = ? AND kind = ?", (agent_id, COMPACT)
+        ).fetchall()
         return {row["run_id"] for row in rows}
 
     def add_auto_compaction(self, agent_id: str, prompt: str) -> Run | None:
@@ -925,10 +951,28 @@ class Store:
 
     def runs_of(self, agent_id: str) -> list[Run]:
         with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM runs WHERE agent_id = ? ORDER BY id", (agent_id,)
-            ).fetchall()
-        return [self.run_from_row(row) for row in rows]
+            return self._runs_of(conn, agent_id)
+
+    @classmethod
+    def _runs_of(cls, conn: sqlite3.Connection, agent_id: str) -> list[Run]:
+        rows = conn.execute(
+            "SELECT * FROM runs WHERE agent_id = ? ORDER BY id", (agent_id,)
+        ).fetchall()
+        return [cls.run_from_row(row) for row in rows]
+
+    def snapshot(
+        self, agent_id: str
+    ) -> tuple[list[Run], dict[int, RunMeta], dict[int, Usage], set[int]]:
+        """An agent's runs (runs_of), their metadata (meta_of), usage records (usage_of) and
+        compaction ids (compactions), read in one transaction so that they agree with each
+        other; timeline.AgentRuns is built from them."""
+        with self._read() as conn:
+            return (
+                self._runs_of(conn, agent_id),
+                self._meta_of(conn, agent_id),
+                self._usage_of(conn, agent_id),
+                self._compactions(conn, agent_id),
+            )
 
     def last_run(self, agent_id: str) -> Run | None:
         with self._conn() as conn:
@@ -1003,11 +1047,15 @@ class Store:
     def usage_of(self, agent_id: str) -> dict[int, Usage]:
         """Per-run usage of an agent's runs, by run id. Runs without a record are absent."""
         with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT u.* FROM run_usage u JOIN runs r ON r.id = u.run_id"
-                " WHERE r.agent_id = ? ORDER BY u.run_id",
-                (agent_id,),
-            ).fetchall()
+            return self._usage_of(conn, agent_id)
+
+    @staticmethod
+    def _usage_of(conn: sqlite3.Connection, agent_id: str) -> dict[int, Usage]:
+        rows = conn.execute(
+            "SELECT u.* FROM run_usage u JOIN runs r ON r.id = u.run_id"
+            " WHERE r.agent_id = ? ORDER BY u.run_id",
+            (agent_id,),
+        ).fetchall()
         return {row["run_id"]: from_row(Usage, row) for row in rows}
 
     def get_usage(self, run_id: int) -> Usage | None:
