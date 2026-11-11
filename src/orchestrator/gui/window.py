@@ -197,10 +197,10 @@ def fragment(target: str) -> str:
 
 
 @contextlib.contextmanager
-def watching_requests(session: Session, bring_forward: Callable[[], str | None]):
+def watching_requests(session: Session, bring_forward: Callable[[], tuple[bool, str]]):
     """While the window is open (this block), answer each new request of a second `orch app`
-    (app_open.py) by bringing the window forward; `bring_forward` returns why it could not,
-    or None."""
+    (app_open.py) by bringing the window forward; `bring_forward` returns whether that worked
+    and what was done, or why not."""
     stop = threading.Event()
 
     def loop() -> None:
@@ -211,10 +211,10 @@ def watching_requests(session: Session, bring_forward: Callable[[], str | None])
                 continue
             seen = request["id"]
             try:
-                problem = bring_forward()
+                raised, detail = bring_forward()
             except Exception as exc:
-                problem = first_line(exc)
-            app_open.answer(seen, problem is None, problem or "")
+                raised, detail = False, first_line(exc)
+            app_open.answer(seen, raised, detail)
 
     thread = threading.Thread(target=loop, name="orch-app-requests", daemon=True)
     thread.start()
@@ -385,19 +385,17 @@ def name_qt_app() -> None:
     QGuiApplication.setDesktopFileName(launcher.slug(config.PROJECT_NAME))
 
 
-def bring_native_forward(window) -> str | None:
+def bring_native_forward(window) -> tuple[bool, str]:
     """Un-minimize the pywebview window and bring it to the front (both backends do this on
-    their GUI thread); on macOS, why it did not become the active window, else None."""
+    their GUI thread); on macOS, checked: the application must become the active one."""
     window.restore()
     window.show()
-    if this_platform() != "darwin":
-        return None
     deadline = time.monotonic() + ACTIVE_WAIT
-    while native_active() is False:
+    while this_platform() == "darwin" and native_active() is False:
         if time.monotonic() > deadline:
-            return "macOS kept another application in front"
+            return False, "macOS kept another application in front"
         time.sleep(0.05)
-    return None
+    return True, "brought it to the front"
 
 
 def native_active() -> bool | None:
@@ -409,31 +407,57 @@ def native_active() -> bool | None:
     return bool(AppKit.NSApplication.sharedApplication().isActive())
 
 
+# `--echo-location`: the page's address, and the decision its decisions window shows.
+WHERE_JS = (
+    "location.href + ' decision: ' +"
+    " (document.querySelector('#decisionsDialog[open] [data-key].marked')?.dataset.key || '-')"
+)
+
+
 def echo_locations(session: Session, window) -> None:
-    """`--echo-location`: say each new address of the native window's page (a check that a
-    request reached it)."""
+    """`--echo-location` (for checks by hand): say as which app this process runs (macOS),
+    then each new place of the native window's page."""
+    if this_platform() == "darwin":
+        say(f"identity: {mac_identity()}")
 
     def loop() -> None:
         last = None
         while not session.done.wait(0.5):
             try:
-                href = window.evaluate_js("location.href")
+                where = window.evaluate_js(WHERE_JS)
             except Exception:
                 continue
-            if href != last:
-                last = href
-                say(f"location: {href}")
+            if where != last:
+                last = where
+                say(f"location: {where}")
 
     threading.Thread(target=loop, name="orch-app-location", daemon=True).start()
+
+
+def mac_identity() -> str:
+    """This process's main bundle and name as macOS sees them from inside."""
+    try:
+        import AppKit  # pyobjc, which pywebview's Cocoa backend brings
+        import Foundation
+    except ImportError:
+        return "unknown (no pyobjc)"
+    bundle = Foundation.NSBundle.mainBundle()
+    running = AppKit.NSRunningApplication.currentApplication()
+    left = "CFProcessPath" in os.environ
+    return (
+        f"main bundle {bundle.bundleIdentifier()} at {bundle.bundlePath()},"
+        f" running application {running.localizedName()!r},"
+        f" CFProcessPath {'still set' if left else 'not handed on'}"
+    )
 
 
 def devtools_port(profile: Path) -> int:
     return int((profile / "DevToolsActivePort").read_text().split()[0])
 
 
-def bring_chromium_forward(profile: Path) -> str | None:
+def bring_chromium_forward(profile: Path) -> tuple[bool, str]:
     """Ask the browser of `orch app` (its DevTools endpoint) to activate its page, which
-    brings its window forward as far as the browser does; why it could not, or None."""
+    brings its window forward as far as the browser does (not checked)."""
     try:
         port = devtools_port(profile)
         body = autostart.get_local(f"http://127.0.0.1:{port}/json/list", 2.0, limit=1 << 22)
@@ -441,10 +465,10 @@ def bring_chromium_forward(profile: Path) -> str | None:
         target = urllib.parse.quote(str(page["id"]), safe="")
         autostart.get_local(f"http://127.0.0.1:{port}/json/activate/{target}", 2.0)
     except StopIteration:
-        return "the browser shows no page"
+        return False, "the browser shows no page"
     except (OSError, ValueError, IndexError, KeyError, TypeError, AttributeError) as exc:
-        return f"its DevTools endpoint did not do it: {first_line(exc)}"
-    return None
+        return False, f"its DevTools endpoint did not do it: {first_line(exc)}"
+    return True, "asked its browser to bring it to the front"
 
 
 def open_pages(profile: Path) -> int | None:
@@ -570,7 +594,7 @@ def forward(target: str) -> int:
         reply = {"raised": False, "detail": "the window did not answer"}
     if reply["raised"]:
         showing = f", showing {target}" if target else ""
-        print(f"{ALREADY_OPEN}: brought it to the front{showing}")
+        print(f"{ALREADY_OPEN}: {reply['detail'] or 'brought it to the front'}{showing}")
     else:
         asked = f"; asked it to show {target}" if target else ""
         print(

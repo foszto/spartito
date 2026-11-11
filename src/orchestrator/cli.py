@@ -314,8 +314,11 @@ def web(host: str = "127.0.0.1", port: int = 8787) -> None:
 
 app_app = typer.Typer(
     rich_markup_mode=MARKUP,
-    help="Open the dashboard in its own window (`orch app [options]`), or install a launcher"
-    " that starts it like an application.",
+    help="Open the dashboard in its own window: a native one with the extra `orchestrator[app]`,"
+    " else a Chromium-family browser in app mode, else the default browser. Uses the running"
+    " `orch web` of this home, or serves the dashboard on 127.0.0.1 until the window is closed."
+    " With the window open already, brings it to the front (at `--agent` or `--decision`)."
+    " `orch app install` adds a launcher that starts it like an application.",
 )
 app.add_typer(app_app, name="app")
 LauncherName = Annotated[

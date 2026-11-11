@@ -352,7 +352,7 @@ class FakeWindow:
         self.raised.append("show")
 
     def evaluate_js(self, script: str):
-        assert script == "location.href"
+        assert script == window.WHERE_JS
         return self.location
 
 
@@ -960,7 +960,7 @@ def test_second_app_brings_the_native_window_forward_at_its_target(webview: Fake
     result = run_app()
     assert result.exit_code == 0, result.output
     ((reply, raised, state),) = seen
-    assert reply == {"id": reply["id"], "raised": True, "detail": ""}
+    assert reply == {"id": reply["id"], "raised": True, "detail": "brought it to the front"}
     assert raised == ["restore", "show"]
     assert state == {"id": reply["id"], "target": "decision:5"}
 
@@ -1050,8 +1050,13 @@ def answering(raised: bool, detail: str = ""):
 @pytest.mark.parametrize(
     ("args", "raised", "detail", "line"),
     [
-        ([], True, "", ": brought it to the front"),
-        (["--decision", "5"], True, "", ": brought it to the front, showing decision:5"),
+        ([], True, "brought it to the front", ": brought it to the front"),
+        (
+            ["--decision", "5"],
+            True,
+            "asked its browser to bring it to the front",
+            ": asked its browser to bring it to the front, showing decision:5",
+        ),
         (
             ["--agent", "worker-3f9a"],
             False,
@@ -1110,15 +1115,21 @@ def test_second_app_brings_chromium_app_mode_forward(chromium: Path, monkeypatch
     threading.Thread(target=opened, daemon=True).start()
     result = run_app()
     assert result.exit_code == 0, result.output
-    assert seen[0]["raised"] is True, seen
+    assert seen[0] == {
+        "id": seen[0]["id"],
+        "raised": True,
+        "detail": "asked its browser to bring it to the front",
+    }
     assert "ACTIVATE p" in chromium.read_text().splitlines()
 
 
-def test_echo_location_says_where_the_page_is(webview: FakeWebview):
+def test_echo_location_says_where_the_page_is(webview: FakeWebview, monkeypatch):
+    monkeypatch.setattr(window, "mac_identity", lambda: "main bundle x")
     webview.open_for = 1.5
     webview.on_start = lambda: setattr(webview.windows[-1], "location", "http://x/#decision:3")
     result = run_app("--echo-location")
     assert result.exit_code == 0, result.output
+    assert "identity: main bundle x\n" in result.stderr
     assert "location: http://x/#decision:3\n" in result.stderr
 
 
