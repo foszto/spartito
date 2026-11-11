@@ -25,7 +25,7 @@ import pytest
 from test_store import OLD_RUN_COLUMNS, OLD_SCHEMA
 
 from orchestrator import mcp_server, notify
-from orchestrator.core import launcher, views
+from orchestrator.core import delivery, launcher, views
 from orchestrator.models import Run, RunStatus
 from orchestrator.service import ORCHESTRATOR_ID, Orchestrator, OrchestratorError
 from orchestrator.store import NOTIFICATION, Store
@@ -700,7 +700,7 @@ def test_wait_returns_at_once_when_a_message_for_the_caller_is_waiting(
     reply = wait(child, timeout_seconds=30)
 
     assert time.monotonic() - started < 2
-    assert reply["finished"] is False and reply["note"] == mcp_server.MESSAGE_NOTE
+    assert reply["finished"] is False and reply["note"] == delivery.MESSAGE_NOTE
     assert reply["agents"][0]["id"] == child and "last_run" not in reply["agents"][0]
     as_agent(None)
     orch.stop(child)
@@ -720,7 +720,7 @@ def test_wait_returns_when_a_message_arrives_during_it(
     timer.join()
 
     assert 0.5 <= time.monotonic() - started < 3
-    assert reply["finished"] is False and reply["note"] == mcp_server.MESSAGE_NOTE
+    assert reply["finished"] is False and reply["note"] == delivery.MESSAGE_NOTE
     as_agent(None)
     orch.stop(child)
 

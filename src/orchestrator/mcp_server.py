@@ -16,11 +16,11 @@ import anyio
 from mcp.server.mcpserver import MCPServer
 
 from . import board, roles
-from .models import Run
-from .replies import clip, run_reply, structured_page
+from .core.delivery import delivery_floor as _delivery_floor  # noqa: F401 (old import path)
+from .core.delivery import wait_for_agents as _wait  # noqa: F401 (old import path)
+from .replies import clip, structured_page
 from .service import Orchestrator, OrchestratorError, result_file, run_usage
 from .store import ANYONE
-from .timeline import AgentRuns
 
 MAX_WAIT_SECONDS = 1800
 WAIT_SECONDS = 120  # default wait_for_agents timeout
@@ -103,107 +103,6 @@ def _sender() -> str | None:
     return os.environ.get("ORCH_AGENT_ID") or None
 
 
-EARLIER_WITH_TEXT = 2  # undelivered runs before the latest that wait_for_agents shows
-LISTED_RUNS = 20  # further undelivered runs it lists by id and status
-LISTED_IDS = 200  # and beyond those, by id only
-
-
-def _agent_runs(shown: Run | None, claimed: list[Run], limit: int) -> dict[str, Any]:
-    """The run part of one agent's wait_for_agents reply, within one budget of `limit`
-    chars (0: no limit) for all its texts, newest first.
-
-    `last_run` is the latest finished run, with its answer only if this call claimed it.
-    Up to EARLIER_WITH_TEXT earlier claimed runs share what is left (`earlier_runs`);
-    the rest are only listed (`other_runs`) — they count as delivered all the same.
-    """
-    budget = None if limit <= 0 else limit
-    parts: dict[str, Any] = {}
-    last = None
-    if shown:
-        is_new = any(run.id == shown.id for run in claimed)
-        last, left = run_reply(shown, budget, answer=is_new)
-        if not is_new:
-            last["already_delivered"] = "get_agent result_chars=0 reads it again"
-        budget = None if budget is None else left
-    earlier = [run for run in claimed if not shown or run.id != shown.id]
-    with_text, listed = [], []
-    for run in reversed(earlier):
-        if len(with_text) < EARLIER_WITH_TEXT and (budget is None or budget > 0):
-            reply, left = run_reply(run, budget)
-            budget = None if budget is None else left
-            with_text.append(reply)
-        else:
-            listed.append({"id": run.id, "status": run.status.value})
-    if with_text:
-        parts["earlier_runs"] = with_text[::-1]
-    if listed:
-        parts["other_runs"] = listed[:LISTED_RUNS][::-1]
-        note = "results not shown; get_agent run_id=<id> reads one"
-        if older := [run["id"] for run in listed[LISTED_RUNS:]]:
-            parts["older_run_ids"] = older[:LISTED_IDS][::-1]
-            note += "; older ones in older_run_ids"
-            if len(older) > LISTED_IDS:
-                note += f" (newest {LISTED_IDS}; {len(older) - LISTED_IDS} before not listed)"
-        parts["other_runs_note"] = note
-    return {**parts, "last_run": last}
-
-
-def _delivery_floor(orch: Orchestrator, caller: str, agent_id: str) -> int:
-    """The first run of an agent a wait_for_agents call may deliver to `caller`: the one
-    after the last run it already got, or, for a caller that never got one, the oldest
-    run active when the call started that is not a compaction (else the latest finished
-    one: a compaction after the answer, e.g. an automatic one, never hides it)."""
-    last = orch.store.last_delivered(caller, agent_id)
-    if last is not None:
-        return last + 1
-    timeline = AgentRuns.read(orch.store, agent_id)
-    _, active, shown = timeline.state()
-    active = [run for run in active if run.id not in timeline.compactions]
-    if active:
-        return active[0].id
-    return shown.id if shown else 0
-
-
-def _wait(orch: Orchestrator, ids: list[str], timeout: float, limit: int) -> dict[str, Any]:
-    """wait_for_agents in a worker thread: statuses until idle, then the undelivered results.
-
-    Each agent's runs are read once and everything returned is derived from that read, so
-    `finished` matches the statuses even when a run is queued after the idle check.
-    """
-    caller = os.environ.get("ORCH_AGENT_ID", "")
-
-    def message_waiting() -> bool:
-        return bool(caller and orch.store.ready_messages(caller))
-
-    if message_waiting():
-        return _statuses(orch, ids, _timelines(orch, ids), MESSAGE_NOTE)
-    floors = {agent_id: _delivery_floor(orch, caller, agent_id) for agent_id in ids}
-    orch.wait_idle(ids, timeout, interrupt=message_waiting)
-    timelines = _timelines(orch, ids)
-    if message_waiting():
-        return _statuses(orch, ids, timelines, MESSAGE_NOTE)
-    states = {agent_id: timelines[agent_id].state() for agent_id in ids}
-    below = {agent_id: orch.store.active_descendants(agent_id) for agent_id in ids}
-    if any(active for _, active, _ in states.values()) or any(below.values()):
-        return _statuses(orch, ids, timelines)
-    outcomes = []
-    for agent_id in ids:
-        status, _, shown = states[agent_id]
-        new = [run for run in timelines[agent_id].answers() if run.id >= floors[agent_id]]
-        claimed = orch.store.claim(caller, [run.id for run in new])
-        totals = timelines[agent_id].totals()
-        outcome = {
-            "id": agent_id,
-            "status": status,
-            "branch": orch.agent(agent_id).branch,
-            "cost_usd": totals.cost or 0,
-            "tokens": totals.tokens(),
-        }
-        claimed_runs = [run for run in new if run.id in claimed]
-        outcomes.append({**outcome, **_agent_runs(shown, claimed_runs, limit)})
-    return {"finished": True, "agents": outcomes}
-
-
 def _lineage(orch: Orchestrator, agent_id: str) -> set[str]:
     """The agent and its ancestors."""
     seen: set[str] = set()
@@ -212,34 +111,6 @@ def _lineage(orch: Orchestrator, agent_id: str) -> set[str]:
         seen.add(current.id)
         current = orch.store.get_agent(current.parent_id) if current.parent_id else None
     return seen
-
-
-MESSAGE_NOTE = "a message for you is waiting: end this turn now with a short status"
-
-
-def _timelines(orch: Orchestrator, ids: list[str]) -> dict[str, AgentRuns]:
-    return {agent_id: AgentRuns.read(orch.store, agent_id) for agent_id in ids}
-
-
-def _statuses(
-    orch: Orchestrator, ids: list[str], timelines: dict[str, AgentRuns], note: str | None = None
-) -> dict[str, Any]:
-    """The reply of an unfinished wait: statuses only, nothing counts as delivered."""
-    agents = []
-    for agent_id in ids:
-        status, active, _ = timelines[agent_id].state()
-        agents.append(
-            {
-                "id": agent_id,
-                "status": status,
-                "queued_runs": len(active),
-                "children_running": orch.store.active_descendants(agent_id),
-            }
-        )
-    reply: dict[str, Any] = {"finished": False, "agents": agents}
-    if note:
-        reply["note"] = note
-    return reply
 
 
 @server.tool()
@@ -419,7 +290,7 @@ async def wait_for_agents(
                 " (it waits for you); end your turn instead"
             )
     timeout = max(1, min(timeout_seconds, MAX_WAIT_SECONDS))
-    return await anyio.to_thread.run_sync(lambda: _wait(orch, ids, timeout, result_chars))
+    return await anyio.to_thread.run_sync(lambda: orch.wait_for_agents(ids, timeout, result_chars))
 
 
 @server.tool()
@@ -578,7 +449,7 @@ def stop_agent(agent_id: str) -> dict[str, Any]:
     orch = _orch()
     stopped = orch.stop_runs(_own(orch, agent_id))
     # The caller knows these ended: no notification and no wait_for_agents repeats them.
-    orch.store.claim(os.environ.get("ORCH_AGENT_ID", ""), stopped)
+    orch.mark_delivered(os.environ.get("ORCH_AGENT_ID", ""), stopped)
     return {"stopped_runs": len(stopped)}
 
 

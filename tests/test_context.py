@@ -12,7 +12,8 @@ import pytest
 from starlette.testclient import TestClient
 from typer.testing import CliRunner
 
-from orchestrator import cli, config, mcp_server, notify
+from orchestrator import cli, config, notify
+from orchestrator.core import delivery
 from orchestrator.core.compaction import LEAD_KEEP
 from orchestrator.loadout import Loadout
 from orchestrator.models import Agent, Event, Run, RunStatus, Usage, context_now
@@ -190,7 +191,7 @@ def test_wait_for_agents_never_delivers_a_compaction(
     second = orch.send(child.id, "SLEEP 1 second", sender=lead.id)
     compaction = orch.compact(child.id)  # by the user, while the child works
 
-    reply = mcp_server._wait(orch, [child.id], timeout=30, limit=4000)
+    reply = delivery.wait_for_agents(orch, [child.id], timeout=30, limit=4000)
 
     (outcome,) = reply["agents"]
     assert reply["finished"] and outcome["status"] == "done"
@@ -200,7 +201,7 @@ def test_wait_for_agents_never_delivers_a_compaction(
     assert orch.store.get_run(compaction.id).status is RunStatus.DONE
     assert orch.store.claim(lead.id, [compaction.id]) == {compaction.id}  # never claimed
     assert first.id not in [r["id"] for r in outcome.get("earlier_runs", [])]
-    again = mcp_server._wait(orch, [child.id], timeout=5, limit=4000)
+    again = delivery.wait_for_agents(orch, [child.id], timeout=5, limit=4000)
     assert again["agents"][0]["last_run"]["already_delivered"]
     finished(orch, lead.id)
 

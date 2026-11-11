@@ -11,9 +11,9 @@ import pytest
 from starlette.testclient import TestClient
 from typer.testing import CliRunner
 
-from orchestrator import cli, config, mcp_server, notify, runner, settings
+from orchestrator import cli, config, notify, runner, settings
 from orchestrator.core import compaction as core_compaction
-from orchestrator.core import launcher
+from orchestrator.core import delivery, launcher
 from orchestrator.core.compaction import LEAD_KEEP
 from orchestrator.models import Run, RunStatus, Usage
 from orchestrator.providers.codex import COMPACT_PROMPT
@@ -427,11 +427,11 @@ def test_wait_for_agents_shows_an_answer_behind_a_queued_compaction(
     orch.store.mark_checked(answer.id)
     compaction = orch.store.add_auto_compaction(child.id, "/compact")
 
-    assert mcp_server._delivery_floor(orch, "someone", child.id) == answer.id
+    assert delivery.delivery_floor(orch, "someone", child.id) == answer.id
     orch.store.finish_run(compaction.id, RunStatus.DONE, result="compacted")
     orch.store.mark_checked(compaction.id)
     monkeypatch.setenv("ORCH_AGENT_ID", "someone")
-    reply = mcp_server._wait(orch, [child.id], timeout=5, limit=4000)
+    reply = delivery.wait_for_agents(orch, [child.id], timeout=5, limit=4000)
     (outcome,) = reply["agents"]
     assert outcome["last_run"]["id"] == answer.id
     assert outcome["last_run"]["result"] == "the answer"
