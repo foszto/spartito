@@ -12,6 +12,7 @@ from starlette.testclient import TestClient
 from typer.testing import CliRunner
 
 from orchestrator import cli, config, mcp_server, notify, runner, settings
+from orchestrator.core import compaction as core_compaction
 from orchestrator.core.compaction import LEAD_KEEP
 from orchestrator.models import Run, RunStatus, Usage
 from orchestrator.providers.codex import COMPACT_PROMPT
@@ -149,7 +150,7 @@ def test_an_agent_that_cannot_be_compacted_is_skipped_quietly(
     agent = orch.create_agent(project, worktree=False)
     orch.store.set_session(agent.id, "s")
     turn = done_turn(orch, agent.id, Usage(context_tokens=5000, session_id="s"))
-    monkeypatch.setattr(Orchestrator, "compact_refusal", lambda self, agent: "no way")
+    monkeypatch.setattr(core_compaction, "compact_refusal", lambda self, agent: "no way")
 
     assert orch.auto_compact(turn.id) is None
     assert compaction_runs(orch, agent.id) == [] and infos(orch, agent.id) == []

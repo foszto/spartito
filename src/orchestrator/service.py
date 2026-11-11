@@ -107,13 +107,23 @@ class Orchestrator:
     # -- compaction (core/compaction.py) ----------------------------------
 
     compact = compaction.compact
-    compact_prompt = compaction.compact_prompt
-    compact_refusal = compaction.compact_refusal
-    auto_compact = compaction.auto_compact
-    compaction_paused = compaction.compaction_paused
-    compaction_ended = compaction.compaction_ended
-    _is_lead = compaction._is_lead
-    _note_paused = compaction._note_paused
+
+    def compact_prompt(self, agent: Agent, instructions: str | None) -> str:
+        return compaction.compact_prompt(self.store, agent, instructions)
+
+    def compact_refusal(self, agent: Agent) -> str | None:
+        return compaction.compact_refusal(self.store, agent)
+
+    def auto_compact(self, run_id: int) -> Run | None:
+        return compaction.auto_compact(self.store, run_id, self._launch)
+
+    def compaction_paused(
+        self, agent: Agent, threshold: int | None = None
+    ) -> tuple[int | None, int] | None:
+        return compaction.compaction_paused(self.store, agent, threshold)
+
+    def compaction_ended(self, run_id: int) -> None:
+        compaction.compaction_ended(self.store, run_id)
 
     # -- runner processes (core/launcher.py) ------------------------------
 
