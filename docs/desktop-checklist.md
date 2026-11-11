@@ -64,7 +64,6 @@ Long-running commands go in **shell A**, the others in **shell B**.
 | B | `orch_test app` (no `--port`: it uses the running server) | `web UI: http://127.0.0.1:18787/ (the running server)` |
 | — | Close the window | `orch app` in shell B returns; `orch web` in shell A keeps running |
 | A | Ctrl-C | `orch web` ends |
-| B | `uv sync --project "$CHECK_DIR/.." 2>/dev/null; ` — see the next row | |
 
 Without the extra (**shell A**, in the checkout):
 
@@ -129,11 +128,11 @@ runs in, so they use the temporary home; the `orch app` it starts picks a free p
 | — | Open its menu | `Running agents: …`, `Open decisions: …`, one `#<id>  <question>` line per open decision, **Open Spartito**, **Quit** |
 | B | `orch_test web --port "$PORT"` | `web UI: http://127.0.0.1:18787` |
 | — | Click an open decision | the default browser opens `http://127.0.0.1:18787/#decision:<id>` with that decision |
-| B | Ctrl-C (stops `orch web`) | |
+| B | Ctrl-C | `orch web` ends; the menu-bar item stays |
 | — | Click the decision again | the `orch app` window opens (on the dashboard, not on that decision) |
 | — | Close that window, click **Open Spartito** | the `orch app` window opens; the item stays |
 | — | Click **Quit** | the item disappears and `orch menubar` returns in shell A; the `orch app` window stays open |
-| — | Close the `orch app` window | |
+| — | Close the `orch app` window | it closes, and the server it started stops with it |
 
 ## 5. Background service
 
