@@ -352,14 +352,29 @@ Source layout:
 ```
 src/orchestrator/
   cli.py           the `orch` command
-  service.py       the core operations, used by the CLI, the MCP server and the dashboard
-  store.py         SQLite (WAL): the only shared state
-  runner.py        one turn in its own detached process
-  providers/       base.py (protocol), claude.py, codex.py
   mcp_server.py    the MCP tools of the orchestrator and the leads
+  web/             dashboard: one page and a JSON API
+  service.py       the facade `Orchestrator`, used by the CLI, the MCP server and the dashboard
+  core/            the operations behind the facade, one module per area:
+    dispatch.py      creating agents, queueing turns with dependencies, withdrawing a message
+    launcher.py      starting and stopping runner processes
+    lifecycle.py     the steps after a turn ends (compaction check, notifications)
+    compaction.py    compacting a conversation, by hand and automatically
+    archive.py       archiving, restoring and deleting agents; the automatic archive check
+    setup.py         model and effort: settings, overrides, what the next turn uses
+    views.py         agent views, listings, run history and context, waiting until settled
+    delivery.py      waiting for agents and delivering each result once per caller
+    access.py        who calls through the MCP server and in which project it may act
+    reads.py         plain store reads the interfaces show
+  runner.py        one turn in its own detached process
+  store.py         SQLite (WAL): the only shared state
+  providers/       base.py (protocol), claude.py, codex.py
   notify.py        notification turns to parents
   replies.py       results cut to a size budget for agents
   models.py        Project, Agent, Run (one turn), Event
+  timeline.py      one agent's runs as one consistent read (`AgentRuns`)
+  textfmt.py       short text renderings: token counts, one-line previews
+  errors.py        the exceptions the interfaces catch from the core
   roles.py         role loading; roles/*.md are the packaged roles
   loadout.py       what an agent loads (tools, MCP servers, setting sources)
   memory_guard.py  hook that confines the `memory` key's file writes to the memory directory
@@ -369,8 +384,13 @@ src/orchestrator/
   keep_awake.py    sleep inhibitor
   desktop.py       desktop notifications (macOS)
   git.py           worktree handling
-  web/             dashboard: one page and a JSON API
+  config.py        paths under `~/.orchestrator/` (or `$ORCH_HOME`)
 ```
+
+The interfaces (`cli`, `mcp_server`, `web`) use only the facade: they neither import the store
+nor touch a `.store` attribute. A module imports only from its own layer or a lower one, in the
+order interfaces > runner > core > domain > infra, without cycles; `tests/test_architecture.py`
+enforces both from the source, with a pinned list of today's exceptions that may only shrink.
 
 ## Limitations and platform support
 
@@ -401,7 +421,7 @@ src/orchestrator/
 ```sh
 uv sync
 uv run pytest                  # uses a fake provider and real git worktrees; no claude/codex calls
-uv run pytest -n auto          # the same suite in parallel (pytest-xdist)
+uv run pytest -n auto          # the same in parallel (pytest-xdist): about 6x faster, the usual way
 uv run ruff check . && uv run ruff format --check .
 node --check src/orchestrator/web/static/app.js
 ```
