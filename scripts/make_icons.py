@@ -1,4 +1,5 @@
-"""Draw the dashboard's icons: the SVG favicon and the PNGs of the web app manifest.
+"""Draw the icons: the SVG favicon and the PNGs of the web app manifest, and the macOS app
+icon (ICNS) of the launcher `orch app install` writes.
 
 The mark is the dashboard's "logo" glyph (three nodes joined like a small tree) in white on
 the accent colour, made bolder so it still reads at 16 px. One description of it below feeds
@@ -7,8 +8,9 @@ need nothing beyond the standard library and come out byte-identical on every ru
 
     uv run python scripts/make_icons.py [OUT_DIR]
 
-OUT_DIR defaults to src/orchestrator/web/static; the files there are committed. Development
-only: the package never runs this.
+OUT_DIR defaults to src/orchestrator/web/static for the web icons and src/orchestrator/gui
+for `icon.icns`; given, all go there. The files are committed. Development only: the package
+never runs this.
 """
 
 from __future__ import annotations
@@ -19,7 +21,10 @@ import sys
 import zlib
 from pathlib import Path
 
-STATIC = Path(__file__).resolve().parent.parent / "src" / "orchestrator" / "web" / "static"
+PACKAGE = Path(__file__).resolve().parent.parent / "src" / "orchestrator"
+STATIC = PACKAGE / "web" / "static"
+GUI = PACKAGE / "gui"
+ICNS = "icon.icns"
 
 # The mark in a 24-unit square (the size of the dashboard's glyphs).
 ACCENT = (0x50, 0x46, 0xE5)  # --accent of the light theme
@@ -41,6 +46,23 @@ PNGS = {
     "icon-512.png": (512, 0.8, 0.8, True),
     "icon-maskable-512.png": (512, 1.0, 0.7, False),
     "icon-apple-180.png": (180, 1.0, 0.8, False),
+}
+
+# The macOS app icon: the rounded square takes 824 of 1024 pixels, centred (Apple's icon grid
+# since macOS 11; the drop shadow of the system's own icons is left out). ICNS element type ->
+# pixels; each holds a PNG (supported since Mac OS X 10.7).
+MAC_SHARE = 824 / 1024
+ICNS_ELEMENTS = {
+    "icp4": 16,
+    "icp5": 32,
+    "ic11": 32,  # 16 pt @2x
+    "ic12": 64,  # 32 pt @2x
+    "ic07": 128,
+    "ic13": 256,  # 128 pt @2x
+    "ic08": 256,
+    "ic14": 512,  # 256 pt @2x
+    "ic09": 512,
+    "ic10": 1024,  # 512 pt @2x
 }
 
 
@@ -130,7 +152,18 @@ def png(size: int, rows: list[bytes], alpha: bool) -> bytes:
     )
 
 
-def write_all(out: Path) -> list[Path]:
+def icns() -> bytes:
+    """The macOS app icon: an ICNS file of PNG elements, each size drawn once."""
+    pngs: dict[int, bytes] = {}
+    body = b""
+    for kind, size in ICNS_ELEMENTS.items():
+        if size not in pngs:
+            pngs[size] = png(size, *raster(size, MAC_SHARE, MAC_SHARE, True))
+        body += kind.encode("ascii") + struct.pack(">I", 8 + len(pngs[size])) + pngs[size]
+    return b"icns" + struct.pack(">I", 8 + len(body)) + body
+
+
+def write_all(out: Path, mac_out: Path | None = None) -> list[Path]:
     out.mkdir(parents=True, exist_ok=True)
     written = [out / "icon.svg"]
     written[0].write_text(svg(), encoding="utf-8")
@@ -138,12 +171,15 @@ def write_all(out: Path) -> list[Path]:
         rows, alpha = raster(size, share, glyph, rounded)
         (out / name).write_bytes(png(size, rows, alpha))
         written.append(out / name)
+    mac = (mac_out or out) / ICNS
+    mac.write_bytes(icns())
+    written.append(mac)
     return written
 
 
 def main(argv: list[str]) -> int:
-    out = Path(argv[1]) if len(argv) > 1 else STATIC
-    for path in write_all(out):
+    given = len(argv) > 1
+    for path in write_all(Path(argv[1]) if given else STATIC, None if given else GUI):
         print(path)
     return 0
 

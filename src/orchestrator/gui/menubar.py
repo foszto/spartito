@@ -1,8 +1,9 @@
 """`orch menubar`: a status item in the macOS menu bar.
 
 Its title shows the running agents and the open decisions of this home ("♪ 2 · 1"; "♪" alone
-when both are zero). Its menu: those two counts, the open decisions (a click opens one in the
-running dashboard, else `orch app`), "Open Spartito" (`orch app`, detached) and "Quit".
+when both are zero). Its menu: those two counts, the open decisions (a click starts
+`orch app --decision <id>`), "Open Spartito" (`orch app`) and "Quit". `orch app` is started
+detached; with its window open already, it brings that forward (at the decision).
 
 The counts are read through the facade in this process every READ_EVERY seconds, in a
 thread of their own: Cocoa's main thread never waits on the database (a writer may hold it
@@ -18,13 +19,12 @@ import subprocess
 import sys
 import threading
 import time
-import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from .. import config
-from . import locate, window
+from . import window
 
 GLYPH = "♪"
 READ_EVERY = 5.0  # seconds between two reads of the counts
@@ -122,12 +122,13 @@ def lines(counts: Counts) -> list[str]:
     return [f"title: {title(counts)}"] + [f"  {e.title or '---'}" for e in menu(counts)]
 
 
-def open_app() -> subprocess.Popen | None:
-    """Start `orch app` for this home as a detached process of its own; a thread waits for
-    its end, so it does not stay a zombie child."""
+def open_app(decision: int | None = None) -> subprocess.Popen | None:
+    """Start `orch app` for this home (at `decision`) as a detached process of its own; a
+    thread waits for its end, so it does not stay a zombie child."""
+    argv = [*APP_ARGV, "--decision", str(decision)] if decision is not None else [*APP_ARGV]
     try:
         proc = subprocess.Popen(
-            APP_ARGV,
+            argv,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -138,19 +139,6 @@ def open_app() -> subprocess.Popen | None:
         return None
     threading.Thread(target=proc.wait, name="orch-menubar-reap", daemon=True).start()
     return proc
-
-
-def open_decision(decision_id: int) -> None:
-    """Show a decision: in the default browser when this home's dashboard server runs,
-    otherwise in `orch app`."""
-    url = locate.running_server()
-    if url:
-        try:
-            if webbrowser.open(f"{url}#decision:{decision_id}"):
-                return
-        except webbrowser.Error:
-            pass
-    open_app()
 
 
 @dataclass
@@ -227,7 +215,7 @@ class Bar:
         if entry.action == OPEN:
             open_app()
         elif entry.action == DECISION and entry.decision is not None:
-            open_decision(entry.decision)
+            open_app(entry.decision)
         elif entry.action == QUIT:
             self.done.set()
 

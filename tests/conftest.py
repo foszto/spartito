@@ -193,3 +193,15 @@ def repo(tmp_path: Path) -> Path:
 @pytest.fixture
 def project(orch: Orchestrator, repo: Path) -> str:
     return orch.add_project(str(repo), "demo", "fake").name
+
+
+@pytest.fixture(autouse=True)
+def no_real_launcher(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch):
+    """`orch app` and its launcher look in a temporary directory, never ~/Applications or
+    the real XDG data home, and never call lsregister."""
+    from orchestrator.gui import launcher
+
+    apps = tmp_path_factory.mktemp("launchers")
+    monkeypatch.setattr(launcher, "default_dir", lambda kind: apps / kind)
+    monkeypatch.setattr(launcher, "unregister", lambda bundle: None)
+    return apps

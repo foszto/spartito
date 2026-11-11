@@ -1,0 +1,376 @@
+"""`orch app install` / `orch app uninstall`: the launcher's files, written into temporary
+directories only (conftest points the default directory there and fakes lsregister)."""
+
+from __future__ import annotations
+
+import os
+import plistlib
+import shlex
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+from typer.testing import CliRunner
+
+from orchestrator import __version__, autostart, cli
+from orchestrator.gui import launcher
+
+HOME = '/tmp/it\'s a "home"'  # a space and both quotes
+ENV = {"ORCH_HOME": HOME, "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"}
+
+
+def item(kind: str, root: Path, name: str = "Spartito", argv=None) -> launcher.Launcher:
+    return launcher.Launcher(
+        kind=kind,
+        name=name,
+        root=root,
+        identifier=f"local.{launcher.slug(name)}-0123abcd.app",
+        env=ENV,
+        argv=tuple(argv or ("/opt/py 3/bin/python", "-m", "orchestrator", "app")),
+    )
+
+
+def invoke(*args: str):
+    return CliRunner().invoke(cli.app, ["app", *args])
+
+
+# -- names -----------------------------------------------------------------------------------
+
+
+def test_identifier_follows_the_label_rule_of_the_service():
+    default = Path(autostart.DEFAULT_HOME).expanduser().resolve()
+    other = Path("/tmp/elsewhere")
+    assert launcher.identifier("Spartito", default) == "local.spartito.app"
+    assert autostart.default_label(default) == "local.spartito.web"
+    digest = autostart.home_hash(other)[:8]
+    assert launcher.identifier("Spartito", other) == f"local.spartito-{digest}.app"
+    assert autostart.default_label(other) == f"local.spartito-{digest}.web"
+    assert launcher.identifier("Spartito Test", other) == f"local.spartito-test-{digest}.app"
+
+
+def test_launcher_of_this_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.setenv("ORCH_AGENT_ID", "worker-1")  # a marker of the caller: not carried
+    monkeypatch.setenv("ORCH_TURN", "7")
+    monkeypatch.setenv("ORCH_NOTIFY_DELAY", "0")
+    monkeypatch.setenv("SECRET_TOKEN", "x")
+    found = launcher.launcher(platform="darwin")
+    home = autostart.home()
+    assert found.name == "Spartito"
+    assert found.root == launcher.default_dir("mac")
+    assert found.identifier == f"local.spartito-{autostart.home_hash(home)[:8]}.app"
+    assert found.env == autostart.captured_env(home)
+    assert found.env["ORCH_HOME"] == str(home)
+    assert {"ORCH_AGENT_ID", "ORCH_TURN", "SECRET_TOKEN"}.isdisjoint(found.env)
+    assert found.argv == (sys.executable, "-m", "orchestrator", "app")
+    assert found.path == launcher.default_dir("mac") / "Spartito.app"
+    linux = launcher.launcher("Spartito Test", tmp_path, platform="linux")
+    assert linux.path == tmp_path / "applications" / "spartito-test.desktop"
+
+
+def test_default_directories(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.undo()  # the real default_dir, not conftest's; nothing is written here
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    assert launcher.default_dir("mac") == tmp_path / "Applications"
+    assert launcher.default_dir("linux") == tmp_path / ".local" / "share"
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    assert launcher.default_dir("linux") == tmp_path / "data"
+
+
+@pytest.mark.parametrize("name", ["", ".hidden", "-x", "a/b", "a\nb", "x" * 65])
+def test_bad_names_are_refused(name: str):
+    with pytest.raises(launcher.LauncherError, match="invalid name"):
+        launcher.launcher(name, platform="darwin")
+
+
+def test_other_platforms_are_refused():
+    with pytest.raises(launcher.LauncherError) as exc:
+        launcher.launcher(platform="win32")
+    assert str(exc.value) == "the launcher is supported on macOS and Linux, not win32"
+
+
+# -- what it writes ---------------------------------------------------------------------------
+
+
+def test_info_plist(tmp_path: Path):
+    info = plistlib.loads(launcher.render_info_plist(item("mac", tmp_path)))
+    assert info == {
+        "CFBundleDevelopmentRegion": "en",
+        "CFBundleDisplayName": "Spartito",
+        "CFBundleExecutable": "Spartito",
+        "CFBundleIconFile": "Spartito.icns",
+        "CFBundleIdentifier": "local.spartito-0123abcd.app",
+        "CFBundleInfoDictionaryVersion": "6.0",
+        "CFBundleName": "Spartito",
+        "CFBundlePackageType": "APPL",
+        "CFBundleShortVersionString": __version__,
+        "CFBundleVersion": __version__,
+        "LSApplicationCategoryType": "public.app-category.developer-tools",
+        "NSHighResolutionCapable": True,
+    }
+
+
+def test_script_golden():
+    root = Path('/Users/some one/it\'s "apps"')
+    script = launcher.render_script(item("mac", root, "Spartito Test"))
+    assert script == (
+        "#!/bin/sh\n"
+        "# Spartito Test: written by `orch app install`, removed by `orch app uninstall`.\n"
+        "# CFProcessPath makes the Python process count as this app (name, icon, identifier).\n"
+        "export CFProcessPath='/Users/some one/it'\"'\"'s \"apps\"/Spartito Test.app/Contents"
+        "/MacOS/Spartito Test'\n"
+        "export ORCH_HOME='/tmp/it'\"'\"'s a \"home\"'\n"
+        "export PATH=/usr/bin:/bin\n"
+        "export LANG=en_US.UTF-8\n"
+        "exec '/opt/py 3/bin/python' -m orchestrator app \"$@\"\n"
+    )
+
+
+def test_script_runs_with_its_environment_and_arguments(tmp_path: Path):
+    """The script, run by sh: the environment it sets and the arguments it passes on reach
+    the command (a Python that prints them instead of `orch app`)."""
+    show = "import os, sys; print(os.environ['ORCH_HOME']); print(os.environ['CFProcessPath']); print(sys.argv[1:])"
+    root = tmp_path / 'it\'s "apps"'
+    written = item("mac", root, argv=(sys.executable, "-c", show))
+    launcher.install(written)
+    done = subprocess.run(
+        [str(written.executable), "--decision", "5"],
+        capture_output=True,
+        text=True,
+        env={"PATH": os.environ["PATH"]},
+        check=True,
+    )
+    assert done.stdout.splitlines() == [HOME, str(written.executable), "['--decision', '5']"]
+
+
+def test_desktop_entry_golden(tmp_path: Path):
+    entry = launcher.render_desktop(item("linux", tmp_path))
+    assert entry == (
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Version=1.5\n"
+        "Name=Spartito\n"
+        "Comment=The dashboard of your coding agents\n"
+        'Exec=env "ORCH_HOME=/tmp/it\'s a \\\\"home\\\\"" PATH=/usr/bin:/bin LANG=en_US.UTF-8'
+        ' "/opt/py 3/bin/python" -m orchestrator app\n'
+        "Icon=spartito\n"
+        "Terminal=false\n"
+        "Categories=Development;\n"
+        "StartupWMClass=Spartito\n"
+        "X-Orchestrator-Id=local.spartito-0123abcd.app\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("arg", "written"),
+    [
+        ("plain", "plain"),
+        ("", '""'),
+        ("a b", '"a b"'),
+        ('say "hi"', '"say \\\\"hi\\\\""'),  # \" in the quoted form, its \ doubled as a string
+        ("$HOME", '"\\\\$HOME"'),
+        ("back\\slash", '"back\\\\\\\\slash"'),
+        ("100%", "100%%"),
+        ("tick`", '"tick\\\\`"'),
+        ("x=1", "x=1"),
+    ],
+)
+def test_exec_arguments_are_quoted_as_the_spec_says(arg: str, written: str):
+    assert launcher.exec_arg(arg) == written
+
+
+def unquote_exec(value: str) -> list[str]:
+    """Read an Exec= value back: string escapes first, then the quoting rules, as a desktop
+    does (`%%` back to `%`)."""
+    value = value.replace("%%", "%")
+    text, i = "", 0
+    while i < len(value):  # string-value escapes
+        if value[i] == "\\" and i + 1 < len(value):
+            text += {"s": " ", "n": "\n", "t": "\t", "r": "\r", "\\": "\\"}.get(
+                value[i + 1], value[i + 1]
+            )
+            i += 2
+        else:
+            text += value[i]
+            i += 1
+    return shlex.split(text)  # double quotes with \" \` \$ \\ inside: as sh reads them
+
+
+def test_desktop_entry_reads_back_to_the_command(tmp_path: Path):
+    entry = launcher.render_desktop(item("linux", tmp_path))
+    (line,) = [x for x in entry.splitlines() if x.startswith("Exec=")]
+    assert unquote_exec(line.removeprefix("Exec=")) == [
+        "env",
+        f"ORCH_HOME={HOME}",
+        "PATH=/usr/bin:/bin",
+        "LANG=en_US.UTF-8",
+        "/opt/py 3/bin/python",
+        "-m",
+        "orchestrator",
+        "app",
+    ]
+
+
+# -- install / uninstall ----------------------------------------------------------------------
+
+
+def tree(root: Path) -> dict[str, tuple[bytes, int]]:
+    return {
+        str(path.relative_to(root)): (path.read_bytes(), stat.S_IMODE(path.stat().st_mode))
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_mac_install_is_idempotent_and_uninstall_removes_it(tmp_path: Path):
+    root = tmp_path / "Applications"
+    root.mkdir()
+    written = item("mac", root)
+    assert launcher.install(written) == root / "Spartito.app"
+    first = tree(root)
+    assert sorted(first) == [
+        "Spartito.app/Contents/Info.plist",
+        "Spartito.app/Contents/MacOS/Spartito",
+        "Spartito.app/Contents/Resources/Spartito.icns",
+    ]
+    assert first["Spartito.app/Contents/MacOS/Spartito"][1] == 0o755
+    assert first["Spartito.app/Contents/Resources/Spartito.icns"][0] == launcher.ICNS.read_bytes()
+    assert launcher.installed(written)
+    assert launcher.install(written) == root / "Spartito.app"
+    assert tree(root) == first
+    assert launcher.uninstall(written) == root / "Spartito.app"
+    assert list(root.iterdir()) == []  # the directory itself stays
+    assert launcher.uninstall(written) is None
+    assert not launcher.installed(written)
+
+
+def test_linux_install_is_idempotent_and_uninstall_removes_it(tmp_path: Path):
+    written = item("linux", tmp_path, "Spartito Test")
+    assert launcher.install(written) == tmp_path / "applications" / "spartito-test.desktop"
+    first = tree(tmp_path)
+    assert sorted(first) == [
+        "applications/spartito-test.desktop",
+        "icons/hicolor/192x192/apps/spartito-test.png",
+        "icons/hicolor/512x512/apps/spartito-test.png",
+    ]
+    assert launcher.install(written) and tree(tmp_path) == first
+    assert launcher.uninstall(written) == written.path
+    assert tree(tmp_path) == {}
+    assert launcher.uninstall(written) is None
+
+
+def test_uninstall_keeps_what_install_did_not_write(tmp_path: Path):
+    written = item("mac", tmp_path)
+    launcher.install(written)
+    extra = written.path / "Contents" / "Resources" / "notes.txt"
+    extra.write_text("mine")
+    assert launcher.uninstall(written) == written.path
+    assert tree(tmp_path) == {"Spartito.app/Contents/Resources/notes.txt": (b"mine", 0o644)}
+
+
+def test_uninstall_unregisters_the_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    seen = []
+    monkeypatch.setattr(launcher, "unregister", lambda bundle: seen.append(bundle))
+    written = item("mac", tmp_path)
+    launcher.install(written)
+    launcher.uninstall(written)
+    assert seen == [written.path]
+
+
+@pytest.mark.parametrize("kind", ["mac", "linux"])
+def test_something_else_at_the_place_is_left_alone(tmp_path: Path, kind: str):
+    written = item(kind, tmp_path)
+    if kind == "mac":
+        (written.path / "Contents").mkdir(parents=True)
+        (written.path / "Contents" / "Info.plist").write_bytes(
+            plistlib.dumps({"CFBundleIdentifier": "com.example.spartito"})
+        )
+    else:
+        written.path.parent.mkdir(parents=True)
+        written.path.write_text("[Desktop Entry]\nName=Spartito\n")
+    before = tree(tmp_path)
+    with pytest.raises(launcher.LauncherError, match="was not written by `orch app install`"):
+        launcher.install(written)
+    assert launcher.uninstall(written) is None
+    assert tree(tmp_path) == before
+
+
+def test_another_homes_launcher_is_replaced_but_not_removed(tmp_path: Path):
+    other = item("mac", tmp_path)
+    mine = launcher.Launcher(**{**other.__dict__, "identifier": "local.spartito-feedbeef.app"})
+    launcher.install(other)
+    assert launcher.uninstall(mine) is None  # not this home's
+    assert not launcher.installed(mine)
+    launcher.install(mine)
+    assert launcher.installed(mine) and not launcher.installed(other)
+
+
+# -- the commands ------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_install_and_uninstall_commands(tmp_path: Path, monkeypatch, platform: str):
+    monkeypatch.setattr(launcher, "this_platform", lambda: platform)
+    target = tmp_path / "apps"
+    options = ["--name", "Spartito Test", "--dir", str(target)]
+    found = launcher.launcher("Spartito Test", target)
+    expected = (
+        target / "Spartito Test.app"
+        if platform == "darwin"
+        else target / "applications" / "spartito-test.desktop"
+    )
+    assert found.path == expected
+    for _ in range(2):
+        result = invoke("install", *options)
+        assert result.exit_code == 0, result.output
+        assert result.stdout == f"installed Spartito Test ({found.identifier}): {expected}\n"
+    assert found.identifier.startswith("local.spartito-test-")
+    result = invoke("uninstall", *options)
+    assert result.exit_code == 0, result.output
+    assert result.stdout == f"removed Spartito Test: {expected}\n"
+    result = invoke("uninstall", *options)
+    assert result.stdout == f"Spartito Test is not installed ({expected})\n"
+    assert not any(p.is_file() for p in target.rglob("*"))
+
+
+def test_default_install_goes_to_the_default_directory(no_real_launcher: Path, monkeypatch):
+    monkeypatch.setattr(launcher, "this_platform", lambda: "darwin")
+    result = invoke("install")
+    assert result.exit_code == 0, result.output
+    assert (no_real_launcher / "mac" / "Spartito.app" / "Contents" / "MacOS" / "Spartito").is_file()
+    assert invoke("uninstall").exit_code == 0
+    assert not (no_real_launcher / "mac" / "Spartito.app").exists()
+
+
+def test_install_refusal_is_an_error(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(launcher, "this_platform", lambda: "darwin")
+    (tmp_path / "Spartito.app").mkdir()
+    result = invoke("install", "--dir", str(tmp_path))
+    assert result.exit_code == 1
+    assert result.stderr.startswith(f"error: {tmp_path / 'Spartito.app'} exists and was not")
+
+
+def test_unsupported_platform(monkeypatch):
+    monkeypatch.setattr(launcher, "this_platform", lambda: "win32")
+    result = invoke("install")
+    assert result.exit_code == 1
+    assert result.stderr == "error: the launcher is supported on macOS and Linux, not win32\n"
+
+
+def test_app_help_lists_the_commands():
+    result = invoke("--help")
+    assert result.exit_code == 0
+    for word in ("install", "uninstall", "--agent", "--decision", "--port"):
+        assert word in result.stdout
+    for hidden in ("--close-after", "--echo-location", "--name", "--dir"):
+        assert hidden not in result.stdout
+
+
+def test_the_icon_is_package_data():
+    """In the source tree next to the module, so the wheel carries it (uv_build packs every
+    file of the package)."""
+    assert Path(launcher.__file__).parent / "icon.icns" == launcher.ICNS
+    assert launcher.ICNS.read_bytes()[:4] == b"icns"
+    assert all(path.is_file() for path in launcher.LINUX_ICONS.values())

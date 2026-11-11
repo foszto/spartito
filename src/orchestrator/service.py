@@ -7,7 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from . import board, decisions, desktop, git, providers
+from . import app_open, board, decisions, desktop, git, providers
 from .core import access, compaction, delivery, dispatch, launcher, lifecycle, reads, views
 from .core import archive as archiving
 from .core import notices as page_notices
@@ -294,6 +294,13 @@ class Orchestrator:
     notice_cursor = page_notices.notice_cursor
     claim_notice = page_notices.claim_notice
     page_present = page_notices.page_present
+
+    # -- the dashboard window of `orch app` (app_open.py) ----------------
+
+    # A second `orch app` asks the open window to come forward (and show a target); its page
+    # gets the request with /api/state. No store: callable on the class.
+    request_app_open = staticmethod(app_open.request)
+    app_open_request = staticmethod(app_open.latest)
 
     # -- delivery (core/delivery.py, core/access.py) ----------------------
 

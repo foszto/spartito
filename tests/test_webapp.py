@@ -19,6 +19,7 @@ from orchestrator.web.app import app
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = ROOT / "src" / "orchestrator" / "web" / "static"
+ICNS = ROOT / "src" / "orchestrator" / "gui" / "icon.icns"
 SCRIPT = ROOT / "scripts" / "make_icons.py"
 ICON_FILES = ("icon.svg", "icon-192.png", "icon-512.png", "icon-maskable-512.png")
 ICON_FILES += ("icon-apple-180.png",)
@@ -27,6 +28,22 @@ ICON_FILES += ("icon-apple-180.png",)
 @pytest.fixture
 def client() -> TestClient:
     return TestClient(app, base_url="http://localhost")
+
+
+def icns_elements(data: bytes) -> dict[str, bytes]:
+    """The elements of an ICNS file by type; fails on a broken one."""
+    assert data[:4] == b"icns"
+    assert struct.unpack(">I", data[4:8])[0] == len(data)
+    pos, elements = 8, {}
+    while pos < len(data):
+        kind, (length,) = (
+            data[pos : pos + 4].decode("ascii"),
+            struct.unpack(">I", data[pos + 4 : pos + 8]),
+        )
+        elements[kind] = data[pos + 8 : pos + length]
+        pos += length
+    assert pos == len(data)
+    return elements
 
 
 def png_info(data: bytes) -> tuple[int, int, bytes]:
@@ -170,6 +187,22 @@ def test_the_new_routes_refuse_a_foreign_host_and_send_no_cors_headers(
     assert client.post(path, json={}, headers={"origin": "http://evil.example"}).status_code == 403
 
 
+def test_mac_app_icon_holds_every_size_as_png() -> None:
+    sizes = {kind: png_info(data)[:2] for kind, data in icns_elements(ICNS.read_bytes()).items()}
+    assert sizes == {
+        "icp4": (16, 16),
+        "icp5": (32, 32),
+        "ic11": (32, 32),
+        "ic12": (64, 64),
+        "ic07": (128, 128),
+        "ic13": (256, 256),
+        "ic08": (256, 256),
+        "ic14": (512, 512),
+        "ic09": (512, 512),
+        "ic10": (1024, 1024),
+    }
+
+
 def test_make_icons_reproduces_the_committed_files(tmp_path: Path) -> None:
     """Two runs give the same bytes; their images are the committed ones. (Bytes against the
     committed files only where zlib compresses as it did here: another zlib build may pack the
@@ -181,10 +214,14 @@ def test_make_icons_reproduces_the_committed_files(tmp_path: Path) -> None:
         outputs.append({path.name: path.read_bytes() for path in out.iterdir()})
 
     assert outputs[0] == outputs[1]
-    assert set(outputs[0]) == set(ICON_FILES)
+    assert set(outputs[0]) == {*ICON_FILES, ICNS.name}
     for name, data in outputs[0].items():
-        committed = (STATIC / name).read_bytes()
-        if name.endswith(".svg"):
+        committed = (ICNS if name == ICNS.name else STATIC / name).read_bytes()
+        if name.endswith(".icns"):
+            mine, theirs = icns_elements(data), icns_elements(committed)
+            assert list(mine) == list(theirs), name
+            assert [png_info(d) for d in mine.values()] == [png_info(d) for d in theirs.values()]
+        elif name.endswith(".svg"):
             assert data == committed
         else:
             assert png_info(data) == png_info(committed), name

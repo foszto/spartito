@@ -47,6 +47,10 @@ const hashTarget = () => decodeURIComponent(location.hash.slice(1));
 // The agent shown; a decision named by the hash is shown once the state is loaded (refresh).
 let selected = hashTarget().startsWith(DECISION) ? ORCH : hashTarget() || ORCH;
 let wantedDecision = hashTarget().startsWith(DECISION) ? hashTarget().slice(DECISION.length) : null;
+// The window of `orch app` opens the page as `?app=<id>`: it applies each later request of a
+// second `orch app` (state.app_open: {id, target}) once, by going to its target. Other pages: null.
+const appParam = new URLSearchParams(location.search).get('app');
+let appRequest = appParam !== null && /^\d+$/.test(appParam) ? Number(appParam) : null;
 let shown = null, lastEvent = 0, refreshing = false, again = false, toolGroup = null;
 let shownAgent = null, archiveList = [], archiveKey = '';
 const findArchived = id => archiveList.find(agent => agent.id === id);
@@ -1602,6 +1606,7 @@ async function refresh() {
   const ticket = setupTicket();  // answers older than a save do not touch the model controls
   try {
     state = await call('/api/state');
+    applyAppRequest(state.app_open);
     if (selected.startsWith('lead:')) {
       const project = state.projects.find(p => p.name === selected.slice(5));
       const lead = project && leadOf(project);
@@ -1645,6 +1650,14 @@ $('settingsButton').onclick = openSettings;
 for (const spec of Object.values(LIST_DIALOGS)) setupListDialog(spec);
 setupBoard();
 window.addEventListener('pagehide', () => flushSetup(true));
+function applyAppRequest(request) {
+  if (appRequest === null || !request || !(request.id > appRequest)) return;
+  appRequest = request.id;
+  history.replaceState(null, '', `?app=${request.id}${location.hash}`);  // a reload applies it no more
+  if (!request.target) return;
+  const fragment = request.target.startsWith(DECISION) ? request.target : encodeURIComponent(request.target);
+  if (location.hash === `#${fragment}`) followHash(); else location.hash = fragment;
+}
 function followHash() {
   const target = hashTarget();
   if (target.startsWith(DECISION)) { wantedDecision = target.slice(DECISION.length); refresh(); return; }

@@ -43,6 +43,7 @@ LAYERS = {
     "keep_awake": "infra",
     "desktop": "infra",
     "config": "infra",  # paths and environment
+    "app_open": "infra",  # requests to the open window of `orch app`
     "autostart": "infra",  # launchd agent and systemd user unit for `orch web`
     "memory_guard": "infra",  # hook script used by the Claude provider
 }

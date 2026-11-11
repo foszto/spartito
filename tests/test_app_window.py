@@ -21,16 +21,21 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from orchestrator import autostart, cli, config
-from orchestrator.gui import locate, window
+from orchestrator import app_open, autostart, cli, config
+from orchestrator.gui import launcher, locate, window
+from orchestrator.service import Orchestrator
 from orchestrator.web import serve
 from orchestrator.web.app import LOOPBACK_HOSTS
 from orchestrator.web.app import app as web_app
 
 PACKAGE = Path(cli.__file__).parent
 NATIVE_MISSING = (
-    "no native window: pywebview is not installed (install the extra orchestrator[app]);"
-    " trying a Chromium-family browser in app mode"
+    "no native window: pywebview is not installed (install the extra orchestrator[app],"
+    " then run `orch app install`; see docs/desktop.md); trying a Chromium-family browser in"
+    " app mode"
+)
+DOCK_HINT = (
+    "the Dock shows this window as Python: `orch app install` gives it Spartito's name and icon"
 )
 NO_CHROMIUM = "no Chromium-family browser found (Chrome, Chromium, Edge or Brave); "
 
@@ -46,6 +51,10 @@ def nothing_real(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     monkeypatch.setattr(window, "BACKEND_PROBE", "raise SystemExit('the probe is not faked')")
     opened: list[str] = []
     monkeypatch.setattr(window.webbrowser, "open", lambda url: opened.append(url) or True)
+    monkeypatch.setattr(window, "native_active", lambda: True)
+    monkeypatch.setattr(window, "native_possible", lambda: False)
+    monkeypatch.setattr(window, "WATCH_EVERY", 0.05)
+    monkeypatch.delenv("CFProcessPath", raising=False)
     return opened
 
 
@@ -327,11 +336,24 @@ class Event:
 class FakeWindow:
     def __init__(self, title: str, url: str, **options) -> None:
         self.title, self.url, self.options = title, url, options
+        self.base = url.split("?")[0]  # the server's URL
         self.events = types.SimpleNamespace(closed=Event())
         self.destroyed = threading.Event()
+        self.raised: list[str] = []  # restore and show, as called
+        self.location = url  # what evaluate_js("location.href") answers
 
     def destroy(self) -> None:
         self.destroyed.set()
+
+    def restore(self) -> None:
+        self.raised.append("restore")
+
+    def show(self) -> None:
+        self.raised.append("show")
+
+    def evaluate_js(self, script: str):
+        assert script == "location.href"
+        return self.location
 
 
 class FakeWebview(types.ModuleType):
@@ -359,7 +381,7 @@ class FakeWebview(types.ModuleType):
         self.options = options
         self.main_thread = threading.current_thread() is threading.main_thread()
         win = self.windows[-1]
-        self.ping = get_json(win.url + "api/ping")
+        self.ping = get_json(win.base + "api/ping")
         if func:
             threading.Thread(target=func, daemon=True).start()
         self.on_start()
@@ -404,7 +426,7 @@ signal.signal(signal.SIGTERM, ended)
 if mode.startswith("exit"):
     sys.exit(int(mode[4:]))
 url = next(a for a in args if a.startswith("--app=")).removeprefix("--app=")
-with urllib.request.urlopen(url + "api/ping", timeout=5) as resp, open(log + ".ping", "wb") as out:
+with urllib.request.urlopen(url.split("?")[0] + "api/ping", timeout=5) as resp, open(log + ".ping", "wb") as out:
     out.write(resp.read())
 listed = []  # when the page was first listed
 
@@ -415,6 +437,13 @@ def window_open():
 
 class DevTools(BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path.startswith("/json/activate/"):
+            with open(log, "a") as out:
+                out.write("ACTIVATE " + self.path.rsplit("/", 1)[1] + "\\n")
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"Target activated")
+            return
         targets = [{"type": "background_page", "id": "b"}]
         if window_open():
             targets.append({"type": "page", "id": "p", "url": url})
@@ -511,9 +540,11 @@ def assert_own_server_gone(url: str) -> None:
 def test_native_window_on_an_own_server(webview: FakeWebview):
     result = run_app()
     assert result.exit_code == 0, result.output
-    assert result.stderr == ""
+    assert result.stderr == DOCK_HINT + "\n"  # macOS without the launcher
     (win,) = webview.windows
-    assert result.stdout == f"web UI: {win.url}\n"
+    assert result.stdout == f"web UI: {win.base}\n"
+    assert win.url == f"{win.base}?app=0"  # the window's page, before any request
+    assert webview.options["icon"] == str(launcher.ICNS)  # the Dock icon
     assert win.title == config.PROJECT_NAME
     assert win.options["text_select"] is True
     assert webview.main_thread
@@ -521,7 +552,7 @@ def test_native_window_on_an_own_server(webview: FakeWebview):
     assert webview.options["private_mode"] is False
     assert webview.options["gui"] is None  # pywebview's choice: Cocoa
     assert not win.destroyed.is_set()  # the user closed it
-    assert_own_server_gone(win.url)
+    assert_own_server_gone(win.base)
 
 
 def test_native_window_closes_itself_after_the_given_time(webview: FakeWebview):
@@ -530,14 +561,14 @@ def test_native_window_closes_itself_after_the_given_time(webview: FakeWebview):
     assert result.exit_code == 0, result.output
     (win,) = webview.windows
     assert win.destroyed.is_set()
-    assert_own_server_gone(win.url)
+    assert_own_server_gone(win.base)
 
 
 def test_own_server_on_a_given_port(webview: FakeWebview):
     port = free_port()
     result = run_app("--port", str(port))
     assert result.exit_code == 0, result.output
-    assert webview.windows[0].url == f"http://127.0.0.1:{port}/"
+    assert webview.windows[0].base == f"http://127.0.0.1:{port}/"
     assert not listening(port)
 
 
@@ -559,7 +590,7 @@ def test_running_server_of_this_home_is_reused_and_kept(webview: FakeWebview):
         result = run_app("--close-after", "0.1")
         assert result.exit_code == 0, result.output
         assert result.stdout == f"web UI: {url} (the running server)\n"
-        assert webview.windows[0].url == url
+        assert webview.windows[0].base == url
         assert listening(port_of(url))
         assert locate.running_server() == url
     finally:
@@ -570,7 +601,7 @@ def test_server_of_another_home_is_not_reused(webview: FakeWebview, pinged):
     foreign = pinged({"tool": "orchestrator", "home": "0123456789abcdef"})
     result = run_app()
     assert result.exit_code == 0, result.output
-    url = webview.windows[0].url
+    url = webview.windows[0].base
     assert port_of(url) != foreign
     assert webview.ping["home"] == this_home()
     assert_own_server_gone(url)
@@ -582,7 +613,7 @@ def test_chromium_app_mode_ends_when_its_window_is_closed(chromium: Path):
     assert result.stderr == NATIVE_MISSING + "\n"
     url = result.stdout.removeprefix("web UI: ").strip()
     assert chromium.read_text().splitlines() == [
-        f"--app={url}",
+        f"--app={url}?app=0",
         f"--user-data-dir={config.runtime_dir() / 'app-profile'}",
         "--remote-debugging-port=0",
         "--no-first-run",
@@ -761,6 +792,7 @@ def linux(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setattr(window, "LINUX_BROWSERS", ("chromium",))
     monkeypatch.setenv("FAKE_CHROMIUM_LOG", str(tmp_path / "chromium.log"))
+    monkeypatch.setattr(window, "name_qt_app", lambda: None)
     log = tmp_path / "probe.log"
     monkeypatch.setenv("FAKE_PROBE_LOG", str(log))
     return log
@@ -773,7 +805,7 @@ def test_linux_native_window_with_qt(webview: FakeWebview, linux: Path, monkeypa
     assert result.stderr == ""
     assert linux.read_text() == "qt"
     assert webview.options["gui"] == "qt"
-    assert_own_server_gone(webview.windows[0].url)
+    assert_own_server_gone(webview.windows[0].base)
 
 
 def test_linux_backend_chosen_by_pywebview_gui(webview: FakeWebview, linux: Path, monkeypatch):
@@ -804,7 +836,7 @@ def test_linux_backend_that_cannot_start(
     assert linux.read_text() == "qt"
     assert webview.windows == []
     url = result.stdout.removeprefix("web UI: ").strip()
-    assert (linux.parent / "chromium.log").read_text().splitlines()[0] == f"--app={url}"
+    assert (linux.parent / "chromium.log").read_text().splitlines()[0] == f"--app={url}?app=0"
     assert_own_server_gone(url)
 
 
@@ -844,7 +876,7 @@ def test_sigterm_closes_the_native_window(webview: FakeWebview):
     assert result.exit_code == 128 + signal.SIGTERM, result.output
     (win,) = webview.windows
     assert win.destroyed.is_set()
-    assert_own_server_gone(win.url)
+    assert_own_server_gone(win.base)
 
 
 def test_serving_only_gives_up_the_lock_for_a_second_app(monkeypatch: pytest.MonkeyPatch):
@@ -867,21 +899,6 @@ def test_serving_only_gives_up_the_lock_for_a_second_app(monkeypatch: pytest.Mon
     assert free
     assert found == url  # a second `orch app` reuses this server
     assert_own_server_gone(url)
-
-
-def test_one_app_per_home(webview: FakeWebview):
-    lock = window.single_instance()
-    assert lock is not None
-    try:
-        result = run_app()
-    finally:
-        lock.close()
-    assert result.exit_code == 0
-    assert result.stdout == "the dashboard window of this home is already open\n"
-    assert webview.windows == []
-    assert not serve.record_path().exists()
-    assert run_app().exit_code == 0  # released
-    assert len(webview.windows) == 1
 
 
 def webview_imports(path: Path) -> list[str]:
@@ -912,3 +929,327 @@ def test_pywebview_is_imported_only_to_open_the_native_window():
         if (where := webview_imports(path))
     }
     assert found == {"gui/window.py": ["native_window"]}
+
+
+# -- a second `orch app`, deep links ---------------------------------------------------------
+
+
+def second_app(target: str = "") -> dict:
+    """What a second `orch app` does, from a thread: write the request and wait for the
+    window's answer."""
+    number = Orchestrator.request_app_open(target)
+    deadline = time.monotonic() + 10
+    while (reply := app_open.answered(number)) is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert reply is not None
+    return {"id": number, **reply}
+
+
+def test_second_app_brings_the_native_window_forward_at_its_target(webview: FakeWebview):
+    webview.open_for = None  # until destroyed
+    seen = []
+
+    def meanwhile() -> None:
+        win = webview.windows[-1]
+        reply = second_app("decision:5")
+        state = get_json(win.base + "api/state")["app_open"]  # what the page gets
+        seen.append((reply, list(win.raised), state))
+        win.destroy()
+
+    webview.on_start = lambda: threading.Thread(target=meanwhile, daemon=True).start()
+    result = run_app()
+    assert result.exit_code == 0, result.output
+    ((reply, raised, state),) = seen
+    assert reply == {"id": reply["id"], "raised": True, "detail": ""}
+    assert raised == ["restore", "show"]
+    assert state == {"id": reply["id"], "target": "decision:5"}
+
+
+def test_native_window_that_macos_keeps_behind(webview: FakeWebview, monkeypatch):
+    monkeypatch.setattr(window, "native_active", lambda: False)
+    monkeypatch.setattr(window, "ACTIVE_WAIT", 0.1)
+    webview.open_for = None
+    seen = []
+
+    def meanwhile() -> None:
+        seen.append(second_app())
+        webview.windows[-1].destroy()
+
+    webview.on_start = lambda: threading.Thread(target=meanwhile, daemon=True).start()
+    assert run_app().exit_code == 0
+    assert seen[0]["raised"] is False
+    assert seen[0]["detail"] == "macOS kept another application in front"
+
+
+def test_a_request_from_before_the_window_is_not_applied(webview: FakeWebview):
+    earlier = Orchestrator.request_app_open("decision:1")
+    webview.open_for = 0.5
+    assert run_app().exit_code == 0
+    (win,) = webview.windows
+    assert win.url == f"{win.base}?app={earlier}"  # the page applies only later ones
+    assert win.raised == []
+    assert app_open.answered(earlier) is None
+
+
+@pytest.mark.parametrize(
+    ("args", "fragment"),
+    [
+        (["--decision", "7"], "#decision:7"),
+        (["--agent", "worker-3f9a"], "#worker-3f9a"),
+        (["--agent", "orchestrator"], "#orchestrator"),
+    ],
+)
+def test_the_window_opens_at_its_target(webview: FakeWebview, args, fragment):
+    assert run_app(*args).exit_code == 0
+    (win,) = webview.windows
+    assert win.url == f"{win.base}?app=0{fragment}"
+
+
+def test_the_default_browser_opens_at_the_target(nothing_real: list[str], monkeypatch):
+    monkeypatch.setattr(window.webbrowser, "open", opened_then_hangup(nothing_real))
+    result = run_app("--decision", "7")
+    assert result.exit_code == 128 + signal.SIGHUP, result.output
+    (url,) = nothing_real
+    assert url.endswith("/#decision:7") and "?app" not in url
+
+
+@pytest.mark.parametrize(
+    ("args", "error"),
+    [
+        (["--agent", "a", "--decision", "1"], "use either --agent or --decision"),
+        (["--agent", "Not An Id"], "not an agent id or decision:<number>: 'Not An Id'"),
+        (["--agent", "x#y"], "not an agent id or decision:<number>: 'x#y'"),
+        (["--decision", "-1"], "--decision takes a decision number"),
+    ],
+)
+def test_targets_are_checked(webview: FakeWebview, args, error):
+    result = run_app(*args)
+    assert result.exit_code == 1
+    assert result.stderr == f"error: {error}\n"
+    assert webview.windows == []
+    assert not (config.runtime_dir() / app_open.REQUEST).exists()
+
+
+def answering(raised: bool, detail: str = ""):
+    """The open window's `orch app`, from a thread: answers the next request."""
+
+    def answer() -> None:
+        before = app_open.last_id()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if (request := app_open.latest()) and request["id"] > before:
+                app_open.answer(request["id"], raised, detail)
+                return
+            time.sleep(0.02)
+
+    thread = threading.Thread(target=answer, daemon=True)
+    thread.start()
+    return thread
+
+
+@pytest.mark.parametrize(
+    ("args", "raised", "detail", "line"),
+    [
+        ([], True, "", ": brought it to the front"),
+        (["--decision", "5"], True, "", ": brought it to the front, showing decision:5"),
+        (
+            ["--agent", "worker-3f9a"],
+            False,
+            "the browser shows no page",
+            ", but it could not be brought to the front (the browser shows no page);"
+            " asked it to show worker-3f9a",
+        ),
+    ],
+)
+def test_second_app_says_in_one_line_how_it_went(webview: FakeWebview, args, raised, detail, line):
+    lock = window.single_instance()
+    assert lock is not None
+    try:
+        thread = answering(raised, detail)
+        result = run_app(*args)
+        thread.join()
+    finally:
+        lock.close()
+    assert result.exit_code == 0, result.output
+    assert result.stdout == f"the dashboard window of this home is already open{line}\n"
+    assert result.stderr == ""
+    assert webview.windows == []
+    assert not serve.record_path().exists()
+
+
+def test_one_app_per_home(webview: FakeWebview, monkeypatch):
+    monkeypatch.setattr(window, "ANSWER_TIMEOUT", 0.2)
+    lock = window.single_instance()
+    assert lock is not None
+    try:
+        result = run_app()
+    finally:
+        lock.close()
+    assert result.exit_code == 0
+    assert result.stdout == (
+        "the dashboard window of this home is already open, but it could not be brought to"
+        " the front (the window did not answer)\n"
+    )
+    assert app_open.latest()["target"] == ""
+    assert webview.windows == []
+    assert not serve.record_path().exists()
+    assert run_app().exit_code == 0  # released
+    assert len(webview.windows) == 1
+
+
+def test_second_app_brings_chromium_app_mode_forward(chromium: Path, monkeypatch):
+    monkeypatch.setenv("FAKE_CHROMIUM_OPEN_FOR", "3")
+    seen = []
+
+    def opened() -> None:  # once the browser shows the page
+        while "--app=" not in (chromium.read_text() if chromium.exists() else ""):
+            time.sleep(0.02)
+        time.sleep(0.5)
+        seen.append(second_app("decision:2"))
+
+    threading.Thread(target=opened, daemon=True).start()
+    result = run_app()
+    assert result.exit_code == 0, result.output
+    assert seen[0]["raised"] is True, seen
+    assert "ACTIVATE p" in chromium.read_text().splitlines()
+
+
+def test_echo_location_says_where_the_page_is(webview: FakeWebview):
+    webview.open_for = 1.5
+    webview.on_start = lambda: setattr(webview.windows[-1], "location", "http://x/#decision:3")
+    result = run_app("--echo-location")
+    assert result.exit_code == 0, result.output
+    assert "location: http://x/#decision:3\n" in result.stderr
+
+
+# -- the remembered port --------------------------------------------------------------------
+
+
+def test_own_server_uses_the_remembered_port_again(webview: FakeWebview):
+    assert run_app().exit_code == 0
+    first = port_of(webview.windows[0].base)
+    remembered = config.runtime_dir() / window.PORT_FILE
+    assert remembered.read_text() == f"{first}\n"
+    assert run_app().exit_code == 0
+    assert port_of(webview.windows[1].base) == first
+
+
+def test_a_taken_remembered_port_is_replaced(webview: FakeWebview):
+    with socket.socket() as taken:
+        taken.bind(("127.0.0.1", 0))
+        taken.listen()
+        busy = taken.getsockname()[1]
+        (config.runtime_dir() / window.PORT_FILE).write_text(f"{busy}\n")
+        assert run_app().exit_code == 0
+    port = port_of(webview.windows[0].base)
+    assert port != busy
+    assert (config.runtime_dir() / window.PORT_FILE).read_text() == f"{port}\n"
+
+
+@pytest.mark.parametrize("content", ["", "nonsense", "0", "70000"])
+def test_a_broken_remembered_port_is_ignored(webview: FakeWebview, content):
+    (config.runtime_dir() / window.PORT_FILE).write_text(content)
+    assert run_app().exit_code == 0
+    port = port_of(webview.windows[0].base)
+    assert (config.runtime_dir() / window.PORT_FILE).read_text() == f"{port}\n"
+
+
+def test_a_given_port_is_not_remembered(webview: FakeWebview):
+    port = free_port()
+    assert run_app("--port", str(port)).exit_code == 0
+    assert not (config.runtime_dir() / window.PORT_FILE).exists()
+
+
+# -- identity: the launcher's app ----------------------------------------------------------
+
+
+@pytest.fixture
+def execed(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, list[str], dict]]:
+    """os.execve, noted; like the real one, it does not return."""
+    calls: list[tuple[str, list[str], dict]] = []
+
+    def execute(executable: str, argv: list[str], env: dict) -> None:
+        calls.append((executable, argv, env))
+        raise SystemExit(0)
+
+    monkeypatch.setattr(window, "execute", execute)
+    monkeypatch.setattr(window, "native_possible", lambda: True)
+    monkeypatch.setattr(window, "read_main_bundle", lambda: None)
+    monkeypatch.setattr(launcher, "this_platform", lambda: "darwin")
+    return calls
+
+
+def test_from_a_terminal_it_runs_on_as_the_installed_launcher(webview: FakeWebview, execed):
+    item = launcher.launcher()
+    launcher.install(item)
+    result = run_app("--decision", "3", "--close-after", "2", "--port", "18811")
+    assert result.exit_code == 0, result.output
+    ((executable, argv, env),) = execed
+    assert executable == sys.executable
+    assert argv == [sys.executable, "-m", "orchestrator", "app"] + [
+        "--port", "18811", "--close-after", "2.0", "--decision", "3"
+    ]  # fmt: skip
+    assert env["CFProcessPath"] == str(item.executable)
+    assert env["ORCH_HOME"] == os.environ["ORCH_HOME"]
+    assert webview.windows == []
+    assert lock_is_free()
+
+
+@pytest.mark.parametrize("why", ["not installed", "another home", "no pywebview", "linux"])
+def test_no_relaunch_without_this_homes_launcher_and_pywebview(
+    webview: FakeWebview, execed, monkeypatch, why
+):
+    if why == "another home":
+        item = launcher.launcher()
+        other = launcher.Launcher(**{**item.__dict__, "identifier": "local.spartito-0badf00d.app"})
+        launcher.install(other)
+    elif why == "no pywebview":
+        launcher.install(launcher.launcher())
+        monkeypatch.setattr(window, "native_possible", lambda: False)
+    elif why == "linux":
+        launcher.install(launcher.launcher())
+        monkeypatch.setattr(window, "this_platform", lambda: "linux")
+        monkeypatch.setattr(launcher, "this_platform", lambda: "linux")
+        monkeypatch.setenv("DISPLAY", ":0")
+        monkeypatch.setattr(window, "backend_problem", lambda gui: None)
+        monkeypatch.setattr(window, "name_qt_app", lambda: None)
+    assert run_app().exit_code == 0
+    assert execed == []
+    assert len(webview.windows) == 1
+
+
+def test_started_as_the_launchers_app(webview: FakeWebview, execed, monkeypatch):
+    """With CFProcessPath (the launcher's script, or the relaunch): no relaunch, no Dock hint,
+    no icon set at run time, and the variable is not handed on."""
+    launcher.install(launcher.launcher())
+    monkeypatch.setenv("CFProcessPath", "/Applications/X.app/Contents/MacOS/X")
+    result = run_app()
+    assert result.exit_code == 0, result.output
+    assert execed == []
+    assert result.stderr == ""
+    assert "icon" not in webview.options
+    assert "CFProcessPath" not in os.environ
+
+
+def test_a_launcher_named_by_the_hidden_options(webview: FakeWebview, execed, tmp_path: Path):
+    apps = tmp_path / "apps"
+    item = launcher.launcher("Spartito Test", apps)
+    launcher.install(item)
+    result = run_app("--name", "Spartito Test", "--dir", str(apps))
+    assert result.exit_code == 0, result.output
+    assert execed[0][2]["CFProcessPath"] == str(
+        apps / "Spartito Test.app/Contents/MacOS/Spartito Test"
+    )
+
+
+def test_linux_window_gets_icon_and_application_name(
+    webview: FakeWebview, linux: Path, monkeypatch
+):
+    named = []
+    monkeypatch.setattr(window, "BACKEND_PROBE", NOTE_GUI)
+    monkeypatch.setattr(window, "name_qt_app", lambda: named.append(True))
+    result = run_app()
+    assert result.exit_code == 0, result.output
+    assert named == [True]
+    assert webview.options["icon"] == str(launcher.LINUX_ICONS["512x512"])
+    assert "Dock" not in result.stderr

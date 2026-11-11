@@ -1,5 +1,5 @@
 """`orch menubar`. Cocoa is never loaded: `show_item` is faked wherever `run` gets that far,
-and `subprocess.Popen`, `webbrowser.open` and `locate.running_server` are faked for clicks."""
+and `subprocess.Popen` is faked for clicks."""
 
 from __future__ import annotations
 
@@ -49,14 +49,6 @@ def launched(monkeypatch: pytest.MonkeyPatch) -> list[tuple[tuple, dict]]:
 
     monkeypatch.setattr(menubar.subprocess, "Popen", Proc)
     return calls
-
-
-@pytest.fixture
-def opened(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """URLs opened in the default browser (not really)."""
-    urls: list[str] = []
-    monkeypatch.setattr(menubar.webbrowser, "open", lambda url: urls.append(url) or True)
-    return urls
 
 
 def decisions(n: int) -> tuple[tuple[int, str], ...]:
@@ -213,39 +205,22 @@ def test_the_counts_come_from_the_facade(
 # -- what a click does -------------------------------------------------------------------
 
 
-def test_open_starts_a_detached_orch_app(launched: list, opened: list[str]) -> None:
+def test_open_starts_a_detached_orch_app(launched: list) -> None:
     Bar().click(Entry("Open Spartito", OPEN))
 
     ((argv,), kwargs) = launched[0]
     assert list(argv) == [sys.executable, "-m", "orchestrator", "app"]
     assert kwargs["start_new_session"] is True and kwargs["stdin"] == subprocess.DEVNULL
-    assert opened == []
 
 
-def test_a_decision_opens_in_the_running_dashboard(
-    launched: list, opened: list[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(menubar.locate, "running_server", lambda: "http://127.0.0.1:18431/")
+def test_a_decision_starts_orch_app_at_that_decision(launched: list) -> None:
+    """Always through `orch app`: it opens its window there, or brings the open one forward
+    there; the default browser is never used."""
     Bar().click(Entry("#4  Ship it?", DECISION, 4))
-    assert opened == ["http://127.0.0.1:18431/#decision:4"]
-    assert launched == []
-
-
-def test_a_decision_without_a_dashboard_starts_orch_app(
-    launched: list, opened: list[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(menubar.locate, "running_server", lambda: None)
-    Bar().click(Entry("#4  Ship it?", DECISION, 4))
-    assert opened == [] and len(launched) == 1
-
-
-def test_a_decision_falls_back_to_orch_app_when_no_browser_opens(
-    launched: list, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(menubar.locate, "running_server", lambda: "http://127.0.0.1:18431/")
-    monkeypatch.setattr(menubar.webbrowser, "open", lambda url: False)
-    Bar().click(Entry("#4  Ship it?", DECISION, 4))
-    assert len(launched) == 1
+    ((argv,), kwargs) = launched[0]
+    assert list(argv) == [sys.executable, "-m", "orchestrator", "app", "--decision", "4"]
+    assert kwargs["start_new_session"] is True
+    assert not hasattr(menubar, "webbrowser")
 
 
 def test_open_says_so_when_orch_app_cannot_start(
@@ -259,10 +234,10 @@ def test_open_says_so_when_orch_app_cannot_start(
     assert capsys.readouterr().err == "orch app did not start: Permission denied\n"
 
 
-def test_quit_ends_only_the_item(launched: list, opened: list[str]) -> None:
+def test_quit_ends_only_the_item(launched: list) -> None:
     bar = Bar()
     bar.click(Entry("Quit", QUIT))
-    assert bar.done.is_set() and launched == [] and opened == []
+    assert bar.done.is_set() and launched == []
     bar.click(Entry("Running agents: 0"))  # an information line does nothing
 
 

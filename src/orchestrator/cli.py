@@ -312,26 +312,101 @@ def web(host: str = "127.0.0.1", port: int = 8787) -> None:
     serve.serve(server)
 
 
-@app.command("app")
+app_app = typer.Typer(
+    rich_markup_mode=MARKUP,
+    help="Open the dashboard in its own window (`orch app [options]`), or install a launcher"
+    " that starts it like an application.",
+)
+app.add_typer(app_app, name="app")
+LauncherName = Annotated[
+    str | None, typer.Option("--name", hidden=True, help="Launcher name (for tests).")
+]
+LauncherDir = Annotated[
+    str | None, typer.Option("--dir", hidden=True, help="Launcher directory (for tests).")
+]
+
+
+def app_launcher(name: str | None, directory: str | None):
+    from pathlib import Path
+
+    from .gui import launcher
+
+    try:
+        return launcher.launcher(name, Path(directory) if directory else None)
+    except launcher.LauncherError as exc:
+        raise fail(exc) from None
+
+
+@app_app.callback(invoke_without_command=True)
 def app_window(
+    ctx: typer.Context,
     port: Annotated[
         int, typer.Option(help="Port of its own server when none is running (default: a free one).")
     ] = 0,
+    agent: Annotated[str | None, typer.Option(help="Open it at this agent.")] = None,
+    decision: Annotated[int | None, typer.Option(help="Open it at this decision.")] = None,
     close_after: Annotated[
         float | None, typer.Option("--close-after", hidden=True, help="Close after SECONDS.")
     ] = None,
+    echo_location: Annotated[
+        bool,
+        typer.Option("--echo-location", hidden=True, help="Say where the native window's page is."),
+    ] = False,
+    name: LauncherName = None,
+    directory: LauncherDir = None,
 ) -> None:
     """Open the dashboard in its own window: a native one with the extra `orchestrator[app]`,
     else a Chromium-family browser in app mode, else the default browser. Uses the running
-    `orch web` of this home, or serves the dashboard on 127.0.0.1 until the window is closed."""
+    `orch web` of this home, or serves the dashboard on 127.0.0.1 until the window is closed.
+    With the window open already, brings it to the front (at `--agent` or `--decision`)."""
+    if ctx.invoked_subcommand:
+        return
+    from . import app_open
     from .gui import window
 
+    if agent is not None and decision is not None:
+        raise fail("use either --agent or --decision")
+    if decision is not None and decision < 0:
+        raise fail("--decision takes a decision number")
+    target = agent or (f"decision:{decision}" if decision is not None else "")
     try:
-        code = window.run(port, close_after)
+        app_open.check_target(target)
+    except ValueError as exc:
+        raise fail(exc) from None
+    item = app_launcher(name, directory) if name or directory else None
+    try:
+        code = window.run(port, close_after, target, item, echo_location)
     except window.AppError as exc:
         raise fail(exc) from None
     if code:
         raise typer.Exit(code)
+
+
+@app_app.command("install")
+def app_install(name: LauncherName = None, directory: LauncherDir = None) -> None:
+    """Install a launcher that opens `orch app` like an application (macOS:
+    ~/Applications/Spartito.app; Linux: a desktop entry). Running it again rewrites it."""
+    from .gui import launcher
+
+    item = app_launcher(name, directory)
+    try:
+        path = launcher.install(item)
+    except launcher.LauncherError as exc:
+        raise fail(exc) from None
+    typer.echo(f"installed {item.name} ({item.identifier}): {path}")
+
+
+@app_app.command("uninstall")
+def app_uninstall(name: LauncherName = None, directory: LauncherDir = None) -> None:
+    """Remove the launcher `orch app install` wrote for this home."""
+    from .gui import launcher
+
+    item = app_launcher(name, directory)
+    path = launcher.uninstall(item)
+    if path:
+        typer.echo(f"removed {item.name}: {path}")
+    else:
+        typer.echo(f"{item.name} is not installed ({item.path})")
 
 
 @app.command()

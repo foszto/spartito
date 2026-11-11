@@ -169,6 +169,9 @@ def state(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
         ],
         # The open ones, oldest first: the header count and the decisions dialog.
         "decisions": orch.list_decisions(),
+        # A second `orch app` asks the window's page (`?app=`) to show a target (app_open.py):
+        # {id, target} while the request is fresh, else null.
+        "app_open": orch.app_open_request(),
     }
 
 

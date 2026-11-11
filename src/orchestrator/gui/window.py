@@ -14,9 +14,18 @@ The window, by the first way that works; each step that fails says so in one lin
   c. the default browser; the own server then runs in the foreground until Ctrl-C.
 On Linux without a display none of them is tried: the URL is printed and served until Ctrl-C.
 
-One `orch app` per home: a second one says so and leaves; one that only serves (c, or no
-display) gives that up, so the next one reuses its server. SIGTERM and SIGHUP end it as
-closing the window does.
+One `orch app` per home: a second one asks the open window to come to the front, and to show
+its target (`--agent`, `--decision`), through app_open.py, and leaves; one that only serves
+(c, or no display) gives that up, so the next one reuses its server. SIGTERM and SIGHUP end
+it as closing the window does.
+
+Identity: on macOS with the launcher of this home installed (launcher.py), an `orch app`
+started from a terminal runs on as that app (exec with CFProcessPath, same pid, terminal and
+exit code), so the Dock shows its name and icon; without the launcher the Dock icon is set at
+run time. On Linux the Qt window carries the icon, application name and desktop file name.
+
+Own server: on the port of the last one (`run/app-port`) when it is free, so the page keeps
+its origin (preferences, notification permission); otherwise on a free one, then remembered.
 """
 
 from __future__ import annotations
@@ -33,20 +42,29 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import webbrowser
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Protocol
 
-from .. import autostart, config
+from .. import app_open, autostart, config
 from ..web import serve
-from . import locate
+from . import launcher, locate
 
 HOST = "127.0.0.1"
 STARTUP_TIMEOUT = 15.0  # seconds for the own server to listen
 STOP_TIMEOUT = 10.0  # seconds for the own server, or the browser, to finish
 WINDOW_SIZE = (1280, 860)
 INSTALL_HINT = "install the extra orchestrator[app]"
+LAUNCHER_HINT = "then run `orch app install`"
+DOCS_HINT = "see docs/desktop.md"
+ALREADY_OPEN = "the dashboard window of this home is already open"
+ANSWER_TIMEOUT = 5.0  # seconds a second `orch app` waits for the open window's answer
+WATCH_EVERY = 0.3  # seconds between two looks at the request file
+ACTIVE_WAIT = 1.0  # seconds for the native window to become the active one (macOS)
+PORT_FILE = "app-port"  # in config.runtime_dir(): the port of the last own server
 CHROMIUM_NAMES = "Chrome, Chromium, Edge or Brave"
 MAC_BROWSERS = ("Google Chrome", "Chromium", "Microsoft Edge", "Brave Browser")  # app bundles
 # Starts pywebview's GUI backend (argv[1]: the one to force, or "" for its own choice) and
@@ -147,8 +165,18 @@ class Session:
     close_after: float | None = None
     url: str = ""
     own: OwnServer | None = None
+    target: str = ""  # "decision:<n>", an agent id or "": where the window opens
+    baseline: int = 0  # requests up to this id were there before the window
+    launcher_installed: bool = False  # this home's launcher (launcher.py) is there
+    bundled: bool = False  # this process counts as the launcher's app (macOS)
+    echo_location: bool = False  # say where the native window's page is (for checks)
     done: threading.Event = field(default_factory=threading.Event)  # end now
     signal: int | None = None  # the SIGTERM or SIGHUP that ended it
+
+    def window_url(self) -> str:
+        """The page in the window: marked as the window's (`?app=<baseline>`, see app_open.py),
+        at its target."""
+        return f"{self.url}?app={self.baseline}{fragment(self.target)}"
 
     def elapsed(self, since: float) -> bool:
         return self.close_after is not None and time.monotonic() - since >= self.close_after
@@ -162,6 +190,39 @@ class Session:
             while self.own and self.own.thread.is_alive() and not self.elapsed(since):
                 if self.done.wait(0.2):
                     break
+
+
+def fragment(target: str) -> str:
+    return f"#{urllib.parse.quote(target, safe=':')}" if target else ""
+
+
+@contextlib.contextmanager
+def watching_requests(session: Session, bring_forward: Callable[[], str | None]):
+    """While the window is open (this block), answer each new request of a second `orch app`
+    (app_open.py) by bringing the window forward; `bring_forward` returns why it could not,
+    or None."""
+    stop = threading.Event()
+
+    def loop() -> None:
+        seen = session.baseline
+        while not stop.wait(WATCH_EVERY) and not session.done.is_set():
+            request = app_open.latest()
+            if request is None or request["id"] <= seen:
+                continue
+            seen = request["id"]
+            try:
+                problem = bring_forward()
+            except Exception as exc:
+                problem = first_line(exc)
+            app_open.answer(seen, problem is None, problem or "")
+
+    thread = threading.Thread(target=loop, name="orch-app-requests", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(STOP_TIMEOUT)
 
 
 class Stoppable(Protocol):
@@ -239,8 +300,9 @@ def native_window(session: Session) -> bool:
     try:
         import webview  # the optional extra: imported here and nowhere else
     except ImportError:
+        then = "" if session.launcher_installed else f", {LAUNCHER_HINT}"
         say(
-            f"no native window: pywebview is not installed ({INSTALL_HINT});"
+            f"no native window: pywebview is not installed ({INSTALL_HINT}{then}; {DOCS_HINT});"
             " trying a Chromium-family browser in app mode"
         )
         return False
@@ -252,10 +314,11 @@ def native_window(session: Session) -> bool:
         )
         return False
     closed = threading.Event()
+    icon = native_identity(session, gui)
     try:
         window = webview.create_window(
             config.PROJECT_NAME,
-            session.url,
+            session.window_url(),
             width=WINDOW_SIZE[0],
             height=WINDOW_SIZE[1],
             text_select=True,
@@ -268,8 +331,16 @@ def native_window(session: Session) -> bool:
 
         window.events.closed += on_closed
 
-        def close_later() -> None:  # runs in pywebview's own thread
-            session.done.wait(session.close_after)  # closed, a stop signal or the time is up
+        def close_later() -> None:  # runs in pywebview's own thread, once the GUI runs
+            if this_platform() == "darwin" and not session.bundled:
+                say(
+                    "the Dock shows this window as Python: `orch app install` gives it"
+                    f" {config.PROJECT_NAME}'s name and icon"
+                )
+            if session.echo_location:
+                echo_locations(session, window)
+            with watching_requests(session, lambda: bring_native_forward(window)):
+                session.done.wait(session.close_after)  # closed, a stop signal or time is up
             if not closed.is_set():
                 window.destroy()
 
@@ -281,6 +352,7 @@ def native_window(session: Session) -> bool:
             gui=gui,
             private_mode=False,
             storage_path=str(config.runtime_dir() / "app-webview"),
+            **({"icon": str(icon)} if icon else {}),
         )
     except Exception as exc:  # no GUI toolkit (Linux without Qt or GTK), and the like
         say(
@@ -291,11 +363,95 @@ def native_window(session: Session) -> bool:
     return True
 
 
+def native_identity(session: Session, gui: str | None) -> Path | None:
+    """Name and icon of the native window; returns the icon file pywebview should set (macOS:
+    the Dock icon, without the launcher; Linux: the window icon)."""
+    if this_platform() == "darwin":
+        return None if session.bundled else launcher.ICNS  # else the bundle gives both
+    if gui == "qt":
+        name_qt_app()
+    return launcher.LINUX_ICONS["512x512"]
+
+
+def name_qt_app() -> None:
+    """The Qt application's name (the class of its X11 WM_CLASS, matched by the launcher's
+    StartupWMClass) and desktop file name (its Wayland app id), set before pywebview makes the
+    QApplication."""
+    try:
+        from qtpy.QtGui import QGuiApplication  # with the extra on Linux; here and nowhere else
+    except Exception:
+        return
+    QGuiApplication.setApplicationName(launcher.WM_CLASS)
+    QGuiApplication.setDesktopFileName(launcher.slug(config.PROJECT_NAME))
+
+
+def bring_native_forward(window) -> str | None:
+    """Un-minimize the pywebview window and bring it to the front (both backends do this on
+    their GUI thread); on macOS, why it did not become the active window, else None."""
+    window.restore()
+    window.show()
+    if this_platform() != "darwin":
+        return None
+    deadline = time.monotonic() + ACTIVE_WAIT
+    while native_active() is False:
+        if time.monotonic() > deadline:
+            return "macOS kept another application in front"
+        time.sleep(0.05)
+    return None
+
+
+def native_active() -> bool | None:
+    """macOS: whether this application is the active one; None when that cannot be known."""
+    try:
+        import AppKit  # pyobjc, which pywebview's Cocoa backend brings
+    except ImportError:
+        return None
+    return bool(AppKit.NSApplication.sharedApplication().isActive())
+
+
+def echo_locations(session: Session, window) -> None:
+    """`--echo-location`: say each new address of the native window's page (a check that a
+    request reached it)."""
+
+    def loop() -> None:
+        last = None
+        while not session.done.wait(0.5):
+            try:
+                href = window.evaluate_js("location.href")
+            except Exception:
+                continue
+            if href != last:
+                last = href
+                say(f"location: {href}")
+
+    threading.Thread(target=loop, name="orch-app-location", daemon=True).start()
+
+
+def devtools_port(profile: Path) -> int:
+    return int((profile / "DevToolsActivePort").read_text().split()[0])
+
+
+def bring_chromium_forward(profile: Path) -> str | None:
+    """Ask the browser of `orch app` (its DevTools endpoint) to activate its page, which
+    brings its window forward as far as the browser does; why it could not, or None."""
+    try:
+        port = devtools_port(profile)
+        body = autostart.get_local(f"http://127.0.0.1:{port}/json/list", 2.0, limit=1 << 22)
+        page = next(t for t in json.loads(body) if t.get("type") == "page")
+        target = urllib.parse.quote(str(page["id"]), safe="")
+        autostart.get_local(f"http://127.0.0.1:{port}/json/activate/{target}", 2.0)
+    except StopIteration:
+        return "the browser shows no page"
+    except (OSError, ValueError, IndexError, KeyError, TypeError, AttributeError) as exc:
+        return f"its DevTools endpoint did not do it: {first_line(exc)}"
+    return None
+
+
 def open_pages(profile: Path) -> int | None:
     """How many pages the browser using `profile` shows, asked at its DevTools endpoint (the
     port it wrote to DevToolsActivePort); None when that cannot be known (yet)."""
     try:
-        port = int((profile / "DevToolsActivePort").read_text().split()[0])
+        port = devtools_port(profile)
         body = autostart.get_local(f"http://127.0.0.1:{port}/json/list", 2.0, limit=1 << 22)
         return sum(1 for target in json.loads(body) if target.get("type") == "page")
     except OSError, ValueError, IndexError, TypeError, AttributeError:
@@ -314,7 +470,7 @@ def app_mode(session: Session) -> bool:
     (profile / "DevToolsActivePort").unlink(missing_ok=True)
     argv = [
         str(browser),
-        f"--app={session.url}",
+        f"--app={session.window_url()}",
         f"--user-data-dir={profile}",
         "--remote-debugging-port=0",  # loopback; honoured only with an own --user-data-dir
         "--no-first-run",
@@ -333,17 +489,18 @@ def app_mode(session: Session) -> bool:
         return False
     started, seen = time.monotonic(), False
     try:
-        while (code := proc.poll()) is None:
-            pages = open_pages(profile)  # None: no endpoint, the process alone tells
-            if pages == 0 and seen or session.elapsed(started):
-                break  # the window was closed (the browser may stay without one)
-            seen = seen or bool(pages)
-            if session.done.wait(POLL if seen else 0.2):
-                break
-        else:
-            if not seen and time.monotonic() - started < EARLY_EXIT:
-                say(f"{browser.name} did not start (it exited at once, code {code}); {then}")
-                return False
+        with watching_requests(session, lambda: bring_chromium_forward(profile)):
+            while (code := proc.poll()) is None:
+                pages = open_pages(profile)  # None: no endpoint, the process alone tells
+                if pages == 0 and seen or session.elapsed(started):
+                    break  # the window was closed (the browser may stay without one)
+                seen = seen or bool(pages)
+                if session.done.wait(POLL if seen else 0.2):
+                    break
+            else:
+                if not seen and time.monotonic() - started < EARLY_EXIT:
+                    say(f"{browser.name} did not start (it exited at once, code {code}); {then}")
+                    return False
     except KeyboardInterrupt:
         pass
     finally:
@@ -365,12 +522,12 @@ def default_browser_note(session: Session) -> str:
 def default_browser(session: Session) -> None:
     """c. Open the page in the default browser; keep the own server until Ctrl-C."""
     try:
-        opened = webbrowser.open(session.url)
+        opened = webbrowser.open(session.url + fragment(session.target))
     except webbrowser.Error:
         opened = False
     if not opened:
         serving = " (serving until Ctrl-C)" if session.own else ""
-        say(f"no browser could be opened: open {session.url}{serving}")
+        say(f"no browser could be opened: open {session.url}{fragment(session.target)}{serving}")
     session.hold()
 
 
@@ -379,7 +536,7 @@ def show(session: Session) -> None:
         serving = ", serving it until Ctrl-C" if session.own else ""
         say(
             "no display (DISPLAY and WAYLAND_DISPLAY are unset):"
-            f" open {session.url} in a browser{serving}"
+            f" open {session.url}{fragment(session.target)} in a browser{serving}"
         )
         session.hold()
         return
@@ -400,19 +557,140 @@ def single_instance(name: str = "app.lock") -> IO[str] | None:
     return handle
 
 
-def run(port: int = 0, close_after: float | None = None) -> int:
-    """`orch app`: open the dashboard window and return once it is gone, with the exit code
-    (128 + the signal when SIGTERM or SIGHUP ended it). AppError when no server can be had."""
+def forward(target: str) -> int:
+    """A window of this home is open: ask it to come to the front (and show `target`), say in
+    one line how that went; exit code 0."""
+    from ..service import Orchestrator
+
+    number = Orchestrator.request_app_open(target)
+    deadline = time.monotonic() + ANSWER_TIMEOUT
+    while (reply := app_open.answered(number)) is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if reply is None:
+        reply = {"raised": False, "detail": "the window did not answer"}
+    if reply["raised"]:
+        showing = f", showing {target}" if target else ""
+        print(f"{ALREADY_OPEN}: brought it to the front{showing}")
+    else:
+        asked = f"; asked it to show {target}" if target else ""
+        print(
+            f"{ALREADY_OPEN}, but it could not be brought to the front ({reply['detail']}){asked}"
+        )
+    return 0
+
+
+def take_bundle_identity() -> bool:
+    """Whether this process was started as the launcher's app (CFProcessPath, macOS). Makes
+    CoreFoundation read the variable now, then drops it, so the processes this one starts
+    (agents, browsers) do not take this app's identity."""
+    if this_platform() != "darwin" or "CFProcessPath" not in os.environ:
+        return False
+    read_main_bundle()
+    os.environ.pop("CFProcessPath", None)
+    return True
+
+
+def read_main_bundle() -> None:
+    """Let CoreFoundation find the main bundle now (it reads CFProcessPath once and keeps
+    it)."""
+    with contextlib.suppress(ImportError):
+        import Foundation  # pyobjc, with the extra; here and nowhere else
+
+        Foundation.NSBundle.mainBundle()
+
+
+def execute(executable: str, argv: list[str], env: dict[str, str]) -> None:
+    os.execve(executable, argv, env)
+
+
+def app_argv(port: int, close_after: float | None, target: str, echo_location: bool) -> list[str]:
+    """`<python> -m orchestrator app` with these options again."""
+    argv = [sys.executable, "-m", "orchestrator", "app"]
+    if port:
+        argv += ["--port", str(port)]
+    if close_after is not None:
+        argv += ["--close-after", repr(close_after)]
+    if target.startswith("decision:"):
+        argv += ["--decision", target.removeprefix("decision:")]
+    elif target:
+        argv += ["--agent", target]
+    if echo_location:
+        argv.append("--echo-location")
+    return argv
+
+
+def native_possible() -> bool:
+    """pywebview is installed (it is not imported for this)."""
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec("webview") is not None
+    except ImportError, ValueError:
+        return False
+
+
+def remembered_port() -> int:
+    try:
+        port = int((config.runtime_dir() / PORT_FILE).read_text().strip())
+    except OSError, ValueError:
+        return 0
+    return port if 0 < port < 65536 else 0
+
+
+def own_server(port: int) -> OwnServer:
+    """The own server: on `port` when given; else on the remembered one when it is free, or
+    a free one, which is then remembered."""
+    if port:
+        return OwnServer(port)
+    server = None
+    if remembered := remembered_port():
+        with contextlib.suppress(AppError):
+            server = OwnServer(remembered)
+    server = server or OwnServer(0)
+    path = config.runtime_dir() / PORT_FILE
+    temp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    temp.write_text(f"{server.port}\n")
+    temp.replace(path)
+    return server
+
+
+def run(
+    port: int = 0,
+    close_after: float | None = None,
+    target: str = "",
+    item: launcher.Launcher | None = None,
+    echo_location: bool = False,
+) -> int:
+    """`orch app`: open the dashboard window (at `target`) and return once it is gone, with
+    the exit code (128 + the signal when SIGTERM or SIGHUP ended it); with a window of this
+    home open already, bring that forward instead. `item`: the launcher to look for (default:
+    this home's). AppError when no server can be had."""
+    app_open.check_target(target)
+    bundled = take_bundle_identity()
     lock = single_instance()
     if lock is None:
-        print("the dashboard window of this home is already open")
-        return 0
-    session = Session(lock, close_after)
+        return forward(target)
+    installed = False
+    if item is None:
+        with contextlib.suppress(launcher.LauncherError):
+            item = launcher.launcher()
+    if item is not None:
+        installed = launcher.installed(item)
+    darwin = this_platform() == "darwin" and item is not None and item.kind == "mac"
+    if darwin and installed and not bundled and native_possible():
+        # Run on as the launcher's app: same process, terminal and exit code.
+        lock.close()
+        env = {**os.environ, "CFProcessPath": str(item.executable)}
+        argv = app_argv(port, close_after, target, echo_location)
+        execute(sys.executable, argv, env)
+    session = Session(lock, close_after, target=target, echo_location=echo_location)
+    session.launcher_installed, session.bundled = installed, bundled
+    session.baseline = app_open.last_id()
     try:
         with stopped_by_signals(session):
             session.url = locate.running_server() or ""
             if not session.url:
-                session.own = OwnServer(port)
+                session.own = own_server(port)
                 session.own.start()
                 session.url = session.own.url
             note = "" if session.own else " (the running server)"
