@@ -8,6 +8,7 @@ form cannot send).
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import asdict
 from html import escape
 from importlib import resources
@@ -24,7 +25,7 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from .. import config, providers, roles
+from .. import __version__, config, providers, roles
 from ..providers.base import model_choices
 from ..service import ORCHESTRATOR_ID, NeedsConfirmation, Orchestrator, OrchestratorError
 from ..settings import ARCHIVE_AFTER, ARCHIVE_AFTER_DEFAULT, COMPACT_AT, COMPACT_AT_DEFAULT, TIERS
@@ -92,6 +93,44 @@ def index(request: Request) -> HTMLResponse:
     html = page.read_text(encoding="utf-8")
     html = html.replace("{{project_name}}", escape(config.PROJECT_NAME))
     return HTMLResponse(html.replace("{{orchestrator_name}}", escape(config.ORCHESTRATOR_NAME)))
+
+
+# The installable page: Chrome wants a name, start_url, display and 192/512 px icons; Safari's
+# "Add to Dock" reads name, display, start_url, scope and id. Colours: the light theme's.
+ICONS = [
+    {"src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {
+        "src": "/static/icon-maskable-512.png",
+        "sizes": "512x512",
+        "type": "image/png",
+        "purpose": "maskable",
+    },
+]
+
+
+def manifest(request: Request) -> JSONResponse:
+    return JSONResponse(
+        {
+            "id": "/",
+            "name": config.PROJECT_NAME,
+            "short_name": config.PROJECT_NAME,
+            "start_url": "/",
+            "scope": "/",
+            "display": "standalone",
+            "theme_color": "#f4f5f8",
+            "background_color": "#f4f5f8",
+            "icons": ICONS,
+        },
+        media_type="application/manifest+json",
+    )
+
+
+def ping(request: Request) -> JSONResponse:
+    """Who serves here, for `orch app` and `orch service status`: this tool, its version and
+    a digest of the home it serves (never the path itself). No store access."""
+    home = hashlib.sha256(str(config.home().resolve()).encode()).hexdigest()[:16]
+    return JSONResponse({"tool": "orchestrator", "version": __version__, "home": home})
 
 
 def state(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
@@ -374,6 +413,8 @@ def dispatch_board(orch: Orchestrator, request: Request, body: dict) -> dict[str
 app = Starlette(
     routes=[
         Route("/", index),
+        Route("/manifest.webmanifest", manifest),
+        Route("/api/ping", ping),
         Route("/api/state", api(state)),
         Route("/api/browse", api(browse)),
         Mount("/static", NoCacheStatic(directory=Path(__file__).parent / "static")),
