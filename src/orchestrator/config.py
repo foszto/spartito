@@ -26,6 +26,13 @@ def logs_dir() -> Path:
     return path
 
 
+def runtime_dir() -> Path:
+    """Files about live processes (markers, locks), not about any one run."""
+    path = home() / "run"
+    path.mkdir(exist_ok=True)
+    return path
+
+
 def run_dir(run_id: int) -> Path:
     """Per-run files: the CLI's raw output stream, stderr, schemas, the final answer."""
     return logs_dir() / f"run-{run_id}"
