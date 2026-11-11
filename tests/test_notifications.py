@@ -25,6 +25,7 @@ import pytest
 from test_store import OLD_RUN_COLUMNS, OLD_SCHEMA
 
 from orchestrator import mcp_server, notify, service
+from orchestrator.core import launcher
 from orchestrator.models import Run, RunStatus
 from orchestrator.service import ORCHESTRATOR_ID, Orchestrator, OrchestratorError
 from orchestrator.store import NOTIFICATION, Store
@@ -149,7 +150,7 @@ def finished_child(
 def busy_agent(orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch) -> str:
     """An agent of nobody (stopping it notifies no one) that stays queued behind a gate.
     Its runner may not handle SIGTERM yet when the test stops it: keep the grace short."""
-    monkeypatch.setattr(service, "STOP_GRACE_SECONDS", 0.3)
+    monkeypatch.setattr(launcher, "STOP_GRACE_SECONDS", 0.3)
     return orch.spawn(project, "slow", worktree=False, after=[gate(orch, project)])[0].id
 
 
@@ -533,7 +534,7 @@ def test_reconcile_fails_a_dead_started_notification_and_releases_its_claims(
 def test_the_kill_branch_of_stop_notifies_and_drops_a_pending_notification(
     orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(service, "STOP_GRACE_SECONDS", 0.2)
+    monkeypatch.setattr(launcher, "STOP_GRACE_SECONDS", 0.2)
     parent = lead(orch, project)
     child = orch.create_agent(project, name="c", worktree=False, parent_id=parent).id
     queued = orch.store.add_run(child, "never launched", sender=parent)
@@ -552,7 +553,7 @@ def test_the_kill_branch_of_stop_notifies_and_drops_a_pending_notification(
 def test_a_stop_stays_quiet_while_someone_waits(
     orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(service, "STOP_GRACE_SECONDS", 0.5)  # if SIGTERM came too early
+    monkeypatch.setattr(launcher, "STOP_GRACE_SECONDS", 0.5)  # if SIGTERM came too early
     parent = lead(orch, project)
     child, run_id = finished_child(orch, project, parent)
     monkeypatch.setenv("ORCH_NOTIFY_DELAY", "30")

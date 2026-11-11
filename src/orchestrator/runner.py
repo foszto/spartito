@@ -457,7 +457,7 @@ def wait_for_canary(
 
 
 LEAD_EXIT_GRACE_SECONDS = 5.0  # a lead's CLI may exit on its own after its answer
-TERM_GRACE_SECONDS = 3.0  # between SIGTERM and SIGKILL; well below service.STOP_GRACE_SECONDS
+TERM_GRACE_SECONDS = 3.0  # between SIGTERM and SIGKILL; well below launcher.STOP_GRACE_SECONDS
 QUIET_AFTER_EXIT_SECONDS = 3.0  # the CLI exited but something it started holds its stdout
 TURN_ENV = "ORCH_TURN"  # marks the processes of one turn through their environment
 RUNNER_ARGV = "-m orchestrator.runner"  # other runners: sub-agents a lead started
