@@ -50,6 +50,7 @@ code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, m
 .brand .logo { width: 28px; height: 28px; border-radius: 8px; background: var(--accent); color: var(--on-accent);
   display: grid; place-items: center; }
 .brand h1 { flex: 1; margin: 0; font-size: 15px; letter-spacing: -.01em; }
+.notify-ask { margin: 0 16px 10px; height: 28px; color: var(--accent); }  /* while the permission is undecided */
 #nav { flex: 1; min-height: 0; overflow: auto; padding: 0 10px 12px; }
 .nav-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 8px; border: 0; border-radius: 8px;
   background: none; text-align: left; }

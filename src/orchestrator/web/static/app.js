@@ -1572,6 +1572,16 @@ function startNoticePoll() {
   }
   pollNotices();
 }
+// The header button, while the permission is undecided: asks from its click, gone once decided.
+function headerPermission() {
+  const ask = $('notifyButton');
+  ask.hidden = !PageNotification || PageNotification.permission !== 'default';
+  ask.onclick = async () => {
+    try { await PageNotification.requestPermission(); } catch (error) { /* stays as it was */ }
+    headerPermission();
+    pollNotices();
+  };
+}
 // The permission, in the settings: asked for only from this click.
 function pagePermission() {
   const line = el('p', 'about page-notify'), permission = PageNotification.permission;
@@ -1585,6 +1595,7 @@ function pagePermission() {
       button('ghost', '', 'Allow in this browser', async () => {
         try { await PageNotification.requestPermission(); } catch (error) { /* stays as it was */ }
         line.replaceWith(pagePermission());
+        headerPermission();
         pollNotices();
       }));
   }
@@ -1668,3 +1679,4 @@ window.addEventListener('hashchange', followHash);
 refresh();
 setInterval(refresh, 2000);
 startNoticePoll();
+headerPermission();
