@@ -6,16 +6,26 @@ stops after SYNC_BUDGET seconds (plus git.KILL_GRACE when a git call had to be k
 A pass checks the `ready` and `in_progress` items that name a branch, the one checked
 longest ago first, with git.branch_state: at most 4 git calls per item, run only in the
 item's registered project and in a verified worktree of an agent of that project on the
-branch. `states` reads the cache for a set of items.
+branch. A failure with one item (git, the database) skips only that item. `states` reads
+the cache for a set of items, `last_sync` tells when the last pass ran.
+
+Merged (git.branch_state) means: the branch's tip at the last check that saw it ahead of
+the base (`ahead_tip`) is in the base now, nothing on the branch is missing from the base
+(or the branch is gone), and the worktree, if any, is clean. So a fresh branch, one reset
+to the base and one merged by squashing are not merged. Accepted: a base branch that moves
+back behind a branch without commits of its own and then forward again shows that branch
+ahead and then in the base, which is what a fast-forward merge looks like, so it counts as
+merged.
 """
 
 from __future__ import annotations
 
 import sys
 import time
+from datetime import UTC, datetime
 from typing import Any
 
-from .. import board, git
+from .. import board, config, git
 from ..models import Agent, Project
 from ..store import Store, now
 from .archive import due
@@ -43,6 +53,16 @@ def check(store: Store) -> dict[str, Any]:
         return {"checked": []}
 
 
+def last_sync() -> str | None:
+    """When the last `sync` pass started (its stamp), as ISO 8601 UTC seconds; None: none
+    yet (or the stamp is unreadable). Never raises."""
+    try:
+        stamped = float((config.home() / STAMP).read_text().strip())
+        return datetime.fromtimestamp(stamped, UTC).isoformat(timespec="seconds")
+    except OSError, ValueError, OverflowError:
+        return None
+
+
 def states(store: Store, items: list[board.Item]) -> dict[int, dict[str, Any]]:
     """The cached git state of the items, by id: {branch, ahead, behind, dirty, merged,
     checked_at, error}. Left out: an item without a branch, one not checked yet, and one
@@ -54,7 +74,7 @@ def states(store: Store, items: list[board.Item]) -> dict[int, dict[str, Any]]:
             "ahead": row["ahead"],
             "behind": row["behind"],
             "dirty": row["dirty"],
-            "merged": row["merged_at"] is not None,
+            "merged": bool(row["merged"]),
             "checked_at": row["checked_at"],
             "error": row["error"],
         }
@@ -78,25 +98,41 @@ def _check(store: Store, deadline: float) -> dict[str, Any]:
     agents: dict[str, list[Agent]] = {}
     checked = []
     for item in sorted(items, key=lambda item: rows.get(item.id, {}).get("checked_at", "")):
-        project = projects.get(item.project)
-        if project is None or not item.branch:
+        if item.project not in projects:
             continue
         if time.monotonic() >= deadline:
             break
-        if project.name not in agents:
-            agents[project.name] = store.list_agents(project.name)
-        row = rows.get(item.id)
-        state = git.branch_state(
-            project.path,
-            item.branch,
-            project.base_branch,
-            worktree=_worktree(item, agents[project.name]),
-            last_tip=row["tip"] if row else None,
-            deadline=deadline,
-        )
-        store.save_board_git(_next_row(item, project, row, state))
-        checked.append(item.id)
+        try:
+            _check_item(store, item, projects[item.project], rows.get(item.id), agents, deadline)
+            checked.append(item.id)
+        except Exception as exc:  # this item only: the next one may well work
+            print(f"board git check of #{item.id} failed: {exc!r}", file=sys.stderr)
     return {"checked": checked}
+
+
+def _check_item(
+    store: Store,
+    item: board.Item,
+    project: Project,
+    row: dict[str, Any] | None,
+    agents: dict[str, list[Agent]],
+    deadline: float,
+) -> dict[str, Any]:
+    """Check one item and store its new cache row (also returned)."""
+    assert item.branch
+    if project.name not in agents:
+        agents[project.name] = store.list_agents(project.name)
+    state = git.branch_state(
+        project.path,
+        item.branch,
+        project.base_branch,
+        worktree=_worktree(item, agents[project.name]),
+        ahead_tip=row["ahead_tip"] if row else None,
+        deadline=deadline,
+    )
+    new = _next_row(item, project, row, state)
+    store.save_board_git(new, wait=max(0.1, deadline - time.monotonic()))
+    return new
 
 
 def _worktree(item: board.Item, agents: list[Agent]) -> str | None:
@@ -110,11 +146,10 @@ def _worktree(item: board.Item, agents: list[Agent]) -> str | None:
 def _next_row(
     item: board.Item, project: Project, row: dict[str, Any] | None, state: git.BranchState
 ) -> dict[str, Any]:
-    """The cache row after a check. A failed check keeps what was known and records why. A
-    branch that is gone keeps its recorded tip. `merged_at` is set when the branch is first
-    seen merged after it was seen ahead (so a fresh branch never counts as merged), and
-    cleared when it is seen not merged."""
-    stamp = now()
+    """The cache row after a check. A failed check keeps what was known and records why.
+    A branch that is gone keeps its recorded tip. `ahead_tip` becomes the tip when the
+    branch itself was counted ahead of the base (`behind` is known then); `done_tip` is
+    left as it is."""
     if row is None:
         row = {
             "item_id": item.id,
@@ -124,20 +159,21 @@ def _next_row(
             "ahead": None,
             "behind": None,
             "dirty": None,
-            "seen_ahead": 0,
-            "merged_at": None,
+            "ahead_tip": None,
+            "done_tip": None,
+            "merged": 0,
         }
     if state.error:
-        return {**row, "error": state.error, "checked_at": stamp}
-    merged = bool(state.merged and row["seen_ahead"])
+        return {**row, "error": state.error, "checked_at": now()}
+    seen_ahead = state.tip is not None and state.behind is not None and bool(state.ahead)
     return {
         **row,
         "tip": state.tip or row["tip"],
         "ahead": state.ahead,
         "behind": state.behind,
         "dirty": state.dirty,
-        "seen_ahead": int(bool(row["seen_ahead"] or state.ahead)),
-        "merged_at": (row["merged_at"] or stamp) if merged else None,
+        "ahead_tip": state.tip if seen_ahead else row["ahead_tip"],
+        "merged": int(state.merged),
         "error": None,
-        "checked_at": stamp,
+        "checked_at": now(),
     }

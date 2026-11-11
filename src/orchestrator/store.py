@@ -199,9 +199,10 @@ CREATE TABLE IF NOT EXISTS notices (
 CREATE INDEX IF NOT EXISTS runs_agent ON runs(agent_id, id);
 CREATE INDEX IF NOT EXISTS events_agent ON events(agent_id, id);
 -- The last known git state of a board item's branch (core/board_git.py); a cache, a table of
--- its own, unknown to older code. A row whose branch is not the item's current one is stale.
--- seen_ahead: the branch was once seen with commits not in `base`; merged_at: when it was
--- first seen merged after that (NULL again once it is not); error: why the last check failed.
+-- its own, unknown to older code. A row whose branch or base is not the item's current one is
+-- stale. ahead_tip: the branch's tip at the last check that saw it ahead of `base`; done_tip:
+-- the ahead_tip whose merge was acted on (the item moved to done) or noted; merged: 0 | 1, as
+-- git.branch_state tells it; error: why the last check failed (the rest is from before).
 CREATE TABLE IF NOT EXISTS board_git (
     item_id INTEGER PRIMARY KEY,
     branch TEXT NOT NULL,
@@ -210,8 +211,9 @@ CREATE TABLE IF NOT EXISTS board_git (
     ahead INTEGER,
     behind INTEGER,
     dirty INTEGER,
-    seen_ahead INTEGER NOT NULL DEFAULT 0,
-    merged_at TEXT,
+    ahead_tip TEXT,
+    done_tip TEXT,
+    merged INTEGER NOT NULL DEFAULT 0,
     error TEXT,
     checked_at TEXT NOT NULL
 );
@@ -1212,8 +1214,9 @@ class Store:
         "ahead",
         "behind",
         "dirty",
-        "seen_ahead",
-        "merged_at",
+        "ahead_tip",
+        "done_tip",
+        "merged",
         "error",
         "checked_at",
     )
@@ -1227,8 +1230,11 @@ class Store:
         with self._conn() as conn:
             return {row["item_id"]: dict(row) for row in conn.execute(query, args)}
 
-    def save_board_git(self, row: dict[str, Any], conn: sqlite3.Connection | None = None) -> None:
-        """Insert or replace one row (every column of BOARD_GIT_COLUMNS), in `conn` if given."""
+    def save_board_git(
+        self, row: dict[str, Any], conn: sqlite3.Connection | None = None, wait: float = 30
+    ) -> None:
+        """Insert or replace one row (every column of BOARD_GIT_COLUMNS), in `conn` if given;
+        else waiting at most `wait` seconds for the write lock (then sqlite3.OperationalError)."""
         names = ", ".join(self.BOARD_GIT_COLUMNS)
         marks = ", ".join("?" for _ in self.BOARD_GIT_COLUMNS)
         values = tuple(row[name] for name in self.BOARD_GIT_COLUMNS)
@@ -1236,5 +1242,5 @@ class Store:
         if conn is not None:
             conn.execute(sql, values)
             return
-        with self._conn() as own:
+        with self._conn(wait) as own:
             own.execute(sql, values)

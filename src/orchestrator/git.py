@@ -20,11 +20,17 @@ class GitError(RuntimeError):
 KILL_GRACE = 1.0  # seconds a killed git gets to close its pipes before it is left behind
 
 
-def _run(repo: str | Path, args: tuple[str, ...], timeout: float | None) -> tuple[int, str, str]:
+def _run(
+    repo: str | Path,
+    args: tuple[str, ...],
+    timeout: float | None,
+    env: dict[str, str] | None = None,
+) -> tuple[int, str, str]:
     """Run git; returns (exit code, stdout, stderr). With `timeout` it really returns within
     about timeout + KILL_GRACE: git runs in a process group of its own, which is killed on
     timeout (hooks and helpers too), and a process that still holds the pipes (stuck in
-    the kernel, or moved to another session) is left behind. Raises GitError on timeout."""
+    the kernel, or moved to another session) is left behind. Raises GitError on timeout.
+    `env`: git's environment (None: this process's)."""
     if timeout is not None and timeout <= 0:
         raise GitError(f"git {' '.join(args)}: no time left")
     proc = subprocess.Popen(
@@ -34,6 +40,7 @@ def _run(repo: str | Path, args: tuple[str, ...], timeout: float | None) -> tupl
         stderr=subprocess.PIPE,
         text=True,
         start_new_session=timeout is not None,
+        env=env,
     )
     try:
         out, err = proc.communicate(timeout=timeout)
@@ -46,8 +53,10 @@ def _run(repo: str | Path, args: tuple[str, ...], timeout: float | None) -> tupl
     return proc.returncode, out, err
 
 
-def git(repo: str | Path, *args: str, timeout: float | None = None) -> str:
-    code, out, err = _run(repo, args, timeout)
+def git(
+    repo: str | Path, *args: str, timeout: float | None = None, env: dict[str, str] | None = None
+) -> str:
+    code, out, err = _run(repo, args, timeout, env)
     if code != 0:
         raise GitError(f"git {' '.join(args)}: {err.strip() or out.strip()}")
     return out.strip()
@@ -121,17 +130,20 @@ def _left(deadline: float | None) -> float:
     return CHECK_TIMEOUT if deadline is None else min(CHECK_TIMEOUT, deadline - time.monotonic())
 
 
-def _changes(path: str | Path, timeout: float) -> int:
+def _changes(path: str | Path, timeout: float, env: dict[str, str] | None = None) -> int:
     """The number of uncommitted changes (untracked files count) in the worktree `path`."""
     # No optional locks: never take the index lock of a worktree another agent uses.
-    status = git(path, "--no-optional-locks", "status", "--porcelain", timeout=timeout)
+    status = git(path, "--no-optional-locks", "status", "--porcelain", timeout=timeout, env=env)
     return len(status.splitlines())
 
 
-def _unmerged(repo: str | Path, tips: list[str], base: str, timeout: float) -> int:
-    """The number of commits reachable from any of `tips` that are not in `base`; 0 is
-    what "merged" means here (for `unsaved_work` and `branch_state` alike)."""
-    return int(git(repo, "rev-list", "--count", *tips, "--not", base, "--", timeout=timeout))
+def _unmerged(
+    repo: str | Path, tips: list[str], base: str, timeout: float, env: dict[str, str] | None = None
+) -> int:
+    """The number of commits reachable from any of `tips` that are not in `base`; 0: nothing
+    there is missing from the base (for `unsaved_work` and `branch_state` alike)."""
+    args = ("rev-list", "--count", *tips, "--not", base, "--")
+    return int(git(repo, *args, timeout=timeout, env=env))
 
 
 def unsaved_work(
@@ -169,6 +181,37 @@ def valid_branch(name: object) -> bool:
     return isinstance(name, str) and bool(name) and not _BAD_BRANCH.search(name)
 
 
+# The variables that point git at another repository, worktree, index or object store (git
+# rev-parse --local-env-vars): they would override -C, so `branch_state` runs git without them.
+REPOSITORY_ENV = (
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+)
+
+
+def _own_env() -> dict[str, str]:
+    """This process's environment without REPOSITORY_ENV (and GIT_CONFIG_KEY_n/VALUE_n)."""
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if name not in REPOSITORY_ENV
+        and not name.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
+    }
+
+
 @dataclass(frozen=True)
 class BranchState:
     """What `branch_state` found. `tip`: the branch's commit, None when it does not exist
@@ -176,16 +219,14 @@ class BranchState:
     way round (when the worktree's HEAD is not the branch's tip, `ahead` counts the
     commits not in the base on the branch or at that HEAD, and `behind` is None);
     `dirty`: uncommitted changes in the worktree, None when no worktree was checked;
-    `merged`: nothing on the branch (or, without it, at `last_tip`) or at the worktree's
-    HEAD is missing from the base and the worktree is clean, the test of `unsaved_work`
-    (None: unknown, e.g. the branch is gone and no tip was recorded); `error`: why
-    nothing could be told (then every other field is None)."""
+    `merged`: see `branch_state`; `error`: why nothing could be told (then every other
+    field is None)."""
 
     tip: str | None = None
     ahead: int | None = None
     behind: int | None = None
     dirty: int | None = None
-    merged: bool | None = None
+    merged: bool = False
     error: str | None = None
 
 
@@ -194,55 +235,73 @@ def branch_state(
     branch: str,
     base: str,
     worktree: str | Path | None = None,
-    last_tip: str | None = None,
+    ahead_tip: str | None = None,
     deadline: float | None = None,
 ) -> BranchState:
     """The state of `branch` of the repository at `repo` (a registered project's path)
     against its local branch `base`, with the uncommitted changes of `worktree` (an
     agent's worktree on that branch; checked only when it exists and is verified to be
     a worktree of `repo`: its top level is `worktree` and its common git directory the
-    repository's). `last_tip`: the tip recorded earlier, used when the branch is gone.
-    At most 4 git calls, each within CHECK_TIMEOUT and, with `deadline`
-    (time.monotonic()), by then; git runs only in `repo` and in the verified `worktree`.
-    Names that could be read as anything but a local branch are refused before any git
-    call. Never raises: a failure is returned as `error`."""
+    repository's).
+
+    `merged`: `ahead_tip` (the branch's tip when it was last seen ahead of the base) is
+    given and is in the base now, nothing on the branch (if it still exists) or at the
+    worktree's HEAD is missing from the base (the test of `unsaved_work`), and the
+    worktree, if checked, is clean. So a branch never seen ahead, or reset to the base,
+    is not merged; nor is one merged by squashing (its commits never reach the base).
+
+    At most 4 git calls, each within CHECK_TIMEOUT and, with `deadline` (time.monotonic()),
+    by then, run only in `repo` and in the verified `worktree`, without the environment
+    variables that would point git elsewhere (REPOSITORY_ENV). Names that could be read
+    as anything but a local branch are refused before any git call. Never raises: a
+    failure is returned as `error`."""
     if not valid_branch(branch) or not valid_branch(base):
         return BranchState(error=f"not a usable branch name: {branch!r} (base {base!r})")
-    if last_tip is not None and not _COMMIT.fullmatch(last_tip):
-        return BranchState(error=f"not a commit id: {last_tip!r}")
+    if ahead_tip is not None and not _COMMIT.fullmatch(ahead_tip):
+        return BranchState(error=f"not a commit id: {ahead_tip!r}")
+    env = _own_env()
     head, base_ref = f"refs/heads/{branch}", f"refs/heads/{base}"
-    probe = ("rev-parse", "--path-format=absolute", "--git-common-dir", "--verify", "--quiet")
+    # 1: the common git directory, the base, whether `ahead_tip` is in the base (`X...B`
+    # prints B, X and ^ each merge base of the two; X is in B when X is their only merge
+    # base) and the branch's tip. With --revs-only a missing branch prints nothing, and as
+    # git reads all that follows a name that is no revision as paths, the branch goes last.
+    revs = [base_ref, *([f"{ahead_tip}...{base_ref}"] if ahead_tip else []), head]
+    probe = ("rev-parse", "--path-format=absolute", "--git-common-dir", "--revs-only", *revs)
     verify = ("rev-parse", "--show-toplevel", "--path-format=absolute", "--git-common-dir")
     try:
-        # 1: the repository's common git directory and the branch's tip (exit 1: no branch).
-        code, out, err = _run(repo, (*probe, head), _left(deadline))
-        found = out.splitlines()
-        if code not in (0, 1) or not found:
-            raise GitError(f"git rev-parse in {repo}: {err.strip() or out.strip()}")
-        common, tip = Path(found[0]).resolve(), found[1] if code == 0 and len(found) > 1 else None
+        found = git(repo, *probe, timeout=_left(deadline), env=env).splitlines()
+        if len(found) < 2:
+            raise GitError(f"there is no branch {base} in {repo}")
+        common, rest = Path(found[0]).resolve(), found[2:]
+        reached = False
+        if ahead_tip:
+            bases = [line for line in rest[2:] if line.startswith("^")]
+            reached = bases == [f"^{ahead_tip}"]
+            rest = rest[2 + len(bases) :]
+        tip = rest[0] if rest else None
         dirty = at = None
         if worktree is not None and Path(worktree).exists():
             # 2: is it a worktree of this repository, and where is its HEAD; 3: its changes.
-            found = git(worktree, *verify, "--verify", "HEAD", timeout=_left(deadline)).splitlines()
+            args = (*verify, "--verify", "HEAD")
+            found = git(worktree, *args, timeout=_left(deadline), env=env).splitlines()
             where = [Path(line).resolve() for line in found[:2]]
             if len(found) != 3 or where != [Path(worktree).resolve(), common]:
                 raise GitError(f"{worktree} is not a worktree of {repo}")
-            dirty, at = _changes(worktree, _left(deadline)), found[2]
+            dirty, at = _changes(worktree, _left(deadline), env), found[2]
         # 4: the commits not in the base (and, for the branch alone, those it lacks).
         behind = None
         if tip is not None and at in (None, tip):
             both = ("rev-list", "--left-right", "--count", f"{head}...{base_ref}", "--")
-            counted = git(repo, *both, timeout=_left(deadline)).split()
-            unmerged: int | None = int(counted[0])
+            counted = git(repo, *both, timeout=_left(deadline), env=env).split()
+            unmerged = int(counted[0])
             behind = int(counted[1])
         else:
-            tips = [t for t in (tip and head, last_tip if tip is None else None, at) if t]
-            unmerged = _unmerged(repo, tips, base_ref, _left(deadline)) if tips else None
+            tips = [t for t in (tip and head, at) if t]
+            unmerged = _unmerged(repo, tips, base_ref, _left(deadline), env) if tips else 0
     except (GitError, OSError, ValueError, IndexError) as exc:
         return BranchState(error=str(exc) or type(exc).__name__)
     ahead = unmerged if tip is not None else None
-    merged = None if unmerged is None else unmerged == 0 and not dirty
-    return BranchState(tip, ahead, behind, dirty, merged)
+    return BranchState(tip, ahead, behind, dirty, reached and unmerged == 0 and not dirty)
 
 
 def _cap(text: str, limit: int | None) -> str:
