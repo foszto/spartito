@@ -14,6 +14,14 @@ dependencies = [
     "uvicorn>=0.54.0",
 ]
 
+[project.optional-dependencies]
+# The native window of `orch app`: Cocoa on macOS (pyobjc); Qt on Linux (pywebview's own `qt`
+# extra: PyQt6 and PyQt6-WebEngine, GPL-3.0, installed only with this extra and only there).
+app = [
+    "pywebview>=6.2; sys_platform == 'darwin'",
+    "pywebview[qt]>=6.2; sys_platform == 'linux'",
+]
+
 [project.scripts]
 orch = "orchestrator.cli:main"
 

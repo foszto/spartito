@@ -7,7 +7,6 @@ is passed in or patched, so both paths run on any host.
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import os
 import plistlib
@@ -576,15 +575,15 @@ def test_status_agrees_with_the_web_apps_own_ping(on, monkeypatch, tmp_path: Pat
     client = TestClient(app, base_url="http://localhost")
     served = {"home": os.environ["ORCH_HOME"]}  # unresolved: both sides must resolve it
 
-    def urlopen(url: str, timeout: float) -> io.BytesIO:
+    def get_local(url: str, timeout: float, limit: int = 65536) -> bytes:
         assert url == "http://127.0.0.1:18787/api/ping"
         with monkeypatch.context() as server_env:
             server_env.setenv("ORCH_HOME", served["home"])
             resp = client.get("/api/ping")
         assert resp.status_code == 200
-        return io.BytesIO(resp.content)
+        return resp.content
 
-    monkeypatch.setattr(autostart.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(autostart, "get_local", get_local)
     on("darwin")
     assert invoke("install", "--port", "18787").exit_code == 0
     assert "web UI:  http://127.0.0.1:18787: answers\n" in invoke("status").output

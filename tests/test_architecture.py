@@ -22,6 +22,7 @@ LAYERS = {
     "__main__": "interfaces",  # `python -m orchestrator`, which the background service runs
     "mcp_server": "interfaces",
     "web": "interfaces",
+    "gui": "interfaces",  # `orch app`: the dashboard in its own window
     "service": "core",
     "core": "core",  # every core/ module: dispatch, launcher, ..., delivery, access, reads
     "runner": "runner",
