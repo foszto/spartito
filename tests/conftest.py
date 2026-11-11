@@ -204,7 +204,33 @@ def no_real_launcher(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pyte
     apps = tmp_path_factory.mktemp("launchers")
     monkeypatch.setattr(launcher, "default_dir", lambda kind: apps / kind)
     monkeypatch.setattr(launcher, "unregister", lambda bundle: None)
+    # The interpreter copy of a macOS launcher: a small file instead of Python, never signed
+    # or run; by default it "does not work", so the launcher uses CFProcessPath. Tests of the
+    # copy set their own fakes.
+    source = apps / "fake-python"
+    source.write_bytes(b"not a real interpreter\n")
+    monkeypatch.setattr(launcher, "interpreter_source", lambda: source)
+    monkeypatch.setattr(launcher, "codesign", lambda path, identity: None)
+    monkeypatch.setattr(launcher, "check_copy", lambda copy, env: "not checked in tests")
     return apps
+
+
+@pytest.fixture(autouse=True)
+def no_real_notifications(tmp_path_factory: pytest.TempPathFactory, monkeypatch):
+    """No test reaches a real notification path: `open` (the launcher's app, macOS) and
+    `notify-send` (Linux) are names that find nothing unless a test installs a fake, and the
+    notification centre cannot be had (notifier.MacCenter raises)."""
+    from orchestrator import desktop
+    from orchestrator.gui import notifier
+
+    missing = tmp_path_factory.mktemp("no-commands")
+    monkeypatch.setattr(desktop, "OPEN", str(missing / "open"))
+    monkeypatch.setattr(desktop, "NOTIFY_SEND", "orch-test-no-notify-send")
+
+    def no_center(*args, **kwargs):
+        raise RuntimeError("no notification centre in tests")
+
+    monkeypatch.setattr(notifier, "MacCenter", no_center)
 
 
 @pytest.fixture(autouse=True)

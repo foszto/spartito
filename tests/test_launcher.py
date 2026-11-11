@@ -3,7 +3,9 @@ directories only (conftest points the default directory there and fakes lsregist
 
 from __future__ import annotations
 
+import json
 import os
+import platform
 import plistlib
 import shlex
 import stat
@@ -108,6 +110,7 @@ def test_info_plist(tmp_path: Path):
         "CFBundleShortVersionString": __version__,
         "CFBundleVersion": __version__,
         "LSApplicationCategoryType": "public.app-category.developer-tools",
+        "LSUIElement": True,
         "NSHighResolutionCapable": True,
     }
 
@@ -358,7 +361,14 @@ def test_install_and_uninstall_commands(tmp_path: Path, monkeypatch, platform: s
     for _ in range(2):
         result = invoke("install", *options)
         assert result.exit_code == 0, result.output
-        assert result.stdout == f"installed Spartito Test ({found.identifier}): {expected}\n"
+        note = (
+            "notifications from Spartito Test itself are not available (not checked in tests);"
+            " notifications without an open dashboard page come from osascript\n"
+            if platform == "darwin"
+            else ""
+        )
+        installed = f"installed Spartito Test ({found.identifier}): {expected}\n"
+        assert result.stdout == installed + note
     assert found.identifier.startswith("local.spartito-test-")
     result = invoke("uninstall", *options)
     assert result.exit_code == 0, result.output
@@ -417,3 +427,194 @@ def test_no_test_can_reach_a_real_window_or_browser():
         import webview  # noqa: F401
     assert window.find_chromium() is None
     assert window.webbrowser.open("http://127.0.0.1:1/") is True  # opens nothing
+
+
+# -- the interpreter copy (macOS) ------------------------------------------------------------
+
+REAL_CHECK_COPY, REAL_CODESIGN = launcher.check_copy, launcher.codesign  # before conftest's fakes
+REAL_SOURCE = launcher.interpreter_source
+
+
+@pytest.fixture
+def working_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
+    """A fake interpreter to copy (`source`), the environment's interpreter linking to it
+    (`env`), and a codesign that notes its calls and works."""
+    source = tmp_path / "python" / "bin" / "python3.14"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"interpreter 3.14.6")
+    env = tmp_path / "venv" / "bin" / "python"
+    env.parent.mkdir(parents=True)
+    env.symlink_to(source)
+    signed: list[tuple[Path, str]] = []
+    monkeypatch.setattr(launcher, "interpreter_source", lambda: source)
+    monkeypatch.setattr(
+        launcher, "codesign", lambda path, identity: signed.append((path, identity))
+    )
+    monkeypatch.setattr(launcher, "check_copy", lambda copy, environment: None)
+    return {"source": source, "env": env, "signed": signed}
+
+
+def test_mac_install_makes_a_signed_copy_and_runs_it_as_the_bundle(
+    tmp_path: Path, working_copy: dict
+):
+    root = tmp_path / "Applications"
+    written = item("mac", root, "Spartito Test", argv=(str(working_copy["env"]), "-m",
+                                                       "orchestrator", "app"))  # fmt: skip
+    notes: list[str] = []
+    assert launcher.install(written, notes) == written.path
+    files = tree(root)
+    assert sorted(files) == [
+        "Spartito Test.app/Contents/Info.plist",
+        "Spartito Test.app/Contents/MacOS/Spartito Test",
+        "Spartito Test.app/Contents/MacOS/spartito-python",
+        "Spartito Test.app/Contents/Resources/Spartito Test.icns",
+        "Spartito Test.app/Contents/Resources/interpreter.json",
+    ]
+    assert files["Spartito Test.app/Contents/MacOS/spartito-python"][0] == b"interpreter 3.14.6"
+    ((signed_path, identity),) = working_copy["signed"]
+    assert identity == written.identifier and signed_path.parent == written.interpreter.parent
+    record = json.loads(files["Spartito Test.app/Contents/Resources/interpreter.json"][0])
+    assert record["source"] == str(working_copy["source"])
+    assert record["environment"] == str(working_copy["env"])
+    assert record["resolved"] == os.path.realpath(working_copy["source"])
+    assert record["identifier"] == written.identifier
+    assert notes == [
+        f"spartito-python: a copy of {working_copy['source']} (Python {record['version']}),"
+        f" signed as {written.identifier}, so Spartito Test can post notifications itself;"
+        " run `orch app install` again after upgrading Python"
+    ]
+    script = files["Spartito Test.app/Contents/MacOS/Spartito Test"][0].decode()
+    assert "CFProcessPath" not in script
+    assert f"export {launcher.BUNDLE_VAR}={shlex.quote(str(written.path))}\n" in script
+    assert f"export __PYVENV_LAUNCHER__={shlex.quote(str(working_copy['env']))}\n" in script
+    assert script.endswith(
+        f'exec {shlex.quote(str(written.interpreter))} -m orchestrator app "$@"\n'
+    )
+    assert launcher.interpreter(written) == written.interpreter
+    assert launcher.uninstall(written) == written.path
+    assert tree(root) == {}
+
+
+def test_the_bundle_script_runs_the_copy_with_the_environment(tmp_path: Path, working_copy):
+    """The written script, run by sh: the copy (here a script that prints what it got) gets
+    the environment's interpreter and the bundle in its environment, and the arguments."""
+    working_copy["source"].write_text(
+        '#!/bin/sh\necho "$__PYVENV_LAUNCHER__|$ORCH_APP_BUNDLE|$ORCH_HOME|$*"\n'
+    )
+    working_copy["source"].chmod(0o755)
+    written = item("mac", tmp_path / "apps", "Spartito Test",
+                   argv=(str(working_copy["env"]), "-m", "orchestrator", "app"))  # fmt: skip
+    launcher.install(written)
+    done = subprocess.run(
+        ["sh", str(written.executable), "--notify"], capture_output=True, text=True, timeout=30
+    )
+    assert done.stdout == (
+        f"{working_copy['env']}|{written.path}|{HOME}|-m orchestrator app --notify\n"
+    )
+
+
+def test_a_copy_that_does_not_work_is_removed_and_the_script_uses_cfprocesspath(
+    tmp_path: Path, working_copy: dict, monkeypatch: pytest.MonkeyPatch
+):
+    written = item("mac", tmp_path, argv=(str(working_copy["env"]), "-m", "orchestrator", "app"))
+    launcher.install(written)
+    assert written.interpreter.exists()
+    monkeypatch.setattr(launcher, "check_copy", lambda copy, environment: "the copy did not run")
+    notes: list[str] = []
+    launcher.install(written, notes)
+    assert notes == [
+        "notifications from Spartito itself are not available (the copy did not run);"
+        " notifications without an open dashboard page come from osascript"
+    ]
+    assert not written.interpreter.exists() and not written.record.exists()
+    assert not list(written.interpreter.parent.glob(".spartito-python.*"))
+    assert launcher.render_script(written) == written.executable.read_text()
+    assert launcher.interpreter(written) is None
+
+
+def test_a_python_upgrade_makes_the_copy_stale_and_install_repairs_it(
+    tmp_path: Path, working_copy: dict, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(launcher, "this_platform", lambda: "darwin")
+    monkeypatch.setattr(sys, "executable", str(working_copy["env"]))
+    options = ["--name", "Spartito Test", "--dir", str(tmp_path / "apps")]
+    assert invoke("install", *options).exit_code == 0
+    written = launcher.launcher("Spartito Test", tmp_path / "apps")
+    assert launcher.interpreter(written) == written.interpreter
+    working_copy["source"].write_bytes(b"interpreter 3.14.7, a little longer")  # an upgrade
+    assert launcher.interpreter(written) is None
+    result = invoke("install", *options)
+    assert result.exit_code == 0, result.output
+    lines = result.stdout.splitlines()
+    assert lines[1] == (
+        "replaced the stale copy of the Python interpreter (Python changed since"
+        f" `orch app install` (it copied {platform.python_version()}))"
+    )
+    assert lines[2].startswith("spartito-python: a copy of ")
+    assert launcher.interpreter(written) == written.interpreter
+    assert written.interpreter.read_bytes() == b"interpreter 3.14.7, a little longer"
+    assert len(invoke("install", *options).stdout.splitlines()) == 2  # current: nothing to say
+
+
+def test_uninstall_forgets_the_grant_of_its_own_bundle_only(tmp_path: Path, working_copy):
+    from orchestrator import desktop
+
+    written = item("mac", tmp_path, argv=(str(working_copy["env"]), "-m", "orchestrator", "app"))
+    launcher.install(written)
+    desktop.record_grant(written.identifier, tmp_path / "Other.app")
+    launcher.uninstall(written)
+    assert desktop.granted_bundle() == tmp_path / "Other.app"
+    launcher.install(written)
+    desktop.record_grant(written.identifier, written.path)
+    launcher.uninstall(written)
+    assert desktop.granted_bundle() is None
+
+
+def test_codesign_signs_ad_hoc_with_the_identifier(tmp_path: Path, monkeypatch):
+    fake = tmp_path / "codesign"
+    fake.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$0.args"\n[ -z "$FAIL" ] || { echo "$FAIL" >&2; exit 1; }\n'
+    )
+    fake.chmod(0o755)
+    monkeypatch.setattr(launcher, "CODESIGN", str(fake))
+    assert REAL_CODESIGN(tmp_path / "copy", "local.x.app") is None
+    assert (tmp_path / "codesign.args").read_text().splitlines() == [
+        "-s", "-", "--force", "--identifier", "local.x.app", str(tmp_path / "copy")
+    ]  # fmt: skip
+    monkeypatch.setenv("FAIL", "copy: invalid format")
+    assert (
+        REAL_CODESIGN(tmp_path / "copy", "local.x.app") == "codesign failed: copy: invalid format"
+    )
+    monkeypatch.setattr(launcher, "CODESIGN", str(tmp_path / "missing"))
+    assert REAL_CODESIGN(tmp_path / "copy", "local.x.app").startswith("codesign did not run: ")
+
+
+@pytest.mark.parametrize(
+    "body, problem",
+    [
+        ('echo "$PREFIX"', None),
+        ("echo /somewhere/else", "the copy found another environment (/somewhere/else)"),
+        (
+            "echo 'dyld: Library not loaded' >&2; exit 6",
+            "the copy did not run: dyld: Library not loaded",
+        ),
+        ("exit 3", "the copy did not run: exit code 3"),
+    ],
+)
+def test_check_copy_runs_it_as_the_bundle_will(tmp_path: Path, monkeypatch, body, problem):
+    copy = tmp_path / "copy"
+    copy.write_text(
+        '#!/bin/sh\n[ "$__PYVENV_LAUNCHER__" = /env/bin/python ] || exit 9\n'
+        f'[ "$1 $2" = "-I -c" ] || exit 8\n{body}\n'
+    )
+    copy.chmod(0o755)
+    monkeypatch.setenv("PREFIX", sys.prefix)
+    assert REAL_CHECK_COPY(copy, "/env/bin/python") == problem
+
+
+def test_the_copy_source_is_the_real_interpreter():
+    """Not a symlink or a launcher stub: the binary that runs (a framework build's lives in
+    its Python.app)."""
+    source = REAL_SOURCE()
+    assert source.is_file() and os.access(source, os.X_OK) and not source.is_symlink()
+    assert source == Path(os.path.realpath(source))

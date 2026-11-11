@@ -1,5 +1,6 @@
-"""Desktop-notification notices for a dashboard page (see desktop.py): what it shows with a
-click action, where it starts, how it takes one, and how it says it is there."""
+"""Desktop-notification notices (see desktop.py) for a dashboard page and for Spartito's own
+notifications on macOS (gui/notifier.py): what they show with a click action, where they
+start, how one is taken, and how a page says it is there."""
 
 from __future__ import annotations
 
@@ -28,7 +29,8 @@ def notice_cursor(orch: Facade) -> int:
 
 
 def claim_notice(orch: Facade, notice_id: int) -> bool:
-    """Take a notice to show it; True only for the first caller (a page or osascript)."""
+    """Take a notice to show it; True only for the first caller (a page, Spartito's window or
+    posting process, the Linux helper or osascript)."""
     return orch.store.claim_notice(notice_id)
 
 

@@ -355,6 +355,12 @@ def app_window(
         bool,
         typer.Option("--echo-location", hidden=True, help="Say where the native window's page is."),
     ] = False,
+    notify: Annotated[
+        bool,
+        typer.Option(
+            "--notify", hidden=True, help="Post the pending notifications as the app, then exit."
+        ),
+    ] = False,
     name: LauncherName = None,
     directory: LauncherDir = None,
 ) -> None:
@@ -372,6 +378,10 @@ def app_window(
     if decision is not None and decision < 0:
         raise fail("--decision takes a decision number")
     target = agent or (f"decision:{decision}" if decision is not None else "")
+    if notify:  # started hidden by a background process (desktop.py); a click: the window
+        target = window.notify_only() or ""
+        if not target:
+            return
     try:
         app_open.check_target(target)
     except ValueError as exc:
@@ -392,11 +402,14 @@ def app_install(name: LauncherName = None, directory: LauncherDir = None) -> Non
     from .gui import launcher
 
     item = app_launcher(name, directory)
+    notes: list[str] = []
     try:
-        path = launcher.install(item)
+        path = launcher.install(item, notes)
     except launcher.LauncherError as exc:
         raise fail(exc) from None
     typer.echo(f"installed {item.name} ({item.identifier}): {path}")
+    for note in notes:
+        typer.echo(note)
 
 
 @app_app.command("uninstall")

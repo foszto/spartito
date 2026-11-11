@@ -7,6 +7,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import platform
 import signal
 import socket
 import subprocess
@@ -1286,3 +1287,165 @@ def test_linux_window_gets_icon_and_application_name(
     assert named == [True]
     assert webview.options["icon"] == str(launcher.LINUX_ICONS["512x512"])
     assert "Dock" not in result.stderr
+
+
+# -- the interpreter copy and notifications (macOS) ------------------------------------------
+
+
+@pytest.fixture
+def working_copy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Install makes an interpreter copy that 'works' (the conftest fakes: a small file,
+    never signed or run)."""
+    monkeypatch.setattr(launcher, "check_copy", lambda copy, environment: None)
+
+
+def test_from_a_terminal_it_runs_on_as_the_interpreter_copy(
+    webview: FakeWebview, execed, working_copy
+):
+    item = launcher.launcher()
+    launcher.install(item)
+    result = run_app("--agent", "a-1")
+    assert result.exit_code == 0, result.output
+    ((executable, argv, env),) = execed
+    assert executable == str(item.interpreter) == argv[0]
+    assert argv[1:] == ["-m", "orchestrator", "app", "--agent", "a-1"]
+    assert env[launcher.BUNDLE_VAR] == str(item.path)
+    assert env["__PYVENV_LAUNCHER__"] == sys.executable
+    assert "CFProcessPath" not in env
+
+
+def test_a_stale_copy_is_not_run_and_says_so(webview: FakeWebview, execed, working_copy):
+    item = launcher.launcher()
+    launcher.install(item)
+    launcher.interpreter_source().write_bytes(b"an upgraded interpreter")  # Python changed
+    result = run_app()
+    assert result.exit_code == 0, result.output
+    ((executable, argv, env),) = execed
+    assert executable == sys.executable and env["CFProcessPath"] == str(item.executable)
+    assert result.stderr == (
+        "the launcher's copy of Python is stale (Python changed since `orch app install`"
+        f" (it copied {platform.python_version()})): run `orch app install` again; until then"
+        " Spartito posts no notifications itself\n"
+    )
+
+
+class FakeCenter:
+    def __init__(self, order: list[str], on_response) -> None:
+        order.append("delegate set")
+        self.on_response = on_response
+        self.asked: list = []
+
+    def authorize(self, done) -> None:
+        self.asked.append(done)
+
+    def status(self, done) -> None:
+        done(0)
+
+    def post(self, *args) -> None:
+        raise AssertionError("nothing is posted before permission")
+
+    def spin(self, seconds: float) -> None:
+        time.sleep(seconds)
+
+
+@pytest.fixture
+def centre(monkeypatch: pytest.MonkeyPatch, webview: FakeWebview) -> dict:
+    """A fake notification centre for the window process; notes when the delegate was set
+    and when the GUI loop started."""
+    from orchestrator.gui import notifier
+
+    seen: dict = {"order": [], "centres": []}
+
+    def make(on_response):
+        made = FakeCenter(seen["order"], on_response)
+        seen["centres"].append(made)
+        return made
+
+    monkeypatch.setattr(notifier, "MacCenter", make)
+    monkeypatch.setattr(notifier, "available", lambda: True)
+    webview.on_start = lambda: seen["order"].append("GUI loop")
+    return seen
+
+
+def test_the_window_as_the_bundle_sets_the_delegate_before_the_gui_loop(
+    webview: FakeWebview, centre: dict, monkeypatch, tmp_path
+):
+    bundle = tmp_path / "Spartito.app"
+    launcher.install(launcher.Launcher(**{**launcher.launcher().__dict__, "root": tmp_path}))
+    monkeypatch.setenv(launcher.BUNDLE_VAR, str(bundle))
+    result = run_app()
+    assert result.exit_code == 0, result.output
+    assert centre["order"] == ["delegate set", "GUI loop"]
+    (made,) = centre["centres"]
+    assert len(made.asked) == 1  # permission asked once
+    assert launcher.BUNDLE_VAR not in os.environ
+    made.on_response("com.apple.UNNotificationDefaultActionIdentifier",
+                     {"home": autostart.home_hash(autostart.home())[:16], "target": "decision:4"})  # fmt: skip
+    assert app_open.latest()["target"] == "decision:4"  # the window's deep-link request
+
+
+@pytest.mark.parametrize("why", ["CFProcessPath", "no bundle", "no framework", "linux"])
+def test_no_notifier_without_the_bundles_own_interpreter(
+    webview: FakeWebview, centre: dict, monkeypatch, why
+):
+    from orchestrator.gui import notifier
+
+    if why == "CFProcessPath":
+        monkeypatch.setenv("CFProcessPath", "/Applications/X.app/Contents/MacOS/X")
+    else:
+        monkeypatch.setenv(launcher.BUNDLE_VAR, "/Applications/X.app")
+    if why == "no bundle":
+        monkeypatch.delenv(launcher.BUNDLE_VAR)
+    if why == "no framework":
+        monkeypatch.setattr(notifier, "available", lambda: False)
+    if why == "linux":
+        monkeypatch.setattr(window, "this_platform", lambda: "linux")
+        monkeypatch.setenv("DISPLAY", ":0")
+        monkeypatch.setattr(window, "backend_problem", lambda gui: None)
+        monkeypatch.setattr(window, "name_qt_app", lambda: None)
+    assert run_app().exit_code == 0
+    assert centre["centres"] == []
+
+
+def test_a_centre_that_fails_is_said_and_the_window_still_opens(webview: FakeWebview, monkeypatch):
+    from orchestrator.gui import notifier
+
+    monkeypatch.setattr(notifier, "available", lambda: True)
+    monkeypatch.setenv(launcher.BUNDLE_VAR, "/Applications/X.app")
+    result = run_app()
+    assert result.exit_code == 0 and len(webview.windows) == 1
+    assert result.stderr == (
+        "notifications from Spartito: not available (no notification centre in tests)\n"
+    )
+
+
+def test_notify_posts_and_leaves_without_a_window(webview: FakeWebview, monkeypatch):
+    called: list = []
+    monkeypatch.setattr(window, "notify_only", lambda: called.append(True))
+    result = run_app("--notify")
+    assert result.exit_code == 0, result.output
+    assert called == [True] and webview.windows == [] and lock_is_free()
+
+
+def test_notify_with_a_click_opens_the_window_at_its_target(webview: FakeWebview, monkeypatch):
+    monkeypatch.setattr(window, "notify_only", lambda: "decision:6")
+    result = run_app("--notify")
+    assert result.exit_code == 0, result.output
+    (win,) = webview.windows
+    assert win.url.endswith("#decision:6")
+
+
+def test_notify_only_posts_as_the_bundle(monkeypatch, tmp_path):
+    from orchestrator.gui import notifier
+
+    got: list = []
+    monkeypatch.setattr(window, "read_main_bundle", lambda: None)
+    monkeypatch.setenv(launcher.BUNDLE_VAR, str(tmp_path / "X.app"))
+    monkeypatch.setattr(notifier, "notify", lambda orch, bundle, say: got.append(bundle) or "a-1")
+    assert window.notify_only() == "a-1" and got == [tmp_path / "X.app"]
+    assert os.environ[launcher.BUNDLE_VAR] == str(tmp_path / "X.app")  # for the window next
+    monkeypatch.setattr(notifier, "notify", lambda orch, bundle, say: None)
+    monkeypatch.delenv(launcher.BUNDLE_VAR)
+    assert window.notify_only() is None
+    monkeypatch.setattr(window, "this_platform", lambda: "linux")
+    assert window.notify_only() is None

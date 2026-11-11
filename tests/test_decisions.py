@@ -38,7 +38,13 @@ def calls(log: Path) -> list[list[str]]:
 
 
 def bodies(log: Path) -> list[str]:
-    return [call[-1] for call in calls(log)]
+    """The texts shown, without the clause that says where to look (desktop.plain), which
+    tests of their own check."""
+    clauses = (desktop.CLAUSE_DECISION, desktop.CLAUSE_FINISHED)
+    return [
+        next((call[-1].removesuffix(c) for c in clauses if call[-1].endswith(c)), call[-1])
+        for call in calls(log)
+    ]
 
 
 @pytest.fixture
@@ -104,7 +110,7 @@ def test_request_decision_records_an_open_decision_and_notifies(
         "-e",
         "end run",
         config.PROJECT_NAME,
-        f"Decision needed ({project}): Which database?",
+        f"Decision needed ({project}): Which database? — open Spartito to answer",
     ]
 
 

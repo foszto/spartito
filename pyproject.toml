@@ -17,8 +17,10 @@ dependencies = [
 [project.optional-dependencies]
 # The native window of `orch app`: Cocoa on macOS (pyobjc); Qt on Linux (pywebview's own `qt`
 # extra: PyQt6 and PyQt6-WebEngine, GPL-3.0, installed only with this extra and only there).
+# On macOS also the notifications Spartito posts itself (UserNotifications, MIT).
 app = [
     "pywebview>=6.2; sys_platform == 'darwin'",
+    "pyobjc-framework-UserNotifications>=13.0; sys_platform == 'darwin'",
     "pywebview[qt]>=6.2; sys_platform == 'linux'",
 ]
 # The menu-bar status item of `orch menubar` (macOS only): Cocoa through pyobjc.

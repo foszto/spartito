@@ -382,6 +382,7 @@ dependencies = [
 
 [package.optional-dependencies]
 app = [
+    { name = "pyobjc-framework-usernotifications", marker = "sys_platform == 'darwin'" },
     { name = "pywebview", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "pywebview", extra = ["qt"], marker = "sys_platform == 'linux'" },
 ]
@@ -401,6 +402,7 @@ requires-dist = [
     { name = "anyio", specifier = ">=4.16.0" },
     { name = "mcp", specifier = ">=2.3.0" },
     { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin' and extra == 'menubar'", specifier = ">=13.0" },
+    { name = "pyobjc-framework-usernotifications", marker = "sys_platform == 'darwin' and extra == 'app'", specifier = ">=13.0" },
     { name = "pywebview", marker = "sys_platform == 'darwin' and extra == 'app'", specifier = ">=6.2" },
     { name = "pywebview", extras = ["qt"], marker = "sys_platform == 'linux' and extra == 'app'", specifier = ">=6.2" },
     { name = "starlette", specifier = ">=1.10.0" },
@@ -629,6 +631,22 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ba/3d/ab2b17b2d31286c405bc7d818cf85de538bd90144cd3163c693b0de1d623/pyobjc_framework_uniformtypeidentifiers-13.0.tar.gz", hash = "sha256:d70ae3722c91c57de71a77d1004a22a118e38798f66c30552cb93754f7a9cbb5", size = 20694, upload-time = "2026-10-30T10:47:49.642Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/73/90/a18455cfe09b8c4f339acf8667aea124b0fdb14094fd0f1b9a3c6ca2bce6/pyobjc_framework_uniformtypeidentifiers-13.0-py2.py3-none-any.whl", hash = "sha256:5375270af9980825b3a20267312bbd616e9828c4b7d5ab008c98d9bf6b8a51e3", size = 5042, upload-time = "2026-10-30T10:44:59.154Z" },
+]
+
+[[package]]
+name = "pyobjc-framework-usernotifications"
+version = "13.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyobjc-core" },
+    { name = "pyobjc-framework-cocoa" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/cc/b6/7be965213588af173bba5cb9d93554f3c268fa0845057a5d40dcf0d8c957/pyobjc_framework_usernotifications-13.0.tar.gz", hash = "sha256:b2e7574043889c11bff555f2203c4e79bcff9a4de513afb6f1f1f13b0aca35e8", size = 33585, upload-time = "2026-10-30T10:47:50.311Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2a/e4/897dd1eaf5fddcadd887da7430aeaa5da3b3c190158de5a8ba4425def2d2/pyobjc_framework_usernotifications-13.0-cp314-cp314-macosx_10_15_universal2.whl", hash = "sha256:583a3c618e6d175d25185e038a69067de943fabbaae2a2ad045c14f83f518c61", size = 10259, upload-time = "2026-10-30T10:45:03.727Z" },
+    { url = "https://files.pythonhosted.org/packages/41/37/90e23542f1c7ed12fc861db9ba1c86fc1f206f0cd969e39e95eef628d5a8/pyobjc_framework_usernotifications-13.0-cp314-cp314t-macosx_10_15_universal2.whl", hash = "sha256:ba516c53a5eadbd88d998b2ea692d2576ae5639776a3fecbf0743782780f9396", size = 10420, upload-time = "2026-10-30T10:45:04.802Z" },
+    { url = "https://files.pythonhosted.org/packages/57/db/64fcdf9d6af2cd2c615a5005ed85ada12de1f2a3f3ebcc3dbf2b21e78250/pyobjc_framework_usernotifications-13.0-cp315-cp315-macosx_10_15_universal2.whl", hash = "sha256:c5d494042c54b5be7f02b3fea1008b81f24c92bc3a46f090604eee5e6753a3e9", size = 10255, upload-time = "2026-10-30T10:45:05.539Z" },
+    { url = "https://files.pythonhosted.org/packages/55/0c/70e66507338b1e4b82649f9572f4a8a7b164ef1483389d5bc72964046ebe/pyobjc_framework_usernotifications-13.0-cp315-cp315t-macosx_10_15_universal2.whl", hash = "sha256:a2bf29202d7e50bbff6ce77cba1505a546b973439e8af86e3d4543a72ed46726", size = 10424, upload-time = "2026-10-30T10:45:06.334Z" },
 ]
 
 [[package]]

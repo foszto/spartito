@@ -20,9 +20,12 @@ its target (`--agent`, `--decision`), through app_open.py, and leaves; one that 
 it as closing the window does.
 
 Identity: on macOS with the launcher of this home installed (launcher.py), an `orch app`
-started from a terminal runs on as that app (exec with CFProcessPath, same pid, terminal and
-exit code), so the Dock shows its name and icon; without the launcher the Dock icon is set at
-run time. On Linux the Qt window carries the icon, application name and desktop file name.
+started from a terminal runs on as that app (exec of the launcher's interpreter copy, or with
+CFProcessPath without a current one; same pid, terminal and exit code), so the Dock shows its
+name and icon; without the launcher the Dock icon is set at run time. Run through the copy,
+the native window also posts the notifications itself (notifier.py), and `--notify` only
+posts the pending ones. On Linux the Qt window carries the icon, application name and desktop
+file name.
 
 Own server: on the port of the last one (`run/app-port`) when it is free, so the page keeps
 its origin (preferences, notification permission); otherwise on a free one, then remembered.
@@ -49,9 +52,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Protocol
 
-from .. import app_open, autostart, config
+from .. import app_open, autostart, config, desktop
 from ..web import serve
-from . import launcher, locate
+from . import launcher, locate, notifier
 
 HOST = "127.0.0.1"
 STARTUP_TIMEOUT = 15.0  # seconds for the own server to listen
@@ -170,6 +173,7 @@ class Session:
     baseline: int = 0  # requests up to this id were there before the window
     launcher_installed: bool = False  # this home's launcher (launcher.py) is there
     bundled: bool = False  # this process counts as the launcher's app (macOS)
+    own_bundle: Path | None = None  # ... through the bundle's interpreter copy: this bundle
     echo_location: bool = False  # say where the native window's page is (for checks)
     done: threading.Event = field(default_factory=threading.Event)  # end now
     signal: int | None = None  # the SIGTERM or SIGHUP that ended it
@@ -345,16 +349,23 @@ def native_window(session: Session) -> bool:
             if not closed.is_set():
                 window.destroy()
 
-        # The GUI loop runs on this (the main) thread until the window is gone. Not private,
-        # so the page keeps its preferences (theme) per origin: in storage_path with Qt/GTK;
-        # macOS WebKit ignores it and keeps the data of the Python app in ~/Library.
-        webview.start(
-            close_later,
-            gui=gui,
-            private_mode=False,
-            storage_path=str(config.runtime_dir() / "app-webview"),
-            **({"icon": str(icon)} if icon else {}),
-        )
+        # The centre's delegate is set before the GUI loop runs: a click that started this
+        # app reaches it.
+        notices = start_notifier(session)
+        try:
+            # The GUI loop runs on this (the main) thread until the window is gone. Not
+            # private, so the page keeps its preferences (theme) per origin: in storage_path
+            # with Qt/GTK; macOS WebKit ignores it and keeps the app's data in ~/Library.
+            webview.start(
+                close_later,
+                gui=gui,
+                private_mode=False,
+                storage_path=str(config.runtime_dir() / "app-webview"),
+                **({"icon": str(icon)} if icon else {}),
+            )
+        finally:
+            if notices is not None:
+                notices.close()
     except Exception as exc:  # no GUI toolkit (Linux without Qt or GTK), and the like
         say(
             f"no native window: pywebview failed ({first_line(exc)});"
@@ -362,6 +373,43 @@ def native_window(session: Session) -> bool:
         )
         return False
     return True
+
+
+def start_notifier(session: Session) -> notifier.WindowNotifier | None:
+    """macOS, run as the launcher's app through its interpreter copy, with the framework:
+    the window process posts the notifications itself (notifier.py); None otherwise."""
+    if this_platform() != "darwin" or session.own_bundle is None or not notifier.available():
+        return None
+    from ..service import Orchestrator
+
+    try:
+        center = notifier.MacCenter(notifier.opener(Orchestrator.request_app_open))
+        notices = notifier.WindowNotifier(
+            Orchestrator(),
+            center,
+            launcher.bundle_identifier(session.own_bundle),
+            session.own_bundle,
+            say,
+        )
+        notices.start()
+    except Exception as exc:
+        say(f"notifications from {config.PROJECT_NAME}: not available ({first_line(exc)})")
+        return None
+    return notices
+
+
+def notify_only() -> str | None:
+    """`orch app --notify`: post the pending notices as the launcher's app and leave; the
+    target of a click that came meanwhile (the caller then opens the window there)."""
+    if this_platform() != "darwin":
+        return None
+    from ..service import Orchestrator
+
+    _, bundle = take_bundle_identity()
+    target = notifier.notify(Orchestrator(), bundle, say)
+    if target and bundle is not None:
+        os.environ[launcher.BUNDLE_VAR] = str(bundle)  # the window that follows is this app
+    return target
 
 
 def native_identity(session: Session, gui: str | None) -> Path | None:
@@ -604,15 +652,18 @@ def forward(target: str) -> int:
     return 0
 
 
-def take_bundle_identity() -> bool:
-    """Whether this process was started as the launcher's app (CFProcessPath, macOS). Makes
-    CoreFoundation read the variable now, then drops it, so the processes this one starts
-    (agents, browsers) do not take this app's identity."""
-    if this_platform() != "darwin" or "CFProcessPath" not in os.environ:
-        return False
+def take_bundle_identity() -> tuple[bool, Path | None]:
+    """Whether this process was started as the launcher's app (macOS: CFProcessPath, or the
+    bundle's interpreter copy, whose script sets launcher.BUNDLE_VAR), and the bundle in the
+    second case. Makes CoreFoundation read the main bundle now, then drops both variables, so
+    the processes this one starts (agents, browsers) do not take this app's identity."""
+    own = os.environ.get(launcher.BUNDLE_VAR)
+    if this_platform() != "darwin" or not ("CFProcessPath" in os.environ or own):
+        return False, None
     read_main_bundle()
     os.environ.pop("CFProcessPath", None)
-    return True
+    os.environ.pop(launcher.BUNDLE_VAR, None)
+    return True, Path(own) if own else None
 
 
 def read_main_bundle() -> None:
@@ -707,7 +758,7 @@ def run(
     home open already, bring that forward instead. `item`: the launcher to look for (default:
     this home's). AppError when no server can be had."""
     app_open.check_target(target)
-    bundled = take_bundle_identity()
+    bundled, own_bundle = take_bundle_identity()
     lock = single_instance()
     if lock is None:
         return forward(target)
@@ -721,11 +772,25 @@ def run(
     if darwin and installed and not bundled and native_possible():
         # Run on as the launcher's app: same process, terminal and exit code.
         lock.close()
-        env = {**os.environ, "CFProcessPath": str(item.executable)}
         argv = app_argv(port, close_after, target, echo_location)
+        copy = launcher.interpreter(item)
+        if copy is not None:
+            env = {
+                **os.environ,
+                launcher.BUNDLE_VAR: str(item.path),
+                "__PYVENV_LAUNCHER__": sys.executable,
+            }
+            execute(str(copy), [str(copy), *argv[1:]], env)
+        if item.record.exists() and (problem := desktop.interpreter_problem(item.path)):
+            say(
+                f"the launcher's copy of Python is stale ({problem}): run `orch app install`"
+                f" again; until then {config.PROJECT_NAME} posts no notifications itself"
+            )
+        env = {**os.environ, "CFProcessPath": str(item.executable)}
         execute(sys.executable, argv, env)
     session = Session(lock, close_after, target=target, echo_location=echo_location)
     session.launcher_installed, session.bundled = installed, bundled
+    session.own_bundle = own_bundle
     session.baseline = app_open.last_id()
     try:
         with stopped_by_signals(session):
