@@ -332,8 +332,12 @@ def install(svc: Service, platform: str | None = None) -> Path:
             if was_active:  # enable --now leaves a running service on its old command line
                 checked("systemctl", "--user", "restart", name)
     except AutostartError:
-        if not existed:  # a failed first install leaves nothing that looks installed
-            unit.unlink(missing_ok=True)
+        if not existed and unit.exists():  # a failed first install leaves nothing behind
+            if kind == "systemd":  # enable may have linked and started it: best effort
+                run("systemctl", "--user", "disable", "--now", unit_name(svc.label))
+            unit.unlink()
+            if kind == "systemd":
+                run("systemctl", "--user", "daemon-reload")
         raise
     return unit
 

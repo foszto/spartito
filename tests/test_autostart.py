@@ -429,6 +429,26 @@ def test_an_install_without_a_user_manager_leaves_no_unit(on, fake_system: FakeS
     assert "(not installed)" in invoke("status").output
 
 
+def test_a_first_install_that_fails_to_start_is_disabled_and_removed(on, fake_system: FakeSystem):
+    on("linux")
+    fake_system.set("systemctl", "enable", exit=1, out="Job failed. See journalctl for details.\n")
+    result = invoke("install")
+    assert result.exit_code == 1
+    assert result.output == (
+        f"error: `systemctl --user enable --now {label()}.service` failed (1): "
+        "Job failed. See journalctl for details.\n"
+    )
+    name = f"{label()}.service"
+    assert fake_system.calls() == [
+        ["systemctl", "--user", "is-active", name],
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "enable", "--now", name],
+        ["systemctl", "--user", "disable", "--now", name],
+        ["systemctl", "--user", "daemon-reload"],
+    ]
+    assert not unit_path().exists()
+
+
 def test_a_failed_reinstall_keeps_the_unit_it_wrote(on, fake_system: FakeSystem):
     on("linux")
     assert invoke("install", "--port", "18787").exit_code == 0
