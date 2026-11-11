@@ -155,6 +155,13 @@ def test_the_unit_quotes_spaces_specifiers_and_variables():
     assert 'Environment="ORCH_PROVIDERS=x=50%%$y\\"z"\n' in unit
 
 
+def test_the_executable_doubles_percent_but_not_dollar():
+    """systemd expands variables in the arguments only: `$$` would stay in the path."""
+    svc = neutral_service(argv=["/opt/a$b/50% py/python3", "-m", "orchestrator", "--x", "a$b%c"])
+    unit = autostart.render_unit(svc)
+    assert 'ExecStart="/opt/a$b/50%% py/python3" -m orchestrator --x a$$b%%c\n' in unit
+
+
 def test_the_service_runs_this_interpreter_on_the_package():
     svc = autostart.service("127.0.0.1", 18787)
     assert svc.argv == [sys.executable, "-m", "orchestrator", "web"] + [

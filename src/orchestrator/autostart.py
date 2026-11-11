@@ -167,10 +167,11 @@ def render_plist(svc: Service) -> bytes:
     )
 
 
-def systemd_quote(value: str, command: bool = False) -> str:
-    """One word for systemd: `%` is a specifier and, in a command line, `$` a variable."""
+def systemd_quote(value: str, argument: bool = False) -> str:
+    """One word for systemd: `%` is a specifier everywhere; `$` is a variable only in the
+    arguments of a command line, not in its executable (systemd.service, "Command lines")."""
     value = value.replace("%", "%%")
-    if command:
+    if argument:
         value = value.replace("$", "$$")
     if value and not any(c in value for c in " \t\n\"\\'"):
         return value
@@ -179,7 +180,10 @@ def systemd_quote(value: str, command: bool = False) -> str:
 
 
 def render_unit(svc: Service) -> str:
-    exec_start = " ".join(systemd_quote(arg, command=True) for arg in svc.argv)
+    executable, *arguments = svc.argv
+    exec_start = " ".join(
+        [systemd_quote(executable)] + [systemd_quote(arg, argument=True) for arg in arguments]
+    )
     env = "".join(
         f"Environment={systemd_quote(f'{name}={value}')}\n" for name, value in svc.env.items()
     )
