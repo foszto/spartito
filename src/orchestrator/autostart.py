@@ -280,9 +280,12 @@ def launchd_pid(label: str) -> tuple[bool, int | None]:
     return True, None
 
 
+def systemd_active(name: str) -> bool:
+    return run("systemctl", "--user", "is-active", name).returncode == 0
+
+
 def systemd_pid(label: str) -> tuple[bool, int | None]:
-    active = run("systemctl", "--user", "is-active", unit_name(label)).returncode == 0
-    if not active:
+    if not systemd_active(unit_name(label)):
         return False, None
     shown = run("systemctl", "--user", "show", "--property=MainPID", "--value", unit_name(label))
     pid = shown.stdout.strip()
@@ -322,7 +325,7 @@ def install(svc: Service, platform: str | None = None) -> Path:
             checked("launchctl", "bootstrap", domain(), str(unit))
         else:
             name = unit_name(svc.label)
-            was_active = run("systemctl", "--user", "is-active", name).returncode == 0
+            was_active = systemd_active(name)
             unit.write_text(render_unit(svc))
             checked("systemctl", "--user", "daemon-reload")
             checked("systemctl", "--user", "enable", "--now", name)
@@ -346,14 +349,24 @@ def uninstall(label: str, platform: str | None = None) -> Path | None:
         if not loaded and launchd_pid(label)[0]:  # still loaded: keep its plist
             raise AutostartError(f"could not unload {label}: {message(bootout)}")
     else:
+        name = unit_name(label)
         loaded = unit.exists()
         if loaded:
-            run("systemctl", "--user", "disable", "--now", unit_name(label))
+            disable = run("systemctl", "--user", "disable", "--now", name)
+            if disable.returncode and systemd_active(name):  # still active: keep its unit
+                raise AutostartError(f"could not stop {label}: {message(disable)}")
     if not unit.exists():
         return unit if loaded else None
     unit.unlink()
     if kind == "systemd":
-        checked("systemctl", "--user", "daemon-reload")
+        reload = run("systemctl", "--user", "daemon-reload")
+        if reload.returncode:  # the unit is gone; the manager learns it at its next start
+            print(
+                "warning: the systemd user manager could not be reached"
+                f" (`systemctl --user daemon-reload`: {message(reload)})",
+                file=sys.stderr,
+                flush=True,
+            )
     return unit
 
 

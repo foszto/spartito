@@ -451,6 +451,56 @@ def test_uninstall_on_linux_disables_and_removes_the_unit(on, fake_system: FakeS
     assert not unit_path().exists()
 
 
+def test_uninstall_keeps_the_unit_of_a_service_that_stays_active(on, fake_system: FakeSystem):
+    on("linux")
+    assert invoke("install").exit_code == 0
+    fake_system.set("systemctl", "disable", exit=1, out="Failed to stop unit: Access denied\n")
+    fake_system.set("systemctl", "is-active", out="active\n")
+    fake_system.clear()
+    result = invoke("uninstall")
+    assert result.exit_code == 1
+    assert result.output == f"error: could not stop {label()}: Failed to stop unit: Access denied\n"
+    name = f"{label()}.service"
+    assert fake_system.calls() == [
+        ["systemctl", "--user", "disable", "--now", name],
+        ["systemctl", "--user", "is-active", name],
+    ]
+    assert unit_path().exists()
+
+
+def test_uninstall_removes_the_unit_of_a_service_that_is_not_active(on, fake_system: FakeSystem):
+    on("linux")
+    assert invoke("install").exit_code == 0
+    fake_system.set("systemctl", "disable", exit=1, out=MANAGER_DOWN)
+    fake_system.clear()
+    result = invoke("uninstall")
+    assert result.exit_code == 0
+    assert result.output == f"removed {label()}: {unit_path()}\n"
+    name = f"{label()}.service"
+    assert fake_system.calls() == [
+        ["systemctl", "--user", "disable", "--now", name],
+        ["systemctl", "--user", "is-active", name],
+        ["systemctl", "--user", "daemon-reload"],
+    ]
+    assert not unit_path().exists()
+
+
+def test_uninstall_without_a_user_manager_removes_the_unit_and_says_so(on, fake_system: FakeSystem):
+    on("linux")
+    assert invoke("install").exit_code == 0
+    for sub in ("disable", "is-active", "daemon-reload"):
+        fake_system.set("systemctl", sub, exit=1, out=MANAGER_DOWN)
+    result = invoke("uninstall")
+    assert result.exit_code == 0
+    assert result.output == (
+        "warning: the systemd user manager could not be reached"
+        " (`systemctl --user daemon-reload`: Failed to connect to bus: No medium found)\n"
+        f"removed {label()}: {unit_path()}\n"
+    )
+    assert not unit_path().exists()
+    assert invoke("uninstall").output == f"{label()} is not installed\n"
+
+
 def test_status_on_linux_reads_active_and_the_main_pid(on, fake_system: FakeSystem):
     on("linux")
     assert invoke("install", "--port", str(free_port())).exit_code == 0
