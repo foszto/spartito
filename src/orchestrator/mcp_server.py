@@ -549,8 +549,8 @@ def update_board_item(
 # A tuple and no output schema: the shortest listing (every orchestrator turn pays for it).
 @server.tool(structured_output=False)
 def dispatch_board(project: str, items: tuple[int, ...] = ()) -> dict[str, Any]:
-    """Send board items to the project lead as one message; they become in_progress.
-    `items`: these ids (idea or ready); default: every ready item."""
+    """Send board items to the project's lead as one message (they become in_progress).
+    `items`: ids, idea or ready; default: all ready."""
     orch = _orch()
     access = Caller.from_env(orch)
     if access.scoped():
@@ -568,6 +568,18 @@ def dispatch_board(project: str, items: tuple[int, ...] = ()) -> dict[str, Any]:
     if skipped:
         reply["skipped"] = {str(s["id"]): s["reason"] for s in skipped}
     return {**reply, "lead": sent["agent_id"], "run_id": run_id}
+
+
+def _without_titles(name: str) -> None:
+    """Drop the titles pydantic writes into a tool's input schema (they repeat the names):
+    the listing is sent in every turn. Validation uses the function's model, not this."""
+    schema = server._tool_manager.get_tool(name).parameters
+    schema.pop("title", None)
+    for field in schema.get("properties", {}).values():
+        field.pop("title", None)
+
+
+_without_titles("dispatch_board")
 
 
 # Tools only the top-level orchestrator (and the interactive session) sees: every other

@@ -19,9 +19,9 @@ from orchestrator.service import ORCHESTRATOR_ID, Orchestrator, OrchestratorErro
 # description, inputSchema, outputSchema), summed.
 MASTER_LISTING_CHARS = 15342
 # What the orchestrator (and the interactive session) sees beyond a lead: dispatch_board,
-# 440 chars as listed, of which 377 are its description and input schema.
-ORCHESTRATOR_EXTRA_CHARS = 440
-ORCHESTRATOR_TEXT_CHARS = 380
+# 355 chars as listed, of which 292 are its description and input schema.
+ORCHESTRATOR_EXTRA_CHARS = 355
+ORCHESTRATOR_TEXT_CHARS = 330
 
 
 def seed(orch: Orchestrator, project: str) -> None:

@@ -3,11 +3,13 @@ CLI and the orchestrator's MCP tool. No runner starts: the messages stay queued.
 
 from __future__ import annotations
 
+import json
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import anyio
 import pytest
 from starlette.testclient import TestClient
 from test_notifications import lead
@@ -229,3 +231,29 @@ def test_a_lead_cannot_dispatch(orch: Orchestrator, project: str, as_agent: Call
     as_agent(None)  # the interactive session may: the message comes from the user
     reply = mcp_server.dispatch_board(project, (item,))
     assert reply["sent"] == [item] and orch.store.meta(reply["run_id"]).sender is None
+
+
+def test_an_id_beyond_sqlites_range_is_skipped(orch: Orchestrator, project: str) -> None:
+    mine = board(orch, project)
+    client = TestClient(app, base_url="http://localhost")
+
+    body = {"ids": [2**63, mine["ready"]]}
+    answer = client.post("/api/board/dispatch-items", json=body, headers=ORIGIN)
+
+    assert answer.status_code == 200
+    assert sent(answer.json()) == {project: [mine["ready"]]}
+    assert answer.json()["skipped"] == [{"id": 2**63, "reason": "no such item"}]
+
+
+def test_the_mcp_server_takes_the_tools_arguments(
+    orch: Orchestrator, project: str, as_agent: Callable
+) -> None:
+    mine = board(orch, project)
+    as_agent(None)
+
+    reply = anyio.run(
+        mcp_server.server.call_tool, "dispatch_board", {"project": project, "items": [mine["idea"]]}
+    )
+    assert json.loads(reply.content[0].text)["sent"] == [mine["idea"]]
+    with pytest.raises(Exception, match="project\n  Field required"):  # validated as before
+        anyio.run(mcp_server.server.call_tool, "dispatch_board", {"items": ["x"]})
