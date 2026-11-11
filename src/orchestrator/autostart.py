@@ -73,8 +73,13 @@ class Status:
     logs: str  # the log file, or the journalctl command
 
 
-def platform_kind(platform: str = sys.platform) -> str:
-    """`launchd` or `systemd`; AutostartError elsewhere."""
+def this_platform() -> str:
+    return sys.platform
+
+
+def platform_kind(platform: str | None = None) -> str:
+    """`launchd` or `systemd` for `platform` (default: this one); AutostartError elsewhere."""
+    platform = platform or this_platform()
     if platform == "darwin":
         return "launchd"
     if platform.startswith("linux"):
@@ -172,7 +177,7 @@ def render_unit(svc: Service) -> str:
         "[Service]\n"
         "Type=exec\n"
         f"ExecStart={exec_start}\n"
-        f"WorkingDirectory={systemd_quote(str(svc.home))}\n"
+        f"WorkingDirectory={str(svc.home).replace('%', '%%')}\n"  # a path: never unquoted
         f"{env}"
         "Restart=on-failure\n"
         "RestartSec=2\n"
@@ -278,7 +283,7 @@ def cut_log(log: Path, limit: int = LOG_LIMIT) -> bool:
 # -- install / uninstall / status ------------------------------------------------------------
 
 
-def install(svc: Service, platform: str = sys.platform) -> Path:
+def install(svc: Service, platform: str | None = None) -> Path:
     """Write the unit and (re)start the service with it; returns the unit file. Running it
     again replaces the unit and restarts the service."""
     kind = platform_kind(platform)
@@ -303,7 +308,7 @@ def install(svc: Service, platform: str = sys.platform) -> Path:
     return unit
 
 
-def uninstall(label: str, platform: str = sys.platform) -> Path | None:
+def uninstall(label: str, platform: str | None = None) -> Path | None:
     """Stop the service and remove its unit; returns the removed unit file, None when there
     was nothing to remove."""
     kind = platform_kind(platform)
@@ -345,7 +350,7 @@ def ping(host: str, port: int, path: Path, timeout: float = PING_TIMEOUT) -> tup
     return "ours", ""
 
 
-def status(label: str, platform: str = sys.platform) -> Status:
+def status(label: str, platform: str | None = None) -> Status:
     kind = platform_kind(platform)
     unit = unit_path(label, kind)
     loaded, pid = (launchd_pid if kind == "launchd" else systemd_pid)(label)
