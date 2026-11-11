@@ -250,6 +250,63 @@ def update(store: Store, item_id: int, changes: dict[str, Any], actor: Actor = O
     return item
 
 
+def _ids(conn: sqlite3.Connection, project: str, state: str) -> list[int]:
+    """The ids in one state of a project, in their order."""
+    rows = conn.execute(
+        "SELECT id FROM board_items WHERE project = ? AND state = ? ORDER BY position, id",
+        (project, state),
+    )
+    return [row["id"] for row in rows]
+
+
+def _renumber(conn: sqlite3.Connection, ids: list[int]) -> None:
+    for position, item_id in enumerate(ids):
+        conn.execute("UPDATE board_items SET position = ? WHERE id = ?", (position, item_id))
+
+
+def place(store: Store, item_id: int, state: Any, before: Any = None, actor: Actor = OWNER) -> Item:
+    """Put the item into `state` (its own or another one) just before the item `before`,
+    which must be in that state of the same project (None: at the end). The state's
+    positions are renumbered 0, 1, …, and so are those of the state it left; where it
+    already is, nothing changes. One transaction. Raises ValueError."""
+    state = check_state(state)
+    if before is not None and type(before) is not int:
+        raise ValueError("before must be a board item id or null")
+    if before == item_id:
+        raise ValueError(f"#{item_id} cannot be placed before itself")
+    run_id = _run_of(store, actor)
+    with store.transaction() as conn:
+        item = _get(conn, item_id)
+        if item is None:
+            raise ValueError(f"there is no board item #{item_id}")
+        current = _ids(conn, item.project, state)
+        order = [other for other in current if other != item_id]
+        if before is None:
+            order.append(item_id)
+        elif before in order:
+            order.insert(order.index(before), item_id)
+        elif _get(conn, before) is None:
+            raise ValueError(f"there is no board item #{before}")
+        else:
+            raise ValueError(f"#{before} is not in {item.project} · {state}")
+        if state != item.state or order != current:
+            _renumber(conn, order)
+            if state != item.state:
+                _renumber(conn, [i for i in _ids(conn, item.project, item.state) if i != item_id])
+            stamp = now()
+            conn.execute(
+                "UPDATE board_items SET state = ?, updated_at = ? WHERE id = ?",
+                (state, stamp, item_id),
+            )
+            placed = _get(conn, item_id)
+            assert placed is not None
+            changes = _diff(item, placed, ("state", "position"))
+            record(conn, item_id, actor, "place", changes, stamp, run_id)
+        item = _get(conn, item_id)
+    assert item is not None
+    return item
+
+
 def move(store: Store, item_id: int, direction: str, actor: Actor = OWNER) -> Item:
     """Swap the item with its neighbour above (`up`) or below (`down`) in its state; at the
     edge nothing changes. The state's positions are renumbered 0, 1, … Raises ValueError."""

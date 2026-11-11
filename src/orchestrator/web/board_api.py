@@ -60,6 +60,16 @@ def board_view(orch: Orchestrator, request: Request, body: dict) -> dict[str, An
 # -- placing an item -------------------------------------------------------------------
 
 
+@route("/api/board/{item_id:int}/place", post=True)
+def place_board_item(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """`{state, before}`: the item into `state` just before the item `before` (null or
+    absent: at the end); the item as it is now."""
+    if not body.get("state"):
+        raise OrchestratorError("'state' is required")
+    item_id = request.path_params["item_id"]
+    return orch.place_board_item(item_id, body["state"], body.get("before")).to_dict()
+
+
 # -- dispatching named items -----------------------------------------------------------
 
 

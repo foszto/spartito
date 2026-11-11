@@ -77,6 +77,18 @@ def board_view(
 # -- placing an item -------------------------------------------------------------------
 
 
+def place_board_item(
+    orch: Facade,
+    item_id: int,
+    state: str,
+    before: int | None = None,
+    actor: board.Actor | None = None,
+) -> board.Item:
+    """Move an item to `state` (or within its own) just before the item `before` of that
+    state and project (None: at the end); see board.place."""
+    return _checked(lambda: board.place(orch.store, item_id, state, before, actor or board.OWNER))
+
+
 # -- dispatching named items -----------------------------------------------------------
 
 

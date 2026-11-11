@@ -245,6 +245,8 @@ class Orchestrator:
         except ValueError as exc:
             raise OrchestratorError(str(exc)) from None
 
+    place_board_item = boards.place_board_item  # into a state, before an item
+
     def dispatch_board(
         self, project: str, ids: Any = None, actor: board.Actor | None = None
     ) -> dict[str, Any]:
