@@ -28,13 +28,13 @@ def record_path() -> Path:
 class Server(uvicorn.Server):
     """A uvicorn server that keeps `run/web.json` while it listens."""
 
-    record: dict | None = None
+    record: dict | None = None  # what it wrote to `run/web.json`, once it did
 
     async def startup(self, sockets: list[socket.socket] | None = None) -> None:
         await super().startup(sockets)
         if self.started:
             port = self.servers[0].sockets[0].getsockname()[1]
-            self.record = {
+            record = {
                 "pid": os.getpid(),
                 "host": self.config.host,
                 "port": port,
@@ -42,8 +42,14 @@ class Server(uvicorn.Server):
             }
             path = record_path()
             temp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-            temp.write_text(json.dumps(self.record))
+            temp.write_text(json.dumps(record))
             temp.replace(path)
+            self.record = record
+
+    @property
+    def ready(self) -> bool:
+        """Listening and recorded in `run/web.json`."""
+        return self.record is not None
 
     def forget(self) -> None:
         """Remove `run/web.json` if it is still this server's."""

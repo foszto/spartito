@@ -108,7 +108,7 @@ class OwnServer:
     def start(self) -> None:
         self.thread.start()
         deadline = time.monotonic() + STARTUP_TIMEOUT
-        while not self.server.started:
+        while not self.server.ready:
             if not self.thread.is_alive() or time.monotonic() > deadline:
                 self.stop()
                 raise AppError("the dashboard server did not start")

@@ -75,9 +75,9 @@ def started(server: serve.Server, sock: socket.socket | None = None) -> threadin
     thread = threading.Thread(target=serve.serve, args=(server, sock), daemon=True)
     thread.start()
     deadline = time.monotonic() + 10
-    while not server.started and thread.is_alive() and time.monotonic() < deadline:
+    while not server.ready and thread.is_alive() and time.monotonic() < deadline:
         time.sleep(0.02)
-    assert server.started
+    assert server.ready
     return thread
 
 
