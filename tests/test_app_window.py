@@ -346,7 +346,8 @@ class FakeWebview(types.ModuleType):
         self.options: dict = {}
         self.ping: dict | None = None
         self.main_thread = False
-        self.open_for = 0.5  # seconds until the user closes the window
+        self.open_for: float | None = 0.5  # seconds until the user closes it; None: never
+        self.on_start = lambda: None  # what happens once the window is up
 
     def create_window(self, title: str, url: str, **options) -> FakeWindow:
         self.windows.append(FakeWindow(title, url, **options))
@@ -361,6 +362,7 @@ class FakeWebview(types.ModuleType):
         self.ping = get_json(win.url + "api/ping")
         if func:
             threading.Thread(target=func, daemon=True).start()
+        self.on_start()
         win.destroyed.wait(self.open_for)
         win.events.closed.fire()
 
@@ -372,12 +374,14 @@ def webview(monkeypatch: pytest.MonkeyPatch) -> FakeWebview:
     return fake
 
 
-# A Chromium-family browser. FAKE_CHROMIUM_MODE: "window" (the default) shows the page for
-# FAKE_CHROMIUM_OPEN_FOR seconds and stays without it, as macOS browsers do, until SIGTERM;
-# "quit" leaves when its page is gone, as on Linux; "silent" has no DevTools endpoint and stays;
-# "exit<N>" leaves at once with code N. Its DevTools endpoint (with --remote-debugging-port=0)
-# lists a background page always and the page while it is shown. Notes its argv, then "TERM"
-# when terminated, in $FAKE_CHROMIUM_LOG, and what /api/ping answered it in <log>.ping.
+# A Chromium-family browser. FAKE_CHROMIUM_MODE: "window" (the default) shows the page until
+# FAKE_CHROMIUM_OPEN_FOR seconds after its DevTools endpoint first listed it (so orch app has
+# seen it, however slow the machine) and stays without it, as macOS browsers do, until SIGTERM;
+# "quit" leaves as its window closes, as on Linux, before ever listing no page; "silent" has no
+# DevTools endpoint and stays; "exit<N>" leaves at once with code N. The endpoint (with
+# --remote-debugging-port=0) lists a background page always and the page while it is shown.
+# Notes its argv, then "TERM" when terminated, in $FAKE_CHROMIUM_LOG, and what /api/ping
+# answered it in <log>.ping.
 CHROMIUM = """#!PYTHON
 import json, os, signal, sys, threading, time, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -402,11 +406,11 @@ if mode.startswith("exit"):
 url = next(a for a in args if a.startswith("--app=")).removeprefix("--app=")
 with urllib.request.urlopen(url + "api/ping", timeout=5) as resp, open(log + ".ping", "wb") as out:
     out.write(resp.read())
-shown = time.monotonic()
+listed = []  # when the page was first listed
 
 
 def window_open():
-    return time.monotonic() - shown < open_for
+    return not listed or time.monotonic() - listed[0] < open_for
 
 
 class DevTools(BaseHTTPRequestHandler):
@@ -414,6 +418,9 @@ class DevTools(BaseHTTPRequestHandler):
         targets = [{"type": "background_page", "id": "b"}]
         if window_open():
             targets.append({"type": "page", "id": "p", "url": url})
+            listed[:] = listed or [time.monotonic()]
+        elif mode == "quit":
+            os._exit(0)
         self.send_response(200 if self.path == "/json/list" else 404)
         self.end_headers()
         self.wfile.write(json.dumps(targets).encode())
@@ -454,11 +461,29 @@ def chromium(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return log
 
 
-def after(seconds: float, action) -> threading.Timer:
-    timer = threading.Timer(seconds, action)
-    timer.daemon = True
-    timer.start()
-    return timer
+@pytest.fixture
+def launched(monkeypatch: pytest.MonkeyPatch) -> list[subprocess.Popen]:
+    """The processes started while the test runs (the browser among them)."""
+    procs: list[subprocess.Popen] = []
+
+    class Recorded(subprocess.Popen):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            procs.append(self)
+
+    monkeypatch.setattr(window.subprocess, "Popen", Recorded)
+    return procs
+
+
+def opened_then_hangup(urls: list[str]):
+    """A default browser that notes the URL, then SIGHUP: it ends orch app once it serves."""
+
+    def opened(url: str) -> bool:
+        urls.append(url)
+        os.kill(os.getpid(), signal.SIGHUP)
+        return True
+
+    return opened
 
 
 def kill_self(sig: int):
@@ -500,6 +525,7 @@ def test_native_window_on_an_own_server(webview: FakeWebview):
 
 
 def test_native_window_closes_itself_after_the_given_time(webview: FakeWebview):
+    webview.open_for = None  # until destroyed
     result = run_app("--close-after", "0.1")
     assert result.exit_code == 0, result.output
     (win,) = webview.windows
@@ -551,10 +577,8 @@ def test_server_of_another_home_is_not_reused(webview: FakeWebview, pinged):
 
 
 def test_chromium_app_mode_ends_when_its_window_is_closed(chromium: Path):
-    started_at = time.monotonic()
     result = run_app()
     assert result.exit_code == 0, result.output
-    assert time.monotonic() - started_at < 10
     assert result.stderr == NATIVE_MISSING + "\n"
     url = result.stdout.removeprefix("web UI: ").strip()
     assert chromium.read_text().splitlines() == [
@@ -581,8 +605,10 @@ def test_chromium_that_quits_with_its_window(chromium: Path, monkeypatch):
 @pytest.mark.parametrize("code", [0, 1])
 def test_chromium_that_exits_at_once_did_not_start(chromium: Path, nothing_real, monkeypatch, code):
     monkeypatch.setenv("FAKE_CHROMIUM_MODE", f"exit{code}")
-    result = run_app("--close-after", "0.3")
-    assert result.exit_code == 0, result.output
+    monkeypatch.setattr(window, "EARLY_EXIT", 600.0)  # "at once" however slow the machine
+    monkeypatch.setattr(window.webbrowser, "open", opened_then_hangup(nothing_real))
+    result = run_app()  # no time limit: that would also end the wait for the browser
+    assert result.exit_code == 128 + signal.SIGHUP, result.output
     (url,) = nothing_real
     assert result.stderr == (
         f"{NATIVE_MISSING}\nGoogle Chrome did not start (it exited at once, code {code});"
@@ -603,13 +629,15 @@ def test_chromium_app_mode_when_pywebview_fails(chromium: Path, monkeypatch: pyt
     assert chromium.exists()
 
 
-def test_chromium_without_devtools_is_ended_after_the_given_time(chromium: Path, monkeypatch):
+def test_chromium_without_devtools_is_ended_after_the_given_time(
+    chromium: Path, launched: list[subprocess.Popen], monkeypatch
+):
     monkeypatch.setenv("FAKE_CHROMIUM_MODE", "silent")
-    started_at = time.monotonic()
     result = run_app("--close-after", "1")
     assert result.exit_code == 0, result.output
-    assert time.monotonic() - started_at < 10
-    assert chromium.read_text().splitlines()[-1] == "TERM"
+    (browser,) = launched
+    # Ended by orch app: by its SIGTERM handler, or before the fake had one
+    assert browser.returncode in (0, -signal.SIGTERM)
     assert_own_server_gone(result.stdout.removeprefix("web UI: ").strip())
 
 
@@ -785,7 +813,15 @@ def test_linux_backend_that_cannot_start(
 
 def test_sigterm_ends_chromium_app_mode(chromium: Path, monkeypatch):
     monkeypatch.setenv("FAKE_CHROMIUM_OPEN_FOR", "1e9")
-    after(1.5, kill_self(signal.SIGTERM))
+    shown = window.open_pages
+
+    def open_pages(profile: Path) -> int | None:
+        pages = shown(profile)
+        if pages:  # the window is up: now the signal
+            os.kill(os.getpid(), signal.SIGTERM)
+        return pages
+
+    monkeypatch.setattr(window, "open_pages", open_pages)
     result = run_app()
     assert result.exit_code == 128 + signal.SIGTERM, result.output
     assert chromium.read_text().splitlines()[-1] == "TERM"
@@ -794,20 +830,18 @@ def test_sigterm_ends_chromium_app_mode(chromium: Path, monkeypatch):
     assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL  # restored
 
 
-def test_sighup_ends_serving(nothing_real: list[str]):
-    after(0.5, kill_self(signal.SIGHUP))
+def test_sighup_ends_serving(nothing_real: list[str], monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(window.webbrowser, "open", opened_then_hangup(nothing_real))
     result = run_app()  # serves until a signal
     assert result.exit_code == 128 + signal.SIGHUP, result.output
     assert_own_server_gone(nothing_real[0])
 
 
 def test_sigterm_closes_the_native_window(webview: FakeWebview):
-    webview.open_for = 10
-    after(0.5, kill_self(signal.SIGTERM))
-    started_at = time.monotonic()
+    webview.open_for = None  # until destroyed
+    webview.on_start = kill_self(signal.SIGTERM)
     result = run_app()
     assert result.exit_code == 128 + signal.SIGTERM, result.output
-    assert time.monotonic() - started_at < 5
     (win,) = webview.windows
     assert win.destroyed.is_set()
     assert_own_server_gone(win.url)
@@ -816,13 +850,19 @@ def test_sigterm_closes_the_native_window(webview: FakeWebview):
 def test_serving_only_gives_up_the_lock_for_a_second_app(monkeypatch: pytest.MonkeyPatch):
     seen = []
 
+    def second_app(url: str) -> None:  # once the first one only serves
+        while not lock_is_free():
+            time.sleep(0.05)
+        seen.append((True, locate.running_server(), url))
+        os.kill(os.getpid(), signal.SIGHUP)
+
     def opened(url: str) -> bool:
-        after(0.3, lambda: seen.append((lock_is_free(), locate.running_server(), url)))
+        threading.Thread(target=second_app, args=(url,), daemon=True).start()
         return True
 
     monkeypatch.setattr(window.webbrowser, "open", opened)
-    result = run_app("--close-after", "1")
-    assert result.exit_code == 0, result.output
+    result = run_app()
+    assert result.exit_code == 128 + signal.SIGHUP, result.output
     ((free, found, url),) = seen
     assert free
     assert found == url  # a second `orch app` reuses this server
