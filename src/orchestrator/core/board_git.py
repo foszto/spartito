@@ -16,12 +16,23 @@ to the base and one merged by squashing are not merged. Accepted: a base branch 
 back behind a branch without commits of its own and then forward again shows that branch
 ahead and then in the base, which is what a fast-forward merge looks like, so it counts as
 merged.
+
+A pass moves an item in `ready` or `in_progress` to `done` (`move_done`) when it finds its
+branch merged, once per merged tip: then `done_tip` = `ahead_tip`, and whatever happens to
+the item afterwards (moved back by hand, its worktree dirty and clean again), it does not
+move again until a new tip was seen ahead and that one is merged. A merge while the item is
+in another state is only noted (`done_tip` = `ahead_tip`, nothing moves): the pass also
+checks, in the same rotation, the items in other states whose cached `ahead_tip` is not
+`done_tip` yet. So an item put into `done` by hand before its branch was merged, and
+reopened later, stays where it was put.
 """
 
 from __future__ import annotations
 
+import sqlite3
 import sys
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -34,23 +45,56 @@ SYNC_EVERY = 60.0  # seconds between two passes, across processes
 SYNC_BUDGET = 2.0  # seconds a pass may spend, git included
 STAMP = "board-git.stamp"
 CHECKED_STATES = (board.READY, board.IN_PROGRESS)
+AUTO_RULE = "merged"  # who moves an item to done: actor kind "auto", this rule
+
+# Records an automatic move to done, inside its transaction: called as
+# record(conn, the item as it was before the move, the merged tip's commit id).
+Recorder = Callable[[sqlite3.Connection, board.Item, str], None]
 
 
-def sync(store: Store) -> dict[str, Any]:
+def sync(store: Store, record: Recorder | None = None) -> dict[str, Any]:
     """Run `check` unless a process ran it in the last SYNC_EVERY seconds (or runs it right
-    now). Never raises; returns what `check` returns ({"checked": []} when skipped)."""
+    now). Never raises; returns what `check` returns (empty lists when skipped)."""
     if not due(STAMP, SYNC_EVERY):
-        return {"checked": []}
-    return check(store)
+        return {"checked": [], "done": []}
+    return check(store, record)
 
 
-def check(store: Store) -> dict[str, Any]:
-    """One pass, now, within SYNC_BUDGET: {"checked": [item ids]}. Never raises."""
+def check(store: Store, record: Recorder | None = None) -> dict[str, Any]:
+    """One pass, now, within SYNC_BUDGET: {"checked": [item ids], "done": [item ids moved
+    to done]}; `record` as in `move_done`. Never raises."""
     try:
-        return _check(store, time.monotonic() + SYNC_BUDGET)
+        return _check(store, time.monotonic() + SYNC_BUDGET, record)
     except Exception as exc:
         print(f"board git check failed: {exc!r}", file=sys.stderr)
-        return {"checked": []}
+        return {"checked": [], "done": []}
+
+
+def move_done(
+    store: Store, item_id: int, row: dict[str, Any], record: Recorder | None = None
+) -> bool:
+    """Store the item's cache `row` and, if the item is still `ready` or `in_progress`, move
+    it to the end of `done`, in one transaction. `record`, if given, is called in that
+    transaction after the move as record(conn, the item before the move, row["done_tip"])
+    to record who moved it (actor kind "auto", rule AUTO_RULE); if it raises, nothing is
+    changed. Returns whether the item moved."""
+    with store.transaction() as conn:
+        store.save_board_git(row, conn)
+        found = conn.execute(
+            "SELECT * FROM board_items WHERE id = ? AND state IN (?, ?)", (item_id, *CHECKED_STATES)
+        ).fetchone()
+        if found is None:
+            return False
+        before = board.Item.from_row(found)
+        conn.execute(
+            "UPDATE board_items SET state = ?, updated_at = ?, position = (SELECT"
+            " COALESCE(MAX(position) + 1, 0) FROM board_items WHERE project = ? AND state = ?)"
+            " WHERE id = ? AND state IN (?, ?)",
+            (board.DONE, now(), before.project, board.DONE, item_id, *CHECKED_STATES),
+        )
+        if record is not None:
+            record(conn, before, row["done_tip"])
+    return True
 
 
 def last_sync() -> str | None:
@@ -83,9 +127,8 @@ def states(store: Store, items: list[board.Item]) -> dict[int, dict[str, Any]]:
     }
 
 
-def _check(store: Store, deadline: float) -> dict[str, Any]:
-    items = [item for state in CHECKED_STATES for item in board.listing(store, state=state)]
-    items = [item for item in items if item.branch]
+def _check(store: Store, deadline: float, record: Recorder | None) -> dict[str, Any]:
+    items = [item for item in board.listing(store) if item.branch]
     projects = {project.name: project for project in store.list_projects()}
     cached = store.board_git([item.id for item in items])
     rows = {
@@ -95,19 +138,27 @@ def _check(store: Store, deadline: float) -> dict[str, Any]:
         and item.project in projects
         and (row["branch"], row["base"]) == (item.branch, projects[item.project].base_branch)
     }  # a row for another branch or base starts afresh
+    items = [
+        item
+        for item in items
+        if item.state in CHECKED_STATES
+        or ((row := rows.get(item.id)) and row["ahead_tip"] and row["ahead_tip"] != row["done_tip"])
+    ]  # other states: only while a merge may still have to be noted
     agents: dict[str, list[Agent]] = {}
-    checked = []
+    checked, done = [], []
     for item in sorted(items, key=lambda item: rows.get(item.id, {}).get("checked_at", "")):
         if item.project not in projects:
             continue
         if time.monotonic() >= deadline:
             break
         try:
-            _check_item(store, item, projects[item.project], rows.get(item.id), agents, deadline)
+            project, row = projects[item.project], rows.get(item.id)
+            if _check_item(store, item, project, row, agents, deadline, record):
+                done.append(item.id)
             checked.append(item.id)
         except Exception as exc:  # this item only: the next one may well work
             print(f"board git check of #{item.id} failed: {exc!r}", file=sys.stderr)
-    return {"checked": checked}
+    return {"checked": checked, "done": done}
 
 
 def _check_item(
@@ -117,8 +168,11 @@ def _check_item(
     row: dict[str, Any] | None,
     agents: dict[str, list[Agent]],
     deadline: float,
-) -> dict[str, Any]:
-    """Check one item and store its new cache row (also returned)."""
+    record: Recorder | None,
+) -> bool:
+    """Check one item and store its new cache row. A merge not acted on or noted yet sets
+    `done_tip`, and moves the item to done if it is `ready` or `in_progress`. Returns
+    whether it moved."""
     assert item.branch
     if project.name not in agents:
         agents[project.name] = store.list_agents(project.name)
@@ -131,8 +185,12 @@ def _check_item(
         deadline=deadline,
     )
     new = _next_row(item, project, row, state)
+    if new["error"] is None and new["merged"] and new["ahead_tip"] != new["done_tip"]:
+        new["done_tip"] = new["ahead_tip"]
+        if item.state in CHECKED_STATES:
+            return move_done(store, item.id, new, record)
     store.save_board_git(new, wait=max(0.1, deadline - time.monotonic()))
-    return new
+    return False
 
 
 def _worktree(item: board.Item, agents: list[Agent]) -> str | None:

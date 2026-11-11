@@ -1,5 +1,5 @@
 """The live git state of board items (git.branch_state, core/board_git): the cache, its
-pass (budget, stamp, safety)."""
+pass (budget, stamp, safety) and the automatic move to done of merged items."""
 
 from __future__ import annotations
 
@@ -204,7 +204,7 @@ def test_a_fresh_branch_is_not_merged(store: Store, project: Project) -> None:
     run_git(project.path, "branch", "feat")
     entry = item(store, project, "feat")
 
-    assert board_git.check(store) == {"checked": [entry.id]}
+    assert board_git.check(store) == {"checked": [entry.id], "done": []}
 
     state = live(store, entry)
     assert state is not None
@@ -472,12 +472,12 @@ def test_the_stamp_gates_a_second_pass(store: Store, project: Project) -> None:
     run_git(project.path, "branch", "feat")
     entry = item(store, project, "feat")
 
-    assert board_git.sync(store) == {"checked": [entry.id]}
-    assert board_git.sync(store) == {"checked": []}  # within SYNC_EVERY
+    assert board_git.sync(store) == {"checked": [entry.id], "done": []}
+    assert board_git.sync(store) == {"checked": [], "done": []}  # within SYNC_EVERY
 
     stamp = Path(os.environ["ORCH_HOME"]) / board_git.STAMP
     stamp.write_text(f"{time.time() - board_git.SYNC_EVERY - 1:.3f}\n")
-    assert board_git.sync(store) == {"checked": [entry.id]}
+    assert board_git.sync(store) == {"checked": [entry.id], "done": []}
 
 
 def test_last_sync_is_the_time_of_the_last_pass(store: Store) -> None:
@@ -496,7 +496,228 @@ def test_a_pass_never_raises(store: Store, monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr(board, "listing", broken)
 
-    assert board_git.sync(store) == {"checked": []}
+    assert board_git.sync(store) == {"checked": [], "done": []}
+
+
+# -- moving merged items to done ----------------------------------------------------------
+
+
+def state_of(store: Store, entry: board.Item) -> str:
+    return board.get(store, entry.id).state
+
+
+class Recorder:
+    """A recording hook for board_git.check: what it was called with."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, str, str, bool]] = []
+
+    def __call__(self, conn: sqlite3.Connection, before: board.Item, tip: str) -> None:
+        moved = conn.execute("SELECT state FROM board_items WHERE id = ?", (before.id,)).fetchone()
+        assert moved["state"] == "done"  # called after the move, in its transaction
+        self.calls.append((before.id, before.state, tip, conn.in_transaction))
+
+
+def merge(project: Project, branch: str = "feat") -> None:
+    run_git(project.path, "merge", "-q", "--no-ff", "-m", f"merge {branch}", branch)
+
+
+@pytest.fixture
+def wt(store: Store, project: Project, tmp_path: Path) -> Path:
+    """A worker's worktree on branch feat with one commit."""
+    path = tmp_path / "wt"
+    worker(store, project, path, "feat")
+    commit(path)
+    return path
+
+
+def test_a_merged_item_moves_to_done_and_is_recorded(
+    store: Store, project: Project, wt: Path
+) -> None:
+    entry = item(store, project, "feat", "in_progress")
+    assert board_git.check(store) == {"checked": [entry.id], "done": []}
+    seen = row_of(store, entry)["ahead_tip"]
+    merge(project)
+    recorder = Recorder()
+
+    assert board_git.check(store, recorder) == {"checked": [entry.id], "done": [entry.id]}
+
+    assert state_of(store, entry) == "done"
+    assert recorder.calls == [(entry.id, "in_progress", seen, True)]
+    assert row_of(store, entry)["done_tip"] == seen
+    assert board_git.check(store) == {"checked": [], "done": []}  # done and noted: left alone
+
+
+def test_a_fresh_branch_never_moves(store: Store, project: Project) -> None:
+    run_git(project.path, "branch", "feat")
+    entry = item(store, project, "feat")
+    for _ in range(2):
+        assert board_git.check(store) == {"checked": [entry.id], "done": []}
+    assert state_of(store, entry) == "ready"
+
+
+def test_a_branch_deleted_after_the_merge_moves_to_done(store: Store, project: Project) -> None:
+    run_git(project.path, "checkout", "-q", "-b", "feat")
+    commit(project.path)
+    run_git(project.path, "checkout", "-q", "main")
+    entry = item(store, project, "feat")
+    board_git.check(store)
+    merge(project)
+    run_git(project.path, "branch", "-q", "-D", "feat")
+
+    assert board_git.check(store)["done"] == [entry.id]
+
+
+def test_a_deleted_branch_whose_tip_is_not_in_the_base_stays(
+    store: Store, project: Project
+) -> None:
+    run_git(project.path, "checkout", "-q", "-b", "feat")
+    commit(project.path)
+    run_git(project.path, "checkout", "-q", "main")
+    entry = item(store, project, "feat")
+    board_git.check(store)
+    run_git(project.path, "branch", "-q", "-D", "feat")  # deleted, never merged
+
+    assert board_git.check(store)["done"] == []
+    assert state_of(store, entry) == "ready" and live(store, entry)["merged"] is False
+
+
+def test_a_squash_merged_item_stays(store: Store, project: Project, wt: Path) -> None:
+    entry = item(store, project, "feat")
+    board_git.check(store)
+    run_git(project.path, "merge", "-q", "--squash", "feat")
+    run_git(project.path, "commit", "-q", "-m", "squashed")
+
+    assert board_git.check(store)["done"] == []
+    assert state_of(store, entry) == "ready"  # accepted: a squash merge is moved by hand
+
+
+@pytest.mark.parametrize("how", ["branch -f", "reset --hard"])
+def test_a_branch_reset_to_the_base_does_not_move(
+    store: Store, project: Project, wt: Path, how: str
+) -> None:
+    """Finding 1: ahead once, then reset to the base: nothing was merged."""
+    entry = item(store, project, "feat", "in_progress")
+    board_git.check(store)
+    if how == "branch -f":
+        run_git(wt, "checkout", "-q", "--detach")
+        run_git(project.path, "branch", "-f", "feat", "main")
+        run_git(wt, "checkout", "-q", "feat")
+    else:
+        run_git(wt, "reset", "-q", "--hard", "main")
+
+    for _ in range(2):
+        assert board_git.check(store)["done"] == []
+    assert state_of(store, entry) == "in_progress"
+
+
+def test_a_dirty_worktree_holds_the_move_until_it_is_clean(
+    store: Store, project: Project, wt: Path
+) -> None:
+    entry = item(store, project, "feat")
+    board_git.check(store)
+    merge(project)
+    (wt / "half-done.txt").write_text("x")
+
+    assert board_git.check(store)["done"] == []
+    assert state_of(store, entry) == "ready"
+
+    (wt / "half-done.txt").unlink()
+    assert board_git.check(store)["done"] == [entry.id]
+
+
+def test_an_item_moved_back_out_of_done_stays(store: Store, project: Project, wt: Path) -> None:
+    """Finding 2: moved back by hand, then a scratch file comes and goes in the worktree."""
+    entry = item(store, project, "feat", "in_progress")
+    board_git.check(store)
+    merge(project)
+    assert board_git.check(store)["done"] == [entry.id]
+
+    board.update(store, entry.id, {"state": "in_progress"})  # by hand: not finished after all
+    assert board_git.check(store) == {"checked": [entry.id], "done": []}
+    (wt / "scratch.txt").write_text("x")
+    assert board_git.check(store)["done"] == [] and live(store, entry)["merged"] is False
+    (wt / "scratch.txt").unlink()
+    assert board_git.check(store)["done"] == [] and live(store, entry)["merged"] is True
+    assert state_of(store, entry) == "in_progress"
+
+    commit(wt, "more.txt")  # new work, seen ahead, merged: that tip moves it again
+    board_git.check(store)
+    merge(project)
+    assert board_git.check(store)["done"] == [entry.id]
+
+
+def test_a_merge_while_the_item_is_done_is_only_noted(
+    store: Store, project: Project, wt: Path
+) -> None:
+    """Finding 3: put into done by hand before the merge, reopened after it."""
+    entry = item(store, project, "feat", "in_progress")
+    board_git.check(store)
+    board.update(store, entry.id, {"state": "done"})
+    assert board_git.check(store) == {"checked": [entry.id], "done": []}  # not merged yet
+    merge(project)
+
+    assert board_git.check(store) == {"checked": [entry.id], "done": []}  # noted
+    row = row_of(store, entry)
+    assert row["done_tip"] == row["ahead_tip"] and row["merged"] == 1
+    assert board_git.check(store) == {"checked": [], "done": []}  # nothing left to note
+
+    board.update(store, entry.id, {"state": "in_progress"})
+    assert board_git.check(store) == {"checked": [entry.id], "done": []}
+    assert state_of(store, entry) == "in_progress"
+
+
+def test_a_merge_while_the_item_is_an_idea_is_only_noted(
+    store: Store, project: Project, wt: Path
+) -> None:
+    entry = item(store, project, "feat", "ready")
+    board_git.check(store)
+    board.update(store, entry.id, {"state": "idea"})
+    merge(project)
+
+    assert board_git.check(store) == {"checked": [entry.id], "done": []}
+
+    board.update(store, entry.id, {"state": "ready"})
+    assert board_git.check(store)["done"] == [] and state_of(store, entry) == "ready"
+
+
+def test_items_in_other_states_without_a_merge_to_note_are_not_checked(
+    store: Store, project: Project, wt: Path
+) -> None:
+    run_git(project.path, "branch", "never-ahead")
+    item(store, project, "never-ahead", "idea")
+    item(store, project, "feat", "done")  # never seen ahead while checked
+
+    assert board_git.check(store) == {"checked": [], "done": []}
+
+
+def test_a_failing_recorder_leaves_the_item_for_the_next_pass(
+    store: Store, project: Project, wt: Path
+) -> None:
+    entry, other = item(store, project, "feat"), item(store, project, "feat")
+    board_git.check(store)
+    merge(project)
+
+    def broken(conn: sqlite3.Connection, before: board.Item, tip: str) -> None:
+        if before.id == entry.id:
+            raise RuntimeError("history is gone")
+
+    assert board_git.check(store, broken) == {"checked": [other.id], "done": [other.id]}
+    assert state_of(store, entry) == "ready" and row_of(store, entry)["done_tip"] is None
+    assert board_git.check(store)["done"] == [entry.id]
+
+
+def test_move_done_only_moves_ready_and_in_progress_items(store: Store, project: Project) -> None:
+    entry = item(store, project, "feat", "idea")
+    finished = item(store, project, "x", "done")
+    row = {name: None for name in Store.BOARD_GIT_COLUMNS}
+    row.update(item_id=entry.id, branch="feat", base="main", merged=1, checked_at="t")
+
+    assert board_git.move_done(store, entry.id, row) is False
+    assert state_of(store, entry) == "idea" and entry.id in store.board_git()
+    board.update(store, entry.id, {"state": "ready"})
+    assert board_git.move_done(store, entry.id, row) is True
+    assert board.get(store, entry.id).position == finished.position + 1
 
 
 # -- older databases ---------------------------------------------------------------------
@@ -526,7 +747,7 @@ def test_an_existing_database_opens_with_the_cache_table(
         board.add(store, "demo", "old item", state="ready", branch="feat")
     (entry,) = board.listing(store)
 
-    assert board_git.check(store) == {"checked": [entry.id]}
+    assert board_git.check(store) == {"checked": [entry.id], "done": []}
     assert live(store, entry) is not None
     Store(path)  # opening it again changes nothing
     assert list(store.board_git()) == [entry.id]
