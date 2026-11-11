@@ -50,7 +50,6 @@ NO_TASK = "no plan task; revisit with tasks 6/12"
 # against the layering, form a cycle or reach the store from an interface today. More imports
 # than pinned, or a lazy one turned module level, fails; so does a count above the real one.
 IMPORT_EXCEPTIONS = {
-    ("service", "runner"): (1, "module level", "kilo; cycle (task 1: textfmt)"),
     ("runner", "service"): (2, "lazy", "follow-up turns (task 4: run-end pipeline)"),
     ("roles", "loadout"): (1, "module level", f"cycle with loadout -> roles; {NO_TASK}"),
     ("loadout", "roles"): (1, "lazy", f"cycle with roles -> loadout; {NO_TASK}"),

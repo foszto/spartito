@@ -40,6 +40,7 @@ from .models import (
 from .providers import McpServer, RunContext
 from .providers.base import NOTIFICATION_RESULT, Invocation
 from .store import COMPACT, MESSAGE, NOTIFICATION, Store, now
+from .textfmt import kilo
 
 POLL_SECONDS = 0.5
 RECONCILE_EVERY = 10  # polls
@@ -707,12 +708,6 @@ def compact_limit(before: Usage | None) -> int | None:
     if before is None or not before.context_tokens:
         return None
     return max(1, before.context_tokens // 2)
-
-
-def kilo(tokens: int | None) -> str:
-    if tokens is None:
-        return "?"
-    return f"{tokens / 1000:.0f}k" if tokens >= 1000 else str(tokens)
 
 
 def compact_summary(usage: Usage) -> str:

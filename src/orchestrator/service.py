@@ -31,7 +31,6 @@ from .models import (
     running_total,
     turn_order,
 )
-from .runner import kilo
 from .store import (
     ANYONE,
     ARCHIVE_AUTO,
@@ -42,6 +41,7 @@ from .store import (
     NOTIFY_MODES,
     Store,
 )
+from .textfmt import kilo
 
 LEAD_ROLE = "lead"
 ORCHESTRATOR_ID = "orchestrator"
