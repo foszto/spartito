@@ -3,7 +3,7 @@
 The modules are parsed, not imported. An import counts wherever it appears: at module level
 or inside a function ("lazy"); only `if TYPE_CHECKING:` blocks are skipped, as they never run.
 
-Both exception lists below may only shrink: a test fails when an entry is no longer needed.
+Both exception lists below may only shrink: a test fails when a count is higher than needed.
 """
 
 from __future__ import annotations
@@ -16,9 +16,7 @@ from pathlib import Path
 PACKAGE = Path(__file__).resolve().parent.parent / "src" / "orchestrator"
 
 # Module (first dotted component below `orchestrator`) -> layer. A module may import from its own
-# layer or any layer of a lower rank. Domain and infra share a rank: infra builds domain types
-# (store -> models, providers -> loadout) and some domain modules read through infra
-# (settings -> store), so between those two only import cycles are checked.
+# layer or any layer of a lower rank; interfaces must not import the store module at all.
 LAYERS = {
     "cli": "interfaces",
     "mcp_server": "interfaces",
@@ -45,21 +43,36 @@ LAYERS = {
     "config": "infra",  # paths and environment
     "memory_guard": "infra",  # hook script used by the Claude provider
 }
-RANK = {"interfaces": 3, "core": 2, "runner": 1, "domain": 0, "infra": 0}
+RANK = {"interfaces": 4, "core": 3, "runner": 2, "domain": 1, "infra": 0}
 
-# (importer, imported) pairs that go against the layering or form a cycle today.
+NO_TASK = "no plan task; revisit with tasks 6/12"
+# (importer, imported) -> (number of imports, where they are, why) for the imports that go
+# against the layering, form a cycle or reach the store from an interface today. More imports
+# than pinned, or a lazy one turned module level, fails; so does a count above the real one.
 IMPORT_EXCEPTIONS = {
-    ("service", "runner"): "kilo; cycle with runner -> service (task 1: textfmt)",
-    ("runner", "service"): "lazy, runner launches follow-up turns (task 4: run-end pipeline)",
-    ("roles", "loadout"): "cycle with the lazy loadout -> roles (no plan task yet)",
-    ("loadout", "roles"): "lazy, roles imports KEYS from loadout (no plan task yet)",
+    ("service", "runner"): (1, "module level", "kilo; cycle (task 1: textfmt)"),
+    ("runner", "service"): (2, "lazy", "follow-up turns (task 4: run-end pipeline)"),
+    ("roles", "loadout"): (1, "module level", f"cycle with loadout -> roles; {NO_TASK}"),
+    ("loadout", "roles"): (1, "lazy", f"cycle with roles -> loadout; {NO_TASK}"),
+    ("mcp_server", "store"): (1, "module level", "ANYONE (task 5: close the facade)"),
+    ("store", "models"): (1, "module level", f"rows to model objects; {NO_TASK}"),
+    ("providers.base", "models"): (1, "module level", f"Agent, Event; {NO_TASK}"),
+    ("providers.base", "loadout"): (1, "module level", f"Loadout; {NO_TASK}"),
+    ("providers.claude", "models"): (1, "module level", f"Agent, Event, Usage; {NO_TASK}"),
+    ("providers.claude", "loadout"): (1, "module level", f"Loadout; {NO_TASK}"),
+    ("providers.codex", "models"): (1, "module level", f"Agent, Event, Usage; {NO_TASK}"),
+    ("keep_awake", "settings"): (1, "module level", f"keep_awake setting; {NO_TASK}"),
+    ("desktop", "settings"): (1, "module level", f"desktop_notifications setting; {NO_TASK}"),
+    ("desktop", "notify"): (1, "module level", f"notify.settled; {NO_TASK}"),
+    ("desktop", "models"): (1, "module level", f"RunStatus; {NO_TASK}"),
 }
 
-# Interface file -> allowed number of `.store` attribute accesses (task 5 brings all to zero).
+# Interface module -> allowed number of `.store` attribute accesses; unlisted interface modules
+# allow none (task 5 brings all to zero).
 STORE_ACCESS = {
-    "cli.py": 9,
-    "mcp_server.py": 23,
-    "web/app.py": 7,
+    "cli": 9,
+    "mcp_server": 23,
+    "web.app": 7,
 }
 
 
@@ -70,9 +83,12 @@ class Import:
     line: int
     lazy: bool
 
+    @property
+    def where(self) -> str:
+        return "lazy" if self.lazy else "module level"
+
     def __str__(self) -> str:
-        where = "lazy" if self.lazy else "module level"
-        return f"{self.importer} -> {self.imported} (line {self.line}, {where})"
+        return f"{self.importer} -> {self.imported} (line {self.line}, {self.where})"
 
 
 def module_name(path: Path) -> str:
@@ -136,9 +152,12 @@ def imports_of(path: Path) -> list[Import]:
     return list(dict.fromkeys(found))  # one entry per statement, not per imported name
 
 
+def modules() -> dict[str, Path]:
+    return {module_name(path): path for path in sorted(PACKAGE.rglob("*.py")) if module_name(path)}
+
+
 def all_imports() -> list[Import]:
-    files = sorted(PACKAGE.rglob("*.py"))
-    return [imp for path in files if module_name(path) for imp in imports_of(path)]
+    return [imp for path in modules().values() for imp in imports_of(path)]
 
 
 def layer(module: str) -> str:
@@ -146,7 +165,8 @@ def layer(module: str) -> str:
 
 
 def violations() -> dict[tuple[str, str], list[Import]]:
-    """Imports of a higher layer, and imports that are part of a cycle, by (importer, imported)."""
+    """Imports of a higher layer, imports in a cycle and imports of the store from an interface,
+    by (importer, imported)."""
     imports = all_imports()
     graph: dict[str, set[str]] = defaultdict(set)
     for imp in imports:
@@ -166,27 +186,37 @@ def violations() -> dict[tuple[str, str], list[Import]]:
     found: dict[tuple[str, str], list[Import]] = defaultdict(list)
     for imp in imports:
         upward = RANK[layer(imp.imported)] > RANK[layer(imp.importer)]
-        if upward or reaches(imp.imported, imp.importer):
+        store = layer(imp.importer) == "interfaces" and imp.imported.split(".")[0] == "store"
+        if upward or store or reaches(imp.imported, imp.importer):
             found[imp.importer, imp.imported].append(imp)
     return found
 
 
 def test_every_module_has_a_layer():
-    modules = {module_name(path) for path in PACKAGE.rglob("*.py")} - {""}
-    unplaced = sorted(m for m in modules if m.split(".")[0] not in LAYERS)
+    unplaced = sorted(m for m in modules() if m.split(".")[0] not in LAYERS)
     assert not unplaced, f"add these modules to LAYERS: {unplaced}"
     assert set(LAYERS.values()) == set(RANK)
 
 
 def test_imports_follow_the_layers():
-    found = violations()
-    new = [str(imp) for pair in sorted(set(found) - set(IMPORT_EXCEPTIONS)) for imp in found[pair]]
-    assert not new, "imports against the layering or in a cycle:\n" + "\n".join(new)
+    problems = []
+    for pair, imps in sorted(violations().items()):
+        allowed, where, _ = IMPORT_EXCEPTIONS.get(pair, (0, "", ""))
+        if len(imps) > allowed or any(imp.where != where for imp in imps):
+            problems += [str(imp) for imp in imps]
+    assert not problems, "imports against the layering, in a cycle or of the store:\n" + "\n".join(
+        problems
+    )
 
 
 def test_import_exceptions_are_still_needed():
-    stale = sorted(set(IMPORT_EXCEPTIONS) - set(violations()))
-    assert not stale, f"remove these entries from IMPORT_EXCEPTIONS: {stale}"
+    found = violations()
+    stale = {
+        pair: len(found.get(pair, []))
+        for pair, (allowed, _, _) in IMPORT_EXCEPTIONS.items()
+        if len(found.get(pair, [])) < allowed
+    }
+    assert not stale, f"lower these IMPORT_EXCEPTIONS counts (remove at 0): {stale}"
 
 
 def store_accesses(path: Path) -> list[int]:
@@ -195,9 +225,9 @@ def store_accesses(path: Path) -> list[int]:
 
 
 def test_interfaces_use_the_store_no_more_than_allowed():
-    for file, allowed in STORE_ACCESS.items():
-        lines = store_accesses(PACKAGE / file)
-        assert len(lines) <= allowed, f"{file}: {len(lines)} `.store` uses, allowed {allowed}"
-        assert len(lines) >= allowed, (
-            f"{file}: only {len(lines)} `.store` uses left; lower STORE_ACCESS to {len(lines)}"
-        )
+    interfaces = {name: path for name, path in modules().items() if layer(name) == "interfaces"}
+    for name in sorted(set(interfaces) | set(STORE_ACCESS)):
+        used = len(store_accesses(interfaces[name])) if name in interfaces else 0
+        allowed = STORE_ACCESS.get(name, 0)
+        assert used <= allowed, f"{name}: {used} `.store` uses, allowed {allowed}"
+        assert used >= allowed, f"{name}: only {used} `.store` uses left; lower STORE_ACCESS"
