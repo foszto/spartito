@@ -305,3 +305,28 @@ def test_masters_board_code_writes_and_its_changes_show_as_unrecorded(
         "edit",
     ]
     assert board.listing(orch.store, project, "done")[0].id == item
+
+
+def test_a_change_that_changes_nothing_leaves_no_entry_and_no_gap(
+    orch: Orchestrator, project: str
+) -> None:
+    item = orch.add_board_item(project, "same", "text", state="ready", branch="b").id
+
+    orch.update_board_item(item, {"title": "same", "state": "ready", "branch": "b"})
+    mcp_server.update_board_item(item, description="text")
+
+    detail = orch.board_detail(item)
+    assert [entry["action"] for entry in detail["history"]] == ["add"]
+    assert detail["unrecorded"] is False
+    orch.update_board_item(item, {"title": "changed"})
+    assert [entry["action"] for entry in orch.board_detail(item)["history"]] == ["add", "edit"]
+
+
+def test_detail_answers_400_for_an_id_beyond_sqlites_range(orch: Orchestrator) -> None:
+    client = TestClient(app, base_url="http://localhost")
+    for item_id in (2**63, 10**30):
+        answer = client.get(f"/api/board/{item_id}/detail")
+        assert answer.status_code == 400
+        assert answer.json() == {"error": f"there is no board item #{item_id}"}
+    shown = CliRunner().invoke(cli.app, ["board", "show", str(2**63)])
+    assert shown.exit_code == 1 and f"no board item #{2**63}" in shown.output
