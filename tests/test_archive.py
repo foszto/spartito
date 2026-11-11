@@ -18,7 +18,8 @@ import pytest
 from starlette.testclient import TestClient
 from typer.testing import CliRunner
 
-from orchestrator import cli, config, git, mcp_server, notify, service
+from orchestrator import cli, config, git, mcp_server, notify
+from orchestrator.core import archive as archiving
 from orchestrator.models import Agent, RunStatus
 from orchestrator.service import NeedsConfirmation, Orchestrator, OrchestratorError
 from orchestrator.store import SCHEMA, Store
@@ -429,7 +430,7 @@ def test_the_automatic_check_runs_from_the_listings_at_most_every_few_minutes(
     orch.overview(archived=True)  # the archive listing never runs it
     assert len(calls) == 1
     stamp = config.home() / "auto-archive.stamp"
-    stamp.write_text(f"{time.time() - service.AUTO_ARCHIVE_EVERY - 1:.0f}\n")
+    stamp.write_text(f"{time.time() - archiving.AUTO_ARCHIVE_EVERY - 1:.0f}\n")
     CliRunner().invoke(cli.app, ["ps"])
     assert len(calls) == 2
     stamp.write_text("garbage")  # an unreadable stamp does not switch the check off
@@ -455,7 +456,7 @@ def test_the_automatic_check_stops_after_its_time_budget(
 ) -> None:
     for n in range(3):
         finished_turn(orch, orch.create_agent(project, name=f"a{n}", worktree=False).id)
-    monkeypatch.setattr(service, "AUTO_ARCHIVE_BUDGET", -1.0)
+    monkeypatch.setattr(archiving, "AUTO_ARCHIVE_BUDGET", -1.0)
 
     assert orch.auto_archive() == []
 
@@ -619,7 +620,7 @@ def test_a_hanging_git_never_hangs_the_listings(
     for agent in agents:
         finished_turn(orch, agent.id)
     monkeypatch.setenv("PATH", f"{hanging_git.parent}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setattr(service, "AUTO_ARCHIVE_BUDGET", 1.5)
+    monkeypatch.setattr(archiving, "AUTO_ARCHIVE_BUDGET", 1.5)
 
     started = time.monotonic()
     archived = orch.auto_archive()
