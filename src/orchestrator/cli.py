@@ -31,6 +31,7 @@ from .settings import (
     KEEP_AWAKE,
     TIERS,
 )
+from .textfmt import fit_line as one_line
 
 # Help texts are wrapped in the source: Markdown reflows them (Rich markup would keep every
 # line break and swallow `[...]`).
@@ -207,11 +208,6 @@ def state_label(view: dict) -> tuple[str, str | None]:
     if waiting := queued_after(view):
         text += f" +{waiting}"
     return text, STATUS_COLORS.get(status)
-
-
-def one_line(text: str, limit: int = 80) -> str:
-    text = " ".join(text.split())
-    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def mcp_config() -> str:

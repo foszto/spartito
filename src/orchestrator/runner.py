@@ -40,7 +40,7 @@ from .models import (
 from .providers import McpServer, RunContext
 from .providers.base import NOTIFICATION_RESULT, Invocation
 from .store import COMPACT, MESSAGE, NOTIFICATION, Store, now
-from .textfmt import kilo
+from .textfmt import kilo, one_line
 
 POLL_SECONDS = 0.5
 RECONCILE_EVERY = 10  # polls
@@ -696,11 +696,6 @@ SIZE_UNKNOWN = (
     "not compacted: the conversation's size is not known (e.g. right after a compaction);"
     " it is after the agent's next turn"
 )
-
-
-def one_line(text: str, limit: int = 200) -> str:
-    text = " ".join(text.split())
-    return text if len(text) <= limit else text[:limit] + "…"
 
 
 def compact_limit(before: Usage | None) -> int | None:
