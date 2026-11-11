@@ -32,10 +32,28 @@ from .settings import (
     TIERS,
 )
 
-app = typer.Typer(no_args_is_help=True, add_completion=False, help=__doc__)
-project_app = typer.Typer(no_args_is_help=True, help="Manage projects (git repositories).")
+# Help texts are wrapped in the source: Markdown reflows them (Rich markup would keep every
+# line break and swallow `[...]`).
+MARKUP = "markdown"
+
+app = typer.Typer(
+    no_args_is_help=True,
+    add_completion=False,
+    rich_markup_mode=MARKUP,
+    help=f"{config.PROJECT_NAME}: run Claude Code and Codex agents in parallel in git worktrees,"
+    " steered through one orchestrator agent. Start with `orch project add`, then `orch chat`"
+    " or `orch web`.",
+)
+project_app = typer.Typer(
+    no_args_is_help=True, rich_markup_mode=MARKUP, help="Manage projects (git repositories)."
+)
 app.add_typer(project_app, name="project")
-config_app = typer.Typer(no_args_is_help=True, help="Default model and effort per tier.")
+config_app = typer.Typer(
+    no_args_is_help=True,
+    rich_markup_mode=MARKUP,
+    help="Settings: model and effort per tier, automatic archiving and compaction, keep-awake,"
+    " desktop notifications.",
+)
 app.add_typer(config_app, name="config")
 
 STATUS_COLORS = {
@@ -282,7 +300,7 @@ def mcp() -> None:
 
 @app.command()
 def web(host: str = "127.0.0.1", port: int = 8787) -> None:
-    """Serve the web UI: add projects, start agents and talk to them."""
+    """Serve the web dashboard: add projects, start agents and talk to them."""
     import uvicorn
 
     from .web.app import LOOPBACK_HOSTS
@@ -350,7 +368,7 @@ def project_rm(name: str) -> None:
 
 @config_app.command("show")
 def config_show(project: Annotated[str | None, typer.Option("--project", "-p")] = None) -> None:
-    """Show model/effort settings: global, or a project's overrides."""
+    """Show the settings: global, or a project's overrides."""
     o = orch()
     try:
         data = o.settings(project)
@@ -562,7 +580,9 @@ def decide(
 
 # -- task board -------------------------------------------------------------
 
-board_app = typer.Typer(help="The task board of each project: ideas and tasks.")
+board_app = typer.Typer(
+    rich_markup_mode=MARKUP, help="The task board of each project: ideas and tasks."
+)
 app.add_typer(board_app, name="board")
 ProjectOption = Annotated[str | None, typer.Option("--project", "-p")]
 StateOption = Annotated[
