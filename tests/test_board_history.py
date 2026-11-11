@@ -152,51 +152,36 @@ def test_a_failed_dispatch_records_its_restore(
 # -- the runs that worked on an item -------------------------------------------------
 
 
-def set_times(orch: Orchestrator, table: str, stamps: dict[int, str], column: str) -> None:
-    with orch.store.connection() as conn:
-        for row_id, stamp in stamps.items():
-            conn.execute(f"UPDATE {table} SET {column} = ? WHERE id = ?", (stamp, row_id))
+def test_the_runs_are_those_its_history_names(
+    orch: Orchestrator, project: str, as_agent: Callable
+) -> None:
+    item = orch.add_board_item(project, "x", state="ready").id
+    other = orch.add_board_item(project, "y", state="ready").id
+    lead_id = lead(orch, project)
+    before = orch.store.add_run(lead_id, "earlier work").id
+    dispatched = orch.dispatch_board(project, [item])["run_id"]
+    turn = running(orch, lead_id)
+    as_agent(lead_id)
+    mcp_server.update_board_item(item, branch="orch/x")  # in that turn
+    mcp_server.update_board_item(other, title="y2")  # the same turn, another item
+    as_agent(None)
+    after = orch.store.add_run(lead_id, "other work").id
 
-
-def history_ids(orch: Orchestrator, item_id: int) -> list[int]:
-    with orch.store.connection() as conn:
-        rows = conn.execute(
-            "SELECT id FROM board_history WHERE item_id = ? ORDER BY id", (item_id,)
-        )
-        return [row["id"] for row in rows]
+    runs = orch.board_detail(item)["runs"]
+    assert [run["id"] for run in runs] == [dispatched, turn]
+    assert {before, after}.isdisjoint(run["id"] for run in runs)
+    assert runs[0] == {
+        "id": dispatched,
+        "agent_id": lead_id,
+        "status": "waiting",
+        "created_at": orch.get_run(dispatched).created_at,
+        "ended_at": None,
+    }
+    assert [run["id"] for run in orch.board_detail(other)["runs"]] == [turn]
 
 
 def at(minute: int) -> str:
     return f"2026-01-01T10:{minute:02d}:00+00:00"
-
-
-def test_the_runs_of_its_agent_while_it_was_in_progress(orch: Orchestrator, project: str) -> None:
-    item = orch.add_board_item(project, "x", state="ready").id
-    lead_id = lead(orch, project)
-    before = orch.store.add_run(lead_id, "earlier work").id
-    dispatched = orch.dispatch_board(project)["run_id"]
-    during = [orch.store.add_run(lead_id, f"turn {n}").id for n in range(22)]
-    orch.update_board_item(item, {"state": "done"})
-    after = orch.store.add_run(lead_id, "later work").id
-    add, dispatch, done = history_ids(orch, item)
-    set_times(orch, "board_history", {add: at(0), dispatch: at(10), done: at(40)}, "ts")
-    runs = {before: at(5), dispatched: at(10), after: at(40)}
-    runs |= {run_id: at(11 + n) for n, run_id in enumerate(during)}
-    set_times(orch, "runs", runs, "created_at")
-    orch.store.update_run(during[0], started_at=at(9))  # started counts: before it was sent
-
-    shown = [run["id"] for run in orch.board_detail(item)["runs"]]
-    assert shown == [dispatched, *during[2:]]  # the dispatch's, and its agent's last 20
-    assert len(during[2:]) == 20
-    run = orch.board_detail(item)["runs"][0]
-    assert run == {
-        "id": dispatched, "agent_id": lead_id, "status": "waiting", "created_at": at(10),
-        "ended_at": None,
-    }  # fmt: skip
-
-    orch.update_board_item(item, {"state": "in_progress"})  # back to work: an open span
-    again = orch.store.add_run(lead_id, "again").id
-    assert again in [run["id"] for run in orch.board_detail(item)["runs"]]
 
 
 # -- API and CLI --------------------------------------------------------------------

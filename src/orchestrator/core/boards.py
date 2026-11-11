@@ -162,49 +162,17 @@ def dispatch_items(
 
 # -- an item's history -----------------------------------------------------------------
 
-AGENT_RUNS = 20  # of the item's agent's runs while it was in_progress, in its detail
 
-
-def _in_progress(entries: list[dict[str, Any]]) -> list[tuple[str, str | None]]:
-    """The recorded spans [start, end) in which the item was in_progress (end None: it
-    still is)."""
-    spans: list[tuple[str, str | None]] = []
-    start = None
-    for entry in entries:
-        change = entry["changes"].get("state")
-        if not isinstance(change, list):
-            continue
-        if change[1] == board.IN_PROGRESS and start is None:
-            start = entry["ts"]
-        elif change[0] == board.IN_PROGRESS and start is not None:
-            spans.append((start, entry["ts"]))
-            start = None
-    if start is not None:
-        spans.append((start, None))
-    return spans
-
-
-def _runs(orch: Facade, item: board.Item, entries: list[dict[str, Any]]) -> list[Run]:
-    """The runs that worked on the item: those its history names (a dispatch's, an acting
-    agent's), and the last AGENT_RUNS runs of its agent started while it was in_progress."""
-    named = {entry["run_id"] for entry in entries if entry["run_id"]}
-    runs = {run.id: run for run in map(orch.store.get_run, named) if run}
-    spans = _in_progress(entries)
-    if item.agent_id and spans:
-
-        def during(run: Run) -> bool:
-            began = run.started_at or run.created_at
-            return any(start <= began and (end is None or began < end) for start, end in spans)
-
-        during_runs = [run for run in orch.store.runs_of(item.agent_id) if during(run)]
-        runs.update((run.id, run) for run in during_runs[-AGENT_RUNS:])
-    return [runs[run_id] for run_id in sorted(runs)]
+def _runs(orch: Facade, entries: list[dict[str, Any]]) -> list[Run]:
+    """The runs its history names: a dispatch's, and the turns of agents that changed it."""
+    named = sorted({entry["run_id"] for entry in entries if entry["run_id"]})
+    return [run for run in map(orch.store.get_run, named) if run]
 
 
 def board_detail(orch: Facade, item_id: int) -> dict[str, Any]:
     """One item with what happened to it: {item, history: [{ts, actor_kind, actor, action,
     changes, run_id}] oldest first, runs: [{id, agent_id, status, created_at, ended_at}] that
-    worked on it, unrecorded: it changed after its last recorded change (or has none)}."""
+    the history names, unrecorded: it changed after its last recorded change (or has none)}."""
     item = _checked(lambda: board.get(orch.store, item_id))
     entries = board.history(orch.store, item_id)
     runs = [
@@ -215,7 +183,7 @@ def board_detail(orch: Facade, item_id: int) -> dict[str, Any]:
             "created_at": run.created_at,
             "ended_at": run.ended_at,
         }
-        for run in _runs(orch, item, entries)
+        for run in _runs(orch, entries)
     ]
     return {
         "item": item.to_dict(),
