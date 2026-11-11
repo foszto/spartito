@@ -13,6 +13,7 @@ from starlette.testclient import TestClient
 from typer.testing import CliRunner
 
 from orchestrator import cli, config, mcp_server, notify
+from orchestrator.core.compaction import LEAD_KEEP
 from orchestrator.loadout import Loadout
 from orchestrator.models import Agent, Event, Run, RunStatus, Usage, context_now
 from orchestrator.providers.base import NOTIFICATION_RESULT, RunContext
@@ -25,7 +26,7 @@ from orchestrator.runner import (
     record_usage,
     render_prompt,
 )
-from orchestrator.service import LEAD_KEEP, Orchestrator, OrchestratorError, agent_state
+from orchestrator.service import Orchestrator, OrchestratorError, agent_state
 from orchestrator.store import COMPACT, Store
 from orchestrator.web.app import app
 

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from . import board, config, decisions, desktop, git, notify, providers, roles, settings
-from .core import launcher
+from .core import compaction, launcher
 from .errors import NeedsConfirmation, OrchestratorError
 from .models import (
     COMPACT,
@@ -34,7 +34,6 @@ from .store import (
     ARCHIVE_MANUAL,
     Store,
 )
-from .textfmt import kilo
 from .timeline import AgentRuns
 from .timeline import agent_state as agent_state  # old import path
 from .timeline import compaction_left as compaction_left  # old import path
@@ -45,12 +44,6 @@ QUEUE_PREVIEW_CHARS = 120
 QUEUE_LISTED = 20  # waiting runs in the detail view's `queue`; `queued_runs` has the count
 WAIT_POLL_SECONDS = 1.0
 WITHDRAWN_PREVIEW_CHARS = 80  # of a withdrawn message, in the agent's info event
-# What the summary of a lead role's compaction (the orchestrator, project leads) keeps when
-# no instructions are given: by an automatic compaction or `orch compact` without any.
-LEAD_KEEP = (
-    "Keep: the owner's standing rules and preferences; the current state; open decisions and"
-    " open items; work in flight with its agent ids, branches and run ids."
-)
 # The automatic archive check runs from the listings (dashboard poll, `orch ps`,
 # list_agents), at most once per AUTO_ARCHIVE_EVERY seconds across all processes, and stops
 # checking further agents once it has spent AUTO_ARCHIVE_BUDGET seconds (the rest: next time).
@@ -266,143 +259,14 @@ class Orchestrator:
         self._launch(run)
         return run
 
-    def compact(self, agent_id: str, instructions: str | None = None) -> Run:
-        """Queue a turn that compacts the agent's conversation with the CLI's own means
-        (Claude: `/compact [instructions]`), in order with its other turns. The session
-        stays the same; the run's result is a short summary (`compacted 48k -> 1k tokens`)
-        that is never delivered to a parent and wakes no one."""
-        agent = self.agent(agent_id)
-        refusal = self.compact_refusal(agent)
-        if refusal:
-            raise OrchestratorError(f"cannot compact {agent.id}: {refusal}")
-        try:
-            prompt = self.compact_prompt(agent, instructions)
-        except ValueError as exc:
-            raise OrchestratorError(f"cannot compact {agent.id}: {exc}") from None
-        run = self.store.add_run(agent.id, prompt, kind=COMPACT)
-        self._launch(run)
-        return run
-
-    def compact_prompt(self, agent: Agent, instructions: str | None) -> str:
-        """The prompt of a compaction of the agent. Without instructions a lead role gets
-        LEAD_KEEP, where its provider takes instructions. Raises ValueError."""
-        compact_prompt = providers.get(agent.provider).compact_prompt  # type: ignore[attr-defined]
-        if (instructions or "").strip() or not self._is_lead(agent):
-            return compact_prompt(instructions)
-        try:
-            return compact_prompt(LEAD_KEEP)
-        except ValueError:  # e.g. Codex, which takes no instructions
-            return compact_prompt(None)
-
-    def _is_lead(self, agent: Agent) -> bool:
-        project = self.store.get_project(agent.project) if agent.project else None
-        try:
-            return roles.load(agent.role, project.path if project else None).lead
-        except KeyError:
-            return False
-
-    def auto_compact(self, run_id: int) -> Run | None:
-        """At the end of a turn that succeeded (its runner calls this before it marks the
-        run done, so no queued run can take the turn first): queue an automatic compaction
-        when the context is above the threshold (settings.compact_at); it goes ahead of the
-        agent's queued messages (Store.may_start). Not after a compaction, not while one is
-        queued or running, not while paused (compaction_paused: the last compaction left
-        the context above the threshold; the turn that measured it says so in the log), and
-        quietly not when the agent cannot be compacted (compact_refusal)."""
-        run = self.store.get_run(run_id)
-        if run is None or self.store.meta(run_id).kind == COMPACT:
-            return None
-        agent = self.agent(run.agent_id)
-        threshold = settings.compact_at(self.store, agent.project)
-        if not threshold:
-            return None
-        timeline = AgentRuns.read(self.store, agent.id)
-        record = timeline.context_now(agent.session_id)
-        tokens = record.context_tokens if record else None
-        if tokens is None or tokens <= threshold:
-            return None
-        left = timeline.compaction_left(agent.session_id)
-        if left is not None and left[0] is None:
-            return None  # nothing measured since the last compaction: the size is not known
-        paused = self.compaction_paused(agent, threshold)
-        if paused is not None:
-            if paused[1] == run_id:  # this turn measured it: say so once
-                self._note_paused(run_id, agent, paused[0], threshold)
-            return None
-        if self.compact_refusal(agent):
-            return None
-        try:
-            prompt = self.compact_prompt(agent, None)
-        except ValueError:
-            return None
-        queued = self.store.add_auto_compaction(agent.id, prompt)
-        if queued is None:
-            return None
-        try:  # also a stop of the finishing turn meanwhile leaves no compaction behind
-            self.store.add_event(
-                queued.id,
-                agent.id,
-                "info",
-                f"automatic compaction: context {kilo(tokens)} is above the threshold of"
-                f" {kilo(threshold)}",
-            )
-            self._launch(queued)
-        except BaseException:
-            self.store.delete_run(queued.id)
-            raise
-        return queued
-
-    def compaction_paused(
-        self, agent: Agent, threshold: int | None = None
-    ) -> tuple[int | None, int] | None:
-        """What the agent's most recent compaction left (compaction_left: tokens, measuring
-        run) when that is above the threshold: then no automatic compaction is queued for
-        the agent until a compaction gets it below, or the threshold is raised above it.
-        None otherwise."""
-        if threshold is None:
-            threshold = settings.compact_at(self.store, agent.project)
-        left = AgentRuns.read(self.store, agent.id).compaction_left(agent.session_id)
-        paused = threshold and left is not None and left[0] is not None and left[0] > threshold
-        return left if paused else None
-
-    def compaction_ended(self, run_id: int) -> None:
-        """After a compaction run ended: when it measured the size it left itself and that
-        pauses automatic compaction, say so in the agent's log (otherwise the turn that
-        measures it does, see auto_compact)."""
-        run = self.store.get_run(run_id)
-        agent = self.store.get_agent(run.agent_id) if run and not run.status.active else None
-        if agent is None:
-            return
-        threshold = settings.compact_at(self.store, agent.project)
-        paused = self.compaction_paused(agent, threshold)
-        if paused is not None and paused[1] == run_id:
-            self._note_paused(run_id, agent, paused[0], threshold)
-
-    def _note_paused(self, run_id: int, agent: Agent, left: int, threshold: int) -> None:
-        self.store.add_event(
-            run_id,
-            agent.id,
-            "info",
-            f"automatic compaction paused: the last compaction left the context at"
-            f" {kilo(left)}, above the threshold of {kilo(threshold)}; a compaction that gets"
-            f" it below (orch compact {agent.id}) or a higher threshold resumes it",
-        )
-
-    def compact_refusal(self, agent: Agent) -> str | None:
-        """Why the agent's conversation cannot be compacted now; None when it can."""
-        try:
-            provider = providers.get(agent.provider)
-        except KeyError as exc:
-            return str(exc.args[0])
-        if not hasattr(provider, "compact_prompt"):
-            return f"the {agent.provider} provider has no way to compact a conversation"
-        if not agent.session_id:
-            return "it has no conversation yet"
-        if getattr(provider, "compact_needs_size", False):
-            record = AgentRuns.read(self.store, agent.id).context_now(agent.session_id)
-            if record is None or not record.context_tokens:
-                return "its context size is not known yet (it is after its next turn)"
-        return None
+    compact = compaction.compact
+    compact_prompt = compaction.compact_prompt
+    _is_lead = compaction._is_lead
+    auto_compact = compaction.auto_compact
+    compaction_paused = compaction.compaction_paused
+    compaction_ended = compaction.compaction_ended
+    _note_paused = compaction._note_paused
+    compact_refusal = compaction.compact_refusal
 
     def _cause(self, sender: str | None) -> int | None:
         running = self.store.running_run(sender) if sender else None

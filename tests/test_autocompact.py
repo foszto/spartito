@@ -12,9 +12,10 @@ from starlette.testclient import TestClient
 from typer.testing import CliRunner
 
 from orchestrator import cli, config, mcp_server, notify, runner, settings
+from orchestrator.core.compaction import LEAD_KEEP
 from orchestrator.models import Run, RunStatus, Usage
 from orchestrator.providers.codex import COMPACT_PROMPT
-from orchestrator.service import LEAD_KEEP, Orchestrator, compaction_left
+from orchestrator.service import Orchestrator, compaction_left
 from orchestrator.settings import COMPACT_AT, compact_tokens
 from orchestrator.store import COMPACT, MESSAGE, Store
 from orchestrator.web.app import app
