@@ -34,6 +34,7 @@ const TIER_INFO = {
   worker: ['Workers', 'Every other role: worker, planner, reviewer, tester.'],
 };
 const ARCHIVE = 'archive:';  // the selection that shows the archive
+const DECISION = 'decision:';  // #decision:<id> opens the decisions dialog on that decision
 const SUGGESTIONS = [
   'Which projects and agents exist, and what is each of them doing?',
   'In project <name>: plan the following feature, split it into tasks and implement them with workers: ',
@@ -42,7 +43,10 @@ const SUGGESTIONS = [
 
 // The names come with the page too, so no label waits for the first /api/state reply.
 let state = { orchestrator_name: document.body.dataset.orchestratorName, orchestrator: null, projects: [], providers: [], roles: [], tiers: [], archived: [], settings: { global: {}, projects: {} } };
-let selected = decodeURIComponent(location.hash.slice(1)) || ORCH;
+const hashTarget = () => decodeURIComponent(location.hash.slice(1));
+// The agent shown; a decision named by the hash is shown once the state is loaded (refresh).
+let selected = hashTarget().startsWith(DECISION) ? ORCH : hashTarget() || ORCH;
+let wantedDecision = hashTarget().startsWith(DECISION) ? hashTarget().slice(DECISION.length) : null;
 let shown = null, lastEvent = 0, refreshing = false, again = false, toolGroup = null;
 let shownAgent = null, archiveList = [], archiveKey = '';
 const findArchived = id => archiveList.find(agent => agent.id === id);
@@ -1039,6 +1043,35 @@ function decisionItem(d) {
   item.append(form);
   return item;
 }
+// The decision `wantedDecision` (from the hash): the dialog opens on it, marked. One no longer
+// open shows the agent that asked instead. The hash goes back to the agent shown, so the same
+// decision can be asked for again.
+async function showWantedDecision() {
+  const id = wantedDecision, dialog = $('decisionsDialog');
+  wantedDecision = null;
+  if ((state.decisions || []).some(d => String(d.id) === id)) {
+    history.replaceState(null, '', `#${encodeURIComponent(selected)}`);
+    if (!dialog.open) dialog.showModal();
+    renderListDialog(LIST_DIALOGS.decisions);
+    for (const node of dialog.querySelectorAll('[data-list] > [data-key]')) {
+      node.classList.toggle('marked', node.dataset.key === id);
+      if (node.dataset.key !== id) continue;
+      node.scrollIntoView({ block: 'center' });
+      node.querySelector('input')?.focus({ preventScroll: true });
+    }
+    return;
+  }
+  const all = await call('/api/decisions?all=1').catch(() => ({ decisions: [] }));
+  const decision = all.decisions.find(d => String(d.id) === id);
+  if (!decision) {
+    history.replaceState(null, '', `#${encodeURIComponent(selected)}`);
+    toast(`There is no decision #${id}`, true); return;
+  }
+  if (dialog.open) dialog.close();
+  toast(`Decision #${id} is no longer open`);
+  if (decision.agent_id === selected) history.replaceState(null, '', `#${encodeURIComponent(selected)}`);
+  else select(decision.agent_id);
+}
 async function answerDecision(d, answer, controls) {
   for (const control of controls) control.disabled = true;
   try {
@@ -1422,14 +1455,17 @@ function compactAtBox(scope, data) {
 const SWITCHES = [
   { key: 'keep_awake', title: 'Keep awake', label: 'Keep the machine awake while agents work',
     about: 'While an agent’s turn runs, this machine does not go to sleep on idle (the display may).' },
-  { key: 'desktop_notifications', title: 'Notifications', label: 'Show desktop notifications (macOS)',
-    about: 'On this machine: when an agent asks you for a decision, and when an agent you messaged directly has finished.' },
+  { key: 'desktop_notifications', title: 'Notifications', label: 'Show desktop notifications',
+    about: 'On this machine: when an agent asks you for a decision, and when an agent you messaged directly has finished. '
+      + 'An open dashboard page allowed to show notifications shows them (a click opens the agent or the decision); '
+      + 'without one, macOS shows them.' },
 ];
 function switchBox({ key, title, label: text, about }) {
   const box = el('div', 'tier'), label = el('label', 'switch-row'), check = el('input');
   check.type = 'checkbox'; check.name = key; check.checked = state.settings.global?.[key] !== false;
   label.append(check, text);
   box.append(el('h4', '', title), el('p', 'about', about), label);
+  if (key === 'desktop_notifications' && PageNotification) box.append(pagePermission());
   return box;
 }
 
@@ -1449,6 +1485,106 @@ function openSettings() {
     await call('/api/settings', { project: form.get('scope') || null, data });
     toast('Settings saved'); await refresh();
   });
+}
+
+// -- notifications from this page ----------------------------------------------
+// With the browser's permission this page shows the desktop notifications (desktop.py: notices)
+// itself, so that a click opens the agent or the decision. It polls with a POST (the same-origin
+// check keeps other sites from faking it); while the polls come, osascript leaves new notices to
+// the page. Each notice is claimed first, so two pages, or a page and osascript, never show the
+// same one. Without the Notification API (an embedded WebKit window) none of this runs and
+// osascript shows them as before.
+// Hidden pages: browsers throttle the page's own timers (Chrome: once a minute after five
+// minutes hidden), which would let the marker go stale, so the poll is ticked by a dedicated
+// worker (static/tick.js), whose timers are not throttled with the page.
+// The cursor (the last notice id dealt with) lives in sessionStorage, so a reload of the tab
+// carries on where it was: a notice recorded meanwhile was left to this page (the marker was
+// still fresh) and is shown after the reload; one older than NOTICE_MAX_AGE_MS is no news and
+// skipped. The cursor moves past a notice only once its claim got an answer; a claim that failed
+// is tried again on the next tick.
+const PageNotification = window.Notification;
+const NOTICE_POLL_MS = 4000, NOTICE_CHARS = 180, NOTICE_MAX_AGE_MS = 10 * 60 * 1000;
+const NOTICE_CURSOR = 'orch-notice-cursor';  // sessionStorage key
+let noticeCursor = savedNoticeCursor(), noticePolling = false;  // null: none yet (replay nothing)
+
+function savedNoticeCursor() {
+  try {
+    const raw = sessionStorage.getItem(NOTICE_CURSOR), value = Number(raw);
+    return raw !== null && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  } catch (error) {
+    return null;
+  }
+}
+function moveNoticeCursor(id) {
+  noticeCursor = id;
+  try { sessionStorage.setItem(NOTICE_CURSOR, String(id)); } catch (error) { /* in memory only */ }
+}
+async function pollNotices() {
+  if (!PageNotification || PageNotification.permission !== 'granted' || noticePolling) return;
+  noticePolling = true;
+  try {
+    const data = await call('/api/notices/poll', { after: noticeCursor });
+    // None yet, or one above the server's (its table was pruned, or another home serves on this
+    // port): start from the server's, replaying nothing.
+    if (noticeCursor === null || noticeCursor > data.cursor) { moveNoticeCursor(data.cursor); return; }
+    for (const notice of data.notices) {
+      if (Date.now() - Date.parse(notice.created_at) > NOTICE_MAX_AGE_MS) { moveNoticeCursor(notice.id); continue; }
+      let claimed;
+      try {
+        claimed = (await call(`/api/notices/${notice.id}/claim`, {})).claimed;
+      } catch (error) {
+        return;  // no answer: this notice and the ones after it on the next tick
+      }
+      moveNoticeCursor(notice.id);
+      if (!claimed) continue;
+      try { showNotice(notice); } catch (error) { /* the browser refused it */ }
+    }
+    moveNoticeCursor(Math.max(noticeCursor, data.cursor));
+  } catch (error) {
+    /* the next tick tries again */
+  } finally {
+    noticePolling = false;
+  }
+}
+function showNotice(notice) {
+  const text = notice.text.length > NOTICE_CHARS ? `${notice.text.slice(0, NOTICE_CHARS - 1)}…` : notice.text;
+  const bubble = new PageNotification(state.project_name || document.title, { body: text, tag: `notice-${notice.id}` });
+  bubble.onclick = () => {
+    window.focus();
+    bubble.close();
+    const decision = notice.kind === 'decision' && notice.decision_id != null;
+    const fragment = decision ? `${DECISION}${notice.decision_id}` : encodeURIComponent(notice.agent_id);
+    if (location.hash === `#${fragment}`) followHash(); else location.hash = fragment;
+  };
+}
+function startNoticePoll() {
+  if (!PageNotification) return;
+  try {
+    const ticker = new Worker('/static/tick.js');
+    ticker.onmessage = pollNotices;
+    ticker.postMessage(NOTICE_POLL_MS);
+  } catch (error) {
+    setInterval(pollNotices, NOTICE_POLL_MS);  // throttled while hidden, but still a poll
+  }
+  pollNotices();
+}
+// The permission, in the settings: asked for only from this click.
+function pagePermission() {
+  const line = el('p', 'about page-notify'), permission = PageNotification.permission;
+  if (permission === 'granted') {
+    line.append('This page shows them; a click opens the agent or the decision.');
+  } else if (permission === 'denied') {
+    line.append('This browser blocks notifications from this page. To have a click open the agent or decision, '
+      + 'allow them in the site settings (Chrome: the icon left of the address; Safari: Settings › Websites › Notifications).');
+  } else {
+    line.append('Let this page show them, so that a click opens the agent or the decision: ',
+      button('ghost', '', 'Allow in this browser', async () => {
+        try { await PageNotification.requestPermission(); } catch (error) { /* stays as it was */ }
+        line.replaceWith(pagePermission());
+        pollNotices();
+      }));
+  }
+  return line;
 }
 
 // -- theme -------------------------------------------------------------------
@@ -1473,6 +1609,7 @@ async function refresh() {
     }
     renderNav();
     renderListDialogs();
+    if (wantedDecision !== null) showWantedDecision();
     renderBoard();
     const target = selected;
     if (target === ARCHIVE) { await renderArchive(); return; }
@@ -1508,9 +1645,13 @@ $('settingsButton').onclick = openSettings;
 for (const spec of Object.values(LIST_DIALOGS)) setupListDialog(spec);
 setupBoard();
 window.addEventListener('pagehide', () => flushSetup(true));
-window.addEventListener('hashchange', () => {
-  const id = decodeURIComponent(location.hash.slice(1)) || ORCH;
+function followHash() {
+  const target = hashTarget();
+  if (target.startsWith(DECISION)) { wantedDecision = target.slice(DECISION.length); refresh(); return; }
+  const id = target || ORCH;
   if (id !== selected) select(id);
-});
+}
+window.addEventListener('hashchange', followHash);
 refresh();
 setInterval(refresh, 2000);
+startNoticePoll();

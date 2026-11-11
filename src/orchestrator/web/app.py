@@ -362,6 +362,35 @@ def answer_decision(orch: Orchestrator, request: Request, body: dict) -> dict[st
     return orch.answer_decision(request.path_params["decision_id"], body.get("answer"))
 
 
+SQLITE_MAX_INT = 2**63 - 1  # a larger id makes sqlite3 raise OverflowError
+
+
+def notice_id(value: Any, what: str) -> int:
+    """`value` as a notice id (an int SQLite can hold); else OrchestratorError (400)."""
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= SQLITE_MAX_INT:
+        raise OrchestratorError(f"'{what}' must be a notice id")
+    return value
+
+
+def poll_notices(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """A page that shows desktop notifications itself (desktop.py) polls here: `after` (a
+    notice id) gives the unclaimed notices above it, oldest first; without it none (a page
+    that just opened replays nothing). `cursor`: the highest notice id so far. The poll also
+    marks the page present, so osascript leaves new notices to it for a while: a POST, so
+    that the same-origin check keeps other web pages from silencing the notifications."""
+    after = body.get("after")
+    after = None if after is None else notice_id(after, "after")
+    orch.page_present()
+    cursor = orch.notice_cursor()  # before the list: a notice added meanwhile is still listed
+    return {"notices": [] if after is None else orch.notices(after), "cursor": cursor}
+
+
+def claim_notice(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """Take a notice to show it: `claimed` is true for the first caller only."""
+    notice = notice_id(request.path_params["notice_id"], "notice id")
+    return {"claimed": orch.claim_notice(notice)}
+
+
 def list_board(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
     """`?project=` (required) the project's items by state and position; `&state=` one state."""
     project = required(dict(request.query_params), "project")
@@ -439,6 +468,8 @@ app = Starlette(
         Route("/api/runs/{run_id:int}/edit", api(edit_run), methods=["POST"]),
         Route("/api/decisions", api(list_decisions)),
         Route("/api/decisions/{decision_id:int}/answer", api(answer_decision), methods=["POST"]),
+        Route("/api/notices/poll", api(poll_notices), methods=["POST"]),
+        Route("/api/notices/{notice_id:int}/claim", api(claim_notice), methods=["POST"]),
         Route("/api/board", api(list_board)),
         Route("/api/board/add", api(add_board_item), methods=["POST"]),
         Route("/api/board/dispatch", api(dispatch_board), methods=["POST"]),
