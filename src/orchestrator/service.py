@@ -31,9 +31,6 @@ from .models import (
     Run,
     RunStatus,
     Usage,
-    answers,
-    context_now,
-    running_total,
 )
 from .store import (
     ANYONE,
@@ -42,7 +39,9 @@ from .store import (
     Store,
 )
 from .textfmt import kilo
-from .timeline import agent_state, compaction_left
+from .timeline import AgentRuns
+from .timeline import agent_state as agent_state  # old import path
+from .timeline import compaction_left as compaction_left  # old import path
 
 LEAD_ROLE = "lead"
 ORCHESTRATOR_ID = "orchestrator"
@@ -322,12 +321,12 @@ class Orchestrator:
         threshold = settings.compact_at(self.store, agent.project)
         if not threshold:
             return None
-        runs, usage = self.store.runs_of(agent.id), self.store.usage_of(agent.id)
-        record = context_now(runs, usage, agent.session_id)
+        timeline = AgentRuns.read(self.store, agent.id)
+        record = timeline.context_now(agent.session_id)
         tokens = record.context_tokens if record else None
         if tokens is None or tokens <= threshold:
             return None
-        left = compaction_left(runs, usage, self.store.compactions(agent.id), agent.session_id)
+        left = timeline.compaction_left(agent.session_id)
         if left is not None and left[0] is None:
             return None  # nothing measured since the last compaction: the size is not known
         paused = self.compaction_paused(agent, threshold)
@@ -367,10 +366,7 @@ class Orchestrator:
         None otherwise."""
         if threshold is None:
             threshold = settings.compact_at(self.store, agent.project)
-        runs = self.store.runs_of(agent.id)
-        left = compaction_left(
-            runs, self.store.usage_of(agent.id), self.store.compactions(agent.id), agent.session_id
-        )
+        left = AgentRuns.read(self.store, agent.id).compaction_left(agent.session_id)
         paused = threshold and left is not None and left[0] is not None and left[0] > threshold
         return left if paused else None
 
@@ -408,9 +404,7 @@ class Orchestrator:
         if not agent.session_id:
             return "it has no conversation yet"
         if getattr(provider, "compact_needs_size", False):
-            record = context_now(
-                self.store.runs_of(agent.id), self.store.usage_of(agent.id), agent.session_id
-            )
+            record = AgentRuns.read(self.store, agent.id).context_now(agent.session_id)
             if record is None or not record.context_tokens:
                 return "its context size is not known yet (it is after its next turn)"
         return None
@@ -498,14 +492,13 @@ class Orchestrator:
                 run_ids.append(int(ref))
             else:
                 agent = self.agent(str(ref))
-                meta = self.store.meta_of(agent.id)
+                timeline = AgentRuns.read(self.store, agent.id)
+                meta = timeline.meta
                 # Not a waiting notification: it is deleted when it has nothing to report.
                 # Not a compaction either: it is no work of the agent's.
                 runs = [
                     run
-                    for run in answers(
-                        self.store.runs_of(agent.id), self.store.compactions(agent.id)
-                    )
+                    for run in timeline.answers()
                     if not (
                         run.status is RunStatus.WAITING
                         and run.id in meta
@@ -783,18 +776,17 @@ class Orchestrator:
         ended_at, automatic), `last_run.kind` is `message` or `notification`, and `compact_refusal`
         says why `compact` is not possible now (null: it is).
         """
-        runs = self.store.runs_of(agent.id)
-        compactions = self.store.compactions(agent.id)
-        usage = self.store.usage_of(agent.id)
+        timeline = AgentRuns.read(self.store, agent.id)
+        runs, compactions, usage = timeline.runs, timeline.compactions, timeline.usage
         effective = self.effective(agent)
-        status, active, shown = agent_state(runs, compactions)
+        status, active, shown = timeline.state()
         result = shown.result if shown else None
         if shown and shown.structured is not None and not detail:
             # The answer once: structured output as compact JSON instead of the text.
             result = json.dumps(shown.structured, ensure_ascii=False, separators=(",", ":"))
         if result and result_limit and len(result) > result_limit:
             result = result[:result_limit] + "… [truncated]"
-        totals = running_total(runs, usage)
+        totals = timeline.totals()
         view = {
             "id": agent.id,
             "project": agent.project,
@@ -813,7 +805,7 @@ class Orchestrator:
             "runs": len(runs),
             "cost_usd": totals.cost or 0,
             "tokens": totals.tokens(),
-            "context": self._context(agent, runs, usage, compactions),
+            "context": self._context(agent, timeline),
             "last_run": shown
             and {
                 "id": shown.id,
@@ -842,7 +834,7 @@ class Orchestrator:
             view["effort_override"] = agent.effort
             if mark := self.store.archived(agent.project).get(agent.id):
                 view["archived"] = mark
-            meta = self.store.meta_of(agent.id)
+            meta = timeline.meta
             if shown:
                 view["last_run"]["kind"] = meta[shown.id].kind if shown.id in meta else MESSAGE
                 view["last_run"]["structured"] = shown.structured
@@ -860,16 +852,14 @@ class Orchestrator:
             ]
         return view
 
-    def _context(
-        self, agent: Agent, runs: list[Run], usage: dict[int, Usage], compactions: set[int]
-    ) -> dict[str, Any] | None:
+    def _context(self, agent: Agent, timeline: AgentRuns) -> dict[str, Any] | None:
         """context_view, with `compact_at` (the automatic compaction threshold; 0: off) and
         `compact_paused` (the size the last compaction left while that pauses automatic
         compaction, see compaction_paused; else null)."""
-        context = context_view(context_now(runs, usage, agent.session_id))
+        context = context_view(timeline.context_now(agent.session_id))
         if context is not None:
             threshold = settings.compact_at(self.store, agent.project)
-            left = compaction_left(runs, usage, compactions, agent.session_id)
+            left = timeline.compaction_left(agent.session_id)
             paused = threshold and left is not None and left[0] is not None and left[0] > threshold
             context["compact_at"] = threshold
             context["compact_paused"] = left[0] if paused else None
@@ -877,8 +867,8 @@ class Orchestrator:
 
     def run_history(self, agent: Agent, limit: int = 10) -> list[dict[str, Any]]:
         """The agent's latest runs with their kind, own tokens, cost and reported model."""
-        usage = self.store.usage_of(agent.id)
-        meta = self.store.meta_of(agent.id)
+        timeline = AgentRuns.read(self.store, agent.id)
+        usage, meta = timeline.usage, timeline.meta
         return [
             {
                 "id": run.id,
@@ -889,7 +879,7 @@ class Orchestrator:
                 "ended_at": run.ended_at,
                 **run_usage(usage.get(run.id)),
             }
-            for run in self.store.runs_of(agent.id)[-limit:]
+            for run in timeline.runs[-limit:]
         ]
 
     def overview(self, project: str | None = None, archived: bool = False) -> list[dict[str, Any]]:
