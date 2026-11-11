@@ -128,11 +128,11 @@ def test_the_orchestrators_dispatch_names_it(orch: Orchestrator, project: str) -
     assert changes == {"state": ["ready", "in_progress"], "agent_id": [None, reply["agent_id"]]}
 
 
-def test_a_failed_dispatch_records_nothing(
+def test_a_failed_dispatch_records_its_restore(
     orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     item = orch.add_board_item(project, "x", state="ready").id
-    lead(orch, project)
+    lead_id = lead(orch, project)
 
     def broken(*args, **kwargs):
         raise OrchestratorError("cannot send")
@@ -140,8 +140,13 @@ def test_a_failed_dispatch_records_nothing(
     monkeypatch.setattr(orch, "send", broken)
     with pytest.raises(OrchestratorError, match="cannot send"):
         orch.dispatch_board(project)
-    assert [e[2] for e in entries(orch, item)] == ["add"]
+    assert entries(orch, item)[1:] == [
+        ("owner", None, "dispatch", {"state": ["ready", "in_progress"], "agent_id": [None, lead_id]}, None),
+        ("owner", None, "restore", {"state": ["in_progress", "ready"], "agent_id": [lead_id, None]}, None),
+    ]  # fmt: skip
     assert orch.board_detail(item)["unrecorded"] is False  # restored as it was
+    orch.update_board_item(item, {"title": "y"})  # its old updated_at is no gap
+    assert [e[2] for e in entries(orch, item)] == ["add", "dispatch", "restore", "edit"]
 
 
 # -- the runs that worked on an item -------------------------------------------------
@@ -268,9 +273,16 @@ def test_a_master_database_with_board_items_opens_and_reads(tmp_path: Path) -> N
     assert detail["history"] == [] and detail["unrecorded"] is True and detail["runs"] == []
     assert orch.board_view()["projects"] == ["demo"]
     orch.update_board_item(1, {"state": "ready"})
-    assert orch.board_detail(1)["unrecorded"] is False
+    detail = orch.board_detail(1)
+    assert detail["unrecorded"] is False
+    gap, change = detail["history"]  # what came before is kept as a gap
+    assert gap == {
+        "ts": at(0), "actor_kind": None, "actor": None, "action": "unrecorded", "changes": {},
+        "run_id": None,
+    }  # fmt: skip
+    assert change["action"] == "state" and change["changes"] == {"state": ["idea", "ready"]}
     Store(path)  # opening it again changes nothing
-    assert len(orch.board_detail(1)["history"]) == 1
+    assert len(orch.board_detail(1)["history"]) == 2
     with sqlite3.connect(path) as conn:  # master's schema runs on it unchanged
         conn.executescript((FIXTURES / "board_master_schema.sql").read_text())
     conn.close()
@@ -296,8 +308,15 @@ def test_masters_board_code_writes_and_its_changes_show_as_unrecorded(
     items, run_id = master_board.dispatch(orch.store, project, lead_id, lambda a, t: 7)
     assert [i.id for i in items] == [item] and run_id == 7
     assert orch.board_detail(item)["unrecorded"] is True
-    orch.update_board_item(item, {"state": "done"})  # the latest change is recorded again
+    orch.update_board_item(item, {"state": "done"})  # recorded again: the gap stays
     detail = orch.board_detail(item)
     assert detail["unrecorded"] is False
+    assert [entry["action"] for entry in detail["history"]] == ["add", "unrecorded", "state"]
+    assert detail["history"][1]["ts"] == "2999-01-01T00:00:00+00:00"
     assert detail["history"][-1]["changes"] == {"state": ["in_progress", "done"]}
+    orch.update_board_item(item, {"title": "again"})  # no new gap
+    assert [entry["action"] for entry in orch.board_detail(item)["history"]][-2:] == [
+        "state",
+        "edit",
+    ]
     assert board.listing(orch.store, project, "done")[0].id == item

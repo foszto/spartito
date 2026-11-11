@@ -85,12 +85,31 @@ def check_state(state: Any) -> str:
 
 def record_gap(conn: sqlite3.Connection, item_id: int, since: str) -> None:
     """Called just before `record` for a change of an existing item, in its transaction:
-    `since` is the item's updated_at before this change. Nothing is kept yet."""
+    `since` is the item's updated_at before this change. Later than the item's last entry
+    (or it has none), the item was changed by code that keeps no history (an older process
+    on the same database): an entry `unrecorded` without actor, at `since`, keeps that gap
+    for good. A change by such code within the same second as the last entry cannot be told
+    apart (the times are in seconds) and stays undetected."""
+    last = conn.execute(
+        "SELECT ts FROM board_history WHERE item_id = ? ORDER BY id DESC LIMIT 1", (item_id,)
+    ).fetchone()
+    if last is None or since > last["ts"]:
+        conn.execute(
+            "INSERT INTO board_history (item_id, ts, actor_kind, actor, action, changes)"
+            " VALUES (?, ?, NULL, NULL, 'unrecorded', '{}')",
+            (item_id, since),
+        )
 
 
 def link_run(conn: sqlite3.Connection, item_ids: list[int], stamp: str, run_id: int) -> None:
     """The run of the dispatch recorded at `stamp` for these items, known once its message
-    was sent. Nothing is kept yet."""
+    was sent."""
+    marks = ", ".join("?" for _ in item_ids)
+    conn.execute(
+        "UPDATE board_history SET run_id = ? WHERE action = 'dispatch' AND ts = ?"
+        f" AND run_id IS NULL AND item_id IN ({marks})",
+        (run_id, stamp, *item_ids),
+    )
 
 
 def _diff(before: Item | None, after: Item, fields: tuple[str, ...]) -> dict[str, Any]:
@@ -145,7 +164,8 @@ def history(store: Store, item_id: int) -> list[dict[str, Any]]:
 
 def unrecorded(item: Item, entries: list[dict[str, Any]]) -> bool:
     """Whether the item changed after its last recorded change (or has none): code from
-    before the history (a lead's MCP server still running it) changed it."""
+    before the history (a lead's MCP server still running it) changed it. Such a gap
+    before a later recorded change is an `unrecorded` entry (see `record_gap`)."""
     return not entries or item.updated_at > entries[-1]["ts"]
 
 
