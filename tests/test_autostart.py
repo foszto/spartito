@@ -427,6 +427,30 @@ def test_a_missing_service_manager_is_an_error(on, monkeypatch: pytest.MonkeyPat
     assert result.exit_code == 1 and "`systemctl` is not on PATH" in result.output
 
 
+BAD_LABELS = ["../../../tmp/x", "a/b", "", ".hidden", "-x", "a b", "x\ny", "x" * 101, "é"]
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+@pytest.mark.parametrize("command", ["install", "uninstall", "status", "logs"])
+@pytest.mark.parametrize("bad", BAD_LABELS)
+def test_a_bad_label_is_refused_before_anything_runs(
+    bad: str, command: str, platform: str, on, fake_system: FakeSystem
+):
+    on(platform)
+    result = invoke(command, "--label", bad)
+    assert result.exit_code == 1
+    assert result.output.startswith("error: invalid label ")
+    assert result.output.count("\n") == 1
+    assert fake_system.calls() == []
+    assert list(Path.home().iterdir()) == []
+    assert not Path(os.environ["ORCH_HOME"]).exists()
+
+
+@pytest.mark.parametrize("good", ["x", "_x", "local.spartito-test_1.web", "x" * 100])
+def test_a_good_label_is_taken_as_it_is(good: str):
+    assert autostart.check_label(good) == good
+
+
 def test_the_label_option_names_the_service(on, fake_system: FakeSystem):
     on("darwin")
     assert invoke("install", "--label", "local.spartito-test.web").exit_code == 0

@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import plistlib
+import re
 import shlex
 import subprocess
 import sys
@@ -40,6 +41,7 @@ ENV_PREFIXES = ("ORCH_", "LC_")
 ENV_EXCLUDED = ("ORCH_AGENT_ID", "ORCH_TURN")
 LOG_LIMIT = 5 * 1024 * 1024  # bytes; launchd does not rotate the log
 PING_TIMEOUT = 2.0  # seconds
+LABEL_RULE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,99}")  # it names the unit file
 BOOTOUT_WAIT = 5.0  # seconds for launchd to drop the old job before the new one is loaded
 
 
@@ -100,6 +102,17 @@ def default_label(path: Path) -> str:
     if path == Path(DEFAULT_HOME).expanduser().resolve():
         return "local.spartito.web"
     return f"local.spartito-{home_hash(path)[:8]}.web"
+
+
+def check_label(label: str) -> str:
+    """The label itself; AutostartError unless it is 1-100 letters, digits, `.`, `_`, `-`,
+    not starting with `.` or `-`, so the unit file stays in its directory."""
+    if not LABEL_RULE.fullmatch(label):
+        raise AutostartError(
+            f"invalid label {label!r}: use up to 100 letters, digits, '.', '_' or '-',"
+            " not starting with '.' or '-'"
+        )
+    return label
 
 
 def web_argv(host: str, port: int) -> list[str]:
@@ -234,13 +247,16 @@ def run(*argv: str) -> subprocess.CompletedProcess[str]:
         raise AutostartError(f"`{argv[0]}` is not on PATH") from None
 
 
+def message(result: subprocess.CompletedProcess[str]) -> str:
+    """The last line a failed command wrote, or its exit code."""
+    why = (result.stderr or result.stdout).strip().splitlines()
+    return why[-1] if why else f"exit code {result.returncode}"
+
+
 def checked(*argv: str) -> subprocess.CompletedProcess[str]:
     result = run(*argv)
     if result.returncode:
-        why = (result.stderr or result.stdout).strip().splitlines()
-        raise AutostartError(
-            f"`{' '.join(argv)}` failed ({result.returncode})" + (f": {why[-1]}" if why else "")
-        )
+        raise AutostartError(f"`{' '.join(argv)}` failed ({result.returncode}): {message(result)}")
     return result
 
 

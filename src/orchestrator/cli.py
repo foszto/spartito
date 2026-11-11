@@ -329,15 +329,18 @@ LabelOption = Annotated[
 ]
 
 
-def service_label(label: str | None) -> str:
-    return label or autostart.default_label(autostart.home())
-
-
 def autostart_fail(action):
     try:
         return action()
     except autostart.AutostartError as exc:
         raise fail(exc) from None
+
+
+def service_label(label: str | None) -> str:
+    """The --label given (checked before anything runs) or the home's default label."""
+    if label is not None:
+        return autostart_fail(lambda: autostart.check_label(label))
+    return autostart.default_label(autostart.home())
 
 
 @service_app.command("install")
@@ -349,7 +352,7 @@ def service_install(
     """Install the dashboard service and (re)start it. Running it again replaces it."""
     from .web.app import LOOPBACK_HOSTS
 
-    svc = autostart.service(host, port, label)
+    svc = autostart.service(host, port, service_label(label))
     unit = autostart_fail(lambda: autostart.install(svc))
     if host not in LOOPBACK_HOSTS:
         typer.secho(
@@ -375,7 +378,8 @@ def service_uninstall(label: LabelOption = None) -> None:
 @service_app.command("status")
 def service_status(label: LabelOption = None) -> None:
     """Whether the dashboard service is installed and running, and who answers on its port."""
-    st = autostart_fail(lambda: autostart.status(service_label(label)))
+    name = service_label(label)
+    st = autostart_fail(lambda: autostart.status(name))
     typer.echo(f"service: {st.label} ({st.platform})")
     typer.echo(f"unit:    {st.unit}" + ("" if st.installed else " (not installed)"))
     running = "loaded" if st.platform == "launchd" else "active"
@@ -398,9 +402,10 @@ def service_logs(
     label: LabelOption = None,
 ) -> None:
     """Where the service writes its output (macOS: its last lines too)."""
+    name = service_label(label)
     kind = autostart_fail(autostart.platform_kind)
     log = autostart.home() / "logs" / "web.log"
-    typer.echo(autostart.logs_hint(log, service_label(label), kind))
+    typer.echo(autostart.logs_hint(log, name, kind))
     if kind == "launchd" and lines > 0 and log.exists():
         with log.open(errors="replace") as handle:
             tail = handle.readlines()[-lines:]
