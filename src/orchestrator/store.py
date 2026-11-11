@@ -198,6 +198,23 @@ CREATE TABLE IF NOT EXISTS notices (
 );
 CREATE INDEX IF NOT EXISTS runs_agent ON runs(agent_id, id);
 CREATE INDEX IF NOT EXISTS events_agent ON events(agent_id, id);
+-- The last known git state of a board item's branch (core/board_git.py); a cache, a table of
+-- its own, unknown to older code. A row whose branch is not the item's current one is stale.
+-- seen_ahead: the branch was once seen with commits not in `base`; merged_at: when it was
+-- first seen merged after that (NULL again once it is not); error: why the last check failed.
+CREATE TABLE IF NOT EXISTS board_git (
+    item_id INTEGER PRIMARY KEY,
+    branch TEXT NOT NULL,
+    base TEXT NOT NULL,
+    tip TEXT,
+    ahead INTEGER,
+    behind INTEGER,
+    dirty INTEGER,
+    seen_ahead INTEGER NOT NULL DEFAULT 0,
+    merged_at TEXT,
+    error TEXT,
+    checked_at TEXT NOT NULL
+);
 """
 
 ANYONE = object()  # withdraw_queued/replace_queued: whoever queued the run
@@ -1184,3 +1201,40 @@ class Store:
                     (agent_id, after),
                 ).fetchall()
         return [from_row(Event, row) for row in rows]
+
+    # -- board git (cache of core/board_git) -----------------------------------
+
+    BOARD_GIT_COLUMNS = (
+        "item_id",
+        "branch",
+        "base",
+        "tip",
+        "ahead",
+        "behind",
+        "dirty",
+        "seen_ahead",
+        "merged_at",
+        "error",
+        "checked_at",
+    )
+
+    def board_git(self, item_ids: list[int] | None = None) -> dict[int, dict[str, Any]]:
+        """The cached git state rows by item id: all, or those of `item_ids`."""
+        query, args = "SELECT * FROM board_git", ()
+        if item_ids is not None:
+            query += " WHERE item_id IN (SELECT value FROM json_each(?))"
+            args = (json.dumps(list(item_ids)),)
+        with self._conn() as conn:
+            return {row["item_id"]: dict(row) for row in conn.execute(query, args)}
+
+    def save_board_git(self, row: dict[str, Any], conn: sqlite3.Connection | None = None) -> None:
+        """Insert or replace one row (every column of BOARD_GIT_COLUMNS), in `conn` if given."""
+        names = ", ".join(self.BOARD_GIT_COLUMNS)
+        marks = ", ".join("?" for _ in self.BOARD_GIT_COLUMNS)
+        values = tuple(row[name] for name in self.BOARD_GIT_COLUMNS)
+        sql = f"INSERT OR REPLACE INTO board_git ({names}) VALUES ({marks})"
+        if conn is not None:
+            conn.execute(sql, values)
+            return
+        with self._conn() as own:
+            own.execute(sql, values)
