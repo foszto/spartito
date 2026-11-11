@@ -1489,8 +1489,9 @@ function openSettings() {
 
 // -- notifications from this page ----------------------------------------------
 // With the browser's permission this page shows the desktop notifications (desktop.py: notices)
-// itself, so that a click opens the agent or the decision. Its polls say `notify=1`; while they
-// come, osascript leaves new notices to the page. Each notice is claimed first, so two pages, or
+// itself, so that a click opens the agent or the decision. It polls with a POST (the same-origin
+// check keeps other sites from faking it); while the polls come, osascript leaves new notices to
+// the page. Each notice is claimed first, so two pages, or
 // a page and osascript, never show the same one. Without the Notification API (an embedded
 // WebKit window) none of this runs and osascript shows them as before.
 // Hidden pages: browsers throttle the page's own timers (Chrome: once a minute after five
@@ -1504,8 +1505,7 @@ async function pollNotices() {
   if (!PageNotification || PageNotification.permission !== 'granted' || noticePolling) return;
   noticePolling = true;
   try {
-    const after = noticeCursor === null ? '' : `&after=${noticeCursor}`;
-    const data = await call(`/api/notices?notify=1${after}`);
+    const data = await call('/api/notices/poll', { after: noticeCursor });
     for (const notice of data.notices) {
       noticeCursor = Math.max(noticeCursor, notice.id);
       await showNotice(notice).catch(() => {});
