@@ -808,7 +808,9 @@ def board_change(changes: dict) -> str:
 
 def board_actor(entry: dict) -> str:
     kind, name = entry["actor_kind"], entry["actor"]
-    if kind == "owner":
+    if kind is None:  # an unrecorded gap: nobody known
+        who = "–"
+    elif kind == "owner":
         who = "owner"
     elif kind == "agent":
         who = f"agent {name}" if name else "chat session"

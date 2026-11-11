@@ -307,6 +307,20 @@ def test_masters_board_code_writes_and_its_changes_show_as_unrecorded(
     assert board.listing(orch.store, project, "done")[0].id == item
 
 
+def test_cli_shows_a_gap_without_an_actor(
+    orch: Orchestrator, project: str, master_board: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    item = orch.add_board_item(project, "x").id
+    monkeypatch.setattr(master_board, "now", lambda: "2999-01-01T00:00:00+00:00")
+    master_board.update(orch.store, item, {"state": "ready"})
+    orch.update_board_item(item, {"title": "y"})
+
+    shown = CliRunner().invoke(cli.app, ["board", "show", str(item)])
+    assert shown.exit_code == 0, shown.output
+    assert "  2999-01-01T00:00:00+00:00  –  unrecorded" in shown.output.splitlines()
+    assert "None" not in shown.output
+
+
 def test_a_change_that_changes_nothing_leaves_no_entry_and_no_gap(
     orch: Orchestrator, project: str
 ) -> None:
