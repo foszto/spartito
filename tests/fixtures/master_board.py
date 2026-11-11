@@ -1,0 +1,290 @@
+# A copy of master's board.py from before the task-board batch: the board code a process
+# still running the old version (a lead's MCP server) uses. Loaded by test_board_history.py.
+"""A small task board per project: ideas and collected tasks that outlive a conversation.
+
+Table `board_items`. Every item belongs to a registered project and is in one state:
+`idea` -> `ready` -> `in_progress` -> `done`; `position` orders the items within one state of
+one project (a new item, and one that changes state, goes to the end). An item may name an
+agent and a branch that work on it. The orchestrator and the leads use the MCP tools
+`list_board`, `add_board_item` and `update_board_item`; the owner the dashboard and
+`orch board`. Nothing is dispatched automatically: `dispatch` (the owner's button or
+`orch board dispatch`) sends a project's `ready` items to its lead as one user message,
+marks them `in_progress` and links them to the lead.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
+from typing import Any
+
+from .store import Store, now
+
+IDEA, READY, IN_PROGRESS, DONE = "idea", "ready", "in_progress", "done"
+STATES = (IDEA, READY, IN_PROGRESS, DONE)
+TITLE_CHARS = 200
+DESCRIPTION_CHARS = 4000
+BRANCH_CHARS = 200
+FIELDS = ("title", "description", "state", "agent_id", "branch")
+
+
+@dataclass
+class Item:
+    id: int
+    project: str
+    title: str
+    description: str = ""
+    state: str = IDEA
+    position: int = 0
+    agent_id: str | None = None
+    branch: str | None = None
+    created_at: str = ""
+    updated_at: str = ""
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> Item:
+        names = cls.__dataclass_fields__
+        return cls(**{key: value for key, value in dict(row).items() if key in names})
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def _text(value: Any, what: str, limit: int, required: bool = False) -> str:
+    if value is None:
+        value = ""
+    if not isinstance(value, str):
+        raise ValueError(f"{what} must be a string")
+    value = value.strip()
+    if required and not value:
+        raise ValueError(f"{what} must not be empty")
+    if len(value) > limit:
+        raise ValueError(f"{what} is too long ({len(value)} chars; at most {limit})")
+    return value
+
+
+def check_state(state: Any) -> str:
+    if state not in STATES:
+        raise ValueError(f"unknown state {state!r} (one of: {', '.join(STATES)})")
+    return state
+
+
+def _end(conn: sqlite3.Connection, project: str, state: str) -> int:
+    """The position after the last item in this state of the project."""
+    row = conn.execute(
+        "SELECT MAX(position) FROM board_items WHERE project = ? AND state = ?", (project, state)
+    ).fetchone()
+    return 0 if row[0] is None else row[0] + 1
+
+
+def _get(conn: sqlite3.Connection, item_id: int) -> Item | None:
+    row = conn.execute("SELECT * FROM board_items WHERE id = ?", (item_id,)).fetchone()
+    return Item.from_row(row) if row else None
+
+
+def get(store: Store, item_id: int) -> Item:
+    """Raises ValueError for an unknown id."""
+    with store.connection() as conn:
+        item = _get(conn, item_id)
+    if item is None:
+        raise ValueError(f"there is no board item #{item_id}")
+    return item
+
+
+def listing(store: Store, project: str | None = None, state: str | None = None) -> list[Item]:
+    """Items by project, state (in STATES order) and position."""
+    where, args = [], []
+    if project is not None:
+        where.append("project = ?")
+        args.append(project)
+    if state is not None:
+        where.append("state = ?")
+        args.append(check_state(state))
+    order = " ".join(f"WHEN '{name}' THEN {n}" for n, name in enumerate(STATES))
+    query = (
+        "SELECT * FROM board_items"
+        + (" WHERE " + " AND ".join(where) if where else "")
+        + f" ORDER BY project, CASE state {order} ELSE {len(STATES)} END, position, id"
+    )
+    with store.connection() as conn:
+        return [Item.from_row(row) for row in conn.execute(query, args).fetchall()]
+
+
+def add(
+    store: Store,
+    project: str,
+    title: Any,
+    description: Any = "",
+    state: Any = IDEA,
+    agent_id: Any = None,
+    branch: Any = None,
+) -> Item:
+    """A new item at the end of its state, with its links checked first (as in `cleaned`):
+    either it is stored whole or not at all. `project` must be registered (the caller
+    checks). Raises ValueError."""
+    title = _text(title, "title", TITLE_CHARS, required=True)
+    description = _text(description, "description", DESCRIPTION_CHARS)
+    state = check_state(state or IDEA)
+    given = {"agent_id": agent_id, "branch": branch}
+    links = cleaned(store, Item(0, project, title), {k: v for k, v in given.items() if v})
+    with store.transaction() as conn:
+        stamp = now()
+        cursor = conn.execute(
+            "INSERT INTO board_items (project, title, description, state, position,"
+            " agent_id, branch, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                project,
+                title,
+                description,
+                state,
+                _end(conn, project, state),
+                links.get("agent_id"),
+                links.get("branch"),
+                stamp,
+                stamp,
+            ),
+        )
+        item = _get(conn, cursor.lastrowid)
+    assert item is not None
+    return item
+
+
+def cleaned(store: Store, item: Item, changes: dict[str, Any]) -> dict[str, Any]:
+    """The changes as stored: only FIELDS; "" clears the agent and the branch, and an agent
+    must exist in the item's project. Raises ValueError."""
+    unknown = set(changes) - set(FIELDS)
+    if unknown:
+        raise ValueError(f"unknown fields: {', '.join(sorted(unknown))}")
+    out: dict[str, Any] = {}
+    if "title" in changes:
+        out["title"] = _text(changes["title"], "title", TITLE_CHARS, required=True)
+    if "description" in changes:
+        out["description"] = _text(changes["description"], "description", DESCRIPTION_CHARS)
+    if "state" in changes:
+        out["state"] = check_state(changes["state"])
+    if "agent_id" in changes:
+        agent_id = _text(changes["agent_id"], "agent", 200) or None
+        agent = store.get_agent(agent_id) if agent_id else None
+        if agent_id and (agent is None or agent.project != item.project):
+            raise ValueError(f"there is no agent '{agent_id}' in project '{item.project}'")
+        out["agent_id"] = agent_id
+    if "branch" in changes:
+        out["branch"] = _text(changes["branch"], "branch", BRANCH_CHARS) or None
+    return out
+
+
+def update(store: Store, item_id: int, changes: dict[str, Any]) -> Item:
+    """Change some FIELDS of an item; a new state puts it at the end of that state.
+    Raises ValueError."""
+    item = get(store, item_id)
+    fields = cleaned(store, item, changes)
+    with store.transaction() as conn:
+        current = _get(conn, item_id)
+        if current is None:
+            raise ValueError(f"there is no board item #{item_id}")
+        if fields.get("state", current.state) != current.state:
+            fields["position"] = _end(conn, current.project, fields["state"])
+        if fields:
+            fields["updated_at"] = now()
+            assignments = ", ".join(f"{key} = ?" for key in fields)
+            conn.execute(
+                f"UPDATE board_items SET {assignments} WHERE id = ?", (*fields.values(), item_id)
+            )
+        item = _get(conn, item_id)
+    assert item is not None
+    return item
+
+
+def move(store: Store, item_id: int, direction: str) -> Item:
+    """Swap the item with its neighbour above (`up`) or below (`down`) in its state; at the
+    edge nothing changes. The state's positions are renumbered 0, 1, … Raises ValueError."""
+    if direction not in ("up", "down"):
+        raise ValueError(f"direction must be 'up' or 'down', not {direction!r}")
+    with store.transaction() as conn:
+        item = _get(conn, item_id)
+        if item is None:
+            raise ValueError(f"there is no board item #{item_id}")
+        ids = [
+            row["id"]
+            for row in conn.execute(
+                "SELECT id FROM board_items WHERE project = ? AND state = ? ORDER BY position, id",
+                (item.project, item.state),
+            )
+        ]
+        at = ids.index(item_id)
+        other = at - 1 if direction == "up" else at + 1
+        if 0 <= other < len(ids):
+            ids[at], ids[other] = ids[other], ids[at]
+            stamp = now()
+            for position, moved in enumerate(ids):
+                conn.execute("UPDATE board_items SET position = ? WHERE id = ?", (position, moved))
+            conn.execute("UPDATE board_items SET updated_at = ? WHERE id = ?", (stamp, item_id))
+        item = _get(conn, item_id)
+    assert item is not None
+    return item
+
+
+def message(project: str, items: list[Item]) -> str:
+    """The one message that hands a project's ready items to its lead."""
+    count = f"{len(items)} item" + ("" if len(items) == 1 else "s")
+    parts = [f"Board items ready for project {project} ({count}), dispatched by the owner:"]
+    for item in items:
+        parts.append(
+            f"#{item.id} {item.title}" + (f"\n{item.description}" if item.description else "")
+        )
+    parts.append(
+        "They are now `in_progress` and linked to you. As work proceeds, keep each item's state"
+        " current with update_board_item (`done` when finished; `ready` or `idea` if it will"
+        " not be done now; `agent`/`branch` for the worker and branch on it)."
+    )
+    return "\n\n".join(parts)
+
+
+def dispatch(
+    store: Store,
+    project: str,
+    lead_id: str,
+    send: Callable[[str, str], int],
+    ids: list[int] | None = None,
+) -> tuple[list[Item], int | None]:
+    """Hand the project's `ready` items (with `ids`: only those of them, the ones the owner
+    confirmed) to its lead: mark them `in_progress` and linked to `lead_id`, then send them
+    as one message with `send(lead_id, text)` (returns the run id). No such item: nothing
+    is sent (run id None). If sending fails, the items are restored as they were."""
+    with store.transaction() as conn:  # claimed at once: a second dispatch finds none
+        rows = conn.execute(
+            "SELECT * FROM board_items WHERE project = ? AND state = ? ORDER BY position, id",
+            (project, READY),
+        ).fetchall()
+        before = [Item.from_row(row) for row in rows]
+        if ids is not None:
+            before = [item for item in before if item.id in set(ids)]
+        start, stamp = _end(conn, project, IN_PROGRESS), now()
+        for offset, item in enumerate(before):
+            conn.execute(
+                "UPDATE board_items SET state = ?, position = ?, agent_id = ?, updated_at = ?"
+                " WHERE id = ?",
+                (IN_PROGRESS, start + offset, lead_id, stamp, item.id),
+            )
+    if not before:
+        return [], None
+    try:
+        run_id = send(lead_id, message(project, before))
+    except BaseException:
+        with store.connection() as conn:
+            for item in before:
+                conn.execute(
+                    "UPDATE board_items SET state = ?, position = ?, agent_id = ?, updated_at = ?"
+                    " WHERE id = ? AND state = ?",
+                    (
+                        item.state,
+                        item.position,
+                        item.agent_id,
+                        item.updated_at,
+                        item.id,
+                        IN_PROGRESS,
+                    ),
+                )
+        raise
+    return [get(store, item.id) for item in before], run_id

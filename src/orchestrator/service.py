@@ -208,6 +208,8 @@ class Orchestrator:
         except ValueError as exc:
             raise OrchestratorError(str(exc)) from None
 
+    board_detail = boards.board_detail  # an item with its history and runs
+
     def add_board_item(
         self,
         project: str,

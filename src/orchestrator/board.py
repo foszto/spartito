@@ -12,6 +12,7 @@ marks them `in_progress` and links them to the lead.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -109,10 +110,33 @@ def record(
     stamp: str,
     run_id: int | None = None,
 ) -> None:
-    """Every change of an item comes here, in the transaction that makes it: who made it,
-    the action (add, edit, state, move, place, dispatch), what changed ({field: [old, new]},
-    see `_diff`), `stamp` (the item's new updated_at) and the run (a dispatch's, or the
-    acting agent's turn). Nothing is kept yet."""
+    """Every change of an item comes here, in the transaction that makes it, and is kept in
+    board_history: who made it, the action (add, edit, state, move, place, dispatch), what
+    changed ({field: [old, new]}, see `_diff`), `stamp` (the item's new updated_at, see
+    `unrecorded`) and the run (a dispatch's, or the acting agent's turn)."""
+    conn.execute(
+        "INSERT INTO board_history (item_id, ts, actor_kind, actor, action, changes, run_id)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (item_id, stamp, actor.kind, actor.name, action, json.dumps(changes), run_id),
+    )
+
+
+def history(store: Store, item_id: int) -> list[dict[str, Any]]:
+    """The item's recorded changes, oldest first: {ts, actor_kind, actor, action, changes,
+    run_id}."""
+    with store.connection() as conn:
+        rows = conn.execute(
+            "SELECT ts, actor_kind, actor, action, changes, run_id FROM board_history"
+            " WHERE item_id = ? ORDER BY id",
+            (item_id,),
+        ).fetchall()
+    return [{**dict(row), "changes": json.loads(row["changes"])} for row in rows]
+
+
+def unrecorded(item: Item, entries: list[dict[str, Any]]) -> bool:
+    """Whether the item changed after its last recorded change (or has none): code from
+    before the history (a lead's MCP server still running it) changed it."""
+    return not entries or item.updated_at > entries[-1]["ts"]
 
 
 def _end(conn: sqlite3.Connection, project: str, state: str) -> int:

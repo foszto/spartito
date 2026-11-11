@@ -794,6 +794,57 @@ def board_edit(
     typer.echo(board_line(item))
 
 
+def board_change(changes: dict) -> str:
+    """{field: [old, new]} as "field: old → new", the description as "description changed"."""
+    parts = []
+    for key, value in changes.items():
+        if isinstance(value, list):
+            old, new = ("–" if part in (None, "") else part for part in value)
+            parts.append(f"{key}: {old} → {new}")
+        else:
+            parts.append(f"{key} {value}")
+    return ", ".join(parts)
+
+
+def board_actor(entry: dict) -> str:
+    kind, name = entry["actor_kind"], entry["actor"]
+    if kind == "owner":
+        who = "owner"
+    elif kind == "agent":
+        who = f"agent {name}" if name else "chat session"
+    else:
+        who = f"{kind}: {name}"
+    return who + (f" (run {entry['run_id']})" if entry["run_id"] else "")
+
+
+@board_app.command("show")
+def board_show(item_id: int) -> None:
+    """Show an item with its history and the runs that worked on it."""
+    detail = board_fail(lambda: orch().board_detail(item_id))
+    item = detail["item"]
+    links = " ".join(f"[{link}]" for link in (item["agent_id"], item["branch"]) if link)
+    typer.secho(f"#{item['id']}  {item['title']}", bold=True)
+    typer.echo(f"  {item['project']} · {item['state']}" + (f"  {links}" if links else ""))
+    typer.echo(f"  added {item['created_at']} · changed {item['updated_at']}")
+    for line in item["description"].splitlines():
+        typer.echo(f"  | {line}")
+    typer.secho("history", bold=True)
+    for entry in detail["history"]:
+        change = board_change(entry["changes"])
+        line = f"  {entry['ts']}  {board_actor(entry)}  {entry['action']}"
+        typer.echo(line + (f"  {change}" if change else ""))
+    if detail["unrecorded"]:
+        gap = "a later change" if detail["history"] else "its changes so far"
+        typer.echo(f"  ({gap} not recorded)")
+    if detail["runs"]:
+        typer.secho("runs", bold=True)
+    for run in detail["runs"]:
+        ended = f" → {run['ended_at']}" if run["ended_at"] else ""
+        typer.echo(
+            f"  run {run['id']}  {run['agent_id']}  {run['status']}  {run['created_at']}{ended}"
+        )
+
+
 @board_app.command("move")
 def board_move(item_id: int, direction: Annotated[str, typer.Argument(help="up or down")]) -> None:
     """Move an item up or down within its state."""

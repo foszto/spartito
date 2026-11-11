@@ -82,3 +82,9 @@ def dispatch_items(orch: Orchestrator, request: Request, body: dict) -> dict[str
 
 
 # -- an item's history -----------------------------------------------------------------
+
+
+@route("/api/board/{item_id:int}/detail")
+def board_detail(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """{item, history, runs, unrecorded} of one item."""
+    return orch.board_detail(request.path_params["item_id"])

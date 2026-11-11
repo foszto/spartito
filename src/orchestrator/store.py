@@ -198,6 +198,23 @@ CREATE TABLE IF NOT EXISTS notices (
 );
 CREATE INDEX IF NOT EXISTS runs_agent ON runs(agent_id, id);
 CREATE INDEX IF NOT EXISTS events_agent ON events(agent_id, id);
+-- What happened to each board item (board.py), written in the same transaction as the
+-- change; a table of its own, unknown to older code (a change it makes is a gap, shown as
+-- unrecorded). actor_kind: 'owner' | 'agent' | 'auto'; actor: the agent id or the rule (NULL:
+-- the owner, or the interactive session); action: add | edit | state | move | place |
+-- dispatch; changes: JSON {field: [old, new]} (the description only "changed"); run_id: the
+-- dispatch's run, or the acting agent's running turn.
+CREATE TABLE IF NOT EXISTS board_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id INTEGER NOT NULL,
+    ts TEXT NOT NULL,
+    actor_kind TEXT NOT NULL,
+    actor TEXT,
+    action TEXT NOT NULL,
+    changes TEXT NOT NULL DEFAULT '{}',
+    run_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS board_history_item ON board_history(item_id, id);
 """
 
 ANYONE = object()  # withdraw_queued/replace_queued: whoever queued the run
