@@ -9,18 +9,17 @@ for the interactive `orch chat` session) and may act everywhere.
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
 import anyio
 from mcp.server.mcpserver import MCPServer
 
 from . import board, roles
+from .core.access import Caller
 from .core.delivery import delivery_floor as _delivery_floor  # noqa: F401 (old import path)
 from .core.delivery import wait_for_agents as _wait  # noqa: F401 (old import path)
 from .replies import clip, structured_page
 from .service import Orchestrator, OrchestratorError, result_file, run_usage
-from .store import ANYONE
 
 MAX_WAIT_SECONDS = 1800
 WAIT_SECONDS = 120  # default wait_for_agents timeout
@@ -45,36 +44,6 @@ def _orch() -> Orchestrator:
     return Orchestrator()
 
 
-def _caller(orch: Orchestrator):
-    agent_id = os.environ.get("ORCH_AGENT_ID")
-    return orch.agent(agent_id) if agent_id else None
-
-
-def _scoped(orch: Orchestrator) -> bool:
-    """True when the caller is an agent confined to one project."""
-    caller = _caller(orch)
-    return bool(caller and caller.project)
-
-
-def _project(orch: Orchestrator, project: str | None) -> str:
-    """Resolve the project argument; agents are confined to their own project."""
-    caller = _caller(orch)
-    if caller and caller.project:
-        if project and project != caller.project:
-            raise OrchestratorError(f"you may only act within project '{caller.project}'")
-        return caller.project
-    if not project:
-        raise OrchestratorError("project is required")
-    return project
-
-
-def _own(orch: Orchestrator, agent_id: str) -> str:
-    caller = _caller(orch)
-    if caller and caller.project and orch.agent(agent_id).project != caller.project:
-        raise OrchestratorError(f"agent '{agent_id}' is outside project '{caller.project}'")
-    return agent_id
-
-
 def _queued(
     orch: Orchestrator, agent_id: str, run_id: int, notify: str | None = None
 ) -> dict[str, Any]:
@@ -83,7 +52,7 @@ def _queued(
     agent = orch.agent(agent_id)
     view = orch.view(agent)
     keys = ("id", "project", "role", "provider", "status", "branch", "cwd")
-    caller = os.environ.get("ORCH_AGENT_ID")
+    caller = Caller.from_env(orch).id
     woken = notify and caller and agent.parent_id == caller
     return {
         "next": NEXT[notify] if woken else NEXT_UNNOTIFIED,
@@ -99,33 +68,17 @@ NEXT = {
 NEXT_UNNOTIFIED = "nothing will wake you: call wait_for_agents"
 
 
-def _sender() -> str | None:
-    return os.environ.get("ORCH_AGENT_ID") or None
-
-
-def _lineage(orch: Orchestrator, agent_id: str) -> set[str]:
-    """The agent and its ancestors."""
-    seen: set[str] = set()
-    current = orch.store.get_agent(agent_id)
-    while current and current.id not in seen:
-        seen.add(current.id)
-        current = orch.store.get_agent(current.parent_id) if current.parent_id else None
-    return seen
-
-
 @server.tool()
 def list_projects() -> list[dict[str, Any]]:
     """List registered projects with the number of agents in each (archived ones not)."""
     orch = _orch()
-    caller = _caller(orch)
     return [
         {
             **vars(project),
             "agents": len(orch.store.list_agents(project.name))
             - len(orch.store.archived(project.name)),
         }
-        for project in orch.store.list_projects()
-        if not (caller and caller.project) or project.name == caller.project
+        for project in Caller.from_env(orch).projects()
     ]
 
 
@@ -135,7 +88,7 @@ def add_project(
 ) -> dict[str, Any]:
     """Register a git repository as a project. `path` may be any directory inside the repo."""
     orch = _orch()
-    if _scoped(orch):
+    if Caller.from_env(orch).scoped():
         raise OrchestratorError("only the top-level orchestrator registers projects")
     project = orch.add_project(path, name, default_provider)
     return {**vars(project), "note": orch.project_note(project)}
@@ -145,7 +98,8 @@ def add_project(
 def list_roles(project: str | None = None) -> list[dict[str, Any]]:
     """List the roles an agent can be spawned with (worker, reviewer, planner, ...)."""
     orch = _orch()
-    path = orch.project(_project(orch, project)).path if project or _scoped(orch) else None
+    access = Caller.from_env(orch)
+    path = orch.project(access.project(project)).path if project or access.scoped() else None
     return [
         {"name": r.name, "description": r.description, "lead": r.lead, "worktree": r.worktree}
         for r in roles.available(path)
@@ -191,9 +145,10 @@ def spawn_agent(
       to is. The reply's `next` tells you whether you will be woken.
     """
     orch = _orch()
-    caller = _caller(orch)
+    access = Caller.from_env(orch)
+    caller = access.agent()
     agent, run = orch.spawn(
-        _project(orch, project),
+        access.project(project),
         task,
         name=name,
         role=role,
@@ -201,7 +156,7 @@ def spawn_agent(
         model=model,
         effort=effort,
         worktree=worktree,
-        share_with=share_worktree_with and _own(orch, share_worktree_with),
+        share_with=share_worktree_with and access.own(share_worktree_with),
         base=base,
         after=after,
         output_schema=output_schema,
@@ -222,10 +177,11 @@ def ask_project_lead(project: str, message: str, notify: str = "each") -> dict[s
     `notify` as in spawn_agent.
     """
     orch = _orch()
-    if _scoped(orch):
+    access = Caller.from_env(orch)
+    if access.scoped():
         raise OrchestratorError("only the top-level orchestrator talks to project leads")
-    lead = orch.lead(project, adopt=_sender())
-    run = orch.send(lead.id, message, sender=_sender(), notify=notify)
+    lead = orch.lead(project, adopt=access.sender())
+    run = orch.send(lead.id, message, sender=access.sender(), notify=notify)
     return _queued(orch, lead.id, run.id, notify)
 
 
@@ -244,13 +200,14 @@ def send_message(
     `output_schema`/`freeform`/`notify` as in spawn_agent.
     """
     orch = _orch()
+    access = Caller.from_env(orch)
     run = orch.send(
-        _own(orch, agent_id),
+        access.own(agent_id),
         message,
         after,
         output_schema,
         not freeform,
-        sender=_sender(),
+        sender=access.sender(),
         notify=notify,
     )
     return _queued(orch, agent_id, run.id, notify)
@@ -261,7 +218,7 @@ def withdraw_message(run_id: int, replacement: str | None = None) -> dict[str, A
     """Withdraw a message you sent (its `run_id`) that has not started, or with
     `replacement` replace its text. Refused once it has started."""
     orch = _orch()
-    sender = _sender() or ANYONE  # the interactive session may act on any run
+    sender = Caller.from_env(orch).acts_as()  # the interactive session may act on any run
     if replacement is None:
         run = orch.withdraw(run_id, sender)
         return {"withdrawn": run.id, "agent_id": run.agent_id}
@@ -281,9 +238,10 @@ async def wait_for_agents(
     `already_delivered`), an agent's texts cut at `result_chars` (0: no limit).
     """
     orch = _orch()
-    ids = [_own(orch, agent_id) for agent_id in agent_ids]
-    if caller := _caller(orch):
-        above = _lineage(orch, caller.id)
+    access = Caller.from_env(orch)
+    ids = [access.own(agent_id) for agent_id in agent_ids]
+    if caller := access.agent():
+        above = orch.lineage(caller.id)
         if inside := [agent_id for agent_id in ids if agent_id in above]:
             raise OrchestratorError(
                 f"cannot wait for {', '.join(inside)}: yourself or an agent above you"
@@ -301,7 +259,8 @@ def list_agents(project: str | None = None, archived: bool = False) -> list[dict
     are the totals of its runs. `archived`: only the archived agents instead.
     """
     orch = _orch()
-    scope = _project(orch, project) if project or _scoped(orch) else None
+    access = Caller.from_env(orch)
+    scope = access.project(project) if project or access.scoped() else None
     return orch.overview(scope, archived=archived)
 
 
@@ -324,7 +283,7 @@ def get_agent(
     """
     orch = _orch()
     orch.store.reconcile()
-    agent = orch.agent(_own(orch, agent_id))
+    agent = orch.agent(Caller.from_env(orch).own(agent_id))
     view = orch.view(agent, detail=True)
     key = "last_run"
     if run_id is not None:
@@ -380,7 +339,7 @@ def agent_log(
     events (0: no limit). `event_id` returns that one event's full text.
     """
     orch = _orch()
-    _own(orch, agent_id)
+    Caller.from_env(orch).own(agent_id)
     if event_id is not None:
         event = orch.store.get_event(event_id)
         if event is None or event.agent_id != agent_id:
@@ -447,9 +406,10 @@ def _cut(line: str, budget: int) -> str | None:
 def stop_agent(agent_id: str) -> dict[str, Any]:
     """Stop an agent's running and queued turns. The agent and its worktree are kept."""
     orch = _orch()
-    stopped = orch.stop_runs(_own(orch, agent_id))
+    access = Caller.from_env(orch)
+    stopped = orch.stop_runs(access.own(agent_id))
     # The caller knows these ended: no notification and no wait_for_agents repeats them.
-    orch.mark_delivered(os.environ.get("ORCH_AGENT_ID", ""), stopped)
+    orch.mark_delivered(access.id, stopped)
     return {"stopped_runs": len(stopped)}
 
 
@@ -459,7 +419,7 @@ def archive_agent(agent_id: str, confirm: bool = False, restore: bool = False) -
     worktree, log). Unmerged or uncommitted work is refused unless `confirm`. `restore`
     brings one back; so does a message to it."""
     orch = _orch()
-    agent_id = _own(orch, agent_id)
+    agent_id = Caller.from_env(orch).own(agent_id)
     return orch.restore(agent_id) if restore else orch.archive(agent_id, confirm)
 
 
@@ -477,7 +437,7 @@ def request_decision(
     `question` at most 500 chars; `options` up to 6 short choices (they may also answer
     freely); `recommendation`: what you would choose and why, in a sentence."""
     orch = _orch()
-    caller = _caller(orch)
+    caller = Caller.from_env(orch).agent()
     if caller is None:
         raise OrchestratorError("this session talks to the user directly: ask them here")
     decision = orch.request_decision(caller.id, question, options, recommendation)
@@ -488,7 +448,7 @@ def request_decision(
 def withdraw_decision(decision_id: int) -> dict[str, Any]:
     """Withdraw one of your open decisions that is no longer needed."""
     orch = _orch()
-    caller = os.environ.get("ORCH_AGENT_ID") or ""
+    caller = Caller.from_env(orch).id
     return {"withdrawn": orch.withdraw_decision(decision_id, caller).id}
 
 
@@ -516,7 +476,7 @@ def list_board(project: str, state: str | None = None) -> dict[str, Any]:
     descriptions are cut, and what does not fit in about 6000 chars is only counted
     (`counts` has every state's total). Leads: their own project only."""
     orch = _orch()
-    name = _project(orch, project)
+    name = Caller.from_env(orch).project(project)
     items = orch.board_items(name, state)
     items.sort(key=lambda item: BOARD_ORDER.index(item.state))  # stable: keeps the order
     counts = {key: n for key in BOARD_ORDER if (n := sum(i.state == key for i in items))}
@@ -544,7 +504,7 @@ def add_board_item(
     200 chars, `description` at most 4000; `state`: idea (default), ready, in_progress, done.
     Leads: their own project only."""
     orch = _orch()
-    item = orch.add_board_item(_project(orch, project), title, description, state)
+    item = orch.add_board_item(Caller.from_env(orch).project(project), title, description, state)
     return {"id": item.id, "project": item.project, "state": item.state}
 
 
@@ -561,7 +521,8 @@ def update_board_item(
     of that state), title, description, or the agent id / branch working on it ("" clears
     one). Leads: items of their own project only."""
     orch = _orch()
-    _project(orch, orch.board_item(item_id).project)  # a lead stays within its project
+    access = Caller.from_env(orch)
+    access.project(orch.board_item(item_id).project)  # a lead stays within its project
     given = {
         "state": state,
         "title": title,

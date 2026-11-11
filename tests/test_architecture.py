@@ -54,7 +54,6 @@ NO_TASK = "no plan task; revisit with tasks 6/12"
 IMPORT_EXCEPTIONS = {
     ("roles", "loadout"): (1, "module level", f"cycle with loadout -> roles; {NO_TASK}"),
     ("loadout", "roles"): (1, "lazy", f"cycle with roles -> loadout; {NO_TASK}"),
-    ("mcp_server", "store"): (1, "module level", "ANYONE (task 5: close the facade)"),
     ("store", "models"): (1, "module level", f"rows to model objects; {NO_TASK}"),
     ("providers.base", "models"): (1, "module level", f"Agent, Event; {NO_TASK}"),
     ("providers.base", "loadout"): (1, "module level", f"Loadout; {NO_TASK}"),
@@ -71,7 +70,7 @@ IMPORT_EXCEPTIONS = {
 # allow none (task 5 brings all to zero).
 STORE_ACCESS = {
     "cli": 9,
-    "mcp_server": 10,
+    "mcp_server": 7,
     "web.app": 7,
 }
 

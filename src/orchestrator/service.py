@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from . import board, decisions, desktop, git, providers
+from .core import access, compaction, delivery, dispatch, launcher, lifecycle, views
 from .core import archive as archiving
-from .core import compaction, delivery, dispatch, launcher, lifecycle, views
 from .core import setup as agent_setup
 from .core.dispatch import ORCHESTRATOR_ID as ORCHESTRATOR_ID  # old import path
 from .core.dispatch import slug as slug  # old import path
@@ -271,11 +271,12 @@ class Orchestrator:
     wait = views.wait
     changes = views.changes
 
-    # -- delivery (core/delivery.py) --------------------------------------
+    # -- delivery (core/delivery.py, core/access.py) ----------------------
 
     wait_for_agents = delivery.wait_for_agents
     delivery_floor = delivery.delivery_floor
     mark_delivered = delivery.mark_delivered
+    lineage = access.lineage
 
     # -- archive (core/archive.py) ----------------------------------------
 
