@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 from .store import Store, now
@@ -81,6 +81,16 @@ def check_state(state: Any) -> str:
     if state not in STATES:
         raise ValueError(f"unknown state {state!r} (one of: {', '.join(STATES)})")
     return state
+
+
+def record_gap(conn: sqlite3.Connection, item_id: int, since: str) -> None:
+    """Called just before `record` for a change of an existing item, in its transaction:
+    `since` is the item's updated_at before this change. Nothing is kept yet."""
+
+
+def link_run(conn: sqlite3.Connection, item_ids: list[int], stamp: str, run_id: int) -> None:
+    """The run of the dispatch recorded at `stamp` for these items, known once its message
+    was sent. Nothing is kept yet."""
 
 
 def _diff(before: Item | None, after: Item, fields: tuple[str, ...]) -> dict[str, Any]:
@@ -257,9 +267,10 @@ def update(store: Store, item_id: int, changes: dict[str, Any], actor: Actor = O
         current = _get(conn, item_id)
         if current is None:
             raise ValueError(f"there is no board item #{item_id}")
-        if fields.get("state", current.state) != current.state:
+        fields = {key: value for key, value in fields.items() if getattr(current, key) != value}
+        if "state" in fields:
             fields["position"] = _end(conn, current.project, fields["state"])
-        if fields:
+        if fields:  # a change that changes nothing writes nothing
             fields["updated_at"] = now()
             assignments = ", ".join(f"{key} = ?" for key in fields)
             conn.execute(
@@ -270,6 +281,7 @@ def update(store: Store, item_id: int, changes: dict[str, Any], actor: Actor = O
         if fields:
             diff = _diff(current, item, FIELDS)
             action = "state" if set(diff) == {"state"} else "edit"
+            record_gap(conn, item_id, current.updated_at)
             record(conn, item_id, actor, action, diff, item.updated_at, run_id)
     return item
 
@@ -357,6 +369,7 @@ def move(store: Store, item_id: int, direction: str, actor: Actor = OWNER) -> It
                 conn.execute("UPDATE board_items SET position = ? WHERE id = ?", (position, moved))
             conn.execute("UPDATE board_items SET updated_at = ? WHERE id = ?", (stamp, item_id))
             changes = {"position": [item.position, other]}
+            record_gap(conn, item_id, item.updated_at)
             record(conn, item_id, actor, "move", changes, stamp, run_id)
         item = _get(conn, item_id)
     assert item is not None
@@ -394,7 +407,8 @@ def dispatch(
     as one message with `send(lead_id, text)` (returns the run id). No such item: nothing
     is sent (run id None). If sending fails, the items are restored as they were.
     `states`: the states an item may be taken from (ready first, then by position); with
-    `ids`, (IDEA, READY) also takes the ideas named."""
+    `ids`, (IDEA, READY) also takes the ideas named. The history follows the same steps:
+    the claim is recorded with it, the run once known, a restore as `restore`."""
     with store.transaction() as conn:  # claimed at once: a second dispatch finds none
         marks = ", ".join("?" for _ in states)
         rows = conn.execute(
@@ -412,14 +426,19 @@ def dispatch(
                 " WHERE id = ?",
                 (IN_PROGRESS, start + offset, lead_id, stamp, item.id),
             )
+            claimed = replace(item, state=IN_PROGRESS, agent_id=lead_id)
+            changes = _diff(item, claimed, ("state", "agent_id"))
+            record_gap(conn, item.id, item.updated_at)
+            record(conn, item.id, actor, "dispatch", changes, stamp)
     if not before:
         return [], None
     try:
         run_id = send(lead_id, message(project, before, actor))
     except BaseException:
-        with store.connection() as conn:
+        with store.transaction() as conn:
+            restored = now()
             for item in before:
-                conn.execute(
+                cursor = conn.execute(
                     "UPDATE board_items SET state = ?, position = ?, agent_id = ?, updated_at = ?"
                     " WHERE id = ? AND state = ?",
                     (
@@ -431,11 +450,11 @@ def dispatch(
                         IN_PROGRESS,
                     ),
                 )
+                if cursor.rowcount:  # its old updated_at comes back: the entry is later
+                    claimed = replace(item, state=IN_PROGRESS, agent_id=lead_id)
+                    back = _diff(claimed, item, ("state", "agent_id"))
+                    record(conn, item.id, actor, "restore", back, restored)
         raise
-    with store.transaction() as conn:  # only once it was sent: the run is known
-        for item in before:
-            changes = {"state": [item.state, IN_PROGRESS]}
-            if item.agent_id != lead_id:
-                changes["agent_id"] = [item.agent_id, lead_id]
-            record(conn, item.id, actor, "dispatch", changes, stamp, run_id)
+    with store.transaction() as conn:
+        link_run(conn, [item.id for item in before], stamp, run_id)
     return [get(store, item.id) for item in before], run_id

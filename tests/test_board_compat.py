@@ -150,40 +150,93 @@ def test_the_owner_and_agents_are_told_apart(
     assert board.Actor("owner", None) == board.OWNER
 
 
-def test_every_change_reaches_the_record_hook(
-    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
+@pytest.fixture
+def hooks(monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
+    """The calls of board.record, record_gap and link_run, in order (they keep nothing)."""
     monkeypatch.setattr(Orchestrator, "_launch", lambda self, run: None)
-    seen: list[tuple[int, str, dict, int | None]] = []
+    seen: list[tuple] = []
 
-    def spy(conn, item_id, actor, action, changes, stamp, run_id=None) -> None:
+    def record(conn, item_id, actor, action, changes, stamp, run_id=None) -> None:
         assert actor == board.OWNER and stamp
         seen.append((item_id, action, changes, run_id))
 
-    monkeypatch.setattr(board, "record", spy)
-    first = orch.add_board_item(project, "first", "d").id
-    second = orch.add_board_item(project, "second").id
-    orch.update_board_item(first, {"description": "e", "title": "1st"})
-    orch.update_board_item(first, {"state": "ready"})
+    monkeypatch.setattr(board, "record", record)
+    monkeypatch.setattr(board, "record_gap", lambda conn, *args: seen.append(("gap", *args)))
+    monkeypatch.setattr(board, "link_run", lambda conn, *args: seen.append(("run", *args)))
+    return seen
+
+
+def test_every_change_reaches_the_record_hook(
+    orch: Orchestrator, project: str, hooks: list[tuple]
+) -> None:
+    first = orch.add_board_item(project, "first", "d")
+    added = orch.add_board_item(project, "second")
+    second = added.id
+    orch.update_board_item(first.id, {"description": "e", "title": "1st"})
+    edited = orch.board_item(first.id).updated_at
+    orch.update_board_item(first.id, {"state": "ready"})
+    readied = orch.board_item(first.id).updated_at
     orch.update_board_item(second, {"state": "ready"})
+    second_readied = orch.board_item(second).updated_at
     orch.move_board_item(second, "up")
     orch.move_board_item(second, "up")  # at the top already: no change
-    result = orch.dispatch_board(project, [first])
+    result = orch.dispatch_board(project, [first.id])
+    lead_id, run_id = result["agent_id"], result["run_id"]
+    stamp = orch.board_item(first.id).updated_at
 
-    assert seen == [
-        (first, "add", {"state": [None, "idea"]}, None),
+    assert hooks == [
+        (first.id, "add", {"state": [None, "idea"]}, None),
         (second, "add", {"state": [None, "idea"]}, None),
-        (first, "edit", {"title": ["first", "1st"], "description": "changed"}, None),
-        (first, "state", {"state": ["idea", "ready"]}, None),
+        ("gap", first.id, first.updated_at),
+        (first.id, "edit", {"title": ["first", "1st"], "description": "changed"}, None),
+        ("gap", first.id, edited),
+        (first.id, "state", {"state": ["idea", "ready"]}, None),
+        ("gap", second, added.updated_at),
         (second, "state", {"state": ["idea", "ready"]}, None),
+        ("gap", second, second_readied),
         (second, "move", {"position": [1, 0]}, None),
-        (
-            first,
-            "dispatch",
-            {"state": ["ready", "in_progress"], "agent_id": [None, result["agent_id"]]},
-            result["run_id"],
-        ),
+        ("gap", first.id, readied),
+        (first.id, "dispatch", {"state": ["ready", "in_progress"], "agent_id": [None, lead_id]}, None),
+        ("run", [first.id], stamp, run_id),
+    ]  # fmt: skip
+
+
+def test_a_change_that_changes_nothing_writes_nothing(
+    orch: Orchestrator, project: str, hooks: list[tuple]
+) -> None:
+    item = orch.add_board_item(project, "same", "text", state="ready")
+    hooks.clear()
+
+    same = orch.update_board_item(
+        item.id, {"title": "same", "description": "text", "state": "ready"}
+    )
+
+    assert same == item and hooks == []
+    assert orch.update_board_item(item.id, {"agent_id": "", "branch": ""}) == item
+
+
+def test_a_failed_dispatch_records_its_restore(
+    orch: Orchestrator, project: str, hooks: list[tuple], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    item = orch.add_board_item(project, "x", state="ready")
+    lead_id = lead(orch, project)
+    hooks.clear()
+
+    def broken(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("cannot send")
+
+    monkeypatch.setattr(orch, "send", broken)
+    with pytest.raises(RuntimeError, match="cannot send"):
+        orch.dispatch_board(project)
+
+    claimed = {"state": ["ready", "in_progress"], "agent_id": [None, lead_id]}
+    restored = {"state": ["in_progress", "ready"], "agent_id": [lead_id, None]}
+    assert hooks == [
+        ("gap", item.id, item.updated_at),
+        (item.id, "dispatch", claimed, None),
+        (item.id, "restore", restored, None),
     ]
+    assert orch.board_item(item.id) == item  # as it was, updated_at too
 
 
 def test_an_agents_dispatch_comes_from_that_agent(
