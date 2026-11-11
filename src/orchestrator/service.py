@@ -281,6 +281,7 @@ class Orchestrator:
     archived_ids = reads.archived_ids
     reconcile = reads.reconcile
     active_runs = reads.active_runs
+    running_count = reads.running_count
     get_run = reads.get_run
     run_kind = reads.run_kind
     get_usage = reads.get_usage

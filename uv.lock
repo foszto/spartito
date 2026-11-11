@@ -385,6 +385,9 @@ app = [
     { name = "pywebview", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "pywebview", extra = ["qt"], marker = "sys_platform == 'linux'" },
 ]
+menubar = [
+    { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin'" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -397,13 +400,14 @@ dev = [
 requires-dist = [
     { name = "anyio", specifier = ">=4.16.0" },
     { name = "mcp", specifier = ">=2.3.0" },
+    { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin' and extra == 'menubar'", specifier = ">=13.0" },
     { name = "pywebview", marker = "sys_platform == 'darwin' and extra == 'app'", specifier = ">=6.2" },
     { name = "pywebview", extras = ["qt"], marker = "sys_platform == 'linux' and extra == 'app'", specifier = ">=6.2" },
     { name = "starlette", specifier = ">=1.10.0" },
     { name = "typer", specifier = ">=0.29.0" },
     { name = "uvicorn", specifier = ">=0.54.0" },
 ]
-provides-extras = ["app"]
+provides-extras = ["app", "menubar"]
 
 [package.metadata.requires-dev]
 dev = [

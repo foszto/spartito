@@ -334,6 +334,28 @@ def app_window(
         raise typer.Exit(code)
 
 
+@app.command()
+def menubar(
+    close_after: Annotated[
+        float | None, typer.Option("--close-after", hidden=True, help="Quit after SECONDS.")
+    ] = None,
+    print_lines: Annotated[
+        bool, typer.Option("--print", hidden=True, help="Print the title and menu on changes.")
+    ] = False,
+) -> None:
+    """Show the running agents and the open decisions in the macOS menu bar (the extra
+    `orchestrator[menubar]`); its menu opens a decision or the dashboard window."""
+    from .gui import menubar as item
+
+    echo = (lambda text: typer.echo(text + "\n", nl=False)) if print_lines else None
+    try:
+        code = item.run(close_after, echo)
+    except item.MenubarError as exc:
+        raise fail(exc) from None
+    if code:
+        raise typer.Exit(code)
+
+
 # -- background service -----------------------------------------------------
 
 service_app = typer.Typer(

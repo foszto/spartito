@@ -21,6 +21,8 @@ app = [
     "pywebview>=6.2; sys_platform == 'darwin'",
     "pywebview[qt]>=6.2; sys_platform == 'linux'",
 ]
+# The menu-bar status item of `orch menubar` (macOS only): Cocoa through pyobjc.
+menubar = ["pyobjc-framework-Cocoa>=13.0; sys_platform == 'darwin'"]
 
 [project.scripts]
 orch = "orchestrator.cli:main"
