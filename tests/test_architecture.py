@@ -19,6 +19,7 @@ PACKAGE = Path(__file__).resolve().parent.parent / "src" / "orchestrator"
 # layer or any layer of a lower rank; interfaces must not import the store module at all.
 LAYERS = {
     "cli": "interfaces",
+    "__main__": "interfaces",  # `python -m orchestrator`, which the background service runs
     "mcp_server": "interfaces",
     "web": "interfaces",
     "service": "core",
@@ -41,6 +42,7 @@ LAYERS = {
     "keep_awake": "infra",
     "desktop": "infra",
     "config": "infra",  # paths and environment
+    "autostart": "infra",  # launchd agent and systemd user unit for `orch web`
     "memory_guard": "infra",  # hook script used by the Claude provider
 }
 # The runner is a process entry point that uses the core (core/lifecycle); the core starts it
