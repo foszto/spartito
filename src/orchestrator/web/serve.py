@@ -51,6 +51,12 @@ class Server(uvicorn.Server):
         """Listening and recorded in `run/web.json`."""
         return self.record is not None
 
+    async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
+        # Here, not only after `run`: on SIGTERM uvicorn raises the signal again once it has
+        # shut down, which ends the process before any `finally` of the caller.
+        self.forget()
+        await super().shutdown(sockets)
+
     def forget(self) -> None:
         """Remove `run/web.json` if it is still this server's."""
         if self.record is None:

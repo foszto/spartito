@@ -327,9 +327,11 @@ def app_window(
     from .gui import window
 
     try:
-        window.run(port, close_after)
+        code = window.run(port, close_after)
     except window.AppError as exc:
         raise fail(exc) from None
+    if code:
+        raise typer.Exit(code)
 
 
 # -- background service -----------------------------------------------------

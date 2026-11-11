@@ -7,31 +7,38 @@ The window, by the first way that works; each step that fails says so in one lin
   a. a native window with pywebview (the optional extra `orchestrator[app]`): Cocoa on macOS,
      Qt on Linux, where the backend is first started in a child process (Qt aborts the whole
      process, no exception, when it cannot load its platform plugin);
-  b. a Chromium-family browser in app mode, with its own profile under `run/`, so its process
-     lives exactly as long as the window;
+  b. a Chromium-family browser in app mode, with its own profile under `run/` and its DevTools
+     endpoint on a free loopback port: the window counts as closed when no page is left in it
+     (macOS browsers keep running without windows), and the browser is then ended. A browser
+     that exits before its window was seen (a crash, a refused profile) did not start;
   c. the default browser; the own server then runs in the foreground until Ctrl-C.
 On Linux without a display none of them is tried: the URL is printed and served until Ctrl-C.
 
-One `orch app` per home: a second one says so and leaves.
+One `orch app` per home: a second one says so and leaves; one that only serves (c, or no
+display) gives that up, so the next one reuses its server. SIGTERM and SIGHUP end it as
+closing the window does.
 """
 
 from __future__ import annotations
 
 import contextlib
 import fcntl
+import json
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import threading
 import time
 import webbrowser
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
 
-from .. import config
+from .. import autostart, config
 from ..web import serve
 from . import locate
 
@@ -47,6 +54,9 @@ MAC_BROWSERS = ("Google Chrome", "Chromium", "Microsoft Edge", "Brave Browser") 
 BACKEND_PROBE = "import sys; from webview.guilib import initialize; initialize(sys.argv[1] or None)"
 PROBE_TIMEOUT = 60.0  # seconds; the first import of Qt WebEngine can be slow
 ERROR_LINE = re.compile(r"[\w.]*(Error|Exception): ")
+POLL = 1.0  # seconds between two looks at the browser's open pages
+EARLY_EXIT = 3.0  # seconds: a browser that ends this soon without a window did not start
+STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
 LINUX_BROWSERS = (
     "google-chrome",
     "google-chrome-stable",
@@ -128,10 +138,60 @@ class OwnServer:
             self.thread.join(STOP_TIMEOUT)
         self.sock.close()
 
-    def hold(self, seconds: float | None) -> None:
-        """Keep serving in the foreground until Ctrl-C (or for `seconds`)."""
+
+@dataclass
+class Session:
+    """One `orch app`: its lock, its server and how it ends."""
+
+    lock: IO[str]
+    close_after: float | None = None
+    url: str = ""
+    own: OwnServer | None = None
+    done: threading.Event = field(default_factory=threading.Event)  # end now
+    signal: int | None = None  # the SIGTERM or SIGHUP that ended it
+
+    def elapsed(self, since: float) -> bool:
+        return self.close_after is not None and time.monotonic() - since >= self.close_after
+
+    def hold(self) -> None:
+        """Serve in the foreground until Ctrl-C, a stop signal or `close_after`. Only serving,
+        it gives up the lock: another `orch app` reuses this server."""
+        self.lock.close()
+        since = time.monotonic()
         with contextlib.suppress(KeyboardInterrupt):
-            self.thread.join(seconds)
+            while self.own and self.own.thread.is_alive() and not self.elapsed(since):
+                if self.done.wait(0.2):
+                    break
+
+
+@contextlib.contextmanager
+def stopped_by_signals(session: Session):
+    """SIGTERM and SIGHUP set `session.done`. Their Python handler does nothing: a thread reads
+    the signal numbers from the wakeup fd, which the C-level handler writes even while a GUI
+    loop (Cocoa) keeps the main thread from running Python handlers."""
+    read_fd, write_fd = os.pipe()
+    os.set_blocking(write_fd, False)
+    previous = {sig: signal.signal(sig, lambda *_: None) for sig in STOP_SIGNALS}
+    previous_fd = signal.set_wakeup_fd(write_fd, warn_on_full_buffer=False)
+
+    def watch() -> None:
+        while data := os.read(read_fd, 64):
+            for number in data:
+                if number in STOP_SIGNALS:
+                    session.signal = number
+                    session.done.set()
+
+    watcher = threading.Thread(target=watch, name="orch-app-signals", daemon=True)
+    watcher.start()
+    try:
+        yield
+    finally:
+        signal.set_wakeup_fd(previous_fd)
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+        os.close(write_fd)
+        watcher.join(1.0)
+        os.close(read_fd)
 
 
 def first_line(exc: BaseException) -> str:
@@ -168,7 +228,7 @@ def backend_problem(gui: str | None) -> str | None:
     return found[0][:200] if found else f"its GUI backend exited with code {done.returncode}"
 
 
-def native_window(url: str, close_after: float | None) -> bool:
+def native_window(session: Session) -> bool:
     """a. Show `url` in a pywebview window until it is closed; False when that cannot be."""
     try:
         import webview  # the optional extra: imported here and nowhere else
@@ -189,16 +249,22 @@ def native_window(url: str, close_after: float | None) -> bool:
     try:
         window = webview.create_window(
             config.PROJECT_NAME,
-            url,
+            session.url,
             width=WINDOW_SIZE[0],
             height=WINDOW_SIZE[1],
             text_select=True,
             zoomable=True,
         )
-        window.events.closed += closed.set
+
+        def on_closed() -> None:  # one handler: pywebview runs each in a thread of its own
+            closed.set()
+            session.done.set()
+
+        window.events.closed += on_closed
 
         def close_later() -> None:  # runs in pywebview's own thread
-            if close_after is not None and not closed.wait(close_after):
+            session.done.wait(session.close_after)  # closed, a stop signal or the time is up
+            if not closed.is_set():
                 window.destroy()
 
         # The GUI loop runs on this (the main) thread until the window is gone. Not private,
@@ -219,19 +285,32 @@ def native_window(url: str, close_after: float | None) -> bool:
     return True
 
 
-def app_mode(url: str, own: OwnServer | None, close_after: float | None) -> bool:
-    """b. Show `url` in a Chromium-family browser in app mode until its process ends; False
-    when there is none."""
+def open_pages(profile: Path) -> int | None:
+    """How many pages the browser using `profile` shows, asked at its DevTools endpoint (the
+    port it wrote to DevToolsActivePort); None when that cannot be known (yet)."""
+    try:
+        port = int((profile / "DevToolsActivePort").read_text().split()[0])
+        body = autostart.get_local(f"http://127.0.0.1:{port}/json/list", 2.0, limit=1 << 22)
+        return sum(1 for target in json.loads(body) if target.get("type") == "page")
+    except OSError, ValueError, IndexError, TypeError, AttributeError:
+        return None
+
+
+def app_mode(session: Session) -> bool:
+    """b. Show the page in a Chromium-family browser in app mode until its window is closed;
+    False when there is none or it did not start."""
     browser = find_chromium()
-    then = default_browser_note(url, own)
+    then = default_browser_note(session)
     if browser is None:
         say(f"no Chromium-family browser found ({CHROMIUM_NAMES}); {then}")
         return False
     profile = config.runtime_dir() / "app-profile"  # its own: the process is this window's
+    (profile / "DevToolsActivePort").unlink(missing_ok=True)
     argv = [
         str(browser),
-        f"--app={url}",
+        f"--app={session.url}",
         f"--user-data-dir={profile}",
+        "--remote-debugging-port=0",  # loopback; honoured only with an own --user-data-dir
         "--no-first-run",
         "--no-default-browser-check",
     ]
@@ -246,9 +325,20 @@ def app_mode(url: str, own: OwnServer | None, close_after: float | None) -> bool
     except OSError as exc:
         say(f"{browser.name} did not start ({exc.strerror or exc}); {then}")
         return False
+    started, seen = time.monotonic(), False
     try:
-        proc.wait(timeout=close_after)
-    except subprocess.TimeoutExpired, KeyboardInterrupt:
+        while (code := proc.poll()) is None:
+            pages = open_pages(profile)  # None: no endpoint, the process alone tells
+            if pages == 0 and seen or session.elapsed(started):
+                break  # the window was closed (the browser may stay without one)
+            seen = seen or bool(pages)
+            if session.done.wait(POLL if seen else 0.2):
+                break
+        else:
+            if not seen and time.monotonic() - started < EARLY_EXIT:
+                say(f"{browser.name} did not start (it exited at once, code {code}); {then}")
+                return False
+    except KeyboardInterrupt:
         pass
     finally:
         if proc.poll() is None:
@@ -261,34 +351,35 @@ def app_mode(url: str, own: OwnServer | None, close_after: float | None) -> bool
     return True
 
 
-def default_browser_note(url: str, own: OwnServer | None) -> str:
-    return "opening the default browser" + (f"; serving {url} until Ctrl-C" if own else "")
+def default_browser_note(session: Session) -> str:
+    serving = f"; serving {session.url} until Ctrl-C" if session.own else ""
+    return f"opening the default browser{serving}"
 
 
-def default_browser(url: str, own: OwnServer | None, close_after: float | None) -> None:
-    """c. Open `url` in the default browser; keep the own server until Ctrl-C."""
+def default_browser(session: Session) -> None:
+    """c. Open the page in the default browser; keep the own server until Ctrl-C."""
     try:
-        opened = webbrowser.open(url)
+        opened = webbrowser.open(session.url)
     except webbrowser.Error:
         opened = False
     if not opened:
-        say(f"no browser could be opened: open {url}" + (" (serving until Ctrl-C)" if own else ""))
-    if own:
-        own.hold(close_after)
+        serving = " (serving until Ctrl-C)" if session.own else ""
+        say(f"no browser could be opened: open {session.url}{serving}")
+    session.hold()
 
 
-def show(url: str, own: OwnServer | None, close_after: float | None) -> None:
+def show(session: Session) -> None:
     if no_display():
+        serving = ", serving it until Ctrl-C" if session.own else ""
         say(
-            f"no display (DISPLAY and WAYLAND_DISPLAY are unset): open {url} in a browser"
-            + (", serving it until Ctrl-C" if own else "")
+            "no display (DISPLAY and WAYLAND_DISPLAY are unset):"
+            f" open {session.url} in a browser{serving}"
         )
-        if own:
-            own.hold(close_after)
+        session.hold()
         return
-    if native_window(url, close_after) or app_mode(url, own, close_after):
+    if native_window(session) or app_mode(session):
         return
-    default_browser(url, own, close_after)
+    default_browser(session)
 
 
 def single_instance() -> IO[str] | None:
@@ -303,25 +394,28 @@ def single_instance() -> IO[str] | None:
     return handle
 
 
-def run(port: int = 0, close_after: float | None = None) -> None:
-    """`orch app`: open the dashboard window and return once it is gone. AppError when no
-    server can be had."""
+def run(port: int = 0, close_after: float | None = None) -> int:
+    """`orch app`: open the dashboard window and return once it is gone, with the exit code
+    (128 + the signal when SIGTERM or SIGHUP ended it). AppError when no server can be had."""
     lock = single_instance()
     if lock is None:
         print("the dashboard window of this home is already open")
-        return
+        return 0
+    session = Session(lock, close_after)
     try:
-        url = locate.running_server()
-        own = None
-        if url is None:
-            own = OwnServer(port)
-            own.start()
-            url = own.url
-        print(f"web UI: {url}" + ("" if own else " (the running server)"), flush=True)
-        try:
-            show(url, own, close_after)
-        finally:
-            if own:
-                own.stop()
+        with stopped_by_signals(session):
+            session.url = locate.running_server() or ""
+            if not session.url:
+                session.own = OwnServer(port)
+                session.own.start()
+                session.url = session.own.url
+            note = "" if session.own else " (the running server)"
+            print(f"web UI: {session.url}{note}", flush=True)
+            try:
+                show(session)
+            finally:
+                if session.own:
+                    session.own.stop()
     finally:
         lock.close()
+    return 128 + session.signal if session.signal else 0

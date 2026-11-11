@@ -346,14 +346,30 @@ def uninstall(label: str, platform: str | None = None) -> Path | None:
     return unit
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs) -> None:
+        return None  # the 3xx answer itself is the result (an HTTPError)
+
+
+# For the loopback servers of this machine: never through a proxy (environment or system
+# settings), never following a redirect elsewhere.
+LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect)
+
+
+def get_local(url: str, timeout: float, limit: int = 65536) -> bytes:
+    """GET `url`, a server on this machine; HTTPError for anything but 2xx, OSError when
+    nothing answers."""
+    with LOCAL_OPENER.open(url, timeout=timeout) as resp:
+        return resp.read(limit)
+
+
 def ping(host: str, port: int, path: Path, timeout: float = PING_TIMEOUT) -> tuple[str, str]:
     """Who answers on host:port: ("ours", "") for this tool with this home, ("foreign", why)
     for anything else that answers, ("none", "") when nothing does."""
     target = {"0.0.0.0": "127.0.0.1", "::": "::1", "": "127.0.0.1"}.get(host, host)
     netloc = f"[{target}]" if ":" in target else target
     try:
-        with urllib.request.urlopen(f"http://{netloc}:{port}/api/ping", timeout=timeout) as resp:
-            body = resp.read(65536)
+        body = get_local(f"http://{netloc}:{port}/api/ping", timeout)
     except urllib.error.HTTPError as exc:
         return "foreign", f"/api/ping answered HTTP {exc.code}"
     except OSError, ValueError:
