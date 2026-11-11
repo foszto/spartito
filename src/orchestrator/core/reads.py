@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from ..models import Event, Run, Usage
+from ..models import Agent, Event, Project, Run, Usage
 from ..store import Store
 
 
@@ -13,6 +13,19 @@ class Facade(Protocol):
     """What these functions use of the facade (they are its methods)."""
 
     store: Store
+
+
+def projects(orch: Facade) -> list[Project]:
+    return orch.store.list_projects()
+
+
+def agents(orch: Facade, project: str | None = None) -> list[Agent]:
+    """The agents (of one project), the archived ones too."""
+    return orch.store.list_agents(project)
+
+
+def get_agent(orch: Facade, agent_id: str) -> Agent | None:
+    return orch.store.get_agent(agent_id)
 
 
 def agent_count(orch: Facade, project: str) -> int:
@@ -23,6 +36,11 @@ def agent_count(orch: Facade, project: str) -> int:
 def reconcile(orch: Facade) -> None:
     """End the runs whose runner process is gone (see Store.reconcile), before showing them."""
     orch.store.reconcile()
+
+
+def active_runs(orch: Facade, agent_id: str) -> list[Run]:
+    """The agent's queued and running turns."""
+    return orch.store.active_runs(agent_id)
 
 
 def get_run(orch: Facade, run_id: int) -> Run | None:

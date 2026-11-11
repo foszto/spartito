@@ -69,7 +69,6 @@ IMPORT_EXCEPTIONS = {
 # Interface module -> allowed number of `.store` attribute accesses; unlisted interface modules
 # allow none (task 5 brings all to zero).
 STORE_ACCESS = {
-    "cli": 9,
     "web.app": 7,
 }
 

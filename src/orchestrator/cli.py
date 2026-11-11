@@ -343,8 +343,8 @@ def project_add(
 def project_list() -> None:
     """List projects."""
     o = orch()
-    for project in o.store.list_projects():
-        count = len(o.store.list_agents(project.name)) - len(o.store.archived(project.name))
+    for project in o.projects():
+        count = o.agent_count(project.name)
         typer.echo(
             f"{project.name:<20} {project.default_provider:<7} {count:>3} agents  {project.path}"
         )
@@ -766,7 +766,7 @@ def ps(
     views = o.overview(project)
     width = max((len(state_label(view)[0]) for view in views), default=0)
     width = max(width, 8)
-    agents = {agent.id: agent for agent in o.store.list_agents(project)}
+    agents = {agent.id: agent for agent in o.agents(project)}
     children: dict[str | None, list[dict]] = {}
     home = {view["id"]: view["project"] for view in views}
     for view in views:
@@ -792,12 +792,12 @@ def ps(
             text, color = state_label(view)
             status = typer.style(text, fg=color)
             cost = f"${view['cost_usd']:.2f}" if view["cost_usd"] else ""
-            setup_text = setup(view, agents.get(view["id"]) or o.store.get_agent(view["id"]))
+            setup_text = setup(view, agents.get(view["id"]) or o.get_agent(view["id"]))
             context = context_text(view["context"]) and context_styled(view["context"])
             extra = "  ".join(filter(None, (setup_text, context, tokens(view["tokens"]), cost)))
             label = shown_name(view["id"])
             typer.secho(f"{label}  {status}  {extra}", bold=True)
-    for item in o.store.list_projects():
+    for item in o.projects():
         if project and item.name != project:
             continue
         typer.secho(f"{item.name}  {item.path}", bold=True)
@@ -829,7 +829,7 @@ def status(agent_id: str) -> None:
     """Show one agent: state, last result and the changes in its worktree."""
     o = orch()
     try:
-        o.store.reconcile()
+        o.reconcile()
         view = o.view(o.agent(agent_id), detail=True)
         changes = o.changes(agent_id)
     except OrchestratorError as exc:
@@ -906,7 +906,7 @@ def logs(
         raise fail(exc) from None
     last_id, first = 0, True
     while True:
-        for event in o.store.events(agent_id, after=last_id, tail=tail if first else None):
+        for event in o.events(agent_id, after=last_id, tail=tail if first else None):
             last_id = event.id
             kind = typer.style(
                 f"{event.kind:<11}",
@@ -1113,7 +1113,7 @@ def attach(agent_id: str) -> None:
         raise fail(exc) from None
     if not agent.session_id:
         raise fail("the agent has no session yet")
-    if o.store.active_runs(agent.id):
+    if o.active_runs(agent.id):
         raise fail("the agent is busy; `orch stop` it first or wait")
     argv = providers.get(agent.provider).attach_command(agent)
     os.chdir(agent.cwd)

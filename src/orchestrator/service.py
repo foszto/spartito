@@ -273,8 +273,12 @@ class Orchestrator:
 
     # -- plain reads (core/reads.py) --------------------------------------
 
+    projects = reads.projects
+    agents = reads.agents
+    get_agent = reads.get_agent
     agent_count = reads.agent_count
     reconcile = reads.reconcile
+    active_runs = reads.active_runs
     get_run = reads.get_run
     get_usage = reads.get_usage
     get_event = reads.get_event
