@@ -297,14 +297,11 @@ def mcp() -> None:
 @app.command()
 def web(host: str = "127.0.0.1", port: int = 8787) -> None:
     """Serve the web dashboard: add projects, start agents and talk to them."""
-    import uvicorn
-
+    from .web import serve
     from .web.app import LOOPBACK_HOSTS
-    from .web.app import app as web_app
 
-    loopback = host in LOOPBACK_HOSTS
-    web_app.state.allowed_hosts = LOOPBACK_HOSTS if loopback else None
-    if not loopback:
+    server = serve.make(host, port)
+    if host not in LOOPBACK_HOSTS:
         typer.secho(
             "warning: the web UI has no authentication and can start agents that run code; "
             "anyone who can reach this address controls them.",
@@ -312,7 +309,27 @@ def web(host: str = "127.0.0.1", port: int = 8787) -> None:
             err=True,
         )
     typer.echo(f"web UI: http://{host}:{port}")
-    uvicorn.run(web_app, host=host, port=port, log_level="warning")
+    serve.serve(server)
+
+
+@app.command("app")
+def app_window(
+    port: Annotated[
+        int, typer.Option(help="Port of its own server when none is running (default: a free one).")
+    ] = 0,
+    close_after: Annotated[
+        float | None, typer.Option("--close-after", hidden=True, help="Close after SECONDS.")
+    ] = None,
+) -> None:
+    """Open the dashboard in its own window: a native one with the extra `orchestrator[app]`,
+    else a Chromium-family browser in app mode, else the default browser. Uses the running
+    `orch web` of this home, or serves the dashboard on 127.0.0.1 until the window is closed."""
+    from .gui import window
+
+    try:
+        window.run(port, close_after)
+    except window.AppError as exc:
+        raise fail(exc) from None
 
 
 # -- background service -----------------------------------------------------
