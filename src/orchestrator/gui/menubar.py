@@ -4,8 +4,9 @@ Its title shows the running agents and the open decisions of this home ("♪ 2 �
 when both are zero). Its menu: those two counts, the open decisions (a click opens one in the
 running dashboard, else `orch app`), "Open Spartito" (`orch app`, detached) and "Quit".
 
-The counts are read through the facade in this process every READ_EVERY seconds; a failed
-read keeps the last values. Everything but `show_item` is plain Python; `show_item` alone
+The counts are read through the facade in this process every READ_EVERY seconds, in a
+thread of their own: Cocoa's main thread never waits on the database (a writer may hold it
+for long), it only shows the latest values. A failed read keeps the last ones. Everything but `show_item` is plain Python; `show_item` alone
 imports Cocoa (pyobjc-framework-Cocoa, the extra `orchestrator[menubar]`). One item per home
 (`run/menubar.lock`); SIGTERM, SIGHUP and SIGINT end it as "Quit" does.
 """
@@ -27,7 +28,7 @@ from . import locate, window
 
 GLYPH = "♪"
 READ_EVERY = 5.0  # seconds between two reads of the counts
-TICK = 0.25  # seconds between two looks at a stop signal and `close_after`
+TICK = 0.25  # seconds between two looks at new counts, a stop signal and `close_after`
 QUESTION_WIDTH = 60  # characters of a question shown in the menu
 SHOWN_DECISIONS = 10
 INSTALL_HINT = "install the extra orchestrator[menubar]"
@@ -67,15 +68,26 @@ class Entry:
 SEPARATOR = Entry()
 
 
-def read_counts() -> Counts:
-    """The counts of this home, through the facade."""
-    from ..service import Orchestrator
+class FacadeReader:
+    """Reads the counts of this home through one facade, made at the first read and again
+    after a failed one."""
 
-    orch = Orchestrator()
-    return Counts(
-        orch.running_count(),
-        tuple((d["id"], d["question"]) for d in orch.list_decisions()),
-    )
+    def __init__(self) -> None:
+        self.orch: Any = None
+
+    def __call__(self) -> Counts:
+        try:
+            if self.orch is None:
+                from ..service import Orchestrator
+
+                self.orch = Orchestrator()
+            return Counts(
+                self.orch.running_count(),
+                tuple((d["id"], d["question"]) for d in self.orch.list_decisions()),
+            )
+        except Exception:
+            self.orch = None
+            raise
 
 
 def title(counts: Counts) -> str:
@@ -110,10 +122,11 @@ def lines(counts: Counts) -> list[str]:
     return [f"title: {title(counts)}"] + [f"  {e.title or '---'}" for e in menu(counts)]
 
 
-def open_app() -> None:
-    """Start `orch app` for this home as a detached process of its own."""
+def open_app() -> subprocess.Popen | None:
+    """Start `orch app` for this home as a detached process of its own; a thread waits for
+    its end, so it does not stay a zombie child."""
     try:
-        subprocess.Popen(
+        proc = subprocess.Popen(
             APP_ARGV,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -122,6 +135,9 @@ def open_app() -> None:
         )
     except OSError as exc:
         say(f"orch app did not start: {exc.strerror or exc}")
+        return None
+    threading.Thread(target=proc.wait, name="orch-menubar-reap", daemon=True).start()
+    return proc
 
 
 def open_decision(decision_id: int) -> None:
@@ -139,42 +155,68 @@ def open_decision(decision_id: int) -> None:
 
 @dataclass
 class Bar:
-    """The state of one `orch menubar`, without Cocoa: the last counts and when it ends."""
+    """The state of one `orch menubar`, without Cocoa: the counts read, the counts shown and
+    when it ends. `read` runs only in the reading thread (`start_reading`); the rest on the
+    main thread."""
 
-    read: Callable[[], Counts] = read_counts
+    read: Callable[[], Counts] = field(default_factory=FacadeReader)
     close_after: float | None = None
     echo: Callable[[str], None] | None = None  # `--print`: gets the lines whenever they change
-    counts: Counts | None = None  # None until a read worked
+    latest: Counts | None = None  # the last counts read; None until a read worked
+    counts: Counts | None = None  # the counts shown; None until a read was picked up
+    updated: bool = False  # the item was shown at least once
     done: threading.Event = field(default_factory=threading.Event)
     signal: int | None = None  # the signal that ended it
     started: float = field(default_factory=time.monotonic)
-    last_read: float | None = None
     failed: bool = False  # the last read failed (said once until one works again)
 
     def shown(self) -> Counts:
         return self.counts or Counts()
 
-    def refresh(self) -> bool:
-        """Read the counts; True when they changed (or were read for the first time). A failed
-        read keeps the last ones."""
-        self.last_read = time.monotonic()
+    def read_once(self) -> None:
+        """Read the counts into `latest`. A failed read keeps the last ones."""
         try:
             counts = self.read()
         except Exception as exc:
             if not self.failed:
                 say(f"cannot read the counts, keeping the last ones: {window.first_line(exc)}")
             self.failed = True
-            return False
+            return
         self.failed = False
-        if counts == self.counts:
+        self.latest = counts
+
+    def keep_reading(self) -> None:
+        while not self.done.is_set():
+            self.read_once()
+            self.done.wait(READ_EVERY)
+
+    def start_reading(self) -> threading.Thread:
+        """The reading thread: a daemon, so a read stuck on the database never holds up the
+        end of the process."""
+        thread = threading.Thread(target=self.keep_reading, name="orch-menubar-read", daemon=True)
+        thread.start()
+        return thread
+
+    def pick_up(self) -> bool:
+        """Take the latest counts read; True when they differ from the shown ones."""
+        latest = self.latest
+        if latest is None or latest == self.counts:
             return False
-        self.counts = counts
+        self.counts = latest
         if self.echo:
-            self.echo("\n".join(lines(counts)))
+            self.echo("\n".join(lines(latest)))
         return True
 
-    def due(self) -> bool:
-        return self.last_read is None or time.monotonic() - self.last_read >= READ_EVERY
+    def tick(self, update: Callable[[], None]) -> bool:
+        """One look on the main thread, without waiting on anything: show new counts with
+        `update`; True when the item should end."""
+        try:
+            if self.pick_up() or not self.updated:
+                self.updated = True
+                update()
+        except Exception as exc:  # never end the item over one bad update
+            say(f"cannot update the menu: {window.first_line(exc)}")
+        return self.ending()
 
     def ending(self) -> bool:
         if self.close_after is not None and time.monotonic() - self.started >= self.close_after:
@@ -210,12 +252,7 @@ def show_item(bar: Bar, cocoa: dict[str, Any]) -> None:
 
     class OrchMenubarTarget(Foundation.NSObject):
         def tick_(self, _timer) -> None:
-            try:
-                if bar.due() and bar.refresh() or not shown:
-                    update()
-            except Exception as exc:  # never end the item over one bad update
-                say(f"cannot update the menu: {window.first_line(exc)}")
-            if bar.ending():
+            if bar.tick(update):
                 app.stop_(None)  # noticed at the next event: post one
                 app.postEvent_atStart_(wake_event(), True)
 
@@ -279,10 +316,12 @@ def run(close_after: float | None = None, echo: Callable[[str], None] | None = N
     if lock is None:
         print("the menu-bar item of this home is already running")
         return 0
-    bar = Bar(close_after=close_after, echo=echo)
+    bar = Bar(FacadeReader(), close_after, echo)
     try:
         with window.stopped_by_signals(bar, STOP_SIGNALS):
+            bar.start_reading()
             show_item(bar, cocoa)
     finally:
+        bar.done.set()  # the reading thread stops after its current read
         lock.close()
     return 128 + bar.signal if bar.signal else 0

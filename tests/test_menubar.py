@@ -39,7 +39,15 @@ def no_cocoa(monkeypatch: pytest.MonkeyPatch) -> list[Bar]:
 def launched(monkeypatch: pytest.MonkeyPatch) -> list[tuple[tuple, dict]]:
     """Processes started (not really)."""
     calls: list[tuple[tuple, dict]] = []
-    monkeypatch.setattr(menubar.subprocess, "Popen", lambda *a, **kw: calls.append((a, kw)))
+
+    class Proc:
+        def __init__(self, *args, **kwargs) -> None:
+            calls.append((args, kwargs))
+
+        def wait(self) -> int:
+            return 0
+
+    monkeypatch.setattr(menubar.subprocess, "Popen", Proc)
     return calls
 
 
@@ -144,11 +152,15 @@ def test_a_failed_read_keeps_the_last_counts(capsys: pytest.CaptureFixture[str])
     printed: list[str] = []
     bar = Bar(read=read, echo=printed.append)
 
-    assert bar.refresh() is True
-    assert bar.refresh() is False and bar.counts == Counts(2, decisions(1))
-    assert bar.refresh() is False and bar.counts == Counts(2, decisions(1))
-    assert bar.refresh() is False  # works again, nothing changed
-    assert bar.refresh() is True and bar.counts == Counts(1, ())
+    def refresh() -> bool:
+        bar.read_once()
+        return bar.pick_up()
+
+    assert refresh() is True
+    assert refresh() is False and bar.counts == Counts(2, decisions(1))
+    assert refresh() is False and bar.counts == Counts(2, decisions(1))
+    assert refresh() is False  # works again, nothing changed
+    assert refresh() is True and bar.counts == Counts(1, ())
     assert [text.splitlines()[0] for text in printed] == ["title: ♪ 2 · 1", "title: ♪ 1 · 0"]
     err = capsys.readouterr().err.splitlines()
     assert err == ["cannot read the counts, keeping the last ones: database is locked"]
@@ -157,12 +169,18 @@ def test_a_failed_read_keeps_the_last_counts(capsys: pytest.CaptureFixture[str])
 def test_the_first_read_is_printed_even_when_all_is_zero() -> None:
     printed: list[str] = []
     bar = Bar(read=Counts, echo=printed.append)
-    assert bar.refresh() is True
+    assert bar.pick_up() is False and printed == []  # nothing read yet
+    bar.read_once()
+    assert bar.pick_up() is True
     assert printed == ["\n".join(menubar.lines(Counts()))]
 
 
-def test_the_counts_come_from_the_facade(orch: Orchestrator, project: str) -> None:
-    assert menubar.read_counts() == Counts(0, ())
+def test_the_counts_come_from_the_facade(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    read = menubar.FacadeReader()
+    assert read() == Counts(0, ())
+    facade = read.orch
     agent, _ = orch.spawn(project, "SLEEP 30", worktree=False)
     deadline = time.monotonic() + 20
     while orch.running_count() != 1:
@@ -171,16 +189,25 @@ def test_the_counts_come_from_the_facade(orch: Orchestrator, project: str) -> No
     first = orch.request_decision(agent.id, "Which database?")
     second = orch.request_decision(agent.id, "Ship it?")
 
-    assert menubar.read_counts() == Counts(
-        1, ((first.id, "Which database?"), (second.id, "Ship it?"))
-    )
+    assert read() == Counts(1, ((first.id, "Which database?"), (second.id, "Ship it?")))
+    assert read.orch is facade  # made once, reused
 
     orch.stop(agent.id)
     while orch.running_count():
         assert time.monotonic() < deadline
         time.sleep(0.05)
     orch.withdraw_decision(first.id, agent.id)
-    assert menubar.read_counts() == Counts(0, ((second.id, "Ship it?"),))
+    assert read() == Counts(0, ((second.id, "Ship it?"),))
+
+    def broken(self) -> int:
+        raise OSError("database is locked")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Orchestrator, "running_count", broken)
+        with pytest.raises(OSError):
+            read()
+    assert read.orch is None  # a new facade at the next read
+    assert read() == Counts(0, ((second.id, "Ship it?"),)) and read.orch is not facade
 
 
 # -- what a click does -------------------------------------------------------------------
@@ -239,6 +266,19 @@ def test_quit_ends_only_the_item(launched: list, opened: list[str]) -> None:
     bar.click(Entry("Running agents: 0"))  # an information line does nothing
 
 
+def test_a_started_orch_app_is_reaped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One that exits at once (its window is already open) does not stay a zombie."""
+    monkeypatch.setattr(menubar, "APP_ARGV", (sys.executable, "-c", "pass"))
+    proc = menubar.open_app()
+    assert proc is not None
+    deadline = time.monotonic() + 10
+    while proc.returncode is None:  # set by the waiting thread
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
+    with pytest.raises(ChildProcessError):
+        os.waitpid(proc.pid, os.WNOHANG)  # already reaped
+
+
 def test_close_after_ends_it() -> None:
     bar = Bar(close_after=0.0)
     assert bar.ending() and bar.done.is_set()
@@ -255,7 +295,8 @@ def test_the_command_runs_the_item_and_prints_on_changes(no_cocoa: list[Bar]) ->
     (bar,) = no_cocoa
     assert bar.close_after == 5.0 and bar.echo is not None
     bar.read = lambda: Counts(1, ())
-    bar.refresh()
+    bar.read_once()
+    bar.pick_up()
     assert invoke().exit_code == 0 and no_cocoa[1].echo is None
 
 
@@ -284,6 +325,44 @@ def test_sigterm_ends_it_with_its_code(monkeypatch: pytest.MonkeyPatch) -> None:
     result = invoke()
     assert result.exit_code == 128 + signal.SIGTERM, result.output
     assert signal.getsignal(signal.SIGTERM) is before  # restored
+
+
+@pytest.mark.parametrize("how", ["close-after", "sigterm", "quit"])
+def test_a_stuck_read_holds_up_nothing(how: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A read that waits on the database (a writer holds it) blocks only the reading thread:
+    the main thread still shows the item and ends at once."""
+    entered, release = threading.Event(), threading.Event()
+
+    def stuck() -> Counts:
+        entered.set()
+        release.wait(60)
+        return Counts(9, ())
+
+    updates: list[float] = []
+
+    def loop(bar: Bar, cocoa: dict) -> None:  # what Cocoa's timer does, every TICK
+        assert entered.wait(10)  # the read is stuck from here on
+        if how == "sigterm":
+            threading.Timer(0.2, os.kill, (os.getpid(), signal.SIGTERM)).start()
+        while not bar.tick(lambda: updates.append(time.monotonic())):
+            if how == "quit":
+                bar.click(Entry("Quit", QUIT))
+            time.sleep(0.05)
+
+    monkeypatch.setattr(menubar, "FacadeReader", lambda: stuck)
+    monkeypatch.setattr(menubar, "show_item", loop)
+    start = time.monotonic()
+    try:
+        result = invoke("--print", *(["--close-after", "0.5"] if how == "close-after" else []))
+        took = time.monotonic() - start
+    finally:
+        release.set()
+
+    expected = 128 + signal.SIGTERM if how == "sigterm" else 0
+    assert result.exit_code == expected, result.output
+    assert took < 3
+    assert len(updates) == 1 and updates[0] - start < 2  # shown at once, with zeros
+    assert result.stdout == ""  # nothing was read, so nothing printed
 
 
 def test_without_the_extra_it_names_it(monkeypatch: pytest.MonkeyPatch, no_cocoa: list) -> None:
