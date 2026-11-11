@@ -1491,34 +1491,62 @@ function openSettings() {
 // With the browser's permission this page shows the desktop notifications (desktop.py: notices)
 // itself, so that a click opens the agent or the decision. It polls with a POST (the same-origin
 // check keeps other sites from faking it); while the polls come, osascript leaves new notices to
-// the page. Each notice is claimed first, so two pages, or
-// a page and osascript, never show the same one. Without the Notification API (an embedded
-// WebKit window) none of this runs and osascript shows them as before.
+// the page. Each notice is claimed first, so two pages, or a page and osascript, never show the
+// same one. Without the Notification API (an embedded WebKit window) none of this runs and
+// osascript shows them as before.
 // Hidden pages: browsers throttle the page's own timers (Chrome: once a minute after five
 // minutes hidden), which would let the marker go stale, so the poll is ticked by a dedicated
 // worker (static/tick.js), whose timers are not throttled with the page.
+// The cursor (the last notice id dealt with) lives in sessionStorage, so a reload of the tab
+// carries on where it was: a notice recorded meanwhile was left to this page (the marker was
+// still fresh) and is shown after the reload; one older than NOTICE_MAX_AGE_MS is no news and
+// skipped. The cursor moves past a notice only once its claim got an answer; a claim that failed
+// is tried again on the next tick.
 const PageNotification = window.Notification;
-const NOTICE_POLL_MS = 4000, NOTICE_CHARS = 180;
-let noticeCursor = null, noticePolling = false;  // null: not polled yet (the first poll replays nothing)
+const NOTICE_POLL_MS = 4000, NOTICE_CHARS = 180, NOTICE_MAX_AGE_MS = 10 * 60 * 1000;
+const NOTICE_CURSOR = 'orch-notice-cursor';  // sessionStorage key
+let noticeCursor = savedNoticeCursor(), noticePolling = false;  // null: none yet (replay nothing)
 
+function savedNoticeCursor() {
+  try {
+    const raw = sessionStorage.getItem(NOTICE_CURSOR), value = Number(raw);
+    return raw !== null && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  } catch (error) {
+    return null;
+  }
+}
+function moveNoticeCursor(id) {
+  noticeCursor = id;
+  try { sessionStorage.setItem(NOTICE_CURSOR, String(id)); } catch (error) { /* in memory only */ }
+}
 async function pollNotices() {
   if (!PageNotification || PageNotification.permission !== 'granted' || noticePolling) return;
   noticePolling = true;
   try {
     const data = await call('/api/notices/poll', { after: noticeCursor });
+    // None yet, or one above the server's (its table was pruned, or another home serves on this
+    // port): start from the server's, replaying nothing.
+    if (noticeCursor === null || noticeCursor > data.cursor) { moveNoticeCursor(data.cursor); return; }
     for (const notice of data.notices) {
-      noticeCursor = Math.max(noticeCursor, notice.id);
-      await showNotice(notice).catch(() => {});
+      if (Date.now() - Date.parse(notice.created_at) > NOTICE_MAX_AGE_MS) { moveNoticeCursor(notice.id); continue; }
+      let claimed;
+      try {
+        claimed = (await call(`/api/notices/${notice.id}/claim`, {})).claimed;
+      } catch (error) {
+        return;  // no answer: this notice and the ones after it on the next tick
+      }
+      moveNoticeCursor(notice.id);
+      if (!claimed) continue;
+      try { showNotice(notice); } catch (error) { /* the browser refused it */ }
     }
-    noticeCursor = Math.max(noticeCursor ?? 0, data.cursor);
+    moveNoticeCursor(Math.max(noticeCursor, data.cursor));
   } catch (error) {
     /* the next tick tries again */
   } finally {
     noticePolling = false;
   }
 }
-async function showNotice(notice) {
-  if (!(await call(`/api/notices/${notice.id}/claim`, {})).claimed) return;
+function showNotice(notice) {
   const text = notice.text.length > NOTICE_CHARS ? `${notice.text.slice(0, NOTICE_CHARS - 1)}…` : notice.text;
   const bubble = new PageNotification(state.project_name || document.title, { body: text, tag: `notice-${notice.id}` });
   bubble.onclick = () => {
