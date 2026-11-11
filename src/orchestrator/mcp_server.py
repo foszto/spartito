@@ -75,8 +75,7 @@ def list_projects() -> list[dict[str, Any]]:
     return [
         {
             **vars(project),
-            "agents": len(orch.store.list_agents(project.name))
-            - len(orch.store.archived(project.name)),
+            "agents": orch.agent_count(project.name),
         }
         for project in Caller.from_env(orch).projects()
     ]
@@ -282,12 +281,12 @@ def get_agent(
     is cut to `max_commits` commit and `max_status` status lines (0: all).
     """
     orch = _orch()
-    orch.store.reconcile()
+    orch.reconcile()
     agent = orch.agent(Caller.from_env(orch).own(agent_id))
     view = orch.view(agent, detail=True)
     key = "last_run"
     if run_id is not None:
-        run = orch.store.get_run(run_id)
+        run = orch.get_run(run_id)
         if run is None or run.agent_id != agent.id:
             raise OrchestratorError(f"agent '{agent.id}' has no run {run_id}")
         del view["last_run"]
@@ -301,7 +300,7 @@ def get_agent(
                 "error": run.error,
                 "started_at": run.started_at,
                 "ended_at": run.ended_at,
-                "usage": run_usage(orch.store.get_usage(run.id)),
+                "usage": run_usage(orch.get_usage(run.id)),
                 "result_file": result_file(run.id),
             },
         )
@@ -341,11 +340,11 @@ def agent_log(
     orch = _orch()
     Caller.from_env(orch).own(agent_id)
     if event_id is not None:
-        event = orch.store.get_event(event_id)
+        event = orch.get_event(event_id)
         if event is None or event.agent_id != agent_id:
             raise OrchestratorError(f"agent '{agent_id}' has no event {event_id}")
         return [_log_line(event, 0)]
-    events = orch.store.events(agent_id, tail=tail)
+    events = orch.events(agent_id, tail=tail)
     return _cap_log([_log_line(event, event_chars) for event in events], max_chars)
 
 

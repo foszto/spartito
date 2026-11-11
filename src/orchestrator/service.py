@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from . import board, decisions, desktop, git, providers
-from .core import access, compaction, delivery, dispatch, launcher, lifecycle, views
+from .core import access, compaction, delivery, dispatch, launcher, lifecycle, reads, views
 from .core import archive as archiving
 from .core import setup as agent_setup
 from .core.dispatch import ORCHESTRATOR_ID as ORCHESTRATOR_ID  # old import path
@@ -270,6 +270,15 @@ class Orchestrator:
     settled = views.settled
     wait = views.wait
     changes = views.changes
+
+    # -- plain reads (core/reads.py) --------------------------------------
+
+    agent_count = reads.agent_count
+    reconcile = reads.reconcile
+    get_run = reads.get_run
+    get_usage = reads.get_usage
+    get_event = reads.get_event
+    events = reads.events
 
     # -- delivery (core/delivery.py, core/access.py) ----------------------
 
