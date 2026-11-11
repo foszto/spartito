@@ -342,6 +342,7 @@ def place(store: Store, item_id: int, state: Any, before: Any = None, actor: Act
             placed = _get(conn, item_id)
             assert placed is not None
             changes = _diff(item, placed, ("state", "position"))
+            record_gap(conn, item_id, item.updated_at)
             record(conn, item_id, actor, "place", changes, stamp, run_id)
         item = _get(conn, item_id)
     assert item is not None

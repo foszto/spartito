@@ -188,19 +188,33 @@ def test_api_places_an_item(orch: Orchestrator, project: str, client: TestClient
     assert foreign.status_code == 400 and f"#{a} is not in" in foreign.json()["error"]
 
 
-def test_a_place_reaches_the_record_hook(
+def test_a_place_reaches_the_record_hooks(
     orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     a = orch.add_board_item(project, "a", state="ready").id
-    b = orch.add_board_item(project, "b").id
-    seen: list[tuple[int, str, dict]] = []
+    b = orch.add_board_item(project, "b")
+    seen: list[tuple] = []
     monkeypatch.setattr(
         board, "record", lambda conn, item_id, actor, action, changes, *rest: seen.append(
             (item_id, action, changes)
         )
     )  # fmt: skip
+    monkeypatch.setattr(board, "record_gap", lambda conn, *args: seen.append(("gap", *args)))
 
-    orch.place_board_item(b, "ready", a)
-    orch.place_board_item(b, "ready", a)  # already there: nothing happens
+    orch.place_board_item(b.id, "ready", a)
+    orch.place_board_item(b.id, "ready", a)  # already there: nothing happens
 
-    assert seen == [(b, "place", {"state": ["idea", "ready"]})]  # position 0 in both
+    # position 0 in both states
+    assert seen == [("gap", b.id, b.updated_at), (b.id, "place", {"state": ["idea", "ready"]})]
+
+
+def test_api_place_answers_400_for_ids_beyond_sqlites_range(
+    orch: Orchestrator, project: str, client: TestClient
+) -> None:
+    item = orch.add_board_item(project, "a").id
+    post = lambda path, body: client.post(path, json=body, headers=ORIGIN)  # noqa: E731
+
+    huge = post(f"/api/board/{2**63}/place", {"state": "ready"})
+    assert huge.status_code == 400 and huge.json() == {"error": f"there is no board item #{2**63}"}
+    before = post(f"/api/board/{item}/place", {"state": "ready", "before": 10**30})
+    assert before.status_code == 400 and f"no board item #{10**30}" in before.json()["error"]
