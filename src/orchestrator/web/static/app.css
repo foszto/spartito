@@ -348,3 +348,7 @@ div.folder > button.folder:hover { background: none; }
 .board-item .links { display: flex; gap: 6px; margin-top: 4px; font-size: 12px; }
 .board-item .links .link { border: 0; background: none; padding: 0; color: var(--accent); font-weight: 500; }
 .board-item .links .link:hover { text-decoration: underline; }
+/* notifications from this page: the permission line in the settings; a decision opened by one */
+.tier .page-notify { margin: 8px 0 0; }
+.tier .page-notify .btn { height: 26px; padding: 0 8px; color: var(--accent); }
+.list-item.marked { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }

@@ -362,6 +362,29 @@ def answer_decision(orch: Orchestrator, request: Request, body: dict) -> dict[st
     return orch.answer_decision(request.path_params["decision_id"], body.get("answer"))
 
 
+def list_notices(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """Desktop notifications for a page to show itself (desktop.py): `?after=<id>` the
+    unclaimed notices above that id, oldest first; without `after` none (a page that just
+    opened replays nothing), only `cursor`, the highest id so far. `&notify=1`: this page can
+    show them, so osascript leaves new ones to it for a while."""
+    if request.query_params.get("notify") == "1":
+        orch.page_present()
+    cursor = orch.notice_cursor()  # before the list: a notice added meanwhile is still listed
+    after = request.query_params.get("after")
+    if after is None:
+        return {"notices": [], "cursor": cursor}
+    try:
+        notices = orch.notices(int(after))
+    except ValueError:
+        raise OrchestratorError("'after' must be a notice id") from None
+    return {"notices": notices, "cursor": cursor}
+
+
+def claim_notice(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """Take a notice to show it: `claimed` is true for the first caller only."""
+    return {"claimed": orch.claim_notice(request.path_params["notice_id"])}
+
+
 def list_board(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
     """`?project=` (required) the project's items by state and position; `&state=` one state."""
     project = required(dict(request.query_params), "project")
@@ -439,6 +462,8 @@ app = Starlette(
         Route("/api/runs/{run_id:int}/edit", api(edit_run), methods=["POST"]),
         Route("/api/decisions", api(list_decisions)),
         Route("/api/decisions/{decision_id:int}/answer", api(answer_decision), methods=["POST"]),
+        Route("/api/notices", api(list_notices)),
+        Route("/api/notices/{notice_id:int}/claim", api(claim_notice), methods=["POST"]),
         Route("/api/board", api(list_board)),
         Route("/api/board/add", api(add_board_item), methods=["POST"]),
         Route("/api/board/dispatch", api(dispatch_board), methods=["POST"]),
