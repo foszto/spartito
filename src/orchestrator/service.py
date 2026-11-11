@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from . import board, config, decisions, desktop, git, notify, providers, roles, settings
+from .errors import NeedsConfirmation, OrchestratorError
 from .models import (
     Agent,
     Project,
@@ -90,15 +91,6 @@ def cache_hint(provider: str, keys: tuple[str, ...] = ("model", "effort")) -> st
     if any(effect[key] != KEEPS for key in keys):
         text += " With a fresh cache the next turn re-reads the whole conversation at full price."
     return text
-
-
-class OrchestratorError(Exception):
-    """A request that cannot be fulfilled; the message is meant for the caller."""
-
-
-class NeedsConfirmation(OrchestratorError):
-    """Archiving would hide work that is not merged: the message says what; repeat the
-    request with confirmation to archive anyway."""
 
 
 def slug(text: str) -> str:
