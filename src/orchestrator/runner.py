@@ -26,7 +26,10 @@ from typing import Any
 
 from . import config, git, keep_awake, loadout, notify, providers, roles, settings
 from .models import (
+    COMPACT,
     CONTEXT_FIELDS,
+    MESSAGE,
+    NOTIFICATION,
     Agent,
     Event,
     Project,
@@ -39,7 +42,7 @@ from .models import (
 )
 from .providers import McpServer, RunContext
 from .providers.base import NOTIFICATION_RESULT, Invocation
-from .store import COMPACT, MESSAGE, NOTIFICATION, Store, now
+from .store import Store, now
 from .textfmt import kilo, one_line
 
 POLL_SECONDS = 0.5

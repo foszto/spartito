@@ -25,9 +25,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from .models import ACTIVE, Run, RunStatus
+from .models import ACTIVE, COMPACT, MESSAGE, NOTIFICATION, Run, RunStatus
 from .replies import run_reply
-from .store import COMPACT, MESSAGE, NOTIFICATION, Store, now, subtree_sql
+from .store import Store, now, subtree_sql
 
 SETTLE_SECONDS = 5.0  # a starting notification waits this long for more completions
 SETTLE_ENV = "ORCH_NOTIFY_DELAY"  # overrides SETTLE_SECONDS (tests set 0)

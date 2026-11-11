@@ -22,6 +22,10 @@ from typing import Any
 from . import board, config, decisions, desktop, git, notify, providers, roles, settings
 from .errors import NeedsConfirmation, OrchestratorError
 from .models import (
+    COMPACT,
+    MESSAGE,
+    NOTIFICATION,
+    NOTIFY_MODES,
     Agent,
     Project,
     Run,
@@ -36,10 +40,6 @@ from .store import (
     ANYONE,
     ARCHIVE_AUTO,
     ARCHIVE_MANUAL,
-    COMPACT,
-    MESSAGE,
-    NOTIFICATION,
-    NOTIFY_MODES,
     Store,
 )
 from .textfmt import kilo

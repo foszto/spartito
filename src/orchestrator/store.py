@@ -23,7 +23,12 @@ from typing import Any
 from . import config
 from .models import (
     ACTIVE,
+    COMPACT,
     CONTEXT_FIELDS,
+    IN_ORDER,
+    MESSAGE,
+    NOTIFICATION,
+    NOTIFY_MODES,
     TOKEN_FIELDS,
     Agent,
     Event,
@@ -181,11 +186,6 @@ CREATE INDEX IF NOT EXISTS runs_agent ON runs(agent_id, id);
 CREATE INDEX IF NOT EXISTS events_agent ON events(agent_id, id);
 """
 
-MESSAGE = "message"
-NOTIFICATION = "notification"
-COMPACT = "compact"  # a turn that compacts the agent's conversation (Orchestrator.compact)
-IN_ORDER = (MESSAGE, COMPACT)  # kinds that keep their queue order among themselves
-NOTIFY_MODES = ("each", "all")
 ANYONE = object()  # withdraw_queued/replace_queued: whoever queued the run
 
 # run_meta columns added after its first version (run_id, agent_id, kind, sender, notify).

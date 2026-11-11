@@ -23,6 +23,12 @@ class RunStatus(StrEnum):
 
 ACTIVE = (RunStatus.WAITING.value, RunStatus.RUNNING.value)
 
+MESSAGE = "message"
+NOTIFICATION = "notification"
+COMPACT = "compact"  # a turn that compacts the agent's conversation (Orchestrator.compact)
+IN_ORDER = (MESSAGE, COMPACT)  # kinds that keep their queue order among themselves
+NOTIFY_MODES = ("each", "all")
+
 
 @dataclass
 class Project:
