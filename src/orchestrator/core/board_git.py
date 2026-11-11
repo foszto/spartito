@@ -27,8 +27,8 @@ branch merged, once per merged tip: then `done_tip` = `ahead_tip`, and whatever 
 the item afterwards (moved back by hand, its worktree dirty and clean again), it does not
 move again until a new tip was seen ahead and that one is merged. A merge while the item is
 in another state is only noted (`done_tip` = `ahead_tip`, nothing moves): the pass also
-checks, in the same rotation, the items in other states whose cached `ahead_tip` is not
-`done_tip` yet. So an item put into `done` by hand before its branch was merged, and
+checks the items in other states whose cached `ahead_tip` is not `done_tip` yet, after the
+`ready` and `in_progress` items and only with what is left of its budget. So an item put into `done` by hand before its branch was merged, and
 reopened later, stays where it was put.
 """
 
@@ -76,14 +76,19 @@ def check(store: Store, record: Recorder | None = None) -> dict[str, Any]:
 
 
 def move_done(
-    store: Store, item_id: int, row: dict[str, Any], record: Recorder | None = None
+    store: Store,
+    item_id: int,
+    row: dict[str, Any],
+    record: Recorder | None = None,
+    wait: float = 30,
 ) -> bool:
     """Store the item's cache `row` and, if the item is still `ready` or `in_progress`, move
     it to the end of `done`, in one transaction. `record`, if given, is called in that
     transaction after the move as record(conn, the item before the move, row["done_tip"])
     to record who moved it (actor kind "auto", rule AUTO_RULE); if it raises, nothing is
-    changed. Returns whether the item moved."""
-    with store.transaction() as conn:
+    changed. `wait`: seconds to wait for the database's write lock. Returns whether the
+    item moved."""
+    with store.transaction(wait) as conn:
         store.save_board_git(row, conn)
         found = conn.execute(
             "SELECT * FROM board_items WHERE id = ? AND state IN (?, ?)", (item_id, *CHECKED_STATES)
@@ -151,7 +156,11 @@ def _check(store: Store, deadline: float, record: Recorder | None) -> dict[str, 
     ]  # other states: only while a merge may still have to be noted
     agents: dict[str, list[Agent]] = {}
     checked, done = [], []
-    for item in sorted(items, key=lambda item: rows.get(item.id, {}).get("checked_at", "")):
+
+    def order(item: board.Item) -> tuple[bool, str]:  # live items first, oldest check first
+        return item.state not in CHECKED_STATES, rows.get(item.id, {}).get("checked_at", "")
+
+    for item in sorted(items, key=order):
         if item.project not in projects:
             continue
         if time.monotonic() >= deadline:
@@ -194,7 +203,7 @@ def _check_item(
     if new["error"] is None and new["merged"] and new["ahead_tip"] != new["done_tip"]:
         new["done_tip"] = new["ahead_tip"]
         if item.state in CHECKED_STATES:
-            return move_done(store, item.id, new, record)
+            return move_done(store, item.id, new, record, max(0.1, deadline - time.monotonic()))
     store.save_board_git(new, wait=max(0.1, deadline - time.monotonic()))
     return False
 

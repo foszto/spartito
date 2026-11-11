@@ -410,11 +410,12 @@ class Store:
         return self._conn()
 
     @contextmanager
-    def transaction(self) -> Iterator[sqlite3.Connection]:
+    def transaction(self, wait: float = 30) -> Iterator[sqlite3.Connection]:
         """One connection holding the write lock from the first statement on, so checks
         and the writes based on them are atomic across processes. Use only this
-        connection inside: another one that writes would wait for this lock."""
-        conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        connection inside: another one that writes would wait for this lock. `wait`:
+        seconds to wait for the lock (then sqlite3.OperationalError)."""
+        conn = sqlite3.connect(self.path, timeout=wait, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
         try:

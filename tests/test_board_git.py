@@ -759,11 +759,11 @@ def test_a_squash_merged_item_stays(store: Store, project: Project, wt: Path) ->
     assert state_of(store, entry) == "ready"  # accepted: a squash merge is moved by hand
 
 
-@pytest.mark.parametrize("how", ["branch -f", "reset --hard"])
+@pytest.mark.parametrize("how", ["branch -f", "reset --hard", "reset to a newer base"])
 def test_a_branch_reset_to_the_base_does_not_move(
-    store: Store, project: Project, wt: Path, how: str
+    store: Store, project: Project, wt: Path, how: str, spy: Spy
 ) -> None:
-    """Finding 1: ahead once, then reset to the base: nothing was merged."""
+    """Ahead once, then reset to the base (old or newer): nothing was merged."""
     entry = item(store, project, "feat", "in_progress")
     board_git.check(store)
     if how == "branch -f":
@@ -771,11 +771,118 @@ def test_a_branch_reset_to_the_base_does_not_move(
         run_git(project.path, "branch", "-f", "feat", "main")
         run_git(wt, "checkout", "-q", "feat")
     else:
+        if how == "reset to a newer base":
+            commit(project.path, "on-main.txt")
         run_git(wt, "reset", "-q", "--hard", "main")
+    spy.clear()
 
     for _ in range(2):
         assert board_git.check(store)["done"] == []
-    assert state_of(store, entry) == "in_progress"
+    assert state_of(store, entry) == "in_progress" and cherries(spy) == 1
+
+
+def test_a_rebased_branch_merged_before_the_next_pass_moves_once(
+    store: Store, project: Project, wt: Path, spy: Spy
+) -> None:
+    entry = item(store, project, "feat", "in_progress")
+    board_git.check(store)
+    commit(project.path, "on-main.txt")
+    run_git(wt, "rebase", "-q", "main")
+    run_git(project.path, "merge", "-q", "--ff-only", "feat")
+    recorder = Recorder()
+
+    assert board_git.check(store, recorder)["done"] == [entry.id]
+    board.update(store, entry.id, {"state": "in_progress"})  # moved back by hand
+    assert board_git.check(store, recorder)["done"] == []
+    assert len(recorder.calls) == 1 and cherries(spy) == 1
+
+
+def test_a_reworded_branch_merged_moves(store: Store, project: Project, wt: Path) -> None:
+    entry = item(store, project, "feat")
+    board_git.check(store)
+    run_git(wt, "commit", "-q", "--amend", "-m", "a better message")
+    merge(project)
+
+    assert board_git.check(store)["done"] == [entry.id]
+
+
+def test_a_branch_deleted_after_a_rebase_merge_moves(store: Store, project: Project) -> None:
+    run_git(project.path, "checkout", "-q", "-b", "feat")
+    commit(project.path)
+    run_git(project.path, "checkout", "-q", "main")
+    entry = item(store, project, "feat")
+    board_git.check(store)
+    commit(project.path, "on-main.txt")
+    run_git(project.path, "rebase", "-q", "main", "feat")
+    run_git(project.path, "checkout", "-q", "main")
+    run_git(project.path, "merge", "-q", "--ff-only", "feat")
+    run_git(project.path, "branch", "-q", "-D", "feat")
+
+    assert board_git.check(store)["done"] == [entry.id]
+
+
+def test_after_a_tip_git_no_longer_has_a_later_merge_moves(
+    store: Store, project: Project, wt: Path
+) -> None:
+    entry = item(store, project, "feat")
+    with store.connection() as conn:  # pruned after a rebase, or the branch recreated
+        row = {name: None for name in Store.BOARD_GIT_COLUMNS}
+        row.update(item_id=entry.id, branch="feat", base="main", ahead_tip="1" * 40)
+        row.update(ahead_in_base=0, merged=0, checked_at="2000")
+        store.save_board_git(row, conn)
+    run_git(wt, "reset", "-q", "--hard", "main")
+
+    assert board_git.check(store)["done"] == []
+    assert row_of(store, entry)["ahead_tip"] is None
+    commit(wt, "later.txt")
+    board_git.check(store)
+    merge(project)
+    assert board_git.check(store)["done"] == [entry.id]
+
+
+def test_live_items_are_checked_first_on_every_pass(
+    store: Store, project: Project, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Many done items whose merge is still to be noted never crowd out a live one."""
+    run_git(project.path, "checkout", "-q", "-b", "feat")
+    tip = commit(project.path)
+    run_git(project.path, "checkout", "-q", "main")
+    parked = [item(store, project, "feat", "done") for _ in range(12)]
+    for entry in parked:  # seen ahead long ago, not merged: checked while budget is left
+        row = {name: None for name in Store.BOARD_GIT_COLUMNS}
+        row.update(item_id=entry.id, branch="feat", base="main", ahead_tip=tip)
+        row.update(ahead_in_base=0, merged=0, checked_at="2000")
+        store.save_board_git(row)
+    live_item = item(store, project, "feat", "in_progress")
+    real = git.branch_state
+
+    def slow(*args: Any, **kwargs: Any) -> git.BranchState:
+        time.sleep(0.1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(git, "branch_state", slow)
+    monkeypatch.setattr(board_git, "SYNC_BUDGET", 0.25)
+    for _ in range(4):  # the parked items, checked longer ago, share what is left
+        checked = board_git.check(store)["checked"]
+        assert checked[0] == live_item.id and len(checked) < len(parked)
+
+
+def test_moving_to_done_waits_for_the_lock_only_within_the_pass(
+    store: Store, project: Project, wt: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry = item(store, project, "feat")
+    board_git.check(store)
+    merge(project)
+    waits: list[float] = []
+    real = store.transaction
+
+    def recorded(wait: float = 30):
+        waits.append(wait)
+        return real(wait)
+
+    monkeypatch.setattr(store, "transaction", recorded)
+    assert board_git.check(store)["done"] == [entry.id]
+    assert waits and all(0 < wait <= board_git.SYNC_BUDGET for wait in waits)
 
 
 def test_a_dirty_worktree_holds_the_move_until_it_is_clean(
