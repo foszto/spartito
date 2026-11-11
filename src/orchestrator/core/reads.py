@@ -5,8 +5,8 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from ..models import Agent, Event, Project, Run, Usage
-from ..store import Store
+from ..models import Agent, Event, Project, Run, RunStatus, Usage
+from ..store import Store, pid_alive
 
 
 class Facade(Protocol):
@@ -46,6 +46,18 @@ def reconcile(orch: Facade) -> None:
 def active_runs(orch: Facade, agent_id: str) -> list[Run]:
     """The agent's queued and running turns."""
     return orch.store.active_runs(agent_id)
+
+
+def running_count(orch: Facade) -> int:
+    """How many agents have a running turn whose runner process is alive (or not yet known).
+    Only reads: a dead runner's turn is not ended here (see `reconcile`)."""
+    return len(
+        {
+            run.agent_id
+            for run in orch.store.active_runs()
+            if run.status == RunStatus.RUNNING and (run.pid is None or pid_alive(run.pid))
+        }
+    )
 
 
 def get_run(orch: Facade, run_id: int) -> Run | None:

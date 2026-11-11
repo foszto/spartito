@@ -36,7 +36,7 @@ import time
 import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO
+from typing import IO, Protocol
 
 from .. import autostart, config
 from ..web import serve
@@ -164,20 +164,26 @@ class Session:
                     break
 
 
+class Stoppable(Protocol):
+    done: threading.Event
+    signal: int | None
+
+
 @contextlib.contextmanager
-def stopped_by_signals(session: Session):
-    """SIGTERM and SIGHUP set `session.done`. Their Python handler does nothing: a thread reads
-    the signal numbers from the wakeup fd, which the C-level handler writes even while a GUI
-    loop (Cocoa) keeps the main thread from running Python handlers."""
+def stopped_by_signals(session: Stoppable, signals: tuple[int, ...] = STOP_SIGNALS):
+    """`signals` (SIGTERM and SIGHUP) set `session.done` and `session.signal`. Their Python
+    handler does nothing: a thread reads the signal numbers from the wakeup fd, which the
+    C-level handler writes even while a GUI loop (Cocoa) keeps the main thread from running
+    Python handlers."""
     read_fd, write_fd = os.pipe()
     os.set_blocking(write_fd, False)
-    previous = {sig: signal.signal(sig, lambda *_: None) for sig in STOP_SIGNALS}
+    previous = {sig: signal.signal(sig, lambda *_: None) for sig in signals}
     previous_fd = signal.set_wakeup_fd(write_fd, warn_on_full_buffer=False)
 
     def watch() -> None:
         while data := os.read(read_fd, 64):
             for number in data:
-                if number in STOP_SIGNALS:
+                if number in signals:
                     session.signal = number
                     session.done.set()
 
@@ -382,10 +388,10 @@ def show(session: Session) -> None:
     default_browser(session)
 
 
-def single_instance() -> IO[str] | None:
-    """The lock of this home's `orch app`, held while the file stays open; None when another
-    process holds it."""
-    handle = (config.runtime_dir() / "app.lock").open("a")
+def single_instance(name: str = "app.lock") -> IO[str] | None:
+    """The lock `name` of this home (`orch app`'s by default), held while the file stays open;
+    None when another process holds it."""
+    handle = (config.runtime_dir() / name).open("a")
     try:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
