@@ -1,4 +1,6 @@
-"""The orchestrator facade. The CLI, the MCP server and the dashboard all go through here."""
+"""The orchestrator facade. The CLI, the MCP server and the dashboard all go through here.
+
+Most methods are functions of the core modules bound here (see core/__init__.py)."""
 
 from __future__ import annotations
 
@@ -107,25 +109,38 @@ class Orchestrator:
             raise OrchestratorError(f"unknown agent '{agent_id}'")
         return agent
 
+    # -- dispatch (core/dispatch.py) --------------------------------------
+
     create_agent = dispatch.create_agent
     send = dispatch.send
+    spawn = dispatch.spawn
+    lead = dispatch.lead
+    orchestrator = dispatch.orchestrator
+    withdraw = dispatch.withdraw
+    replace_message = dispatch.replace_message
+    role_schema = staticmethod(dispatch.role_schema)
+    _cause = dispatch._cause
+    _check_notify = staticmethod(dispatch._check_notify)
+    _orchestrator_draft = staticmethod(dispatch._orchestrator_draft)
+    _resolve_after = dispatch._resolve_after
+
+    # -- compaction (core/compaction.py) ----------------------------------
+
     compact = compaction.compact
     compact_prompt = compaction.compact_prompt
-    _is_lead = compaction._is_lead
+    compact_refusal = compaction.compact_refusal
     auto_compact = compaction.auto_compact
     compaction_paused = compaction.compaction_paused
     compaction_ended = compaction.compaction_ended
+    _is_lead = compaction._is_lead
     _note_paused = compaction._note_paused
-    compact_refusal = compaction.compact_refusal
-    _cause = dispatch._cause
-    _check_notify = staticmethod(dispatch._check_notify)
-    spawn = dispatch.spawn
-    role_schema = staticmethod(dispatch.role_schema)
-    lead = dispatch.lead
-    orchestrator = dispatch.orchestrator
-    _orchestrator_draft = staticmethod(dispatch._orchestrator_draft)
-    _resolve_after = dispatch._resolve_after
+
+    # -- runner processes (core/launcher.py) ------------------------------
+
     _launch = launcher._launch
+    stop = launcher.stop
+    stop_runs = launcher.stop_runs
+    _kill = staticmethod(launcher._kill)
 
     def run_ended(self, run_id: int, agent_id: str, recheck: bool = False) -> None:
         """Every path that ends a run calls this once it has ended (or was deleted): it
@@ -352,7 +367,7 @@ class Orchestrator:
             return self.store.get_agent(ORCHESTRATOR_ID) or self._orchestrator_draft()
         return self.agent(agent_id)
 
-    # -- observation ------------------------------------------------------
+    # -- observation (core/views.py) --------------------------------------
 
     view = views.view
     _context = views._context
@@ -363,15 +378,7 @@ class Orchestrator:
     wait = views.wait
     changes = views.changes
 
-    # -- control ----------------------------------------------------------
-
-    stop = launcher.stop
-    stop_runs = launcher.stop_runs
-    withdraw = dispatch.withdraw
-    replace_message = dispatch.replace_message
-    _kill = staticmethod(launcher._kill)
-
-    # -- archive ----------------------------------------------------------
+    # -- archive (core/archive.py) ----------------------------------------
 
     is_lead = archiving.is_lead
     unsaved = archiving.unsaved
