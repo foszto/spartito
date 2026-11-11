@@ -330,7 +330,10 @@ def uninstall(label: str, platform: str | None = None) -> Path | None:
     kind = platform_kind(platform)
     unit = unit_path(label, kind)
     if kind == "launchd":
-        loaded = run("launchctl", "bootout", f"{domain()}/{label}").returncode == 0
+        bootout = run("launchctl", "bootout", f"{domain()}/{label}")
+        loaded = bootout.returncode == 0
+        if not loaded and launchd_pid(label)[0]:  # still loaded: keep its plist
+            raise AutostartError(f"could not unload {label}: {message(bootout)}")
     else:
         loaded = unit.exists()
         if loaded:

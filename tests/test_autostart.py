@@ -302,6 +302,36 @@ def test_uninstall_on_macos_boots_out_and_removes_the_plist(on, fake_system: Fak
     assert f"removed {label()}" in result.output
 
 
+def test_uninstall_keeps_the_plist_of_an_agent_that_stays_loaded(on, fake_system: FakeSystem):
+    on("darwin")
+    assert invoke("install").exit_code == 0
+    fake_system.set("launchctl", "bootout", exit=37, out="Boot-out failed: 37: in progress\n")
+    fake_system.set("launchctl", "print", out="\tpid = 4242\n")  # still loaded
+    fake_system.clear()
+    result = invoke("uninstall")
+    assert result.exit_code == 1
+    assert result.output == f"error: could not unload {label()}: Boot-out failed: 37: in progress\n"
+    assert fake_system.calls() == [
+        ["launchctl", "bootout", f"gui/{UID}/{label()}"],
+        ["launchctl", "print", f"gui/{UID}/{label()}"],
+    ]
+    assert plist_path().exists()
+
+
+def test_uninstall_removes_the_plist_of_an_agent_that_was_not_loaded(on, fake_system: FakeSystem):
+    on("darwin")
+    assert invoke("install").exit_code == 0  # bootout and print fail: not loaded
+    fake_system.clear()
+    result = invoke("uninstall")
+    assert result.exit_code == 0
+    assert fake_system.calls() == [
+        ["launchctl", "bootout", f"gui/{UID}/{label()}"],
+        ["launchctl", "print", f"gui/{UID}/{label()}"],
+    ]
+    assert not plist_path().exists()
+    assert result.output == f"removed {label()}: {plist_path()}\n"
+
+
 @pytest.mark.parametrize("platform", ["darwin", "linux"])
 def test_uninstall_without_a_service_says_so(platform: str, on):
     on(platform)
