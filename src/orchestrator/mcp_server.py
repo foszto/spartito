@@ -16,10 +16,11 @@ import anyio
 from mcp.server.mcpserver import MCPServer
 
 from . import board, roles
-from .models import Run, answers, running_total
+from .models import Run
 from .replies import clip, run_reply, structured_page
-from .service import Orchestrator, OrchestratorError, agent_state, result_file, run_usage
+from .service import Orchestrator, OrchestratorError, result_file, run_usage
 from .store import ANYONE
+from .timeline import AgentRuns
 
 MAX_WAIT_SECONDS = 1800
 WAIT_SECONDS = 120  # default wait_for_agents timeout
@@ -155,10 +156,9 @@ def _delivery_floor(orch: Orchestrator, caller: str, agent_id: str) -> int:
     last = orch.store.last_delivered(caller, agent_id)
     if last is not None:
         return last + 1
-    runs = orch.store.runs_of(agent_id)
-    compactions = orch.store.compactions(agent_id)
-    _, active, shown = agent_state(runs, compactions)
-    active = [run for run in active if run.id not in compactions]
+    timeline = AgentRuns.read(orch.store, agent_id)
+    _, active, shown = timeline.state()
+    active = [run for run in active if run.id not in timeline.compactions]
     if active:
         return active[0].id
     return shown.id if shown else 0
@@ -176,28 +176,22 @@ def _wait(orch: Orchestrator, ids: list[str], timeout: float, limit: int) -> dic
         return bool(caller and orch.store.ready_messages(caller))
 
     if message_waiting():
-        return _statuses(orch, ids, {aid: orch.store.runs_of(aid) for aid in ids}, MESSAGE_NOTE)
+        return _statuses(orch, ids, _timelines(orch, ids), MESSAGE_NOTE)
     floors = {agent_id: _delivery_floor(orch, caller, agent_id) for agent_id in ids}
     orch.wait_idle(ids, timeout, interrupt=message_waiting)
-    runs = {agent_id: orch.store.runs_of(agent_id) for agent_id in ids}
-    # Read after the runs, so no compaction among them is missing: they are never results.
-    compactions = {agent_id: orch.store.compactions(agent_id) for agent_id in ids}
+    timelines = _timelines(orch, ids)
     if message_waiting():
-        return _statuses(orch, ids, runs, MESSAGE_NOTE)
-    states = {agent_id: agent_state(runs[agent_id], compactions[agent_id]) for agent_id in ids}
+        return _statuses(orch, ids, timelines, MESSAGE_NOTE)
+    states = {agent_id: timelines[agent_id].state() for agent_id in ids}
     below = {agent_id: orch.store.active_descendants(agent_id) for agent_id in ids}
     if any(active for _, active, _ in states.values()) or any(below.values()):
-        return _statuses(orch, ids, runs)
+        return _statuses(orch, ids, timelines)
     outcomes = []
     for agent_id in ids:
         status, _, shown = states[agent_id]
-        new = [
-            run
-            for run in answers(runs[agent_id], compactions[agent_id])
-            if run.id >= floors[agent_id]
-        ]
+        new = [run for run in timelines[agent_id].answers() if run.id >= floors[agent_id]]
         claimed = orch.store.claim(caller, [run.id for run in new])
-        totals = running_total(runs[agent_id], orch.store.usage_of(agent_id))
+        totals = timelines[agent_id].totals()
         outcome = {
             "id": agent_id,
             "status": status,
@@ -223,13 +217,17 @@ def _lineage(orch: Orchestrator, agent_id: str) -> set[str]:
 MESSAGE_NOTE = "a message for you is waiting: end this turn now with a short status"
 
 
+def _timelines(orch: Orchestrator, ids: list[str]) -> dict[str, AgentRuns]:
+    return {agent_id: AgentRuns.read(orch.store, agent_id) for agent_id in ids}
+
+
 def _statuses(
-    orch: Orchestrator, ids: list[str], runs: dict[str, list[Run]], note: str | None = None
+    orch: Orchestrator, ids: list[str], timelines: dict[str, AgentRuns], note: str | None = None
 ) -> dict[str, Any]:
     """The reply of an unfinished wait: statuses only, nothing counts as delivered."""
     agents = []
     for agent_id in ids:
-        status, active, _ = agent_state(runs[agent_id], orch.store.compactions(agent_id))
+        status, active, _ = timelines[agent_id].state()
         agents.append(
             {
                 "id": agent_id,

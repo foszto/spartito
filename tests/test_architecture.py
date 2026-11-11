@@ -70,7 +70,7 @@ IMPORT_EXCEPTIONS = {
 # allow none (task 5 brings all to zero).
 STORE_ACCESS = {
     "cli": 9,
-    "mcp_server": 23,
+    "mcp_server": 18,
     "web.app": 7,
 }
 
