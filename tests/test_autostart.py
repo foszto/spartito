@@ -284,6 +284,12 @@ def test_a_failed_bootstrap_is_an_error(on, fake_system: FakeSystem):
     result = invoke("install")
     assert result.exit_code == 1
     assert "launchctl bootstrap" in result.output and "Bootstrap failed" in result.output
+    assert not plist_path().exists()  # nothing was installed before
+    fake_system.set("launchctl", "bootstrap", exit=0)
+    assert invoke("install", "--port", "18787").exit_code == 0
+    fake_system.set("launchctl", "bootstrap", exit=5, out="Bootstrap failed: 5: I/O error\n")
+    assert invoke("install", "--port", "18788").exit_code == 1
+    assert plistlib.loads(plist_path().read_bytes())["ProgramArguments"][-1] == "18788"
 
 
 def test_install_cuts_a_large_log_only(on):
@@ -404,6 +410,30 @@ def test_install_twice_on_linux_restarts_with_the_latest_options(on, fake_system
         ["systemctl", "--user", "restart", name],
     ]
     assert os.listdir(unit_path().parent) == [unit_path().name]
+    assert "--port 18788\n" in unit_path().read_text()
+
+
+MANAGER_DOWN = "Failed to connect to bus: No medium found\n"
+
+
+def test_an_install_without_a_user_manager_leaves_no_unit(on, fake_system: FakeSystem):
+    on("linux")
+    fake_system.set("systemctl", "daemon-reload", exit=1, out=MANAGER_DOWN)
+    result = invoke("install")
+    assert result.exit_code == 1
+    assert result.output == (
+        "error: `systemctl --user daemon-reload` failed (1): "
+        "Failed to connect to bus: No medium found\n"
+    )
+    assert not unit_path().exists()
+    assert "(not installed)" in invoke("status").output
+
+
+def test_a_failed_reinstall_keeps_the_unit_it_wrote(on, fake_system: FakeSystem):
+    on("linux")
+    assert invoke("install", "--port", "18787").exit_code == 0
+    fake_system.set("systemctl", "enable", exit=1, out="Failed to enable unit\n")
+    assert invoke("install", "--port", "18788").exit_code == 1
     assert "--port 18788\n" in unit_path().read_text()
 
 

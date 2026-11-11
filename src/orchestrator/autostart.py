@@ -309,22 +309,29 @@ def install(svc: Service, platform: str | None = None) -> Path:
     kind = platform_kind(platform)
     unit = unit_path(svc.label, kind)
     unit.parent.mkdir(parents=True, exist_ok=True)
-    if kind == "launchd":
-        if run("launchctl", "bootout", f"{domain()}/{svc.label}").returncode == 0:
-            deadline = time.monotonic() + BOOTOUT_WAIT  # bootout fails when not loaded
-            while launchd_pid(svc.label)[0] and time.monotonic() < deadline:
-                time.sleep(0.1)
-        svc.log.parent.mkdir(parents=True, exist_ok=True)
-        cut_log(svc.log)
-        unit.write_bytes(render_plist(svc))
-        checked("launchctl", "bootstrap", domain(), str(unit))
-    else:
-        was_active = run("systemctl", "--user", "is-active", unit_name(svc.label)).returncode == 0
-        unit.write_text(render_unit(svc))
-        checked("systemctl", "--user", "daemon-reload")
-        checked("systemctl", "--user", "enable", "--now", unit_name(svc.label))
-        if was_active:  # enable --now leaves a running service on its old command line
-            checked("systemctl", "--user", "restart", unit_name(svc.label))
+    existed = unit.exists()
+    try:
+        if kind == "launchd":
+            if run("launchctl", "bootout", f"{domain()}/{svc.label}").returncode == 0:
+                deadline = time.monotonic() + BOOTOUT_WAIT  # bootout fails when not loaded
+                while launchd_pid(svc.label)[0] and time.monotonic() < deadline:
+                    time.sleep(0.1)
+            svc.log.parent.mkdir(parents=True, exist_ok=True)
+            cut_log(svc.log)
+            unit.write_bytes(render_plist(svc))
+            checked("launchctl", "bootstrap", domain(), str(unit))
+        else:
+            name = unit_name(svc.label)
+            was_active = run("systemctl", "--user", "is-active", name).returncode == 0
+            unit.write_text(render_unit(svc))
+            checked("systemctl", "--user", "daemon-reload")
+            checked("systemctl", "--user", "enable", "--now", name)
+            if was_active:  # enable --now leaves a running service on its old command line
+                checked("systemctl", "--user", "restart", name)
+    except AutostartError:
+        if not existed:  # a failed first install leaves nothing that looks installed
+            unit.unlink(missing_ok=True)
+        raise
     return unit
 
 
