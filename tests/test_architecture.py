@@ -22,7 +22,7 @@ LAYERS = {
     "mcp_server": "interfaces",
     "web": "interfaces",
     "service": "core",
-    "core": "core",
+    "core": "core",  # every core/ module: dispatch, launcher, ..., delivery, access, reads
     "runner": "runner",
     "models": "domain",
     "settings": "domain",
@@ -49,8 +49,9 @@ RANK = {"interfaces": 4, "runner": 3, "core": 2, "domain": 1, "infra": 0}
 
 NO_TASK = "no plan task; revisit with tasks 6/12"
 # (importer, imported) -> (number of imports, where they are, why) for the imports that go
-# against the layering, form a cycle or reach the store from an interface today. More imports
-# than pinned, or a lazy one turned module level, fails; so does a count above the real one.
+# against the layering or form a cycle today; an interface importing the store has none. More
+# imports than pinned, or a lazy one turned module level, fails; so does a count above the real
+# one.
 IMPORT_EXCEPTIONS = {
     ("roles", "loadout"): (1, "module level", f"cycle with loadout -> roles; {NO_TASK}"),
     ("loadout", "roles"): (1, "lazy", f"cycle with roles -> loadout; {NO_TASK}"),
@@ -65,10 +66,6 @@ IMPORT_EXCEPTIONS = {
     ("desktop", "notify"): (1, "module level", f"notify.settled; {NO_TASK}"),
     ("desktop", "models"): (1, "module level", f"RunStatus; {NO_TASK}"),
 }
-
-# Interface module -> allowed number of `.store` attribute accesses; unlisted interface modules
-# allow none (task 5 brings all to zero).
-STORE_ACCESS: dict[str, int] = {}
 
 # The reads of one agent's runs that timeline.AgentRuns takes together (Store.snapshot): no
 # function outside these modules calls two or more of them, it reads the snapshot instead.
@@ -226,13 +223,14 @@ def store_accesses(path: Path) -> list[int]:
     return [n.lineno for n in ast.walk(tree) if isinstance(n, ast.Attribute) and n.attr == "store"]
 
 
-def test_interfaces_use_the_store_no_more_than_allowed():
-    interfaces = {name: path for name, path in modules().items() if layer(name) == "interfaces"}
-    for name in sorted(set(interfaces) | set(STORE_ACCESS)):
-        used = len(store_accesses(interfaces[name])) if name in interfaces else 0
-        allowed = STORE_ACCESS.get(name, 0)
-        assert used <= allowed, f"{name}: {used} `.store` uses, allowed {allowed}"
-        assert used >= allowed, f"{name}: only {used} `.store` uses left; lower STORE_ACCESS"
+def test_interfaces_do_not_use_the_store():
+    """The interfaces go through the facade: no `.store` attribute at all, no exceptions."""
+    used = {
+        name: lines
+        for name, path in modules().items()
+        if layer(name) == "interfaces" and (lines := store_accesses(path))
+    }
+    assert not used, f"`.store` used in interfaces (module: lines); add a facade read: {used}"
 
 
 def run_reads(path: Path) -> dict[str, set[str]]:
