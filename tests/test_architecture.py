@@ -68,9 +68,7 @@ IMPORT_EXCEPTIONS = {
 
 # Interface module -> allowed number of `.store` attribute accesses; unlisted interface modules
 # allow none (task 5 brings all to zero).
-STORE_ACCESS = {
-    "web.app": 7,
-}
+STORE_ACCESS: dict[str, int] = {}
 
 # The reads of one agent's runs that timeline.AgentRuns takes together (Store.snapshot): no
 # function outside these modules calls two or more of them, it reads the snapshot instead.

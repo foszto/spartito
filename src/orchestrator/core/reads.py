@@ -33,6 +33,11 @@ def agent_count(orch: Facade, project: str) -> int:
     return len(orch.store.list_agents(project)) - len(orch.store.archived(project))
 
 
+def archived_ids(orch: Facade) -> list[str]:
+    """The ids of all archived agents, sorted."""
+    return sorted(orch.store.archived())
+
+
 def reconcile(orch: Facade) -> None:
     """End the runs whose runner process is gone (see Store.reconcile), before showing them."""
     orch.store.reconcile()
@@ -45,6 +50,11 @@ def active_runs(orch: Facade, agent_id: str) -> list[Run]:
 
 def get_run(orch: Facade, run_id: int) -> Run | None:
     return orch.store.get_run(run_id)
+
+
+def run_kind(orch: Facade, run_id: int) -> str:
+    """The run's kind (message, notification, compaction)."""
+    return orch.store.meta(run_id).kind
 
 
 def get_usage(orch: Facade, run_id: int) -> Usage | None:

@@ -106,7 +106,7 @@ def state(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
         "orchestrator_setup": None if top else orch.setup(ORCHESTRATOR_ID),
         "projects": [
             {**asdict(project), "agents": [a for a in agents if a["project"] == project.name]}
-            for project in orch.store.list_projects()
+            for project in orch.projects()
         ],
         "providers": [
             {"name": name, **model_choices(provider), "efforts": list(provider.efforts)}
@@ -114,14 +114,14 @@ def state(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
         ],
         "tiers": list(TIERS),
         # Ids only: the archive view loads the agents themselves (/api/archive).
-        "archived": sorted(orch.store.archived()),
+        "archived": orch.archived_ids(),
         "archive_after_default": ARCHIVE_AFTER_DEFAULT,
         "archive_after_key": ARCHIVE_AFTER,
         "compact_at_default": COMPACT_AT_DEFAULT,
         "compact_at_key": COMPACT_AT,
         "settings": {
             "global": orch.settings(),
-            "projects": {p.name: orch.settings(p.name) for p in orch.store.list_projects()},
+            "projects": {p.name: orch.settings(p.name) for p in orch.projects()},
         },
         "roles": [
             {"name": r.name, "description": r.description, "worktree": r.worktree, "lead": r.lead}
@@ -136,7 +136,7 @@ def state(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
 def events(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
     agent = orch.agent(request.path_params["agent_id"])
     after = int(request.query_params.get("after", 0))
-    rows = orch.store.events(agent.id, after=after, tail=None if after else 400)
+    rows = orch.events(agent.id, after=after, tail=None if after else 400)
     setup = orch.setup(agent.id)
     return {
         "agent": {
@@ -177,7 +177,7 @@ def browse(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
         raise OrchestratorError(f"{path} is not a directory") from None
     except PermissionError:
         raise OrchestratorError(f"no permission to read {path}") from None
-    registered = {project.path: project.name for project in orch.store.list_projects()}
+    registered = {project.path: project.name for project in orch.projects()}
     return {
         "path": str(path),
         "parent": str(path.parent) if path.parent != path else None,
@@ -263,10 +263,10 @@ def compact_agent(orch: Orchestrator, request: Request, body: dict) -> dict[str,
 def get_run(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
     """One run with its full text (the queue lists a preview), for editing it."""
     run_id = request.path_params["run_id"]
-    run = orch.store.get_run(run_id)
+    run = orch.get_run(run_id)
     if run is None:
         raise OrchestratorError(f"no run {run_id}")
-    kind = orch.store.meta(run_id).kind
+    kind = orch.run_kind(run_id)
     return {
         "id": run.id,
         "agent_id": run.agent_id,

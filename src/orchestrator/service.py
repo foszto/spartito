@@ -277,9 +277,11 @@ class Orchestrator:
     agents = reads.agents
     get_agent = reads.get_agent
     agent_count = reads.agent_count
+    archived_ids = reads.archived_ids
     reconcile = reads.reconcile
     active_runs = reads.active_runs
     get_run = reads.get_run
+    run_kind = reads.run_kind
     get_usage = reads.get_usage
     get_event = reads.get_event
     events = reads.events
