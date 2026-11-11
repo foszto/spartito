@@ -17,18 +17,18 @@ Spartito; each piece works on its own.
 ## Installing the extras
 
 The background service, the installable page and the notifications need nothing beyond the
-default install. The native window of `orch app` needs the optional extra `app`:
+default install. The native window of `orch app` needs the optional extra `app`, the
+menu-bar item (macOS) the extra `menubar`:
 
 ```sh
-uv tool install --editable '.[app]'    # instead of `uv tool install --editable .`
-uv sync --extra app                    # in a checkout, for `uv run orch app`
+uv tool install --editable '.[app,menubar]'    # instead of `uv tool install --editable .`
+uv sync --extra app --extra menubar            # in a checkout, for `uv run orch …`
 ```
 
 Without the extra, `orch app` falls back to a browser (see [Own window](#own-window)). On
 Linux the extra installs Qt and PyQt6, which are GPL-3 software (see
-[Optional dependencies](#optional-dependencies)).
-
-<!-- MENUBAR: to be completed (its extra) -->
+[Optional dependencies](#optional-dependencies)). On Linux the extra `menubar` installs
+nothing.
 
 ## Platform support
 
@@ -39,7 +39,7 @@ Linux the extra installs Qt and PyQt6, which are GPL-3 software (see
 | notification click-through | in an open dashboard page; without one, `osascript` without a click action | in an open dashboard page; without one, none |
 | `orch app` native window | Cocoa (WebKit), extra `app` | Qt WebEngine, extra `app` |
 | `orch app` browser fallback | Chromium-family browser in app mode, else the default browser | the same |
-| menu-bar item | planned <!-- MENUBAR: to be completed --> | no |
+| menu-bar item (`orch menubar`) | yes, extra `menubar` | no |
 
 ## Background service
 
@@ -98,9 +98,14 @@ home; otherwise `something else answers (…)` (another program, or this tool fo
 running without a session (for example after a reboot), enable lingering for your user once:
 `loginctl enable-linger`. `orch service` does not do this.
 
-`orch service uninstall` stops the service and removes its unit file. On other platforms
-every `orch service` command fails with `the background service is supported on macOS and
-Linux, not <platform>`.
+**Failures.** A first install that fails removes the unit file it wrote; when a unit existed
+before, the new one stays as written. `orch service uninstall` stops the service and removes
+its unit file. If it cannot stop it, the unit file is kept and the command fails with exit
+code 1: `error: could not unload <label>: …` on macOS, `error: could not stop <label>: …` on
+Linux. On Linux, when the systemd user manager cannot be reached, the file is removed anyway,
+a `warning: the systemd user manager could not be reached (…)` line says so, and the exit
+code is 0. On other platforms every `orch service` command fails with `the background service
+is supported on macOS and Linux, not <platform>`.
 
 ## Installable page
 
@@ -263,9 +268,38 @@ the window too, with exit code 128 + the signal (143, 129). If `--port` is taken
 
 ## Menu-bar item
 
-<!-- MENUBAR: to be completed -->
+```sh
+orch menubar
+```
 
-A menu-bar status item (macOS only) is still being built; this section will describe it.
+macOS only, with the extra `menubar`. `orch menubar` shows a status item in the menu bar, with
+no Dock icon, and runs until you quit it. Its title is `♪` when no agent is running and no
+decision is open, otherwise `♪ <running agents> · <open decisions>`, for example `♪ 2 · 1`.
+
+Its menu, from the top:
+
+- `Running agents: N` and `Open decisions: M`;
+- one line per open decision, `#<id>  <question>` with the question cut to 60 characters; at
+  most 10, then `… and K more`;
+- **Open Spartito** starts `orch app` for the same home, as a separate process;
+- **Quit** ends the menu-bar item only; an `orch app` window it opened stays open.
+
+A click on a decision opens `<dashboard URL>#decision:<id>` in the default browser when a
+dashboard server of this home is running (found as `orch app` finds it), otherwise it starts
+`orch app`.
+
+The counts are read from the home's database every 5 seconds; no dashboard server is needed
+for them. One item per home: a second `orch menubar` prints
+`the menu-bar item of this home is already running` and exits with code 0. SIGTERM, SIGHUP and
+Ctrl-C end it like **Quit**, with exit code 128 + the signal. It is not started automatically
+at login; start it by hand.
+
+Errors, each with exit code 1:
+
+```
+error: orch menubar runs on macOS only
+error: pyobjc-framework-Cocoa is not installed (install the extra orchestrator[menubar])
+```
 
 ## Security
 
@@ -287,8 +321,8 @@ A menu-bar status item (macOS only) is still being built; this section will desc
 
 ## Optional dependencies
 
-The extra `app` is not part of the default install, and none of these packages is part of
-this repository.
+The extras `app` and `menubar` are not part of the default install, and none of these
+packages is part of this repository.
 
 | platform | package | licence |
 |---|---|---|
@@ -304,7 +338,8 @@ this repository.
 **Installing the extra on Linux brings GPL-3 software onto the machine** (PyQt6 and
 PyQt6-WebEngine), about 200 MB with Qt. On macOS no Qt package is installed.
 
-<!-- MENUBAR: to be completed (its extra and licences) -->
+The extra `menubar` installs pyobjc-framework-Cocoa (with pyobjc-core), MIT, on macOS only; on
+other platforms it installs nothing.
 
 ## Known limitations
 
@@ -318,7 +353,14 @@ PyQt6-WebEngine), about 200 MB with Qt. On macOS no Qt package is installed.
   `~/Library/Caches/org.python.python`, shared by every Python app that uses WebKit.
 - `orch app` finds a running server only through `run/web.json`: an `orch web` started before
   this version is found once it has been restarted.
-- On Linux the backend check adds start-up time to every `orch app`.
+- On Linux the backend check adds start-up time to every `orch app`, and a stop signal that
+  arrives during the check is acted on only after it.
+- On macOS, Ctrl-C in the terminal of an `orch app` with a native window ends the process
+  without removing `run/web.json`; the stale record is harmless, as it is never reused.
+- The systemd unit does not support a Python interpreter path that contains `$$` or `${`.
+- On macOS, a re-install whose `launchctl bootstrap` fails leaves the service stopped until
+  the next login or a successful install.
+- The menu-bar item is not started at login.
 - pywebview does not list Python 3.14 among its supported versions.
 - The page's `theme-color` follows the system's colour scheme, not the dashboard's theme
   switch.

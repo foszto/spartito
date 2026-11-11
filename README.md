@@ -65,10 +65,11 @@ orch --help
 Without installing, prefix every command with `uv run` inside the checkout (`uv run orch …`).
 
 The native window of `orch app` needs the optional extra `app` (on Linux it brings Qt and
-PyQt6, which are GPL-3 software; see [docs/desktop.md](docs/desktop.md#optional-dependencies)):
+PyQt6, which are GPL-3 software; see [docs/desktop.md](docs/desktop.md#optional-dependencies)),
+the macOS menu-bar item the extra `menubar`:
 
 ```sh
-uv tool install --editable '.[app]'
+uv tool install --editable '.[app,menubar]'
 ```
 
 Spartito keeps its state in `~/.orchestrator/`. Set `ORCH_HOME` to use another directory.
@@ -182,6 +183,7 @@ conversation; the agent carries on with what does not depend on it. See
 | `orch chat` | interactive orchestrator session (Claude Code) |
 | `orch web` | dashboard |
 | `orch app` | dashboard in its own window |
+| `orch menubar` | running agents and open decisions in the macOS menu bar |
 | `orch service install/uninstall/status/logs` | dashboard as a background service |
 | `orch ask <project> "…"` | message the project lead (creates it) |
 | `orch spawn -p <project> "…"` | start an agent (`-r` role, `-n` name, `--provider`, `--after`, `--share`, `--base`) |
@@ -231,7 +233,8 @@ The dashboard can also be used like a desktop application:
 - **Own window.** `orch app [--port]` opens the dashboard in a native window (extra `app`),
   else in a Chromium-family browser in app mode, else in the default browser. It uses the
   running server of this home or serves the dashboard until the window is closed.
-- **Menu-bar item** (macOS only): still being built. <!-- MENUBAR: to be completed -->
+- **Menu-bar item** (macOS only). `orch menubar` (extra `menubar`) shows the running agents and
+  open decisions in the menu bar; its menu opens a decision or the dashboard window.
 
 | | macOS | Linux |
 |---|---|---|
@@ -240,7 +243,7 @@ The dashboard can also be used like a desktop application:
 | notification click-through | in an open page; else `osascript`, no click | in an open page; else none |
 | `orch app` native window | Cocoa (WebKit), extra `app` | Qt WebEngine, extra `app` (GPL-3) |
 | `orch app` browser fallback | yes | yes |
-| menu-bar item | planned <!-- MENUBAR: to be completed --> | no |
+| menu-bar item | extra `menubar` | no |
 
 Details, security notes, Linux requirements and limitations:
 [docs/desktop.md](docs/desktop.md).
@@ -399,7 +402,8 @@ src/orchestrator/
   mcp_server.py    the MCP tools of the orchestrator and the leads
   web/             dashboard: one page and a JSON API
     serve.py         running the dashboard server, shared by `orch web` and `orch app`
-  gui/             `orch app`: the window (window.py) and finding a running server (locate.py)
+  gui/             `orch app`: the window (window.py) and finding a running server (locate.py);
+                   `orch menubar` (menubar.py)
   autostart.py     `orch service`: the launchd agent or systemd user unit
   service.py       the facade `Orchestrator`, used by the CLI, the MCP server and the dashboard
   core/            the operations behind the facade, one module per area:

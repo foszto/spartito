@@ -76,9 +76,17 @@ Linux, the last-but-one row shows no notification at all.
 
 ## 4. Menu-bar item
 
-<!-- MENUBAR: to be completed -->
+macOS only. In the setup shell (temporary `ORCH_HOME`), with an open decision recorded as in
+step 3:
 
-To be written once the menu-bar item exists.
+| do | expect |
+|---|---|
+| `uv sync --extra app --extra menubar`, then `uv run orch menubar` | `♪` (or `♪ <running> · <decisions>`) appears in the menu bar; no Dock icon |
+| Open its menu | `Running agents: …`, `Open decisions: …`, one `#<id>  <question>` line per open decision, **Open Spartito**, **Quit** |
+| With `uv run orch web --port "$PORT"` running, click an open decision | the default browser opens `http://127.0.0.1:<port>/#decision:<id>` with that decision |
+| Stop `orch web`, click the decision again | the `orch app` window opens (on the dashboard, not on that decision) |
+| Click **Open Spartito** | the `orch app` window opens (or is already open); the item stays |
+| Click **Quit** | the item disappears; an open `orch app` window stays |
 
 ## 5. Background service
 
