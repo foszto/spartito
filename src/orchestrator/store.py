@@ -373,8 +373,8 @@ class Store:
             conn.close()
 
     @contextmanager
-    def _conn(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self.path, timeout=30)
+    def _conn(self, wait: float = 30) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(self.path, timeout=wait)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
         try:
@@ -1109,11 +1109,17 @@ class Store:
     # -- notices ----------------------------------------------------------
 
     def add_notice(
-        self, kind: str, agent_id: str, text: str, decision_id: int | None = None
+        self,
+        kind: str,
+        agent_id: str,
+        text: str,
+        decision_id: int | None = None,
+        wait: float = 30,
     ) -> int:
-        """Record an unclaimed notice and prune those older than NOTICE_KEEP; its id."""
+        """Record an unclaimed notice and prune those older than NOTICE_KEEP; its id.
+        `wait`: seconds to wait for the write lock (then sqlite3.OperationalError)."""
         cutoff = (datetime.now(UTC) - NOTICE_KEEP).isoformat(timespec="seconds")
-        with self._conn() as conn:
+        with self._conn(wait) as conn:
             conn.execute("DELETE FROM notices WHERE created_at < ?", (cutoff,))
             cursor = conn.execute(
                 "INSERT INTO notices (created_at, kind, agent_id, decision_id, text)"
@@ -1138,9 +1144,10 @@ class Store:
         with self._conn() as conn:
             return conn.execute("SELECT COALESCE(MAX(id), 0) FROM notices").fetchone()[0]
 
-    def claim_notice(self, notice_id: int) -> bool:
-        """Mark an unclaimed notice as shown; True only for the one caller that did."""
-        with self._conn() as conn:
+    def claim_notice(self, notice_id: int, wait: float = 30) -> bool:
+        """Mark an unclaimed notice as shown; True only for the one caller that did.
+        `wait` as in add_notice."""
+        with self._conn(wait) as conn:
             cursor = conn.execute(
                 "UPDATE notices SET claimed_at = ? WHERE id = ? AND claimed_at IS NULL",
                 (now(), notice_id),

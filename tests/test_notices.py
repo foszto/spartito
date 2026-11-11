@@ -176,7 +176,7 @@ def test_a_stale_page_counts_as_none(orch: Orchestrator, fake_osascript: Path, m
 def test_a_notice_a_page_claimed_first_is_not_shown_again(
     orch: Orchestrator, fake_osascript: Path, macos: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(orch.store, "claim_notice", lambda notice_id: False)
+    monkeypatch.setattr(orch.store, "claim_notice", lambda notice_id, wait: False)
     desktop.show(orch.store, "a-1 finished", "a-1")
     time.sleep(0.5)
     assert calls(fake_osascript) == [] and len(rows(orch.store)) == 1
@@ -216,6 +216,48 @@ def test_a_store_that_fails_still_lets_osascript_show_it(
     fresh_page()
     desktop.show(orch.store, "a-1 finished", "a-1")
     until(lambda: calls(fake_osascript), what="the notification")
+
+
+def test_a_failed_claim_still_lets_osascript_show_it(
+    orch: Orchestrator, fake_osascript: Path, macos: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(*args: object) -> bool:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(orch.store, "claim_notice", fail)
+    desktop.show(orch.store, "a-1 finished", "a-1")
+    until(lambda: calls(fake_osascript), what="the notification")
+    assert bodies(fake_osascript) == ["a-1 finished"]
+
+
+def test_a_marker_from_the_future_is_not_a_fresh_page(
+    orch: Orchestrator, fake_osascript: Path, macos: None
+) -> None:
+    desktop.page_present()
+    later = time.time() + 60
+    os.utime(desktop.page_marker(), (later, later))
+    assert not desktop.page_fresh()
+
+    desktop.show(orch.store, "a-1 finished", "a-1")
+    until(lambda: calls(fake_osascript), what="the notification")
+
+
+def test_a_busy_store_delays_a_notification_only_briefly(
+    orch: Orchestrator, fake_osascript: Path, macos: None
+) -> None:
+    holder = sqlite3.connect(orch.store.path, isolation_level=None)
+    holder.execute("BEGIN IMMEDIATE")  # another process holds the write lock
+    try:
+        started = time.monotonic()
+        desktop.show(orch.store, "a-1 finished", "a-1")
+        took = time.monotonic() - started
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+
+    assert desktop.STORE_WAIT_SECONDS <= took < desktop.STORE_WAIT_SECONDS + 3
+    until(lambda: calls(fake_osascript), what="the notification")
+    assert rows(orch.store) == []  # not recorded, shown anyway
 
 
 def test_a_decision_notice_carries_the_decision_and_the_requesting_agent(

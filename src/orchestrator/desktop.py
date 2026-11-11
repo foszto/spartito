@@ -53,6 +53,7 @@ PLATFORM = sys.platform  # tests set another
 DECISION, FINISHED = "decision", "finished"  # the kinds of notice
 PAGE_MARKER = "page-notifier"  # in config.runtime_dir()
 PAGE_FRESH_SECONDS = 15.0  # a page polls far more often while it is visible
+STORE_WAIT_SECONDS = 2.0  # for the write lock of a notice; then osascript shows it unrecorded
 
 
 def command(
@@ -86,9 +87,10 @@ def page_present() -> None:
 def page_fresh() -> bool:
     """Whether such a page polled within the last PAGE_FRESH_SECONDS."""
     try:
-        return time.time() - page_marker().stat().st_mtime < PAGE_FRESH_SECONDS
+        age = time.time() - page_marker().stat().st_mtime
     except OSError:
         return False
+    return 0 <= age < PAGE_FRESH_SECONDS  # a marker from the future: not to be trusted
 
 
 def show(
@@ -107,7 +109,7 @@ def show(
         argv = command(config.PROJECT_NAME, body)
         if argv is None:
             return
-        if notice is not None and not store.claim_notice(notice):
+        if notice is not None and not _claim(store, notice):
             return  # a page showed it meanwhile
         proc = subprocess.Popen(
             argv,
@@ -127,9 +129,18 @@ def _record(store: Store, body: str, agent_id: str | None, decision_id: int | No
         return None
     try:
         kind = FINISHED if decision_id is None else DECISION
-        return store.add_notice(kind, agent_id, body, decision_id)
+        return store.add_notice(kind, agent_id, body, decision_id, STORE_WAIT_SECONDS)
     except Exception:
         return None
+
+
+def _claim(store: Store, notice: int) -> bool:
+    """Claim the notice for osascript; one that cannot be claimed (the store is busy) is
+    shown anyway, as before notices existed."""
+    try:
+        return store.claim_notice(notice, STORE_WAIT_SECONDS)
+    except Exception:
+        return True
 
 
 def _reap(proc: subprocess.Popen[bytes]) -> None:
