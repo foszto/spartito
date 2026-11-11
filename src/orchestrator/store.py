@@ -200,9 +200,11 @@ CREATE INDEX IF NOT EXISTS runs_agent ON runs(agent_id, id);
 CREATE INDEX IF NOT EXISTS events_agent ON events(agent_id, id);
 -- The last known git state of a board item's branch (core/board_git.py); a cache, a table of
 -- its own, unknown to older code. A row whose branch or base is not the item's current one is
--- stale. ahead_tip: the branch's tip at the last check that saw it ahead of `base`; done_tip:
--- the ahead_tip whose merge was acted on (the item moved to done) or noted; merged: 0 | 1, as
--- git.branch_state tells it; error: why the last check failed (the rest is from before).
+-- stale. ahead_tip: the branch's tip at the last check that saw it ahead of `base` (NULL again
+-- once its work is found not to be in the base); ahead_in_base: 1 once its work is found in
+-- the base; done_tip: the ahead_tip whose merge was acted on (the item moved to done) or
+-- noted; merged: 0 | 1, as git.branch_state tells it; error: why the last check failed (the
+-- rest is from before).
 CREATE TABLE IF NOT EXISTS board_git (
     item_id INTEGER PRIMARY KEY,
     branch TEXT NOT NULL,
@@ -212,6 +214,7 @@ CREATE TABLE IF NOT EXISTS board_git (
     behind INTEGER,
     dirty INTEGER,
     ahead_tip TEXT,
+    ahead_in_base INTEGER NOT NULL DEFAULT 0,
     done_tip TEXT,
     merged INTEGER NOT NULL DEFAULT 0,
     error TEXT,
@@ -1215,6 +1218,7 @@ class Store:
         "behind",
         "dirty",
         "ahead_tip",
+        "ahead_in_base",
         "done_tip",
         "merged",
         "error",

@@ -219,15 +219,33 @@ class BranchState:
     way round (when the worktree's HEAD is not the branch's tip, `ahead` counts the
     commits not in the base on the branch or at that HEAD, and `behind` is None);
     `dirty`: uncommitted changes in the worktree, None when no worktree was checked;
-    `merged`: see `branch_state`; `error`: why nothing could be told (then every other
-    field is None)."""
+    `merged`: see `branch_state`; `reached`: whether the work at `ahead_tip` is in the
+    base (True), is not or git no longer has that commit (False: forget it), or was not
+    asked (None); `error`: why nothing could be told (then every other field is None)."""
 
     tip: str | None = None
     ahead: int | None = None
     behind: int | None = None
     dirty: int | None = None
     merged: bool = False
+    reached: bool | None = None
     error: str | None = None
+
+
+def _reached(
+    repo: str | Path, commit: str, base_ref: str, deadline: float | None, env: dict[str, str]
+) -> bool:
+    """Whether every commit of `commit` that is not in the base has a patch-equivalent one
+    there (`git cherry`: no "+" line); an ancestor of the base has none to look for. False
+    as well when git no longer has `commit` (asked only after cherry failed). Raises
+    GitError when that cannot be told (a timeout, another failure)."""
+    code, out, err = _run(repo, ("cherry", base_ref, commit), _left(deadline), env)
+    if code == 0:
+        return not any(line.startswith("+") for line in out.splitlines())
+    known = ("rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}")
+    if _run(repo, known, _left(deadline), env)[0] == 1:
+        return False
+    raise GitError(f"git cherry {base_ref} {commit}: {err.strip() or out.strip()}")
 
 
 def branch_state(
@@ -237,6 +255,7 @@ def branch_state(
     worktree: str | Path | None = None,
     ahead_tip: str | None = None,
     deadline: float | None = None,
+    in_base: bool = False,
 ) -> BranchState:
     """The state of `branch` of the repository at `repo` (a registered project's path)
     against its local branch `base`, with the uncommitted changes of `worktree` (an
@@ -244,41 +263,35 @@ def branch_state(
     a worktree of `repo`: its top level is `worktree` and its common git directory the
     repository's).
 
-    `merged`: `ahead_tip` (the branch's tip when it was last seen ahead of the base) is
-    given and is in the base now, nothing on the branch (if it still exists) or at the
-    worktree's HEAD is missing from the base (the test of `unsaved_work`), and the
-    worktree, if checked, is clean. So a branch never seen ahead, or reset to the base,
-    is not merged; nor is one merged by squashing (its commits never reach the base).
+    `merged`: nothing on the branch (if it still exists) or at the worktree's HEAD is
+    missing from the base (the test of `unsaved_work`), the worktree, if checked, is
+    clean, and the work at `ahead_tip` (the branch's tip when it was last seen ahead of
+    the base) is in the base: `in_base` (known from an earlier check) or, asked only then,
+    every commit of it is in the base or has a patch-equivalent one there (git cherry: so
+    a rebased or reworded branch merged counts, one reset to the base does not). The
+    answer is `reached`; a tip git no longer has is reported as not reached.
 
-    At most 4 git calls, each within CHECK_TIMEOUT and, with `deadline` (time.monotonic()),
-    by then, run only in `repo` and in the verified `worktree`, without the environment
-    variables that would point git elsewhere (REPOSITORY_ENV). Names that could be read
-    as anything but a local branch are refused before any git call. Never raises: a
-    failure is returned as `error`."""
+    At most 5 git calls (a 6th only when the cherry call fails, to tell a tip git no
+    longer has from an error), each within CHECK_TIMEOUT and, with `deadline`
+    (time.monotonic()), by then, run only in `repo` and in the verified `worktree`,
+    without the environment variables that would point git elsewhere (REPOSITORY_ENV).
+    Names that could be read as anything but a local branch are refused before any git
+    call. Never raises: a failure is returned as `error`."""
     if not valid_branch(branch) or not valid_branch(base):
         return BranchState(error=f"not a usable branch name: {branch!r} (base {base!r})")
     if ahead_tip is not None and not _COMMIT.fullmatch(ahead_tip):
         return BranchState(error=f"not a commit id: {ahead_tip!r}")
     env = _own_env()
     head, base_ref = f"refs/heads/{branch}", f"refs/heads/{base}"
-    # 1: the common git directory, the base, whether `ahead_tip` is in the base (`X...B`
-    # prints B, X and ^ each merge base of the two; X is in B when X is their only merge
-    # base) and the branch's tip. With --revs-only a missing branch prints nothing, and as
-    # git reads all that follows a name that is no revision as paths, the branch goes last.
-    revs = [base_ref, *([f"{ahead_tip}...{base_ref}"] if ahead_tip else []), head]
-    probe = ("rev-parse", "--path-format=absolute", "--git-common-dir", "--revs-only", *revs)
+    # 1: the common git directory, the base and the branch's tip. With --revs-only a missing
+    # branch prints nothing (and a missing base nothing from there on).
+    probe = ("rev-parse", "--path-format=absolute", "--git-common-dir", "--revs-only")
     verify = ("rev-parse", "--show-toplevel", "--path-format=absolute", "--git-common-dir")
     try:
-        found = git(repo, *probe, timeout=_left(deadline), env=env).splitlines()
+        found = git(repo, *probe, base_ref, head, timeout=_left(deadline), env=env).splitlines()
         if len(found) < 2:
             raise GitError(f"there is no branch {base} in {repo}")
-        common, rest = Path(found[0]).resolve(), found[2:]
-        reached = False
-        if ahead_tip:
-            bases = [line for line in rest[2:] if line.startswith("^")]
-            reached = bases == [f"^{ahead_tip}"]
-            rest = rest[2 + len(bases) :]
-        tip = rest[0] if rest else None
+        common, tip = Path(found[0]).resolve(), found[2] if len(found) > 2 else None
         dirty = at = None
         if worktree is not None and Path(worktree).exists():
             # 2: is it a worktree of this repository, and where is its HEAD; 3: its changes.
@@ -298,10 +311,16 @@ def branch_state(
         else:
             tips = [t for t in (tip and head, at) if t]
             unmerged = _unmerged(repo, tips, base_ref, _left(deadline), env) if tips else 0
+        # 5 (6): did the work at `ahead_tip` reach the base; asked once per tip, and only
+        # when the rest says merged.
+        reached = True if ahead_tip and in_base else None
+        if ahead_tip and not in_base and unmerged == 0 and not dirty:
+            reached = _reached(repo, ahead_tip, base_ref, deadline, env)
     except (GitError, OSError, ValueError, IndexError) as exc:
         return BranchState(error=str(exc) or type(exc).__name__)
     ahead = unmerged if tip is not None else None
-    return BranchState(tip, ahead, behind, dirty, reached and unmerged == 0 and not dirty)
+    merged = bool(reached) and unmerged == 0 and not dirty
+    return BranchState(tip, ahead, behind, dirty, merged, reached)
 
 
 def _cap(text: str, limit: int | None) -> str:

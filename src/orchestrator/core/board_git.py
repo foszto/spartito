@@ -9,10 +9,15 @@ item's registered project and in a verified worktree of an agent of that project
 branch. A failure with one item (git, the database) skips only that item. `states` reads
 the cache for a set of items, `last_sync` tells when the last pass ran.
 
-Merged (git.branch_state) means: the branch's tip at the last check that saw it ahead of
-the base (`ahead_tip`) is in the base now, nothing on the branch is missing from the base
-(or the branch is gone), and the worktree, if any, is clean. So a fresh branch, one reset
-to the base and one merged by squashing are not merged. Accepted: a base branch that moves
+Merged (git.branch_state) means: nothing on the branch is missing from the base (or the
+branch is gone), the worktree, if any, is clean, and the work at the branch's tip at the
+last check that saw it ahead of the base (`ahead_tip`) is in the base, as those commits or
+as patch-equivalent ones (git cherry, asked once per tip: so a branch rebased or reworded
+and then merged counts). So a fresh branch and one reset to the base (old or newer) are
+not merged; a tip whose work is not in the base, or that git no longer has, is forgotten
+until the branch is seen ahead again. Not detected: a squash merge of more than one commit,
+and commits whose content changed between the last check that saw them and the merge (the
+item is moved by hand). Accepted: a base branch that moves
 back behind a branch without commits of its own and then forward again shows that branch
 ahead and then in the base, which is what a fast-forward merge looks like, so it counts as
 merged.
@@ -183,6 +188,7 @@ def _check_item(
         worktree=_worktree(item, agents[project.name]),
         ahead_tip=row["ahead_tip"] if row else None,
         deadline=deadline,
+        in_base=bool(row and row["ahead_in_base"]),
     )
     new = _next_row(item, project, row, state)
     if new["error"] is None and new["merged"] and new["ahead_tip"] != new["done_tip"]:
@@ -206,8 +212,8 @@ def _next_row(
 ) -> dict[str, Any]:
     """The cache row after a check. A failed check keeps what was known and records why.
     A branch that is gone keeps its recorded tip. `ahead_tip` becomes the tip when the
-    branch itself was counted ahead of the base (`behind` is known then); `done_tip` is
-    left as it is."""
+    branch itself was counted ahead of the base (`behind` is known then), and is forgotten
+    when its work is found not to be in the base; `done_tip` is left as it is."""
     if row is None:
         row = {
             "item_id": item.id,
@@ -218,19 +224,26 @@ def _next_row(
             "behind": None,
             "dirty": None,
             "ahead_tip": None,
+            "ahead_in_base": 0,
             "done_tip": None,
             "merged": 0,
         }
     if state.error:
         return {**row, "error": state.error, "checked_at": now()}
     seen_ahead = state.tip is not None and state.behind is not None and bool(state.ahead)
+    ahead_tip, in_base = row["ahead_tip"], row["ahead_in_base"]
+    if seen_ahead:
+        ahead_tip, in_base = state.tip, 0
+    elif state.reached is not None:
+        ahead_tip, in_base = (ahead_tip, 1) if state.reached else (None, 0)
     return {
         **row,
         "tip": state.tip or row["tip"],
         "ahead": state.ahead,
         "behind": state.behind,
         "dirty": state.dirty,
-        "ahead_tip": state.tip if seen_ahead else row["ahead_tip"],
+        "ahead_tip": ahead_tip,
+        "ahead_in_base": in_base,
         "merged": int(state.merged),
         "error": None,
         "checked_at": now(),

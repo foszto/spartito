@@ -37,6 +37,10 @@ def commit(path: str | Path, name: str = "file.txt") -> str:
     return run_git(path, "rev-parse", "HEAD")
 
 
+def merge_into_main(project: Project, branch: str = "feat") -> None:
+    run_git(project.path, "merge", "-q", "--no-ff", "-m", f"merge {branch}", branch)
+
+
 def init_repo(path: Path) -> Path:
     path.mkdir()
     run_git(path, "init", "-q", "-b", "main")
@@ -120,11 +124,13 @@ def test_branch_state_counts_ahead_behind_and_changes(
     (wt / "loose.txt").unlink()
     run_git(project.path, "merge", "-q", "--no-ff", "-m", "merge", "feat")
     merged = git.branch_state(project.path, "feat", "main", worktree=wt, ahead_tip=tip)
-    assert merged == git.BranchState(tip, 0, 2, 0, True)
+    assert merged == git.BranchState(tip, 0, 2, 0, True, True)
     assert git.branch_state(project.path, "feat", "main", ahead_tip=start).merged is True
     assert git.branch_state(project.path, "feat", "main").merged is False  # no ahead tip
     unknown = git.branch_state(project.path, "feat", "main", ahead_tip="1" * 40)
-    assert (unknown.merged, unknown.error) == (False, None)  # a tip git no longer has
+    assert unknown == git.BranchState(tip, 0, 2, None, False, False)  # a tip git no longer has
+    known = git.branch_state(project.path, "feat", "main", ahead_tip="1" * 40, in_base=True)
+    assert (known.merged, known.reached) == (True, True)  # told before: not asked again
 
 
 def test_branch_state_reports_errors_instead_of_raising(project: Project, tmp_path: Path) -> None:
@@ -269,13 +275,17 @@ def test_commits_added_and_merged_between_two_checks_are_merged(
     assert (row["ahead"], row["ahead_tip"], row["merged"]) == (0, seen, 1)
 
 
-@pytest.mark.parametrize("how", ["branch -f", "reset --hard"])
+def cherries(spy: Spy) -> int:
+    return sum(args[0] == "cherry" for _, args in spy)
+
+
+@pytest.mark.parametrize("how", ["branch -f", "reset --hard", "reset to a newer base"])
 def test_a_branch_reset_to_the_base_is_not_merged(
-    store: Store, project: Project, tmp_path: Path, how: str
+    store: Store, project: Project, tmp_path: Path, how: str, spy: Spy
 ) -> None:
     wt = tmp_path / "wt"
     worker(store, project, wt, "feat")
-    seen = commit(wt)
+    commit(wt)
     entry = item(store, project, "feat", "in_progress")
     board_git.check(store)
     if how == "branch -f":
@@ -283,13 +293,169 @@ def test_a_branch_reset_to_the_base_is_not_merged(
         run_git(project.path, "branch", "-f", "feat", "main")
         run_git(wt, "checkout", "-q", "feat")
     else:
+        if how == "reset to a newer base":
+            commit(project.path, "on-main.txt")
         run_git(wt, "reset", "-q", "--hard", "main")
+    spy.clear()
 
     board_git.check(store)
 
     row = row_of(store, entry)
-    assert (row["ahead"], row["dirty"], row["ahead_tip"], row["merged"]) == (0, 0, seen, 0)
-    assert live(store, entry)["merged"] is False
+    assert (row["ahead"], row["dirty"], row["merged"], row["error"]) == (0, 0, 0, None)
+    assert row["ahead_tip"] is None  # its work is not in the base: forgotten
+    assert live(store, entry)["merged"] is False and cherries(spy) == 1
+    board_git.check(store)
+    assert cherries(spy) == 1  # told once per ahead tip
+
+
+def test_a_branch_rebased_and_merged_between_two_checks_is_merged(
+    store: Store, project: Project, tmp_path: Path, spy: Spy
+) -> None:
+    wt = tmp_path / "wt"
+    worker(store, project, wt, "feat")
+    seen = commit(wt)
+    entry = item(store, project, "feat")
+    board_git.check(store)
+    commit(project.path, "on-main.txt")
+    run_git(wt, "rebase", "-q", "main")
+    run_git(project.path, "merge", "-q", "--ff-only", "feat")
+    spy.clear()
+
+    board_git.check(store)
+
+    row = row_of(store, entry)
+    assert (row["ahead_tip"], row["ahead_in_base"], row["merged"]) == (seen, 1, 1)
+    board_git.check(store)
+    assert cherries(spy) == 1 and row_of(store, entry)["merged"] == 1
+
+
+def test_a_reworded_branch_merged_is_merged(store: Store, project: Project, tmp_path: Path) -> None:
+    wt = tmp_path / "wt"
+    worker(store, project, wt, "feat")
+    commit(wt)
+    entry = item(store, project, "feat")
+    board_git.check(store)
+    run_git(wt, "commit", "-q", "--amend", "-m", "a better message")
+    merge_into_main(project)
+
+    board_git.check(store)
+
+    assert row_of(store, entry)["merged"] == 1
+
+
+def test_an_amended_content_merged_is_not_detected(
+    store: Store, project: Project, tmp_path: Path
+) -> None:
+    wt = tmp_path / "wt"
+    worker(store, project, wt, "feat")
+    commit(wt)
+    entry = item(store, project, "feat")
+    board_git.check(store)
+    (wt / "file.txt").write_text("changed")
+    run_git(wt, "commit", "-q", "-a", "--amend", "-m", "changed")
+    merge_into_main(project)
+
+    board_git.check(store)
+
+    row = row_of(store, entry)
+    assert (row["merged"], row["ahead_tip"]) == (0, None)  # documented: moved by hand
+
+
+def test_a_branch_deleted_after_a_rebase_merge_is_merged(store: Store, project: Project) -> None:
+    run_git(project.path, "checkout", "-q", "-b", "feat")
+    commit(project.path)
+    run_git(project.path, "checkout", "-q", "main")
+    entry = item(store, project, "feat")
+    board_git.check(store)
+    commit(project.path, "on-main.txt")
+    run_git(project.path, "rebase", "-q", "main", "feat")
+    run_git(project.path, "checkout", "-q", "main")
+    run_git(project.path, "merge", "-q", "--ff-only", "feat")
+    run_git(project.path, "branch", "-q", "-D", "feat")
+
+    board_git.check(store)
+
+    row = row_of(store, entry)
+    assert (row["merged"], row["ahead"], row["error"]) == (1, None, None)
+
+
+@pytest.mark.parametrize("ahead", [False, True])
+def test_a_recorded_tip_git_no_longer_has_is_forgotten(
+    store: Store, project: Project, tmp_path: Path, ahead: bool
+) -> None:
+    wt = tmp_path / "wt"
+    worker(store, project, wt, "feat")
+    entry = item(store, project, "feat")
+    board_git.check(store)
+    if ahead:
+        commit(wt)
+    with store.connection() as conn:  # pruned after a rebase, or the branch recreated
+        conn.execute("UPDATE board_git SET ahead_tip = ? WHERE item_id = ?", ("1" * 40, entry.id))
+
+    board_git.check(store)
+
+    tip = run_git(wt, "rev-parse", "HEAD")
+    row = row_of(store, entry)
+    assert (row["tip"], row["ahead"], row["behind"], row["error"]) == (tip, int(ahead), 0, None)
+    assert row["ahead_tip"] == (tip if ahead else None) and row["merged"] == 0
+    if not ahead:
+        commit(wt)
+        board_git.check(store)
+    merge_into_main(project)
+    board_git.check(store)
+    assert row_of(store, entry)["merged"] == 1  # a later merge is seen again
+
+
+def test_a_pruned_tip_after_a_reset_is_forgotten(
+    store: Store, project: Project, tmp_path: Path
+) -> None:
+    wt = tmp_path / "wt"
+    worker(store, project, wt, "feat")
+    seen = commit(wt)
+    entry = item(store, project, "feat")
+    board_git.check(store)
+    run_git(wt, "reset", "-q", "--hard", "main")
+    run_git(project.path, "reflog", "expire", "--expire=now", "--all")
+    run_git(project.path, "gc", "-q", "--prune=now")
+    assert subprocess.run(["git", "-C", project.path, "cat-file", "-e", seen]).returncode != 0
+
+    board_git.check(store)
+
+    row = row_of(store, entry)
+    assert (row["ahead"], row["ahead_tip"], row["merged"], row["error"]) == (0, None, 0, None)
+
+
+@pytest.mark.parametrize("failure", ["timeout", "exit"])
+def test_a_failed_cherry_call_is_an_error_not_a_verdict(
+    store: Store,
+    project: Project,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    wt = tmp_path / "wt"
+    worker(store, project, wt, "feat")
+    seen = commit(wt)
+    entry = item(store, project, "feat")
+    board_git.check(store)
+    merge_into_main(project)
+    real = git._run
+
+    def failing(repo: str | Path, args: tuple[str, ...], timeout: float | None, env=None):
+        if args[0] == "cherry":
+            if failure == "timeout":
+                raise git.GitError("git cherry: no answer within 1 s")
+            return 128, "", "fatal: something broke"
+        return real(repo, args, timeout, env)
+
+    monkeypatch.setattr(git, "_run", failing)
+    board_git.check(store)
+
+    row = row_of(store, entry)
+    assert row["error"] and (row["ahead_tip"], row["ahead_in_base"]) == (seen, 0)
+    monkeypatch.setattr(git, "_run", real)
+    board_git.check(store)
+    assert row_of(store, entry)["merged"] == 1
 
 
 def test_a_squash_merge_is_not_merged(store: Store, project: Project) -> None:
@@ -388,6 +554,7 @@ def test_git_runs_only_in_the_project_and_verified_worktrees(
 
 ALLOWED_OPTIONS = {
     "--path-format=absolute", "--git-common-dir", "--verify", "--revs-only", "--show-toplevel",
+    "--quiet",
     "--no-optional-locks", "--porcelain", "--left-right", "--count", "--not", "--",
 }  # fmt: skip
 
