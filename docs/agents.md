@@ -145,7 +145,7 @@ orch decide 12 "Use Postgres"
 The answer reaches the agent as an ordinary message from you (`Decision #12 — <question>` and
 `Answer: <answer>`) and closes the decision; a closed decision takes no further answer. The
 message restores an archived agent; if the agent was deleted, the decision closes without an
-answer, with a note. A waiting decision also triggers a desktop notification on macOS (see
+answer, with a note. A waiting decision also triggers a desktop notification (see
 [configuration.md](configuration.md#desktop-notifications-desktop_notifications)).
 
 ## Archiving

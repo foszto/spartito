@@ -30,7 +30,9 @@ The command is `orch`; the Python package is `orchestrator`.
   project; per-agent overrides.
 - Persistent task board per project, and a list of decisions that wait for you.
 - Automatic compaction of long conversations, automatic archiving of finished agents, keeping
-  the machine awake while agents work, desktop notifications (macOS).
+  the machine awake while agents work, desktop notifications.
+- The dashboard as a desktop application: a background service, an installable page,
+  notifications whose click opens the agent or decision, and its own window (`orch app`).
 - No daemon: every turn is its own process; all state is in one SQLite database.
 
 ## Requirements
@@ -61,6 +63,13 @@ orch --help
 ```
 
 Without installing, prefix every command with `uv run` inside the checkout (`uv run orch …`).
+
+The native window of `orch app` needs the optional extra `app` (on Linux it brings Qt and
+PyQt6, which are GPL-3 software; see [docs/desktop.md](docs/desktop.md#optional-dependencies)):
+
+```sh
+uv tool install --editable '.[app]'
+```
 
 Spartito keeps its state in `~/.orchestrator/`. Set `ORCH_HOME` to use another directory.
 
@@ -172,6 +181,8 @@ conversation; the agent carries on with what does not depend on it. See
 | `orch project add/list/rm` | register, list and unregister projects |
 | `orch chat` | interactive orchestrator session (Claude Code) |
 | `orch web` | dashboard |
+| `orch app` | dashboard in its own window |
+| `orch service install/uninstall/status/logs` | dashboard as a background service |
 | `orch ask <project> "…"` | message the project lead (creates it) |
 | `orch spawn -p <project> "…"` | start an agent (`-r` role, `-n` name, `--provider`, `--after`, `--share`, `--base`) |
 | `orch send <agent> "…"` | follow-up message, queued if the agent is busy |
@@ -205,6 +216,34 @@ The dashboard has no login. Bound to a loopback address (the default), it answer
 addressed to that host and rejects writes from other websites. Binding it to another address
 (`--host 0.0.0.0`) gives anyone who can reach it control over agents that run code. Details:
 [docs/usage.md](docs/usage.md#dashboard).
+
+### Desktop app
+
+The dashboard can also be used like a desktop application:
+
+- **Background service.** `orch service install [--host] [--port]` runs `orch web` at login
+  and restarts it when it stops; `orch service status`, `logs` and `uninstall` manage it.
+- **Installable page.** Chrome offers Install in the address bar; Safari has **File › Add to
+  Dock**.
+- **Notifications with click-through.** Allowed once under **Models and effort** ›
+  **Notifications** › **Allow in this browser**, an open dashboard page shows the
+  notifications itself; a click opens the agent or decision.
+- **Own window.** `orch app [--port]` opens the dashboard in a native window (extra `app`),
+  else in a Chromium-family browser in app mode, else in the default browser. It uses the
+  running server of this home or serves the dashboard until the window is closed.
+- **Menu-bar item** (macOS only): still being built. <!-- MENUBAR: to be completed -->
+
+| | macOS | Linux |
+|---|---|---|
+| background service | launchd agent | systemd user unit |
+| installable page | Chrome, Safari | Chromium-family browsers |
+| notification click-through | in an open page; else `osascript`, no click | in an open page; else none |
+| `orch app` native window | Cocoa (WebKit), extra `app` | Qt WebEngine, extra `app` (GPL-3) |
+| `orch app` browser fallback | yes | yes |
+| menu-bar item | planned <!-- MENUBAR: to be completed --> | no |
+
+Details, security notes, Linux requirements and limitations:
+[docs/desktop.md](docs/desktop.md).
 
 ### MCP tools
 
@@ -253,7 +292,7 @@ setting → the role's `model` → the CLI's default. Effort levels: Claude `low
 | `compact_at_tokens`: automatic compaction threshold | `orch config compact-at <tokens>` | global, project | `256000` |
 | `archive_after_hours`: automatic archiving | `orch config archive-after <hours>` | global, project | `24` |
 | `keep_awake`: prevent idle sleep while a turn runs | `orch config keep-awake on\|off` | global | `on` |
-| `desktop_notifications` (macOS) | `orch config desktop-notifications on\|off` | global | `on` |
+| `desktop_notifications` | `orch config desktop-notifications on\|off` | global | `on` |
 
 `0` or `off` turns compaction and archiving off; an empty value (`""`) clears a setting so
 that the global value or the default applies. All settings can also be changed in the
@@ -269,7 +308,10 @@ dashboard's **Models and effort** window.
 - **Keep-awake.** `caffeinate -i` on macOS, `systemd-inhibit --what=idle` on Linux; prevents
   idle sleep only, not a closed lid or a forced sleep.
 - **Desktop notifications.** When a decision waits for you, and when an agent you messaged
-  directly has finished together with all its agents.
+  directly has finished together with all its agents. An open dashboard page allowed to show
+  notifications shows them, and a click opens the agent or decision; without one, macOS shows
+  them through `osascript` (no click action) and Linux shows none. See
+  [Desktop app](#desktop-app).
 
 The limit on review rounds is not a setting: the packaged `lead` role prompt allows at most
 two review rounds per branch (the review and one re-review of the fixes), after which the lead
@@ -337,11 +379,13 @@ The answer reaches the agent as a message from you. Details:
   waits for dependencies, creates the worktree if needed, runs `claude -p --output-format
   stream-json` or `codex exec --json`, and turns the output into uniform events.
 - **State** lives under `~/.orchestrator/` (or `$ORCH_HOME`): `orch.db` (projects, agents,
-  turns, events, usage, settings, board, decisions), `worktrees/<project>/<agent-id>/`, and
-  `workspace/` (the orchestrator's working directory).
+  turns, events, usage, settings, board, decisions, notices), `worktrees/<project>/<agent-id>/`,
+  `workspace/` (the orchestrator's working directory), and `run/` (files about live processes:
+  the running dashboard server's `web.json`, locks and markers, the browser profile of
+  `orch app`).
 - **Logs** per turn in `logs/run-<id>/`: the CLI's raw output stream, stderr, `result.md`
   (the full final answer, or the error of a failed turn) and `result.json` for a structured
-  answer.
+  answer. On macOS the background service writes to `logs/web.log`.
 - **Permissions.** Claude agents run with `--permission-mode auto`, Codex agents in the
   `workspace-write` sandbox; `orch spawn --permission` overrides this per agent.
 - **Providers** implement a small protocol (`providers/base.py`); further providers can be
@@ -354,6 +398,9 @@ src/orchestrator/
   cli.py           the `orch` command
   mcp_server.py    the MCP tools of the orchestrator and the leads
   web/             dashboard: one page and a JSON API
+    serve.py         running the dashboard server, shared by `orch web` and `orch app`
+  gui/             `orch app`: the window (window.py) and finding a running server (locate.py)
+  autostart.py     `orch service`: the launchd agent or systemd user unit
   service.py       the facade `Orchestrator`, used by the CLI, the MCP server and the dashboard
   core/            the operations behind the facade, one module per area:
     dispatch.py      creating agents, queueing turns with dependencies, withdrawing a message
@@ -366,6 +413,7 @@ src/orchestrator/
     delivery.py      waiting for agents and delivering each result once per caller
     access.py        who calls through the MCP server and in which project it may act
     reads.py         plain store reads the interfaces show
+    notices.py       notices for a dashboard page that shows desktop notifications
   runner.py        one turn in its own detached process
   store.py         SQLite (WAL): the only shared state
   providers/       base.py (protocol), claude.py, codex.py
@@ -382,7 +430,7 @@ src/orchestrator/
   board.py         task board
   decisions.py     decisions
   keep_awake.py    sleep inhibitor
-  desktop.py       desktop notifications (macOS)
+  desktop.py       desktop notifications: notices for a page, else `osascript` (macOS)
   git.py           worktree handling
   config.py        paths under `~/.orchestrator/` (or `$ORCH_HOME`)
 ```
@@ -396,7 +444,7 @@ enforces both from the source, with a pinned list of today's exceptions that may
 
 - **Platforms.** Developed and used on macOS. On Linux, the sleep inhibitor
   (`systemd-inhibit`) and the cleanup of a stopped turn's processes have not been tested on a
-  real machine, and there are no desktop notifications. Windows is not supported: process
+  real machine, and desktop notifications appear only through an open dashboard page. Windows is not supported: process
   handling relies on POSIX process groups and sessions.
 - **Codex.** Codex reports no cost. The context size is known only from the session's rollout
   file under `$CODEX_HOME/sessions/`. `/compact` does not work in `codex exec resume`, so a
@@ -410,7 +458,8 @@ enforces both from the source, with a pinned list of today's exceptions that may
   and keeps that version; a running `orch chat` session keeps the prompt it started with.
   Headless Claude agents receive the current role prompt with every turn.
 - **Upgrades.** A running `orch web` keeps the code it was started with; restart it after an
-  upgrade. New turns start new runner processes and use the new code.
+  upgrade (for the background service: `orch service install` again). New turns start new
+  runner processes and use the new code.
 - **Automatic compaction** pauses for an agent when a compaction did not bring its context
   below the threshold.
 - **Loadout changes** do not shrink existing sessions: the earlier tool and skill lists stay in
