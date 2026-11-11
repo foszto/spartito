@@ -13,7 +13,7 @@ import pytest
 from test_notifications import lead
 
 from orchestrator import board, mcp_server
-from orchestrator.service import ORCHESTRATOR_ID, Orchestrator
+from orchestrator.service import ORCHESTRATOR_ID, Orchestrator, OrchestratorError
 
 # Measured on master before the batch: the JSON of every tool in the listing (name,
 # description, inputSchema, outputSchema), summed.
@@ -254,3 +254,16 @@ def test_an_agents_dispatch_comes_from_that_agent(
     assert orch.agent(old_lead).parent_id == ORCHESTRATOR_ID
     assert orch.store.meta(result["run_id"]).sender == ORCHESTRATOR_ID
     assert "dispatched by orchestrator:" in orch.store.runs_of(old_lead)[0].prompt
+
+
+@pytest.mark.parametrize("item_id", [2**63, -(2**63) - 1, 10**30])
+def test_an_id_beyond_sqlites_range_is_an_unknown_item(
+    orch: Orchestrator, project: str, item_id: int
+) -> None:
+    for call in (
+        lambda: orch.board_item(item_id),
+        lambda: orch.update_board_item(item_id, {"title": "x"}),
+        lambda: orch.move_board_item(item_id, "up"),
+    ):
+        with pytest.raises(OrchestratorError, match=f"no board item #{item_id}"):
+            call()

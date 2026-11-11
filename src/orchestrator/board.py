@@ -157,7 +157,12 @@ def _end(conn: sqlite3.Connection, project: str, state: str) -> int:
     return 0 if row[0] is None else row[0] + 1
 
 
+SQLITE_IDS = range(-(2**63), 2**63)  # an id outside (OverflowError in sqlite3) is unknown
+
+
 def _get(conn: sqlite3.Connection, item_id: int) -> Item | None:
+    if item_id not in SQLITE_IDS:
+        return None
     row = conn.execute("SELECT * FROM board_items WHERE id = ?", (item_id,)).fetchone()
     return Item.from_row(row) if row else None
 
