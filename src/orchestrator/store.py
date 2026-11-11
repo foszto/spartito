@@ -16,7 +16,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -182,6 +182,20 @@ CREATE TABLE IF NOT EXISTS board_items (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS board_items_order ON board_items(project, state, position);
+-- Desktop notifications as records (desktop.show), so an open dashboard page can show them
+-- with a click action; a table of its own, unknown to older code. kind: 'decision' |
+-- 'finished'; agent_id: whom it is about (a decision: the requesting agent); decision_id:
+-- NULL for 'finished'; claimed_at: set once a page or osascript showed it (the first claim
+-- wins). Rows older than a day are pruned when one is added.
+CREATE TABLE IF NOT EXISTS notices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    decision_id INTEGER,
+    text TEXT NOT NULL,
+    claimed_at TEXT
+);
 CREATE INDEX IF NOT EXISTS runs_agent ON runs(agent_id, id);
 CREATE INDEX IF NOT EXISTS events_agent ON events(agent_id, id);
 """
@@ -210,6 +224,7 @@ ARCHIVE_MANUAL, ARCHIVE_AUTO = "manual", "auto"
 RESTORE_SQL = (
     "UPDATE archived_agents SET restored_at = ? WHERE agent_id = ? AND restored_at IS NULL"
 )
+NOTICE_KEEP = timedelta(days=1)
 LOST_TRIGGER_SECONDS = 120  # an ended run still unchecked this long lost its trigger
 
 EVENT_TEXT_LIMIT = 4000
@@ -358,8 +373,8 @@ class Store:
             conn.close()
 
     @contextmanager
-    def _conn(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self.path, timeout=30)
+    def _conn(self, wait: float = 30) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(self.path, timeout=wait)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
         try:
@@ -1090,6 +1105,54 @@ class Store:
                 (caller, agent_id),
             ).fetchone()
         return row["run_id"]
+
+    # -- notices ----------------------------------------------------------
+
+    def add_notice(
+        self,
+        kind: str,
+        agent_id: str,
+        text: str,
+        decision_id: int | None = None,
+        wait: float = 30,
+    ) -> int:
+        """Record an unclaimed notice and prune those older than NOTICE_KEEP; its id.
+        `wait`: seconds to wait for the write lock (then sqlite3.OperationalError)."""
+        cutoff = (datetime.now(UTC) - NOTICE_KEEP).isoformat(timespec="seconds")
+        with self._conn(wait) as conn:
+            conn.execute("DELETE FROM notices WHERE created_at < ?", (cutoff,))
+            cursor = conn.execute(
+                "INSERT INTO notices (created_at, kind, agent_id, decision_id, text)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (now(), kind, agent_id, decision_id, text),
+            )
+        assert cursor.lastrowid is not None
+        return cursor.lastrowid
+
+    def notices(self, after: int = 0) -> list[dict[str, Any]]:
+        """The unclaimed notices with an id above `after`, oldest first."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, kind, agent_id, decision_id, text, created_at FROM notices"
+                " WHERE id > ? AND claimed_at IS NULL ORDER BY id",
+                (after,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def notice_cursor(self) -> int:
+        """The highest notice id (0: none): a reader starting here skips what came before."""
+        with self._conn() as conn:
+            return conn.execute("SELECT COALESCE(MAX(id), 0) FROM notices").fetchone()[0]
+
+    def claim_notice(self, notice_id: int, wait: float = 30) -> bool:
+        """Mark an unclaimed notice as shown; True only for the one caller that did.
+        `wait` as in add_notice."""
+        with self._conn(wait) as conn:
+            cursor = conn.execute(
+                "UPDATE notices SET claimed_at = ? WHERE id = ? AND claimed_at IS NULL",
+                (now(), notice_id),
+            )
+        return cursor.rowcount == 1
 
     # -- events -----------------------------------------------------------
 

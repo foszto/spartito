@@ -13,10 +13,19 @@ Two occasions, each from the process where it happens:
   the agent busy: the one notification comes once that compaction has ended, and tells
   how the turn ended (the compaction is housekeeping; its own outcome is in the log).
 
+Each one is recorded as a *notice* (store table `notices`: its kind, the agent, the
+decision) so that an open dashboard page can show it as a Web Notification whose click opens
+that agent or decision. Such a page touches a marker file (`page_present`, through the
+facade) on each poll; while the marker is fresh (PAGE_FRESH_SECONDS) the notice is left to the
+page, which claims it. Otherwise `osascript` shows it, as before any page could (macOS only;
+elsewhere nothing is shown), and claims it first, so a page polling later does not show it
+again and one that claimed it already is not doubled.
+
 `osascript` gets the texts as arguments of its run handler, never inside the script source
 (they come from agents). It is started and left alone: a reaper thread kills it after
 TIMEOUT_SECONDS; a missing binary or any error is ignored. Off with the global setting
-`desktop_notifications` (`orch config desktop-notifications off`).
+`desktop_notifications` (`orch config desktop-notifications off`): then nothing is recorded
+either.
 """
 
 from __future__ import annotations
@@ -25,7 +34,9 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable
+from pathlib import Path
 
 from . import config, notify, settings
 from .models import RunStatus
@@ -39,6 +50,10 @@ SCRIPT = (
 TEXT_CHARS = 240  # of the body; Notification Center shows about two lines anyway
 TIMEOUT_SECONDS = 5.0
 PLATFORM = sys.platform  # tests set another
+DECISION, FINISHED = "decision", "finished"  # the kinds of notice
+PAGE_MARKER = "page-notifier"  # in config.runtime_dir()
+PAGE_FRESH_SECONDS = 15.0  # a page polls far more often while it is visible
+STORE_WAIT_SECONDS = 2.0  # for the write lock of a notice; then osascript shows it unrecorded
 
 
 def command(
@@ -60,15 +75,42 @@ def one_line(text: str, limit: int) -> str:
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
 
-def show(store: Store, body: str) -> None:
-    """Show `body` under the tool's name, unless switched off or not possible. Never raises
-    and never waits for osascript."""
+def page_marker() -> Path:
+    return config.runtime_dir() / PAGE_MARKER
+
+
+def page_present() -> None:
+    """A dashboard page that can show notifications is polling: refresh the marker."""
+    page_marker().touch()
+
+
+def page_fresh() -> bool:
+    """Whether such a page polled within the last PAGE_FRESH_SECONDS."""
+    try:
+        age = time.time() - page_marker().stat().st_mtime
+    except OSError:
+        return False
+    return 0 <= age < PAGE_FRESH_SECONDS  # a marker from the future: not to be trusted
+
+
+def show(
+    store: Store, body: str, agent_id: str | None = None, decision_id: int | None = None
+) -> None:
+    """Notify about `agent_id` (a decision notice with `decision_id`, else a finished one)
+    under the tool's name, unless switched off: record the notice, then leave it to a fresh
+    page or show it with osascript (see the module doc). Without an agent nothing is
+    recorded and osascript shows it. Never raises and never waits for osascript."""
     try:
         if not settings.desktop_notifications(store):
+            return
+        notice = _record(store, body, agent_id, decision_id)
+        if notice is not None and page_fresh():
             return
         argv = command(config.PROJECT_NAME, body)
         if argv is None:
             return
+        if notice is not None and not _claim(store, notice):
+            return  # a page showed it meanwhile
         proc = subprocess.Popen(
             argv,
             stdin=subprocess.DEVNULL,
@@ -79,6 +121,26 @@ def show(store: Store, body: str) -> None:
         threading.Thread(target=_reap, args=(proc,), daemon=True).start()
     except Exception:
         pass
+
+
+def _record(store: Store, body: str, agent_id: str | None, decision_id: int | None) -> int | None:
+    """The new notice's id; None without an agent or if it could not be stored."""
+    if agent_id is None:
+        return None
+    try:
+        kind = FINISHED if decision_id is None else DECISION
+        return store.add_notice(kind, agent_id, body, decision_id, STORE_WAIT_SECONDS)
+    except Exception:
+        return None
+
+
+def _claim(store: Store, notice: int) -> bool:
+    """Claim the notice for osascript; one that cannot be claimed (the store is busy) is
+    shown anyway, as before notices existed."""
+    try:
+        return store.claim_notice(notice, STORE_WAIT_SECONDS)
+    except Exception:
+        return True
 
 
 def _reap(proc: subprocess.Popen[bytes]) -> None:
@@ -127,4 +189,4 @@ def turn_ended(store: Store, run_id: int, agent_id: str) -> None:
     except Exception:
         return
     if text:
-        show(store, text)
+        show(store, text, agent_id)

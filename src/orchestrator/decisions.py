@@ -108,7 +108,7 @@ def record(
     decision = get(store, decision_id)
     assert decision is not None
     where = agent.project or desktop.display_name(store, agent.id)
-    desktop.show(store, f"Decision needed ({where}): {question}")
+    desktop.show(store, f"Decision needed ({where}): {question}", agent.id, decision.id)
     return decision
 
 

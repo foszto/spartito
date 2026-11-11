@@ -10,6 +10,7 @@ from typing import Any
 from . import board, decisions, desktop, git, providers
 from .core import access, compaction, delivery, dispatch, launcher, lifecycle, reads, views
 from .core import archive as archiving
+from .core import notices as page_notices
 from .core import setup as agent_setup
 from .core.dispatch import ORCHESTRATOR_ID as ORCHESTRATOR_ID  # old import path
 from .core.dispatch import slug as slug  # old import path
@@ -285,6 +286,13 @@ class Orchestrator:
     get_usage = reads.get_usage
     get_event = reads.get_event
     events = reads.events
+
+    # -- notices for a dashboard page (core/notices.py) -------------------
+
+    notices = page_notices.notices
+    notice_cursor = page_notices.notice_cursor
+    claim_notice = page_notices.claim_notice
+    page_present = page_notices.page_present
 
     # -- delivery (core/delivery.py, core/access.py) ----------------------
 
