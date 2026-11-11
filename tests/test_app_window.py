@@ -43,6 +43,7 @@ def nothing_real(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     monkeypatch.setattr(window, "mac_app_dirs", lambda: [])
     monkeypatch.setattr(window, "LINUX_BROWSERS", ())
     monkeypatch.setattr(window, "this_platform", lambda: "darwin")
+    monkeypatch.setattr(window, "BACKEND_PROBE", "raise SystemExit('the probe is not faked')")
     opened: list[str] = []
     monkeypatch.setattr(window.webbrowser, "open", lambda url: opened.append(url) or True)
     return opened
@@ -378,6 +379,7 @@ def test_native_window_on_an_own_server(webview: FakeWebview):
     assert webview.main_thread
     assert webview.ping["home"] == this_home()
     assert webview.options["private_mode"] is False
+    assert webview.options["gui"] is None  # pywebview's choice: Cocoa
     assert not win.destroyed.is_set()  # the user closed it
     assert_own_server_gone(win.url)
 
@@ -547,10 +549,93 @@ def test_linux_without_a_display(webview: FakeWebview, chromium: Path, nothing_r
 
 def test_linux_with_wayland_opens_a_window(webview: FakeWebview, monkeypatch):
     monkeypatch.setattr(window, "this_platform", lambda: "linux")
+    monkeypatch.setattr(window, "BACKEND_PROBE", "pass")
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
     assert run_app().exit_code == 0
     assert len(webview.windows) == 1
+
+
+# Stand-ins for pywebview's backend start in the child process (window.BACKEND_PROBE); each
+# notes the backend it was told to force (its argument) in $FAKE_PROBE_LOG.
+NOTE_GUI = "import os, sys; open(os.environ['FAKE_PROBE_LOG'], 'w').write(sys.argv[1])\n"
+QT_PLUGIN = (
+    "qt.qpa.plugin: From 6.5.0, xcb-cursor0 or libxcb-cursor0 is needed to load the Qt xcb"
+    " platform plugin."
+)
+QT_ABORTS = (
+    NOTE_GUI + f"print({QT_PLUGIN!r}, file=sys.stderr)\n"
+    "print('This application failed to start because no Qt platform plugin could be"
+    " initialized.', file=sys.stderr, flush=True)\n"
+    "os._exit(134)\n"  # as an abort ends it, without a core dump or crash report
+)
+QT_IMPORT_FAILS = (
+    NOTE_GUI + "print('[pywebview] QT cannot be loaded', file=sys.stderr)\n"
+    "print('Traceback (most recent call last):', file=sys.stderr)\n"
+    "print('  File \"qt.py\", line 1', file=sys.stderr)\n"
+    "print('ImportError: libEGL.so.1: cannot open shared object file', file=sys.stderr)\n"
+    "raise RuntimeError('You must have either QT or GTK with Python extensions installed')\n"
+)
+
+
+@pytest.fixture
+def linux(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Linux with an X display and a fake `chromium` on PATH; returns the probe's log."""
+    monkeypatch.setattr(window, "this_platform", lambda: "linux")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.delenv("PYWEBVIEW_GUI", raising=False)
+    bin_dir = tmp_path / "linux-bin"
+    bin_dir.mkdir()
+    (bin_dir / "chromium").write_text(CHROMIUM.format(python=sys.executable))
+    (bin_dir / "chromium").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(window, "LINUX_BROWSERS", ("chromium",))
+    monkeypatch.setenv("FAKE_CHROMIUM_LOG", str(tmp_path / "chromium.log"))
+    log = tmp_path / "probe.log"
+    monkeypatch.setenv("FAKE_PROBE_LOG", str(log))
+    return log
+
+
+def test_linux_native_window_with_qt(webview: FakeWebview, linux: Path, monkeypatch):
+    monkeypatch.setattr(window, "BACKEND_PROBE", NOTE_GUI)
+    result = run_app()
+    assert result.exit_code == 0, result.output
+    assert result.stderr == ""
+    assert linux.read_text() == "qt"
+    assert webview.options["gui"] == "qt"
+    assert_own_server_gone(webview.windows[0].url)
+
+
+def test_linux_backend_chosen_by_pywebview_gui(webview: FakeWebview, linux: Path, monkeypatch):
+    monkeypatch.setenv("PYWEBVIEW_GUI", "gtk")
+    monkeypatch.setattr(window, "BACKEND_PROBE", NOTE_GUI)
+    assert run_app().exit_code == 0
+    assert linux.read_text() == ""
+    assert webview.options["gui"] is None
+
+
+@pytest.mark.parametrize(
+    ("probe", "reason"),
+    [
+        (QT_ABORTS, QT_PLUGIN),
+        (QT_IMPORT_FAILS, "ImportError: libEGL.so.1: cannot open shared object file"),
+    ],
+)
+def test_linux_backend_that_cannot_start(
+    webview: FakeWebview, linux: Path, monkeypatch, probe, reason
+):
+    monkeypatch.setattr(window, "BACKEND_PROBE", probe)
+    result = run_app()
+    assert result.exit_code == 0, result.output
+    assert result.stderr == (
+        f"no native window: pywebview cannot start its GUI backend ({reason});"
+        " trying a Chromium-family browser in app mode\n"
+    )
+    assert linux.read_text() == "qt"
+    assert webview.windows == []
+    url = result.stdout.removeprefix("web UI: ").strip()
+    assert (linux.parent / "chromium.log").read_text().splitlines()[0] == f"--app={url}"
+    assert_own_server_gone(url)
 
 
 def test_one_app_per_home(webview: FakeWebview):

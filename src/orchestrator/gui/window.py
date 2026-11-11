@@ -4,7 +4,9 @@ The server: this home's running one when `locate` finds it (never stopped here),
 one of its own on 127.0.0.1 in a thread, stopped when the window is gone.
 
 The window, by the first way that works; each step that fails says so in one line on stderr:
-  a. a native window with pywebview (the optional extra `orchestrator[app]`);
+  a. a native window with pywebview (the optional extra `orchestrator[app]`): Cocoa on macOS,
+     Qt on Linux, where the backend is first started in a child process (Qt aborts the whole
+     process, no exception, when it cannot load its platform plugin);
   b. a Chromium-family browser in app mode, with its own profile under `run/`, so its process
      lives exactly as long as the window;
   c. the default browser; the own server then runs in the foreground until Ctrl-C.
@@ -18,6 +20,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -39,6 +42,11 @@ WINDOW_SIZE = (1280, 860)
 INSTALL_HINT = "install the extra orchestrator[app]"
 CHROMIUM_NAMES = "Chrome, Chromium, Edge or Brave"
 MAC_BROWSERS = ("Google Chrome", "Chromium", "Microsoft Edge", "Brave Browser")  # app bundles
+# Starts pywebview's GUI backend (argv[1]: the one to force, or "" for its own choice) and
+# leaves: exit 0 when it can start.
+BACKEND_PROBE = "import sys; from webview.guilib import initialize; initialize(sys.argv[1] or None)"
+PROBE_TIMEOUT = 60.0  # seconds; the first import of Qt WebEngine can be slow
+ERROR_LINE = re.compile(r"[\w.]*(Error|Exception): ")
 LINUX_BROWSERS = (
     "google-chrome",
     "google-chrome-stable",
@@ -131,6 +139,35 @@ def first_line(exc: BaseException) -> str:
     return (text[0] if text else type(exc).__name__)[:200]
 
 
+def linux_gui() -> str | None:
+    """The backend pywebview is told to use on Linux: Qt, which the extra installs (it would
+    try GTK first and log its import error), unless PYWEBVIEW_GUI chooses."""
+    if not this_platform().startswith("linux") or os.environ.get("PYWEBVIEW_GUI"):
+        return None
+    return "qt"
+
+
+def backend_problem(gui: str | None) -> str | None:
+    """Why pywebview's GUI backend cannot start here, found by starting it in a child
+    process; None when it can."""
+    argv = [sys.executable, "-c", BACKEND_PROBE, gui or ""]
+    try:
+        done = subprocess.run(
+            argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=PROBE_TIMEOUT
+        )
+    except subprocess.TimeoutExpired:
+        return f"its GUI backend did not start within {PROBE_TIMEOUT:.0f} s"
+    except OSError as exc:
+        return str(exc.strerror or exc)
+    if done.returncode == 0:
+        return None
+    lines = [line.strip() for line in done.stderr.splitlines() if line.strip()]
+    errors = [line for line in lines if ERROR_LINE.match(line)]
+    plain = [line for line in lines if not line.startswith(("[pywebview]", "Traceback", "File "))]
+    found = errors or plain
+    return found[0][:200] if found else f"its GUI backend exited with code {done.returncode}"
+
+
 def native_window(url: str, close_after: float | None) -> bool:
     """a. Show `url` in a pywebview window until it is closed; False when that cannot be."""
     try:
@@ -138,6 +175,13 @@ def native_window(url: str, close_after: float | None) -> bool:
     except ImportError:
         say(
             f"no native window: pywebview is not installed ({INSTALL_HINT});"
+            " trying a Chromium-family browser in app mode"
+        )
+        return False
+    gui = linux_gui()
+    if this_platform().startswith("linux") and (problem := backend_problem(gui)):
+        say(
+            f"no native window: pywebview cannot start its GUI backend ({problem});"
             " trying a Chromium-family browser in app mode"
         )
         return False
@@ -162,6 +206,7 @@ def native_window(url: str, close_after: float | None) -> bool:
         # macOS WebKit ignores it and keeps the data of the Python app in ~/Library.
         webview.start(
             close_later,
+            gui=gui,
             private_mode=False,
             storage_path=str(config.runtime_dir() / "app-webview"),
         )
