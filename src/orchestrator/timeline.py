@@ -117,3 +117,20 @@ class AgentRuns:
     def totals(self) -> Usage:
         """Tokens and cost of all the runs (models.running_total)."""
         return running_total(self.runs, self.usage)
+
+    def total_before(self, run_id: int, session_id: str | None) -> Usage:
+        """Tokens and cost of the runs that took their turn before `run_id` in the session
+        `session_id` (models.running_total): runs recorded under another session are left
+        out, runs without a recorded session count (see runner.record_usage)."""
+        recorded = self.usage
+
+        def same_session(other: Run) -> bool:
+            other_session = recorded[other.id].session_id if other.id in recorded else None
+            return not session_id or other_session in (None, session_id)
+
+        # The runs that took their turn before this one: those that have ended (one run of
+        # an agent at a time; an automatic compaction runs ahead of lower ids).
+        earlier = [
+            o for o in self.runs if o.id != run_id and not o.status.active and same_session(o)
+        ]
+        return running_total(earlier, recorded)

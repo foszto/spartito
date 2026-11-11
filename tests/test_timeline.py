@@ -96,3 +96,21 @@ def test_agent_runs_without_meta_or_usage_rows() -> None:
     assert timeline.totals().cost_usd == 0.5
     assert timeline.context_now("s") is None
     assert timeline.compaction_left("s") is None
+
+
+def test_the_total_before_a_run_counts_the_ended_runs_of_its_session() -> None:
+    def run(n: int, status: RunStatus = RunStatus.DONE) -> Run:
+        return Run(id=n, agent_id="a", prompt="x", status=status)
+
+    runs = [run(1), run(2), run(3), run(4, RunStatus.RUNNING), run(5, RunStatus.WAITING)]
+    usage = {
+        1: Usage(input_tokens=1, session_id="old"),
+        2: Usage(input_tokens=10, session_id="s"),
+        3: Usage(input_tokens=100),  # no session recorded: counts
+        4: Usage(input_tokens=1000, session_id="s"),  # this run
+    }
+    timeline = AgentRuns("a", runs, {}, usage, set())
+
+    assert timeline.total_before(4, "s").input_tokens == 110
+    assert timeline.total_before(4, None).input_tokens == 111  # no session: all ended runs
+    assert timeline.total_before(3, "s").input_tokens == 10

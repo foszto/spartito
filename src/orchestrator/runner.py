@@ -36,14 +36,12 @@ from .models import (
     Run,
     RunStatus,
     Usage,
-    answers,
-    context_now,
-    running_total,
 )
 from .providers import McpServer, RunContext
 from .providers.base import NOTIFICATION_RESULT, Invocation
 from .store import Store, now
 from .textfmt import kilo, one_line
+from .timeline import AgentRuns
 
 POLL_SECONDS = 0.5
 RECONCILE_EVERY = 10  # polls
@@ -114,7 +112,7 @@ def render_prompt(store: Store, prompt: str) -> str:
 
     def substitute(match: re.Match[str]) -> str:
         agent_id = match.group(1)
-        runs = answers(store.runs_of(agent_id), store.compactions(agent_id))
+        runs = AgentRuns.read(store, agent_id).answers()
         done = [r for r in runs if r.status is RunStatus.DONE]
         if not done:
             return match.group(0)
@@ -162,8 +160,9 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
     kind = store.meta(run.id).kind
     compact = kind == COMPACT
     began = now()
-    recorded = store.usage_of(agent.id)
-    before = context_now(store.runs_of(agent.id), recorded, agent.session_id)
+    timeline = AgentRuns.read(store, agent.id)
+    recorded = timeline.usage
+    before = timeline.context_now(agent.session_id)
     if compact and getattr(provider, "compact_needs_size", False) and compact_limit(before) is None:
         # Checked when it was queued, but e.g. a compaction just before left it unknown.
         store.add_event(run.id, agent.id, "error", SIZE_UNKNOWN)
@@ -769,20 +768,7 @@ def record_usage(
         # (Claude's legacy session cost is known and subtracted, tokens are not), and the
         # tokens of a turn that failed or was stopped without a result land in the agent's
         # next run.
-        recorded = store.usage_of(agent.id)
-
-        def same_session(other: Run) -> bool:
-            other_session = recorded[other.id].session_id if other.id in recorded else None
-            return not session_id or other_session in (None, session_id)
-
-        # The runs that took their turn before this one: those that have ended (one run of
-        # an agent at a time; an automatic compaction runs ahead of lower ids).
-        earlier = [
-            o
-            for o in store.runs_of(agent.id)
-            if o.id != run.id and not o.status.active and same_session(o)
-        ]
-        usage = usage.since(running_total(earlier, recorded))
+        usage = usage.since(AgentRuns.read(store, agent.id).total_before(run.id, session_id))
     usage.model = model or usage.model
     usage.session_id = session_id
     for key in CONTEXT_FIELDS:
