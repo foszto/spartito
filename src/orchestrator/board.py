@@ -433,8 +433,7 @@ def dispatch(
     as one message with `send(lead_id, text)` (returns the run id). No such item: nothing
     is sent (run id None). If sending fails, the items are restored as they were.
     `states`: the states an item may be taken from (ready first, then by position); with
-    `ids`, (IDEA, READY) also takes the ideas named. The history follows the same steps:
-    the claim is recorded with it, the run once known, a restore as `restore`."""
+    `ids`, (IDEA, READY) also takes the ideas named."""
     with store.transaction() as conn:  # claimed at once: a second dispatch finds none
         marks = ", ".join("?" for _ in states)
         rows = conn.execute(
@@ -452,6 +451,8 @@ def dispatch(
                 " WHERE id = ?",
                 (IN_PROGRESS, start + offset, lead_id, stamp, item.id),
             )
+            # The history follows each step: the claim here, its run once known (link_run),
+            # a restore as `restore`.
             claimed = replace(item, state=IN_PROGRESS, agent_id=lead_id)
             changes = _diff(item, claimed, ("state", "agent_id"))
             record_gap(conn, item.id, item.updated_at)
