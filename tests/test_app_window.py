@@ -1157,6 +1157,28 @@ def test_a_taken_remembered_port_is_replaced(webview: FakeWebview):
     assert (config.runtime_dir() / window.PORT_FILE).read_text() == f"{port}\n"
 
 
+@pytest.mark.parametrize("family", [socket.AF_INET, socket.AF_INET6])
+def test_a_remembered_port_another_program_listens_on_everywhere_is_replaced(
+    webview: FakeWebview, family
+):
+    """A program on 0.0.0.0 or :: : binding 127.0.0.1 beside it would work on macOS
+    (SO_REUSEADDR) and take its loopback traffic; the port counts as taken."""
+    with socket.socket(family) as other:
+        other.bind(("0.0.0.0" if family == socket.AF_INET else "::", 0))
+        other.listen()
+        busy = other.getsockname()[1]
+        (config.runtime_dir() / window.PORT_FILE).write_text(f"{busy}\n")
+        assert window.listened_on(busy)
+        assert run_app().exit_code == 0
+    port = port_of(webview.windows[0].base)
+    assert port != busy
+    assert (config.runtime_dir() / window.PORT_FILE).read_text() == f"{port}\n"
+
+
+def test_a_free_port_is_not_listened_on():
+    assert not window.listened_on(free_port())
+
+
 @pytest.mark.parametrize("content", ["", "nonsense", "0", "70000"])
 def test_a_broken_remembered_port_is_ignored(webview: FakeWebview, content):
     (config.runtime_dir() / window.PORT_FILE).write_text(content)

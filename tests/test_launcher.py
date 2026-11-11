@@ -145,6 +145,39 @@ def test_script_runs_with_its_environment_and_arguments(tmp_path: Path):
     assert done.stdout.splitlines() == [HOME, str(written.executable), "['--decision', '5']"]
 
 
+BAD_NAMES = {"ORCH_FOO-BAR": "x", "ORCH_$(touch pwned)": "y", "ORCH_A B": "z", "1ORCH": "w"}
+
+
+def test_only_valid_variable_names_are_written(tmp_path: Path):
+    """A captured name that is no shell or `env` name is left out of the script and of the
+    desktop entry: it could break the script or run as code at every start."""
+    show = "import os; print(sorted(k for k in os.environ if k.startswith(('ORCH', '1'))))"
+    written = launcher.Launcher(
+        **{
+            **item("mac", tmp_path, argv=(sys.executable, "-c", show)).__dict__,
+            "env": {**ENV, **BAD_NAMES, "ORCH_OK_1": "v"},
+        }
+    )
+    script = launcher.render_script(written)
+    assert "export ORCH_OK_1=v\n" in script
+    assert not any(name in script for name in BAD_NAMES)
+    launcher.install(written)
+    done = subprocess.run(
+        [str(written.executable)],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={"PATH": os.environ["PATH"]},
+        check=True,
+    )
+    assert done.stdout.strip() == "['ORCH_HOME', 'ORCH_OK_1']"
+    assert not (tmp_path / "pwned").exists()
+    entry = launcher.render_desktop(launcher.Launcher(**{**written.__dict__, "kind": "linux"}))
+    (line,) = [x for x in entry.splitlines() if x.startswith("Exec=")]
+    assert "ORCH_OK_1=v" in unquote_exec(line.removeprefix("Exec="))
+    assert not any(name in line for name in BAD_NAMES)
+
+
 def test_desktop_entry_golden(tmp_path: Path):
     entry = launcher.render_desktop(item("linux", tmp_path))
     assert entry == (
@@ -374,3 +407,13 @@ def test_the_icon_is_package_data():
     assert Path(launcher.__file__).parent / "icon.icns" == launcher.ICNS
     assert launcher.ICNS.read_bytes()[:4] == b"icns"
     assert all(path.is_file() for path in launcher.LINUX_ICONS.values())
+
+
+def test_no_test_can_reach_a_real_window_or_browser():
+    """conftest's guard (this module adds no fixture of its own): no pywebview, no browser."""
+    from orchestrator.gui import window
+
+    with pytest.raises(ImportError):
+        import webview  # noqa: F401
+    assert window.find_chromium() is None
+    assert window.webbrowser.open("http://127.0.0.1:1/") is True  # opens nothing

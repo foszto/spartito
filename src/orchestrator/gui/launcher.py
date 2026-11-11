@@ -37,6 +37,7 @@ STATIC = GUI.parent / "web" / "static"
 LINUX_ICONS = {"192x192": STATIC / "icon-192.png", "512x512": STATIC / "icon-512.png"}
 WM_CLASS = config.PROJECT_NAME  # what the Qt window reports as its class (window.name_qt_app)
 ID_KEY = "X-Orchestrator-Id"  # the identifier in the desktop entry
+ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 NAME_RULE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}")
 LSREGISTER = Path(
     "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework"
@@ -148,10 +149,16 @@ def render_info_plist(item: Launcher) -> bytes:
     )
 
 
+def written_env(item: Launcher) -> dict[str, str]:
+    """The variables the launcher sets: only names a shell and `env` take as names
+    (ENV_NAME); another name could break the script or run as code, so it is left out."""
+    return {name: value for name, value in item.env.items() if ENV_NAME.fullmatch(name)}
+
+
 def render_script(item: Launcher) -> str:
     exports = "".join(
         f"export {name}={shlex.quote(value)}\n"
-        for name, value in {"CFProcessPath": str(item.executable), **item.env}.items()
+        for name, value in {"CFProcessPath": str(item.executable), **written_env(item)}.items()
     )
     command = " ".join(shlex.quote(arg) for arg in item.argv)
     return (
@@ -175,7 +182,7 @@ def exec_arg(arg: str) -> str:
 
 
 def render_desktop(item: Launcher) -> str:
-    env = [f"{name}={value}" for name, value in item.env.items()]
+    env = [f"{name}={value}" for name, value in written_env(item).items()]
     command = " ".join(exec_arg(arg) for arg in ("env", *env, *item.argv))
     return (
         "[Desktop Entry]\n"

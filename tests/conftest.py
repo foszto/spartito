@@ -205,3 +205,18 @@ def no_real_launcher(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pyte
     monkeypatch.setattr(launcher, "default_dir", lambda kind: apps / kind)
     monkeypatch.setattr(launcher, "unregister", lambda bundle: None)
     return apps
+
+
+@pytest.fixture(autouse=True)
+def no_real_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test can open a real window or browser (and so no WebKit data in ~/Library): no
+    pywebview (`import webview` fails; tests install a fake one), no Chromium-family browser
+    found, a default browser that opens nothing. Tests that need one install a fake."""
+    import sys
+
+    from orchestrator.gui import window
+
+    monkeypatch.setitem(sys.modules, "webview", None)
+    monkeypatch.setattr(window, "mac_app_dirs", lambda: [])
+    monkeypatch.setattr(window, "LINUX_BROWSERS", ())
+    monkeypatch.setattr(window.webbrowser, "open", lambda url: True)

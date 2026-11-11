@@ -65,6 +65,7 @@ ANSWER_TIMEOUT = 5.0  # seconds a second `orch app` waits for the open window's 
 WATCH_EVERY = 0.3  # seconds between two looks at the request file
 ACTIVE_WAIT = 1.0  # seconds for the native window to become the active one (macOS)
 PORT_FILE = "app-port"  # in config.runtime_dir(): the port of the last own server
+CONNECT_TIMEOUT = 0.5  # seconds for the look whether something listens on that port
 CHROMIUM_NAMES = "Chrome, Chromium, Edge or Brave"
 MAC_BROWSERS = ("Google Chrome", "Chromium", "Microsoft Edge", "Brave Browser")  # app bundles
 # Starts pywebview's GUI backend (argv[1]: the one to force, or "" for its own choice) and
@@ -661,13 +662,29 @@ def remembered_port() -> int:
     return port if 0 < port < 65536 else 0
 
 
+def listened_on(port: int) -> bool:
+    """Whether a program accepts connections on `port` of the loopback addresses (127.0.0.1
+    or ::1), also through a wildcard address. OwnServer's bind (SO_REUSEADDR, as uvicorn's)
+    would succeed beside a program listening on 0.0.0.0 or :: on macOS, and take its
+    loopback traffic."""
+    for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as probe:
+                probe.settimeout(CONNECT_TIMEOUT)
+                if probe.connect_ex((host, port)) == 0:
+                    return True
+        except OSError:  # no IPv6 here, and the like
+            continue
+    return False
+
+
 def own_server(port: int) -> OwnServer:
-    """The own server: on `port` when given; else on the remembered one when it is free, or
-    a free one, which is then remembered."""
+    """The own server: on `port` when given; else on the remembered one when nothing
+    listens there, or a free one, which is then remembered."""
     if port:
         return OwnServer(port)
     server = None
-    if remembered := remembered_port():
+    if (remembered := remembered_port()) and not listened_on(remembered):
         with contextlib.suppress(AppError):
             server = OwnServer(remembered)
     server = server or OwnServer(0)
