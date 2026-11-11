@@ -9,6 +9,7 @@ for the interactive `orch chat` session) and may act everywhere.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 import anyio
@@ -19,7 +20,7 @@ from .core.access import Caller
 from .core.delivery import delivery_floor as _delivery_floor  # noqa: F401 (old import path)
 from .core.delivery import wait_for_agents as _wait  # noqa: F401 (old import path)
 from .replies import clip, structured_page
-from .service import Orchestrator, OrchestratorError, result_file, run_usage
+from .service import ORCHESTRATOR_ID, Orchestrator, OrchestratorError, result_file, run_usage
 
 MAX_WAIT_SECONDS = 1800
 WAIT_SECONDS = 120  # default wait_for_agents timeout
@@ -545,7 +546,40 @@ def update_board_item(
     return _board_line(orch.update_board_item(item_id, changes, _actor(access)))
 
 
+# A tuple and no output schema: the shortest listing (every orchestrator turn pays for it).
+@server.tool(structured_output=False)
+def dispatch_board(project: str, items: tuple[int, ...] = ()) -> dict[str, Any]:
+    """Send board items to the project lead as one message; they become in_progress.
+    `items`: these ids (idea or ready); default: every ready item."""
+    orch = _orch()
+    access = Caller.from_env(orch)
+    if access.scoped():
+        raise OrchestratorError("only the top-level orchestrator dispatches board items")
+    actor = _actor(access)
+    if not items:
+        result = orch.dispatch_board(project, actor=actor)
+        sent = {"items": result["items"], "agent_id": result["agent_id"]}
+        run_id, skipped = result["run_id"], []
+    else:
+        result = orch.dispatch_items(list(items), project, actor)
+        sent = result["results"][0] if result["results"] else {"items": [], "agent_id": None}
+        run_id, skipped = sent.get("run_id"), result["skipped"]
+    reply: dict[str, Any] = {"sent": [item["id"] for item in sent["items"]]}
+    if skipped:
+        reply["skipped"] = {str(s["id"]): s["reason"] for s in skipped}
+    return {**reply, "lead": sent["agent_id"], "run_id": run_id}
+
+
+# Tools only the top-level orchestrator (and the interactive session) sees: every other
+# agent pays for each tool's description in every turn.
+ORCHESTRATOR_TOOLS = ("dispatch_board",)
+
+
 def main() -> None:
+    caller = os.environ.get("ORCH_AGENT_ID")
+    if caller and caller != ORCHESTRATOR_ID:
+        for name in ORCHESTRATOR_TOOLS:
+            server.remove_tool(name)
     server.run("stdio")
 
 

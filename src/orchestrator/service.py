@@ -262,6 +262,8 @@ class Orchestrator:
         items, lead, run_id = boards.to_lead(self, name, ids, actor or board.OWNER)
         return {"items": [item.to_dict() for item in items], "agent_id": lead.id, "run_id": run_id}
 
+    dispatch_items = boards.dispatch_items  # named items, any projects
+
     # -- settings (core/setup.py) ----------------------------------------
 
     settings = agent_setup.stored_settings

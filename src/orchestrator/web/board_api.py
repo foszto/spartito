@@ -73,4 +73,12 @@ def place_board_item(orch: Orchestrator, request: Request, body: dict) -> dict[s
 # -- dispatching named items -----------------------------------------------------------
 
 
+@route("/api/board/dispatch-items", post=True)
+def dispatch_items(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """`{ids}`: those items (idea or ready, in any project) to their project's lead, one
+    message per project: {results: [{project, agent_id, run_id, items}], skipped: [{id,
+    reason}]}."""
+    return orch.dispatch_items(body.get("ids"))
+
+
 # -- an item's history -----------------------------------------------------------------

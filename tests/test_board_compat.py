@@ -18,7 +18,10 @@ from orchestrator.service import ORCHESTRATOR_ID, Orchestrator
 # Measured on master before the batch: the JSON of every tool in the listing (name,
 # description, inputSchema, outputSchema), summed.
 MASTER_LISTING_CHARS = 15342
-ORCHESTRATOR_EXTRA_CHARS = 0  # what the orchestrator may see beyond a lead
+# What the orchestrator (and the interactive session) sees beyond a lead: dispatch_board,
+# 440 chars as listed, of which 377 are its description and input schema.
+ORCHESTRATOR_EXTRA_CHARS = 440
+ORCHESTRATOR_TEXT_CHARS = 380
 
 
 def seed(orch: Orchestrator, project: str) -> None:
@@ -97,6 +100,12 @@ def test_the_tool_listing_costs_a_lead_nothing_more(
     assert chars(seen) <= MASTER_LISTING_CHARS + extra
     if not extra:
         assert chars(seen) == MASTER_LISTING_CHARS
+        assert removed == list(mcp_server.ORCHESTRATOR_TOOLS)
+    else:
+        assert removed == []
+        only = [tool for tool in seen if tool["name"] in mcp_server.ORCHESTRATOR_TOOLS]
+        text = sum(len(t["description"]) + len(json.dumps(t["inputSchema"])) for t in only)
+        assert text <= ORCHESTRATOR_TEXT_CHARS and "outputSchema" not in only[0]
 
 
 def test_the_interactive_session_sees_what_the_orchestrator_sees(

@@ -363,15 +363,20 @@ def dispatch(
     send: Callable[[str, str], int],
     ids: list[int] | None = None,
     actor: Actor = OWNER,
+    states: tuple[str, ...] = (READY,),
 ) -> tuple[list[Item], int | None]:
     """Hand the project's `ready` items (with `ids`: only those of them, the ones the owner
     confirmed) to its lead: mark them `in_progress` and linked to `lead_id`, then send them
     as one message with `send(lead_id, text)` (returns the run id). No such item: nothing
-    is sent (run id None). If sending fails, the items are restored as they were."""
+    is sent (run id None). If sending fails, the items are restored as they were.
+    `states`: the states an item may be taken from (ready first, then by position); with
+    `ids`, (IDEA, READY) also takes the ideas named."""
     with store.transaction() as conn:  # claimed at once: a second dispatch finds none
+        marks = ", ".join("?" for _ in states)
         rows = conn.execute(
-            "SELECT * FROM board_items WHERE project = ? AND state = ? ORDER BY position, id",
-            (project, READY),
+            f"SELECT * FROM board_items WHERE project = ? AND state IN ({marks})"
+            " ORDER BY CASE state WHEN ? THEN 0 ELSE 1 END, position, id",
+            (project, *(check_state(state) for state in states), READY),
         ).fetchall()
         before = [Item.from_row(row) for row in rows]
         if ids is not None:

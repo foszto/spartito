@@ -805,14 +805,36 @@ def board_move(item_id: int, direction: Annotated[str, typer.Argument(help="up o
 
 
 @board_app.command("dispatch")
-def board_dispatch(project: Annotated[str, typer.Option("--project", "-p")]) -> None:
-    """Send the project's ready items to its lead as one message (they become in_progress)."""
+def board_dispatch(
+    ids: Annotated[
+        list[int] | None, typer.Argument(help="Item ids (idea or ready), in any project.")
+    ] = None,
+    project: ProjectOption = None,
+) -> None:
+    """Send board items to their project's lead, one message per project (they become
+    in_progress): the ids named, or with -p alone the project's ready items."""
+    if ids:
+        board_dispatch_items(ids, project)
+        return
+    if not project:
+        raise fail("name item ids or --project")
     result = board_fail(lambda: orch().dispatch_board(project))
     if not result["items"]:
         typer.echo(f"no ready items in {project}; nothing sent")
         return
     ids = ", ".join(f"#{item['id']}" for item in result["items"])
     typer.echo(f"{ids} -> {result['agent_id']}  run {result['run_id']}")
+
+
+def board_dispatch_items(ids: list[int], project: str | None) -> None:
+    result = board_fail(lambda: orch().dispatch_items(ids, project))
+    for sent in result["results"]:
+        names = ", ".join(f"#{item['id']}" for item in sent["items"])
+        typer.echo(f"{names} -> {sent['agent_id']}  run {sent['run_id']}")
+    for skipped in result["skipped"]:
+        typer.echo(f"#{skipped['id']} not sent: {skipped['reason']}")
+    if not result["results"]:
+        typer.echo("nothing sent")
 
 
 # -- agents -----------------------------------------------------------------
