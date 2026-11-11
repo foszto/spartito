@@ -16,6 +16,7 @@ import socket
 import subprocess
 import sys
 import threading
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -155,6 +156,13 @@ def test_the_unit_quotes_spaces_specifiers_and_variables():
     assert 'Environment="ORCH_PROVIDERS=x=50%%$y\\"z"\n' in unit
 
 
+def test_the_executable_doubles_percent_but_not_dollar():
+    """systemd expands variables in the arguments only: `$$` would stay in the path."""
+    svc = neutral_service(argv=["/opt/a$b/50% py/python3", "-m", "orchestrator", "--x", "a$b%c"])
+    unit = autostart.render_unit(svc)
+    assert 'ExecStart="/opt/a$b/50%% py/python3" -m orchestrator --x a$$b%%c\n' in unit
+
+
 def test_the_service_runs_this_interpreter_on_the_package():
     svc = autostart.service("127.0.0.1", 18787)
     assert svc.argv == [sys.executable, "-m", "orchestrator", "web"] + [
@@ -276,6 +284,12 @@ def test_a_failed_bootstrap_is_an_error(on, fake_system: FakeSystem):
     result = invoke("install")
     assert result.exit_code == 1
     assert "launchctl bootstrap" in result.output and "Bootstrap failed" in result.output
+    assert not plist_path().exists()  # nothing was installed before
+    fake_system.set("launchctl", "bootstrap", exit=0)
+    assert invoke("install", "--port", "18787").exit_code == 0
+    fake_system.set("launchctl", "bootstrap", exit=5, out="Bootstrap failed: 5: I/O error\n")
+    assert invoke("install", "--port", "18788").exit_code == 1
+    assert plistlib.loads(plist_path().read_bytes())["ProgramArguments"][-1] == "18788"
 
 
 def test_install_cuts_a_large_log_only(on):
@@ -399,6 +413,50 @@ def test_install_twice_on_linux_restarts_with_the_latest_options(on, fake_system
     assert "--port 18788\n" in unit_path().read_text()
 
 
+MANAGER_DOWN = "Failed to connect to bus: No medium found\n"
+
+
+def test_an_install_without_a_user_manager_leaves_no_unit(on, fake_system: FakeSystem):
+    on("linux")
+    fake_system.set("systemctl", "daemon-reload", exit=1, out=MANAGER_DOWN)
+    result = invoke("install")
+    assert result.exit_code == 1
+    assert result.output == (
+        "error: `systemctl --user daemon-reload` failed (1): "
+        "Failed to connect to bus: No medium found\n"
+    )
+    assert not unit_path().exists()
+    assert "(not installed)" in invoke("status").output
+
+
+def test_a_first_install_that_fails_to_start_is_disabled_and_removed(on, fake_system: FakeSystem):
+    on("linux")
+    fake_system.set("systemctl", "enable", exit=1, out="Job failed. See journalctl for details.\n")
+    result = invoke("install")
+    assert result.exit_code == 1
+    assert result.output == (
+        f"error: `systemctl --user enable --now {label()}.service` failed (1): "
+        "Job failed. See journalctl for details.\n"
+    )
+    name = f"{label()}.service"
+    assert fake_system.calls() == [
+        ["systemctl", "--user", "is-active", name],
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "enable", "--now", name],
+        ["systemctl", "--user", "disable", "--now", name],
+        ["systemctl", "--user", "daemon-reload"],
+    ]
+    assert not unit_path().exists()
+
+
+def test_a_failed_reinstall_keeps_the_unit_it_wrote(on, fake_system: FakeSystem):
+    on("linux")
+    assert invoke("install", "--port", "18787").exit_code == 0
+    fake_system.set("systemctl", "enable", exit=1, out="Failed to enable unit\n")
+    assert invoke("install", "--port", "18788").exit_code == 1
+    assert "--port 18788\n" in unit_path().read_text()
+
+
 def test_uninstall_on_linux_disables_and_removes_the_unit(on, fake_system: FakeSystem):
     on("linux")
     assert invoke("install").exit_code == 0
@@ -411,6 +469,56 @@ def test_uninstall_on_linux_disables_and_removes_the_unit(on, fake_system: FakeS
         ["systemctl", "--user", "daemon-reload"],
     ]
     assert not unit_path().exists()
+
+
+def test_uninstall_keeps_the_unit_of_a_service_that_stays_active(on, fake_system: FakeSystem):
+    on("linux")
+    assert invoke("install").exit_code == 0
+    fake_system.set("systemctl", "disable", exit=1, out="Failed to stop unit: Access denied\n")
+    fake_system.set("systemctl", "is-active", out="active\n")
+    fake_system.clear()
+    result = invoke("uninstall")
+    assert result.exit_code == 1
+    assert result.output == f"error: could not stop {label()}: Failed to stop unit: Access denied\n"
+    name = f"{label()}.service"
+    assert fake_system.calls() == [
+        ["systemctl", "--user", "disable", "--now", name],
+        ["systemctl", "--user", "is-active", name],
+    ]
+    assert unit_path().exists()
+
+
+def test_uninstall_removes_the_unit_of_a_service_that_is_not_active(on, fake_system: FakeSystem):
+    on("linux")
+    assert invoke("install").exit_code == 0
+    fake_system.set("systemctl", "disable", exit=1, out=MANAGER_DOWN)
+    fake_system.clear()
+    result = invoke("uninstall")
+    assert result.exit_code == 0
+    assert result.output == f"removed {label()}: {unit_path()}\n"
+    name = f"{label()}.service"
+    assert fake_system.calls() == [
+        ["systemctl", "--user", "disable", "--now", name],
+        ["systemctl", "--user", "is-active", name],
+        ["systemctl", "--user", "daemon-reload"],
+    ]
+    assert not unit_path().exists()
+
+
+def test_uninstall_without_a_user_manager_removes_the_unit_and_says_so(on, fake_system: FakeSystem):
+    on("linux")
+    assert invoke("install").exit_code == 0
+    for sub in ("disable", "is-active", "daemon-reload"):
+        fake_system.set("systemctl", sub, exit=1, out=MANAGER_DOWN)
+    result = invoke("uninstall")
+    assert result.exit_code == 0
+    assert result.output == (
+        "warning: the systemd user manager could not be reached"
+        " (`systemctl --user daemon-reload`: Failed to connect to bus: No medium found)\n"
+        f"removed {label()}: {unit_path()}\n"
+    )
+    assert not unit_path().exists()
+    assert invoke("uninstall").output == f"{label()} is not installed\n"
 
 
 def test_status_on_linux_reads_active_and_the_main_pid(on, fake_system: FakeSystem):
@@ -603,17 +711,27 @@ def real_systemd_analyze() -> str | None:
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="systemd only on Linux")
-def test_systemd_accepts_the_unit(tmp_path: Path):
+@pytest.mark.parametrize("folder", ["bin", "my py%x$y"])
+def test_systemd_accepts_the_unit(folder: str, tmp_path: Path):
+    """Also outside a login session (its own XDG_RUNTIME_DIR). verify checks that the
+    executable exists, so a link to this interpreter stands in a folder with ` `, `%`, `$`."""
     analyze = real_systemd_analyze()
     if not analyze:
         pytest.skip("no systemd-analyze")
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(mode=0o700)
+    interpreter = tmp_path / folder / "python3"
+    interpreter.parent.mkdir()
+    interpreter.symlink_to(sys.executable)
+    svc = autostart.service("127.0.0.1", 18787)
     unit = tmp_path / "local.spartito-check.web.service"
-    unit.write_text(autostart.render_unit(autostart.service("127.0.0.1", 18787)))
+    unit.write_text(autostart.render_unit(replace(svc, argv=[str(interpreter), *svc.argv[1:]])))
     result = subprocess.run(
         [analyze, "verify", "--user", "--man=no", "--recursive-errors=no", str(unit)],
         capture_output=True,
         text=True,
         check=False,
+        env={**os.environ, "XDG_RUNTIME_DIR": str(runtime)},
     )
     assert result.returncode == 0, result.stderr
 

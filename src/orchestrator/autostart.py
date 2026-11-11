@@ -167,10 +167,11 @@ def render_plist(svc: Service) -> bytes:
     )
 
 
-def systemd_quote(value: str, command: bool = False) -> str:
-    """One word for systemd: `%` is a specifier and, in a command line, `$` a variable."""
+def systemd_quote(value: str, argument: bool = False) -> str:
+    """One word for systemd: `%` is a specifier everywhere; `$` is a variable only in the
+    arguments of a command line, not in its executable (systemd.service, "Command lines")."""
     value = value.replace("%", "%%")
-    if command:
+    if argument:
         value = value.replace("$", "$$")
     if value and not any(c in value for c in " \t\n\"\\'"):
         return value
@@ -179,7 +180,10 @@ def systemd_quote(value: str, command: bool = False) -> str:
 
 
 def render_unit(svc: Service) -> str:
-    exec_start = " ".join(systemd_quote(arg, command=True) for arg in svc.argv)
+    executable, *arguments = svc.argv
+    exec_start = " ".join(
+        [systemd_quote(executable)] + [systemd_quote(arg, argument=True) for arg in arguments]
+    )
     env = "".join(
         f"Environment={systemd_quote(f'{name}={value}')}\n" for name, value in svc.env.items()
     )
@@ -276,9 +280,12 @@ def launchd_pid(label: str) -> tuple[bool, int | None]:
     return True, None
 
 
+def systemd_active(name: str) -> bool:
+    return run("systemctl", "--user", "is-active", name).returncode == 0
+
+
 def systemd_pid(label: str) -> tuple[bool, int | None]:
-    active = run("systemctl", "--user", "is-active", unit_name(label)).returncode == 0
-    if not active:
+    if not systemd_active(unit_name(label)):
         return False, None
     shown = run("systemctl", "--user", "show", "--property=MainPID", "--value", unit_name(label))
     pid = shown.stdout.strip()
@@ -305,22 +312,33 @@ def install(svc: Service, platform: str | None = None) -> Path:
     kind = platform_kind(platform)
     unit = unit_path(svc.label, kind)
     unit.parent.mkdir(parents=True, exist_ok=True)
-    if kind == "launchd":
-        if run("launchctl", "bootout", f"{domain()}/{svc.label}").returncode == 0:
-            deadline = time.monotonic() + BOOTOUT_WAIT  # bootout fails when not loaded
-            while launchd_pid(svc.label)[0] and time.monotonic() < deadline:
-                time.sleep(0.1)
-        svc.log.parent.mkdir(parents=True, exist_ok=True)
-        cut_log(svc.log)
-        unit.write_bytes(render_plist(svc))
-        checked("launchctl", "bootstrap", domain(), str(unit))
-    else:
-        was_active = run("systemctl", "--user", "is-active", unit_name(svc.label)).returncode == 0
-        unit.write_text(render_unit(svc))
-        checked("systemctl", "--user", "daemon-reload")
-        checked("systemctl", "--user", "enable", "--now", unit_name(svc.label))
-        if was_active:  # enable --now leaves a running service on its old command line
-            checked("systemctl", "--user", "restart", unit_name(svc.label))
+    existed = unit.exists()
+    try:
+        if kind == "launchd":
+            if run("launchctl", "bootout", f"{domain()}/{svc.label}").returncode == 0:
+                deadline = time.monotonic() + BOOTOUT_WAIT  # bootout fails when not loaded
+                while launchd_pid(svc.label)[0] and time.monotonic() < deadline:
+                    time.sleep(0.1)
+            svc.log.parent.mkdir(parents=True, exist_ok=True)
+            cut_log(svc.log)
+            unit.write_bytes(render_plist(svc))
+            checked("launchctl", "bootstrap", domain(), str(unit))
+        else:
+            name = unit_name(svc.label)
+            was_active = systemd_active(name)
+            unit.write_text(render_unit(svc))
+            checked("systemctl", "--user", "daemon-reload")
+            checked("systemctl", "--user", "enable", "--now", name)
+            if was_active:  # enable --now leaves a running service on its old command line
+                checked("systemctl", "--user", "restart", name)
+    except AutostartError:
+        if not existed and unit.exists():  # a failed first install leaves nothing behind
+            if kind == "systemd":  # enable may have linked and started it: best effort
+                run("systemctl", "--user", "disable", "--now", unit_name(svc.label))
+            unit.unlink()
+            if kind == "systemd":
+                run("systemctl", "--user", "daemon-reload")
+        raise
     return unit
 
 
@@ -335,14 +353,24 @@ def uninstall(label: str, platform: str | None = None) -> Path | None:
         if not loaded and launchd_pid(label)[0]:  # still loaded: keep its plist
             raise AutostartError(f"could not unload {label}: {message(bootout)}")
     else:
+        name = unit_name(label)
         loaded = unit.exists()
         if loaded:
-            run("systemctl", "--user", "disable", "--now", unit_name(label))
+            disable = run("systemctl", "--user", "disable", "--now", name)
+            if disable.returncode and systemd_active(name):  # still active: keep its unit
+                raise AutostartError(f"could not stop {label}: {message(disable)}")
     if not unit.exists():
         return unit if loaded else None
     unit.unlink()
     if kind == "systemd":
-        checked("systemctl", "--user", "daemon-reload")
+        reload = run("systemctl", "--user", "daemon-reload")
+        if reload.returncode:  # the unit is gone; the manager learns it at its next start
+            print(
+                "warning: the systemd user manager could not be reached"
+                f" (`systemctl --user daemon-reload`: {message(reload)})",
+                file=sys.stderr,
+                flush=True,
+            )
     return unit
 
 
