@@ -7,6 +7,7 @@ is passed in or patched, so both paths run on any host.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import plistlib
@@ -564,6 +565,33 @@ def test_status_reports_who_answers_on_the_units_port(on, server):
     foreign = server(200, b'{"tool": "else"}')
     assert invoke("install", "--port", str(foreign)).exit_code == 0
     assert "something else answers (not this tool)" in invoke("status").output
+
+
+def test_status_agrees_with_the_web_apps_own_ping(on, monkeypatch, tmp_path: Path):
+    """The dashboard's real /api/ping, run in-process: same home answers, another does not."""
+    from starlette.testclient import TestClient
+
+    from orchestrator.web.app import app
+
+    client = TestClient(app, base_url="http://localhost")
+    served = {"home": os.environ["ORCH_HOME"]}  # unresolved: both sides must resolve it
+
+    def urlopen(url: str, timeout: float) -> io.BytesIO:
+        assert url == "http://127.0.0.1:18787/api/ping"
+        with monkeypatch.context() as server_env:
+            server_env.setenv("ORCH_HOME", served["home"])
+            resp = client.get("/api/ping")
+        assert resp.status_code == 200
+        return io.BytesIO(resp.content)
+
+    monkeypatch.setattr(autostart.urllib.request, "urlopen", urlopen)
+    on("darwin")
+    assert invoke("install", "--port", "18787").exit_code == 0
+    assert "web UI:  http://127.0.0.1:18787: answers\n" in invoke("status").output
+    served["home"] = str(tmp_path / "elsewhere")
+    assert (
+        "something else answers (this tool, but for another ORCH_HOME)" in invoke("status").output
+    )
 
 
 # -- the real systemd, where there is one ----------------------------------------------------
