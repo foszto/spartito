@@ -3,6 +3,8 @@ name = "orchestrator"
 version = "0.1.0"
 description = "A small orchestrator for fleets of coding agents (Claude Code, Codex) in git worktrees"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.14"
 dependencies = [
     "mcp>=2.3.0",

@@ -404,3 +404,7 @@ uv run pytest                  # uses a fake provider and real git worktrees; no
 uv run ruff check . && uv run ruff format --check .
 node --check src/orchestrator/web/static/app.js
 ```
+
+## License
+
+MIT, see [LICENSE](LICENSE).
