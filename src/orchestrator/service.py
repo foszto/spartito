@@ -21,7 +21,7 @@ from .core.views import result_file as result_file  # old import path
 from .core.views import run_usage as run_usage  # old import path
 from .errors import NeedsConfirmation as NeedsConfirmation  # old import path
 from .errors import OrchestratorError
-from .models import Agent, Project
+from .models import Agent, Project, Run
 from .store import Store
 from .timeline import agent_state as agent_state  # old import path
 from .timeline import compaction_left as compaction_left  # old import path
@@ -29,7 +29,6 @@ from .timeline import compaction_left as compaction_left  # old import path
 # isort: split
 # Kept for old import paths: the service no longer uses these itself.
 from .core.dispatch import LEAD_ROLE as LEAD_ROLE
-from .models import Run as Run
 from .models import RunStatus as RunStatus
 from .models import Usage as Usage
 from .textfmt import kilo as kilo
@@ -118,7 +117,9 @@ class Orchestrator:
 
     # -- runner processes (core/launcher.py) ------------------------------
 
-    _launch = launcher._launch
+    def _launch(self, run: Run) -> None:
+        launcher.launch(self.store, run)
+
     stop = launcher.stop
     stop_runs = launcher.stop_runs
     _kill = staticmethod(launcher._kill)

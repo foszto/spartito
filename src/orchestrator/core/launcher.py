@@ -34,7 +34,9 @@ class Facade(Protocol):
 STOP_GRACE_SECONDS = 8
 
 
-def _launch(orch: Facade, run: Run) -> None:
+def launch(store: Store, run: Run) -> None:
+    """Start the run's runner process (Orchestrator._launch; core/lifecycle passes it on as
+    the `launch` of processes without the facade)."""
     log = open(config.logs_dir() / f"run-{run.id}.runner.log", "w")  # noqa: SIM115
     env = {**os.environ, "ORCH_HOME": str(config.home())}
     proc = subprocess.Popen(
@@ -46,7 +48,7 @@ def _launch(orch: Facade, run: Run) -> None:
         start_new_session=True,  # survives the caller; also makes a killable group
     )
     log.close()
-    orch.store.update_run(run.id, pid=proc.pid)
+    store.update_run(run.id, pid=proc.pid)
     # Reap the runner if this process outlives it, so a dead runner is not a zombie
     # that still looks alive to Store.reconcile().
     threading.Thread(target=proc.wait, daemon=True).start()
