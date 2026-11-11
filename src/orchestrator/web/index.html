@@ -4,6 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{project_name}}</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="icon" href="/static/icon-192.png" type="image/png" sizes="192x192">
+<link rel="apple-touch-icon" href="/static/icon-apple-180.png" sizes="180x180">
+<meta name="apple-mobile-web-app-title" content="{{project_name}}">
+<meta name="application-name" content="{{project_name}}">
+<meta name="theme-color" content="#f4f5f8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f1116" media="(prefers-color-scheme: dark)">
 <script>
   // Before first paint, so the page never flashes the wrong theme.
   (() => {
