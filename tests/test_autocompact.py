@@ -13,6 +13,7 @@ from typer.testing import CliRunner
 
 from orchestrator import cli, config, mcp_server, notify, runner, settings
 from orchestrator.core import compaction as core_compaction
+from orchestrator.core import launcher
 from orchestrator.core.compaction import LEAD_KEEP
 from orchestrator.models import Run, RunStatus, Usage
 from orchestrator.providers.codex import COMPACT_PROMPT
@@ -546,15 +547,15 @@ def test_a_stop_while_queueing_goes_through_and_leaves_no_compaction(
     orch.store.set_session(agent.id, "s")
     turn = done_turn(orch, agent.id, Usage(context_tokens=30_000, session_id="s"))
 
-    def stopped(self: Orchestrator, run: Run) -> None:
+    def stopped(store: Store, run: Run) -> None:
         raise runner.Stopped
 
-    monkeypatch.setattr(Orchestrator, "_launch", stopped)  # the stop arrives while launching
+    monkeypatch.setattr(launcher, "launch", stopped)  # the stop arrives while launching
     with pytest.raises(runner.Stopped):
         runner.queue_auto_compaction(orch.store, turn.id)
     assert compaction_runs(orch, agent.id) == []
 
-    monkeypatch.setattr(Orchestrator, "_launch", lambda self, run: None)
+    monkeypatch.setattr(launcher, "launch", lambda store, run: None)
     runner.queue_auto_compaction(orch.store, turn.id)  # queued; then the stop arrives
     (queued,) = compaction_runs(orch, agent.id)
     assert runner.auto_queued == [queued.id]
@@ -565,9 +566,9 @@ def test_a_stop_while_queueing_goes_through_and_leaves_no_compaction(
 def test_other_errors_while_queueing_never_fail_the_turn(
     orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def broken(self: Orchestrator, run_id: int) -> None:
+    def broken(store: Store, run_id: int, launch: object) -> None:
         raise RuntimeError("database is locked")
 
-    monkeypatch.setattr(Orchestrator, "auto_compact", broken)
+    monkeypatch.setattr(core_compaction, "auto_compact", broken)
     runner.queue_auto_compaction(orch.store, 1)  # no exception
     assert runner.auto_queued == []

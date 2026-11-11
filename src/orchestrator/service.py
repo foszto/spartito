@@ -4,13 +4,12 @@ Most methods are functions of the core modules bound here (see core/__init__.py)
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Any
 
-from . import board, decisions, desktop, git, notify, providers
+from . import board, decisions, desktop, git, providers
 from .core import archive as archiving
-from .core import compaction, dispatch, launcher, views
+from .core import compaction, dispatch, launcher, lifecycle, views
 from .core import setup as agent_setup
 from .core.dispatch import ORCHESTRATOR_ID as ORCHESTRATOR_ID  # old import path
 from .core.dispatch import slug as slug  # old import path
@@ -136,13 +135,9 @@ class Orchestrator:
 
     def run_ended(self, run_id: int, agent_id: str, recheck: bool = False) -> None:
         """Every path that ends a run calls this once it has ended (or was deleted): it
-        queues the notifications that are due (see notify.run_ended). Never raises: the
-        caller is ending a run and must not fail because of this."""
-        try:
-            notify.run_ended(self.store, run_id, agent_id, self._launch, recheck)
-        except Exception as exc:
-            print(f"notifying the parents of {agent_id} failed: {exc!r}", file=sys.stderr)
-        desktop.turn_ended(self.store, run_id, agent_id)  # never raises
+        queues the notifications that are due (see core/lifecycle.run_ended). Never raises:
+        the caller is ending a run and must not fail because of this."""
+        lifecycle.run_ended(self.store, run_id, agent_id, self._launch, recheck)
 
     # -- decisions (decisions.py) -----------------------------------------
 

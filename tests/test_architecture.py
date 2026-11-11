@@ -43,14 +43,15 @@ LAYERS = {
     "config": "infra",  # paths and environment
     "memory_guard": "infra",  # hook script used by the Claude provider
 }
-RANK = {"interfaces": 4, "core": 3, "runner": 2, "domain": 1, "infra": 0}
+# The runner is a process entry point that uses the core (core/lifecycle); the core starts it
+# by command line (core/launcher), never by import.
+RANK = {"interfaces": 4, "runner": 3, "core": 2, "domain": 1, "infra": 0}
 
 NO_TASK = "no plan task; revisit with tasks 6/12"
 # (importer, imported) -> (number of imports, where they are, why) for the imports that go
 # against the layering, form a cycle or reach the store from an interface today. More imports
 # than pinned, or a lazy one turned module level, fails; so does a count above the real one.
 IMPORT_EXCEPTIONS = {
-    ("runner", "service"): (2, "lazy", "follow-up turns (task 4: run-end pipeline)"),
     ("roles", "loadout"): (1, "module level", f"cycle with loadout -> roles; {NO_TASK}"),
     ("loadout", "roles"): (1, "lazy", f"cycle with roles -> loadout; {NO_TASK}"),
     ("mcp_server", "store"): (1, "module level", "ANYONE (task 5: close the facade)"),

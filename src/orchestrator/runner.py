@@ -4,7 +4,8 @@ The runner waits for the run's turn (dependencies, then the agent's turn order, 
 `Store.may_start`), prepares the workspace, launches the provider CLI and translates its
 output stream into events. Because every run has its own process there is no daemon to
 keep alive: whoever queued the run (CLI, MCP server) may exit immediately. When the run
-has ended, in whatever way, the runner checks whether a parent is due a notification.
+has ended, in whatever way, the runner goes through the end-of-run steps
+(core/lifecycle.run_ended), e.g. whether a parent is due a notification.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config, git, keep_awake, loadout, notify, providers, roles, settings
+from .core import lifecycle
 from .models import (
     COMPACT,
     CONTEXT_FIELDS,
@@ -778,10 +780,8 @@ def record_usage(
 
 
 def main(run_id: int) -> None:
-    from .service import Orchestrator  # the service launches runners; import it lazily
-
     store = Store()
-    orch = Orchestrator(store)
+    launch = lifecycle.attach(store)
     run = store.get_run(run_id)
     if run is None or not run.status.active:
         return
@@ -795,12 +795,7 @@ def main(run_id: int) -> None:
         # Whatever happened, the run is over: maybe a parent is now due a notification.
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         signal.signal(signal.SIGINT, signal.SIG_IGN)
-        if kind == COMPACT:
-            try:
-                orch.compaction_ended(run_id)
-            except Exception as exc:
-                print(f"checking the compaction's outcome failed: {exc!r}", file=sys.stderr)
-        orch.run_ended(run_id, run.agent_id)
+        lifecycle.run_ended(store, run_id, run.agent_id, launch, compacted=kind == COMPACT)
 
 
 def take_turn(store: Store, run: Run, kind: str) -> None:
@@ -852,12 +847,10 @@ auto_queued: list[int] = []  # the automatic compaction this runner's turn queue
 
 
 def queue_auto_compaction(store: Store, run_id: int) -> None:
-    """Orchestrator.auto_compact, which must never fail the turn whose end calls it; only a
-    stop goes through (take_turn then withdraws what was queued)."""
-    from .service import Orchestrator  # the service launches runners; import it lazily
-
+    """lifecycle.turn_done (the automatic compaction check), which must never fail the turn
+    whose end calls it; only a stop goes through (take_turn then withdraws what was queued)."""
     try:
-        queued = Orchestrator(store).auto_compact(run_id)
+        queued = lifecycle.turn_done(store, run_id, lifecycle.launch_for(store))
     except Stopped:
         raise
     except Exception as exc:

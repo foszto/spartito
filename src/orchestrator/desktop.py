@@ -4,7 +4,7 @@ Two occasions, each from the process where it happens:
 
 - a decision was recorded (decisions.record, in the requesting agent's MCP server);
 - an agent the owner messaged directly has finished (`turn_ended`, from
-  Orchestrator.run_ended: the runner whose turn ended, or a process whose reconcile ended
+  core/lifecycle.run_ended: the runner whose turn ended, or a process whose reconcile ended
   a run). Finished: a turn of the agent ended (it ran; a stopped turn does not count) and
   the agent and all its descendants are now settled (notify.settled), and its latest
   message run was queued by the user (run_meta.sender NULL; notification and compaction

@@ -277,7 +277,7 @@ class Store:
     # Called as on_run_end(run_id, agent_id, recheck) when reconcile ended a run (or
     # deleted a notification that never started: recheck, the agent may still be due one)
     # or found an ended run whose runner died before checking the parents. The
-    # Orchestrator sets it so parents get notified.
+    # Orchestrator (a runner: core/lifecycle.attach) sets it so parents get notified.
     on_run_end: Callable[[int, str, bool], None] | None = None
 
     def __init__(self, path: Path | None = None) -> None:
