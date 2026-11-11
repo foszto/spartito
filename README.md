@@ -38,8 +38,18 @@ The command is `orch`; the Python package is `orchestrator`.
 - macOS or Linux (see [Limitations and platform support](#limitations-and-platform-support)).
 - Python 3.14 and [uv](https://docs.astral.sh/uv/).
 - `git`.
-- The `claude` (Claude Code) and/or `codex` CLI, installed and logged in. `orch chat` needs
-  `claude`.
+- The `claude` (Claude Code) CLI, installed and logged in, and optionally the `codex` CLI.
+  The defaults use Claude Code: the orchestrator agent, `orch chat`, and every project
+  registered without `--provider` (so its lead and the agents started without `--provider`).
+  Both quick-start paths below therefore need `claude`.
+
+A Codex-only or mixed setup is configured per project and per agent:
+`orch project add --provider codex` makes Codex the project's default (its lead and its agents), and
+`orch spawn --provider claude|codex` chooses for one agent. The dashboard's orchestrator agent
+runs on Codex only if an `orchestrator` role override with `provider: codex` (see
+[Roles](#roles)) exists before it is first used, since its provider is fixed when it is
+created; `orch chat` always runs Claude Code. Details:
+[docs/configuration.md](docs/configuration.md#providers-and-permissions).
 
 ## Installation
 

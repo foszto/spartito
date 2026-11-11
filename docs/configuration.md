@@ -254,8 +254,12 @@ A role is a Markdown file: frontmatter, then the prompt. Lookup order, first hit
 2. `~/.orchestrator/roles/<name>.md`
 3. the packaged roles (`src/orchestrator/roles/`)
 
-A file with the name of a packaged role overrides it. `orch roles` lists what is available
-(and whether each role is a lead role and works in a worktree or the checkout).
+A file with the name of a packaged role overrides it completely: copy the packaged file and
+change it, rather than writing only the keys that differ. `orch roles` lists the packaged roles
+and those in `~/.orchestrator/roles/` (whether each is a lead role, and whether it works in a
+worktree or the checkout); it has no project option and does not list roles under
+`<project>/.orch/roles/`. Those are still used by `orch spawn -p <project> -r <name>` and are
+listed for agents by the MCP tool `list_roles(project)`.
 
 ### Frontmatter
 
@@ -297,6 +301,14 @@ The schema must be strict enough for both Claude's `--json-schema` and Codex's
 optional value expressed as nullable or as an empty list.
 
 ## Providers and permissions
+
+A new agent's provider is, first hit wins: `--provider` (or `provider` in `spawn_agent`, or
+the dashboard's form), the role's `provider`, the project's default (`orch project add
+--provider`, default `claude`). The orchestrator agent uses the `provider` of the
+`orchestrator` role (an override in `~/.orchestrator/roles/orchestrator.md`), otherwise
+`claude`; its provider is fixed when it is first created (by its first message, or by setting its model or
+effort). `orch chat` always
+runs Claude Code.
 
 Claude agents run with `--permission-mode auto`, Codex agents in the `workspace-write`
 sandbox. `orch spawn --permission <mode>` sets another mode for one agent.

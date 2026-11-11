@@ -242,7 +242,14 @@ that next turn (Codex). If that is still above the threshold, automatic compacti
 the agent: an `info` event (`automatic compaction paused: …`) is written once, and the
 `context.compact_paused` field, `orch status` and the dashboard show it. A compaction that
 brings the size below the threshold, or a threshold above the measured size, lifts the pause.
-While no size has been measured since the last compaction, nothing is queued. If `orch stop`
+While no size has been measured since the last compaction, nothing is queued.
+
+With Codex, automatic compaction works like a manual one: it is queued only when the context
+size is known, and runs the turn with the lowered limit. If the model does not compact during
+that turn, the compaction fails (`nothing was compacted`), the context stays above the
+threshold, and automatic compaction pauses for that agent as described above.
+
+If `orch stop`
 arrives while a compaction is being queued, the turn becomes `stopped` and the compaction is
 withdrawn.
 
