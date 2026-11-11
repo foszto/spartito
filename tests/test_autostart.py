@@ -16,6 +16,7 @@ import socket
 import subprocess
 import sys
 import threading
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -610,17 +611,27 @@ def real_systemd_analyze() -> str | None:
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="systemd only on Linux")
-def test_systemd_accepts_the_unit(tmp_path: Path):
+@pytest.mark.parametrize("folder", ["bin", "my py%x$y"])
+def test_systemd_accepts_the_unit(folder: str, tmp_path: Path):
+    """Also outside a login session (its own XDG_RUNTIME_DIR). verify checks that the
+    executable exists, so a link to this interpreter stands in a folder with ` `, `%`, `$`."""
     analyze = real_systemd_analyze()
     if not analyze:
         pytest.skip("no systemd-analyze")
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(mode=0o700)
+    interpreter = tmp_path / folder / "python3"
+    interpreter.parent.mkdir()
+    interpreter.symlink_to(sys.executable)
+    svc = autostart.service("127.0.0.1", 18787)
     unit = tmp_path / "local.spartito-check.web.service"
-    unit.write_text(autostart.render_unit(autostart.service("127.0.0.1", 18787)))
+    unit.write_text(autostart.render_unit(replace(svc, argv=[str(interpreter), *svc.argv[1:]])))
     result = subprocess.run(
         [analyze, "verify", "--user", "--man=no", "--recursive-errors=no", str(unit)],
         capture_output=True,
         text=True,
         check=False,
+        env={**os.environ, "XDG_RUNTIME_DIR": str(runtime)},
     )
     assert result.returncode == 0, result.stderr
 
