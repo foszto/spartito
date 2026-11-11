@@ -23,6 +23,10 @@ before a compaction, like Codex; FAKE_COMPACT_NOOP=1 adds `NOOP` to every compac
 runner passed it (prompt, slash_commands, output_schema, compact_below) to `ctx.json` in
 the run's scratch directory.
 
+`AWAKE` first waits (up to 10 s) until the fake sleep inhibitor of its runner (conftest.py)
+has logged its start, so the turn cannot end before the inhibitor is up: a new script may
+take longer to start than a short turn lasts.
+
 `STALE` first reports a result of its own for a background task (like Claude on resume
 after its previous process was ended with a background command running). `TWICE` reports
 a second result after the answer (like Claude when a background command ends), with the
@@ -89,6 +93,14 @@ else:
     prompt = sys.stdin.read()
 print(json.dumps({"session": "fake-session", "model": "fake-model-1"}), flush=True)
 words = prompt.split()
+if "AWAKE" in words:  # this runner's inhibitor: "<pid> start <name> <mark> ... <runner pid>"
+    inhibit_log = pathlib.Path(os.environ["FAKE_INHIBIT_LOG"])
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not any(
+        line.split()[1] == "start" and line.split()[-1] == str(os.getppid())
+        for line in (inhibit_log.read_text().splitlines() if inhibit_log.exists() else [])
+    ):
+        time.sleep(0.01)
 usage = None
 for flag, value in zip(words, words[1:]):
     if flag == "SLEEP":

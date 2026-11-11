@@ -26,15 +26,17 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 # do. Notes in $FAKE_INHIBIT_LOG "<pid> start <name> <ORCH_TURN or unmarked> <args>", then
 # "<pid> end" when the runner was gone, or "<pid> TERM stored|early" when it was ended:
 # whether a run's result file existed by then. FAKE_INHIBIT_EXIT=<code>: exits at once
-# (no lock to be had); FAKE_INHIBIT_STUBBORN=1: ignores SIGTERM.
+# (no lock to be had); FAKE_INHIBIT_STUBBORN=1: ignores SIGTERM. Its traps are set before it
+# notes its start: a SIGTERM before that (a release before the script ran) ends it unlogged,
+# which the prompt word AWAKE of the fake provider rules out.
 FAKE_INHIBITOR = r"""#!/bin/sh
 log() { [ -n "$FAKE_INHIBIT_LOG" ] && echo "$$ $1" >> "$FAKE_INHIBIT_LOG"; }
-log "start $(basename "$0") ${ORCH_TURN:-unmarked} $*"
-[ -n "$FAKE_INHIBIT_EXIT" ] && exit "$FAKE_INHIBIT_EXIT"
-eval "runner=\${$#}"
 stored() { ls "$ORCH_HOME"/logs/run-*/result.md >/dev/null 2>&1 && echo stored || echo early; }
 trap 'log "TERM $(stored)"; exit 0' TERM
 [ -n "$FAKE_INHIBIT_STUBBORN" ] && trap '' TERM
+log "start $(basename "$0") ${ORCH_TURN:-unmarked} $*"
+[ -n "$FAKE_INHIBIT_EXIT" ] && exit "$FAKE_INHIBIT_EXIT"
+eval "runner=\${$#}"
 while kill -0 "$runner" 2>/dev/null; do sleep 0.1; done
 log end
 """

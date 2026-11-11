@@ -1,5 +1,6 @@
 """While a turn executes the machine is kept from sleeping on idle (keep_awake.py); the
-fake caffeinate / systemd-inhibit of conftest.py stand in for the real ones."""
+fake caffeinate / systemd-inhibit of conftest.py stand in for the real ones. A turn whose
+inhibitor the log must show waits for it (the fake provider's AWAKE)."""
 
 from __future__ import annotations
 
@@ -95,8 +96,8 @@ def test_the_linux_lock_is_held_by_a_loop_that_ends_with_the_runner() -> None:
 def test_a_turn_holds_one_inhibitor_tied_to_its_runner_and_a_queued_turn_none(
     orch: Orchestrator, project: str, fake_inhibitors: Path
 ) -> None:
-    agent, first = orch.spawn(project, "SLEEP 2", worktree=False)
-    second = orch.send(agent.id, "SLEEP 0.5")
+    agent, first = orch.spawn(project, "AWAKE SLEEP 2", worktree=False)
+    second = orch.send(agent.id, "AWAKE SLEEP 0.5")
     wait_for(lambda: started(fake_inhibitors))
 
     # The first turn's: unmarked, waiting for its runner; the queued one holds nothing.
@@ -115,7 +116,7 @@ def test_a_turn_holds_one_inhibitor_tied_to_its_runner_and_a_queued_turn_none(
     assert ends(fake_inhibitors, str(pids[0])) == ["TERM stored"]  # released, not left
 
 
-@pytest.mark.parametrize("prompt", ["SLEEP 0.5", "SLEEP 0.5 FAIL"])
+@pytest.mark.parametrize("prompt", ["AWAKE SLEEP 0.5", "AWAKE SLEEP 0.5 FAIL"])
 def test_released_when_the_run_is_stored_done_or_failed(
     orch: Orchestrator, project: str, fake_inhibitors: Path, prompt: str
 ) -> None:
@@ -133,7 +134,7 @@ def test_a_lead_turn_keeps_it_until_the_run_is_stored(
 ) -> None:
     """The end of a lead's turn clears the runner's session and marked processes: not this."""
     lead = orch.lead(project)
-    orch.send(lead.id, "LINGER 30")
+    orch.send(lead.id, "AWAKE LINGER 30")
 
     assert turn(orch, lead.id).status is RunStatus.DONE
     ((pid, *_),) = started(fake_inhibitors)
@@ -159,7 +160,7 @@ def test_a_relaunch_without_memory_keeps_the_one_inhibitor(
     monkeypatch.setenv("ORCH_CANARY_SECONDS", "1")
     monkeypatch.setenv("FAKE_HOOKS", "off")
     lead = orch.lead(project)
-    orch.send(lead.id, "LOADOUT")
+    orch.send(lead.id, "AWAKE LOADOUT")
 
     assert turn(orch, lead.id).result == "plain"
     assert launches(lead.cwd) == ["memory", "plain"]
@@ -205,9 +206,9 @@ def test_an_inhibitor_that_exits_at_once_is_noted_once_and_the_turns_go_on(
 ) -> None:
     """systemd-inhibit without logind, or with the lock refused."""
     monkeypatch.setenv("FAKE_INHIBIT_EXIT", "1")
-    agent, _ = orch.spawn(project, "SLEEP 0.5", worktree=False)
+    agent, _ = orch.spawn(project, "AWAKE SLEEP 0.5", worktree=False)
     assert turn(orch, agent.id).status is RunStatus.DONE
-    orch.send(agent.id, "SLEEP 0.5")
+    orch.send(agent.id, "AWAKE SLEEP 0.5")
     assert turn(orch, agent.id).status is RunStatus.DONE
 
     assert len(started(fake_inhibitors)) == 2
@@ -230,7 +231,7 @@ def test_an_inhibitor_ignoring_sigterm_is_killed_at_release(
     orch: Orchestrator, project: str, fake_inhibitors: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("FAKE_INHIBIT_STUBBORN", "1")
-    agent, _ = orch.spawn(project, "SLEEP 0.5", worktree=False)
+    agent, _ = orch.spawn(project, "AWAKE SLEEP 0.5", worktree=False)
 
     assert turn(orch, agent.id).status is RunStatus.DONE
     ((pid, *_),) = started(fake_inhibitors)
