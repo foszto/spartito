@@ -49,6 +49,14 @@ def route(path: str, post: bool = False) -> Any:
 # -- the board across projects ---------------------------------------------------------
 
 
+@route("/api/board/view")
+def board_view(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """`?project=` one project's items (default: every registered project's); `&state=` one
+    state's: {projects, synced_at, items}."""
+    query = request.query_params
+    return orch.board_view(query.get("project") or None, query.get("state") or None)
+
+
 # -- placing an item -------------------------------------------------------------------
 
 

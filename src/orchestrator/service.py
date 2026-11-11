@@ -200,6 +200,8 @@ class Orchestrator:
         known = {p.name for p in self.store.list_projects()}
         return [item for item in items if item.project in known]
 
+    board_view = boards.board_view  # every project's board at once (core/boards.py)
+
     def board_item(self, item_id: int) -> board.Item:
         try:
             return board.get(self.store, item_id)

@@ -59,6 +59,21 @@ def to_lead(
 # -- the board across projects ---------------------------------------------------------
 
 
+def board_view(
+    orch: Facade, project: str | None = None, state: str | None = None
+) -> dict[str, Any]:
+    """The board of every registered project (`project`: of that one; `state`: that state
+    only) as {projects: every registered project's name, synced_at: when the live state was
+    last refreshed (None: not yet), items: the items in board_items' order}. Later parts may
+    add keys to an item (live state, blockers, source); readers treat each as optional."""
+    items = orch.board_items(project, state)
+    return {
+        "projects": [p.name for p in orch.store.list_projects()],
+        "synced_at": None,
+        "items": [item.to_dict() for item in items],
+    }
+
+
 # -- placing an item -------------------------------------------------------------------
 
 
