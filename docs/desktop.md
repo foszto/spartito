@@ -26,7 +26,8 @@ uv sync --extra app --extra menubar            # in a checkout, for `uv run orch
 ```
 
 Without the extra, `orch app` falls back to a browser (see [Own window](#own-window)). On
-Linux the extra installs Qt and PyQt6, which are GPL-3 software (see
+Linux the extra installs PyQt6 and PyQt6-WebEngine, which are GPL-3.0-only, and the Qt
+libraries they bring, which are LGPL-3.0 (see
 [Optional dependencies](#optional-dependencies)). On Linux the extra `menubar` installs
 nothing.
 
@@ -335,8 +336,9 @@ packages is part of this repository.
 | Linux | PyQt6-Qt6, PyQt6-WebEngine-Qt6 (the Qt libraries) | LGPL-3.0 |
 | Linux | PyQt6-sip | BSD-2-Clause |
 
-**Installing the extra on Linux brings GPL-3 software onto the machine** (PyQt6 and
-PyQt6-WebEngine), about 200 MB with Qt. On macOS no Qt package is installed.
+**Installing the extra on Linux brings GPL-3.0-only software onto the machine** (PyQt6 and
+PyQt6-WebEngine), together with the Qt libraries under LGPL-3.0, about 200 MB in all. On
+macOS no Qt package is installed.
 
 The extra `menubar` installs pyobjc-framework-Cocoa (with pyobjc-core), MIT, on macOS only; on
 other platforms it installs nothing.
