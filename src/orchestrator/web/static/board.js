@@ -231,6 +231,172 @@
     return `#${id} → ${LABEL[item.state]}, ${row.findIndex(other => other.id === id) + 1} of ${row.length}`;
   }
 
+  // -- moving items: drag and drop, Alt+arrows, the "⋯" menu ------------------------------
+  // A drop sends `place {state, before}`; Alt+Up/Down the existing `move`; Alt+Left/Right a
+  // place at the end of the previous or next state. Reordering is within the item's project:
+  // in the all-projects view another project's group is no target.
+
+  async function moved(item, request) {
+    ui.focus = item.id;
+    try { await request(); }
+    catch (error) { ui.focus = null; toast(error.message, true); return; }
+    ui.pending = true;
+    await load();
+    announce(placeText(item.id));
+  }
+  const place = (item, state, before) => moved(item, () => call(`/api/board/${item.id}/place`, { state, before }));
+  const shift = (item, direction) => moved(item, () => call(`/api/board/${item.id}/move`, { direction }));
+  // The moves an item has now: [label, action] with disabled ones for the ends.
+  function moves(item) {
+    const row = siblings(item.project, item.state), at = row.findIndex(other => other.id === item.id);
+    const list = [['Move up', () => shift(item, 'up'), at <= 0], ['Move down', () => shift(item, 'down'), at === row.length - 1]];
+    for (const [state, label] of STATES) if (state !== item.state) list.push([`Move to ${label}`, () => place(item, state, null)]);
+    return list;
+  }
+
+  function stepKeys(event, node, item) {
+    if (event.target !== node || !event.altKey || event.ctrlKey || event.metaKey) return;
+    const step = { ArrowUp: -1, ArrowDown: 1, ArrowLeft: -1, ArrowRight: 1 }[event.key];
+    if (!step) return;
+    event.preventDefault();
+    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      const row = siblings(item.project, item.state), at = row.findIndex(other => other.id === item.id);
+      if (row[at + step]) shift(item, step < 0 ? 'up' : 'down');
+      else announce(`#${item.id} is already ${step < 0 ? 'first' : 'last'} in ${LABEL[item.state]}`);
+      return;
+    }
+    const state = ORDER[ORDER.indexOf(item.state) + step];
+    if (state) place(item, state, null);
+    else announce(`#${item.id} is already in ${LABEL[item.state]}`);
+  }
+
+  function menu(anchor, item) {
+    closeMenu();
+    const box = el('div', 'bv-menu');
+    box.setAttribute('role', 'menu'); box.setAttribute('aria-label', `#${item.id}`);
+    const entries = [...moves(item), ...hooks.menu.flatMap(extend => extend(item)), ['Open details', () => open(item)]];
+    for (const [label, action, disabled] of entries) {
+      const entry = el('button', 'bv-menu-item', label);
+      entry.type = 'button'; entry.setAttribute('role', 'menuitem'); entry.disabled = Boolean(disabled);
+      entry.onclick = () => { closeMenu(false); action(); };
+      box.append(entry);
+    }
+    box.onkeydown = event => {
+      const enabled = [...box.querySelectorAll('button:not(:disabled)')], at = enabled.indexOf(document.activeElement);
+      if (event.key === 'Escape') { event.preventDefault(); closeMenu(); }
+      else if (event.key === 'Tab') closeMenu(false);
+      else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        enabled[(at + (event.key === 'ArrowDown' ? 1 : enabled.length - 1)) % enabled.length].focus();
+      }
+    };
+    ui.menu = { box, anchor };
+    hold('menu');
+    document.body.append(box);
+    const spot = anchor.getBoundingClientRect(), size = box.getBoundingClientRect();
+    const below = spot.bottom + 4 + size.height <= innerHeight;
+    box.style.top = `${Math.max(4, below ? spot.bottom + 4 : spot.top - 4 - size.height)}px`;
+    box.style.left = `${Math.max(4, Math.min(spot.right - size.width, innerWidth - size.width - 4))}px`;
+    anchor.setAttribute('aria-expanded', 'true');
+    box.querySelector('button:not(:disabled)').focus();
+  }
+  // `refocus`: back to the "⋯" it came from (Escape); not when an entry acts or focus moved on.
+  function closeMenu(refocus = true) {
+    const shown = ui.menu;
+    if (!shown) return;
+    ui.menu = null;
+    shown.box.remove();
+    shown.anchor.setAttribute('aria-expanded', 'false');
+    if (refocus && shown.anchor.isConnected) shown.anchor.focus();
+    release('menu');
+  }
+  document.addEventListener('mousedown', event => {
+    if (ui.menu && !ui.menu.box.contains(event.target) && event.target !== ui.menu.anchor) closeMenu(false);
+  }, true);
+  window.addEventListener('resize', () => closeMenu(false));
+  window.addEventListener('hashchange', () => closeMenu(false));
+
+  // Where a drag over `column` would drop: {state, before, own: the group it goes into,
+  // refused: another project's group}. Before the first card of its group whose middle is
+  // below the pointer; at the end of the group without one (or outside every group).
+  function dropAt(event, column) {
+    const drag = ui.drag, state = column.dataset.state, over = event.target.closest('.bv-group');
+    if (over && over.dataset.project !== drag.project) return { state, refused: over };
+    const own = over || [...column.querySelectorAll('.bv-group')].find(group => group.dataset.project === drag.project);
+    let before = null;
+    if (over) {
+      for (const node of over.querySelectorAll('.bv-card')) {
+        if (Number(node.dataset.id) === drag.id) continue;
+        const box = node.getBoundingClientRect();
+        if (event.clientY < box.top + box.height / 2) { before = Number(node.dataset.id); break; }
+      }
+    }
+    return { state, before, own: own || null };
+  }
+
+  function mark(column, target) {
+    unmark();
+    if (target.refused) { target.refused.classList.add('bv-refused'); return; }
+    column.classList.add('bv-over');
+    const line = el('div', 'bv-marker');
+    const at = target.before === null ? null : column.querySelector(`.bv-card[data-id="${target.before}"]`);
+    if (at) at.before(line);
+    else if (target.own) target.own.append(line);
+    else column.querySelector('.bv-list').append(line);
+  }
+  function unmark() {
+    if (!ui.root) return;
+    for (const node of ui.root.querySelectorAll('.bv-marker')) node.remove();
+    for (const node of ui.root.querySelectorAll('.bv-over, .bv-refused')) node.classList.remove('bv-over', 'bv-refused');
+  }
+
+  function draggable(node, item) {
+    node.draggable = true;
+    node.addEventListener('dragstart', event => {
+      closeMenu(false);
+      ui.drag = { id: item.id, project: item.project };
+      hold('drag');
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', `#${item.id} ${item.title}`);
+      node.classList.add('bv-dragged');
+    });
+    node.addEventListener('dragend', () => {
+      node.classList.remove('bv-dragged');
+      unmark();
+      ui.drag = null;
+      release('drag');
+    });
+  }
+
+  function droppable(column) {
+    column.addEventListener('dragover', event => {
+      if (!ui.drag) return;
+      const target = dropAt(event, column);
+      mark(column, target);
+      if (target.refused) { event.dataTransfer.dropEffect = 'none'; return; }
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+    });
+    column.addEventListener('dragleave', event => { if (!column.contains(event.relatedTarget)) unmark(); });
+    column.addEventListener('drop', event => {
+      if (!ui.drag) return;
+      event.preventDefault();
+      const target = dropAt(event, column), item = find(ui.drag.id);
+      unmark();
+      if (!target.refused && item) place(item, target.state, target.before);
+    });
+  }
+
+  hooks.head.push(root => { for (const column of root.querySelectorAll('.bv-col')) droppable(column); });
+  hooks.card.push((node, item) => {
+    draggable(node, item);
+    const more = button('ghost icon bv-more-button', '', '⋯', event => { event.stopPropagation(); menu(more, item); }, `Move #${item.id}…`);
+    more.dataset.part = 'menu';
+    more.setAttribute('aria-haspopup', 'menu'); more.setAttribute('aria-expanded', 'false');
+    node.querySelector('.bv-card-head').append(more);
+    node.addEventListener('keydown', event => stepKeys(event, node, item));
+  });
+
   // -- the item dialog: a new item, or one item's detail ---------------------------------
 
   const open = item => select(route(ui.project, item.id));

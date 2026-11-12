@@ -44,6 +44,20 @@ button.chip { border: 0; font: inherit; font-size: 12px; cursor: pointer; }
 .bv-agent { color: var(--accent); }
 .bv-agent:hover { background: var(--accent-soft); }
 
+/* moving: the "⋯" menu, and the drop marker of a drag */
+.bv-more-button { margin-left: auto; width: 24px; height: 22px; font-size: 15px; line-height: 1; letter-spacing: 0; }
+.bv-menu { position: fixed; z-index: 20; min-width: 180px; padding: 4px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--surface); box-shadow: var(--shadow); display: flex; flex-direction: column; }
+.bv-menu-item { padding: 6px 10px; border: 0; border-radius: 7px; background: none; text-align: left; white-space: nowrap; }
+.bv-menu-item:hover:not(:disabled), .bv-menu-item:focus { background: var(--accent-soft); outline: none; }
+.bv-menu-item:disabled { color: var(--faint); cursor: default; }
+.bv-menu-item:last-child { margin-top: 3px; padding-top: 7px; border-top: 1px solid var(--line); border-radius: 0 0 7px 7px; }
+.bv-card.bv-dragged { opacity: .45; }
+.bv-col.bv-over { border-color: var(--accent); }
+.bv-marker { height: 3px; margin: -2px 2px; border-radius: 2px; background: var(--accent); flex: none; }
+.bv-group.bv-refused { outline: 2px dashed var(--failed); outline-offset: 2px; }
+.bv-group.bv-refused::after { content: "not allowed: an item stays in its own project"; color: var(--failed); font-size: 12px; padding: 0 2px 4px; }
+
 /* the item dialog */
 .bv-dialog { width: min(680px, calc(100vw - 32px)); }
 .bv-stamp { margin: -4px 0 10px; color: var(--muted); font-size: 12.5px; }
