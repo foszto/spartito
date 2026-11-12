@@ -9,6 +9,7 @@ of the board (items, states, dispatch of a project's `ready` items) are in
 - [The view](#the-view)
 - [Automatic move to done](#automatic-move-to-done)
 - [Command line, MCP and API](#command-line-mcp-and-api)
+- [Known limitations](#known-limitations)
 - [Checklist for the owner](#checklist-for-the-owner)
 
 ## The view
@@ -69,7 +70,7 @@ detail lists the decisions (each opens in the decisions dialog), unlinks a linke
 links another open decision: the project's or the orchestrator's (a decision of another
 project cannot be linked).
 
-**History.** The detail lists every change of the item, oldest first: when, by whom (you, an
+**History.** The detail lists every change of the item, newest first: when, by whom (you, an
 agent, or the automatic merge rule) and what (added, edited, state, moved, placed, dispatched,
 linked, unlinked a decision, restored). A change made by older code that keeps no history shows as a
 gap ("not recorded"). The runs the history names (a dispatch, an agent's turn) are listed
@@ -123,27 +124,59 @@ HTTP API (the dashboard's; writes need the page's own origin and a JSON body):
 `board_sources` and `board_blockers`. They are additive: older code keeps working on the same
 database and does not know them (a change it makes shows as a gap in the history).
 
+## Known limitations
+
+- While an item's detail is open, a change of its live state or blockers rebuilds the lower
+  part of the dialog: keyboard focus there and a chosen Link option are lost (a typed title
+  and the other fields are kept).
+- A board route naming an unknown project repeats a failing request every 2 seconds.
+- Changing the project filter drops the selected items of other projects.
+
 ## Checklist for the owner
 
 Manual checks in a visible browser. They use the code of the checkout under test, a temporary
-home and port 18788, so your real home and a live dashboard are not involved.
+home and port 18788, so your real home (`~/.orchestrator`) and a live dashboard (port 8787)
+are not involved.
+
+**Shell A**, in the checkout of the branch under test:
 
 ```sh
 uv sync --extra app
-check="$(mktemp -d)"; export ORCH_HOME="$check/home" PORT=18788
-alias orch_test="$PWD/.venv/bin/orch"
+check="$(mktemp -d)"
+cat > "$check/env.sh" <<EOF
+export CHECK_DIR="$check"
+export ORCH_HOME="$check/home"
+export PORT=18788
+export ORCH_BIN="$PWD/.venv/bin/orch"
+orch_test() { "\$ORCH_BIN" "\$@"; }
+EOF
+. "$check/env.sh"
+echo ". '$check/env.sh'"    # copy this line
+```
+
+**Shell B**: open a second terminal and paste the line printed above; it loads the same
+environment. Every command below calls `orch_test` (the checkout's `orch`), never a bare
+`orch`. **Guard**, before each step in either shell: `echo "$ORCH_HOME $PORT"` prints
+`<temporary directory>/home 18788`; if it prints nothing or `~/.orchestrator`, load the
+environment first.
+
+Two projects and three items (**shell B**), then the dashboard (**shell A**, left running):
+
+```sh
 for p in alpha beta; do
-  git init -q -b main "$check/$p" && git -C "$check/$p" commit -q --allow-empty -m init
-  orch_test project add "$check/$p" --name "$p"
+  git init -q -b main "$CHECK_DIR/$p" && git -C "$CHECK_DIR/$p" commit -q --allow-empty -m init
+  orch_test project add "$CHECK_DIR/$p" --name "$p"
 done
 orch_test board add -p alpha "First task" --state ready
 orch_test board add -p alpha "Second task" --state idea
 orch_test board add -p beta "Third task" --state ready
-orch_test web --port "$PORT"            # leave running; open http://127.0.0.1:18788/#board:
 ```
 
-In a second terminal, before anything, `export ORCH_HOME=<the same temporary home>`. A guard:
-`echo "$ORCH_HOME"` prints the temporary directory, never `~/.orchestrator`.
+```sh
+orch_test web --port "$PORT"            # shell A; open http://127.0.0.1:18788/#board:
+```
+
+The numbered steps run in **shell B** unless they name shell A.
 
 1. **Board** in the left column opens `#board:` with both projects grouped in each column;
    the filter shows one project and back.
@@ -157,11 +190,14 @@ In a second terminal, before anything, `export ORCH_HOME=<the same temporary hom
    both items are `in_progress` and linked to their leads (needs a provider; one short turn each).
 6. With one project selected in the filter, the other project's selected item leaves the
    selection.
-7. A real merge: `git -C "$check/alpha" switch -c feat/x`, commit a file, `switch main`;
+7. A real merge: `git -C "$CHECK_DIR/alpha" switch -c feat/x`, commit a file
+   (`echo x > "$CHECK_DIR/alpha/x.txt"; git -C "$CHECK_DIR/alpha" add x.txt;
+   git -C "$CHECK_DIR/alpha" commit -m x`), `git -C "$CHECK_DIR/alpha" switch main`;
    `orch_test board edit <id> --branch feat/x` on a `ready` item; after a minute the card shows
-   `↑1`; `git -C "$check/alpha" merge --no-ff feat/x`; after another minute the item is in
-   **Done** and its history names `merged` and the commit.
-8. An item whose branch does not exist shows `no branch`, on the card and in the detail.
+   `↑1`; `git -C "$CHECK_DIR/alpha" merge --no-ff -m "merge feat/x" feat/x`; after another
+   minute the item is in **Done** and its history names `merged` and the commit.
+8. `orch_test board edit <id> --branch feat/none` on a `ready` item: after a minute it shows
+   `no branch`, on the card and in the detail (`orch_test board --live` says the same).
 9. Send any message to a lead; **Add to board** on a message opens the form; after **Add** the
    focus is on **On the board: #id**; reload the conversation and click **Add to board** on the
    same message again: no second item, the link is shown.
@@ -170,6 +206,7 @@ In a second terminal, before anything, `export ORCH_HOME=<the same temporary hom
     see it under **Blocked by** and as the card's badge; unlink it; link and answer it: it goes.
 12. Switch the theme (moon button): cards, chips, menu and detail are readable in both.
 13. A narrow window (about 400 px wide): one column, nothing overlaps, cards still open.
-14. `orch_test app --port "$PORT"` (stop `orch web` first): the board works the same in the
-    window.
-15. Done: stop the servers, `rm -rf "$check"`.
+14. Shell A: stop `orch_test web` (Ctrl+C), then `orch_test app --port "$PORT"`: the board
+    works the same in the window.
+15. Done: close the window, then in shell B `echo "$CHECK_DIR"` (a temporary directory) and
+    `rm -rf "$CHECK_DIR"`.
