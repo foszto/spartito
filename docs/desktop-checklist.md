@@ -20,6 +20,39 @@ new terminal **without** the environment of the setup below, in the checkout tha
 
 Repeat step 2 after every Python upgrade (Homebrew or uv).
 
+### After a merge that changes notifications
+
+`orch app install` is **not** needed again when the merge changes neither the launcher nor the
+dependencies: the launcher only starts `orch app` from the tool environment, which with
+`--editable` is the merged checkout. It is needed after a Python upgrade, or when the state
+line below says `run orch app install again`. Steps, on the real app:
+
+1. Quit Spartito (Cmd-Q). If the dashboard service runs, `orch service install` (restarts it
+   with the merged code; the window loads its page from that server, and an older page has
+   no place for the state line or the banners).
+2. Start Spartito from the Dock or `~/Applications`. Under the agent list, at the bottom of
+   the sidebar, a quiet line says the notification state, for example `notifications:
+   Spartito shows them; a click opens it there`. The same lines are in
+   `~/.orchestrator/logs/app.log`. If macOS shows a prompt for *Spartito*, allow it.
+3. Close every dashboard tab in your browsers (a page allowed to notify shows the notice
+   first). Click another app's window so Spartito is in the background, and have a lead record
+   a decision (or answer one with **Ask** in the dashboard first).
+4. Expect one notification titled *Spartito*: `Decision needed (<project>): …`. Click it:
+   the Spartito window comes to the front with the **Decisions** window on that decision. No
+   Script Editor.
+5. **System Settings › Notifications › Spartito**: switch **Allow notifications** off. The
+   state line changes within a few seconds to `… not allowed (System Settings › Notifications
+   › Spartito); notices are shown in this window`.
+6. With Spartito in the background again, trigger another decision: no macOS notification;
+   the Dock icon bounces once and shows the badge `1`; in the window a banner at the top right
+   shows the decision. Click the Dock icon: the badge goes. Click the banner: the decision
+   opens and the banner closes.
+7. Switch **Allow notifications** on again.
+
+If a step fails, send the step number, what you saw, and `~/.orchestrator/logs/app.log`
+(it holds the window's notification state lines, each click on a notification with its target,
+why the window ended, and why a native window could not open; no notice text).
+
 ## Setup
 
 Everything runs with the code of the checkout under test, a temporary home and port 18787, so
@@ -157,7 +190,11 @@ every dashboard page first and wait 20 s.
 | Close the window, trigger another | one notification from *Spartito Check*, no Dock icon appears for it |
 | Click it | *Spartito Check* starts and opens the window at the agent or decision; close it |
 | Catch the hidden start: trigger another and at once run `for i in $(seq 400); do a=$(lsappinfo find bundleID=$(defaults read ~/Applications/"Spartito Check.app"/Contents/Info CFBundleIdentifier)); [ -n "$a" ] && { lsappinfo info -only applicationtype $a; break; }; sleep 0.25; done` | `type="UIElement"` |
-| Turn *Spartito Check* off in **System Settings › Notifications**, trigger another | a plain macOS notification ending with `— open Spartito to see it` (or `to answer`); `app-notify.json` is gone |
+| Open the window, look under the agent list | the quiet line `notifications: Spartito Check shows them; a click opens it there`; the same line is in `$ORCH_HOME/logs/app.log` |
+| Turn *Spartito Check* off in **System Settings › Notifications** | within a few seconds the line reads `notifications from Spartito Check: not allowed (…); notices are shown in this window`; `app-notify.json` is gone |
+| Switch to another app, trigger another | no macOS notification and no `osascript` one; the Dock icon bounces once with the badge `1`; a banner at the top right of the window; clicking the Dock icon removes the badge; clicking the banner opens the agent or decision and closes it |
+| Trigger four more, then reload the window (Cmd-R) | at most three banners, the newest; closed ones stay closed |
+| Close the window, trigger another | a plain macOS notification ending with `— open Spartito to see it` (or `to answer`) |
 | `orch_test config desktop-notifications off`, trigger another | no notification at all; then `orch_test config desktop-notifications on` |
 
 If Safari blocked the prompt earlier: Safari **Settings › Websites › Notifications**.

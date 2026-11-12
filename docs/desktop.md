@@ -193,7 +193,7 @@ for permission for *Spartito* once it is shown, the first time it runs; allow it
 prompt or later under **System Settings › Notifications › Spartito**. It asks again at each
 start (the system prompts only once) and reads the authorization status every 2 seconds, so
 a permission given or withdrawn later in System Settings, or an answer to the request that
-never arrives (see [Why the window asks only once it is shown](#why-the-window-asks-only-once-it-is-shown)),
+never arrives (see [Why notices went to osascript](#why-notices-went-to-osascript)),
 is seen within seconds. When allowed it writes `run/app-notify.json` (the bundle's identifier
 and path): from then on step 3 is used when no window is open. A posting app that finds the
 permission withdrawn removes the file and leaves the notices to `osascript`; one that gets no
@@ -223,6 +223,9 @@ notifications from <app>: not available (<why>); notices are shown in this windo
 `UserNotifications is not installed (install the extra orchestrator[app])`, or the error of
 the notification centre. The second line comes once, 30 seconds after asking without an
 answer; the third when the status read, not the request's answer, told the decision.
+Besides these, `logs/app.log` gets `a click on a notification: opening <target>` for each
+click that reaches the window, and `window ended: <why>` (a stop signal, `--close-after`, the
+window closed, or the GUI loop ended) when the window goes.
 
 **How the page and the window are found.** A permitted page polls the server every 4 seconds
 and touches `run/page-notifier`; the native window's process (macOS) touches
@@ -266,31 +269,39 @@ shows each new notice itself, so `osascript` (whose click opens Script Editor) s
 The window process takes each notice once, as a page does, so nothing else shows it again. A
 notice it is allowed to post but the system refuses is shown inside the window too.
 
-### Why the window asks only once it is shown
+### Why notices went to osascript
 
-Up to this change the window asked for permission at start, before its GUI loop ran, and took
-notices only once the answer to that request said "allowed". On an installed launcher this
-was seen to fail without a word: no prompt was noticed, no grant was recorded, and every
-notice went to `osascript`, whose click opens Script Editor. Measured with test launchers in
-`~/Applications` (the unsigned bundle with its ad hoc signed interpreter copy, started by
-`open` as the Dock does):
+Before this change the window asked for permission during its launch and took notices only
+once the answer to that request said "allowed"; until then, and whenever no answer came, it
+left them to the next path, `osascript`, without a word. So with the launcher installed and
+the window open, a decision notice still came from `osascript`, and its click opened Script
+Editor. Measured with test launchers in `~/Applications` (the unsigned bundle with its ad hoc
+signed interpreter copy, started by `open` as the Dock does), reading the authorization
+status from a second process of the same bundle:
 
-- **The identity is accepted.** In that process the notification centre is there, the
-  authorization status reads 0 (not determined), and a provisional request, which never
+- **The identity is accepted; signing is not the cause.** In that process the notification
+  centre is there, the status reads 0 (not determined), and a provisional request, which never
   prompts, was granted at once (status 0 → 3). With a decided status the old window code
-  recorded the grant at once. So neither the unsigned bundle (`codesign -dv` on it: "not
-  signed at all"), nor the interpreter's signature that does not bind `Info.plist`, nor
-  `LSUIElement` keeps the system from accepting the app; `orch app install` therefore still
-  signs only the interpreter copy.
-- **The answer to a request made during the launch got lost.** The old window code asked
-  during the launch; the system's status turned to allowed within 8 seconds, but the
-  request's answer never reached the process in the 35 seconds it ran: it said nothing and
-  wrote no grant. On the installation where the defect was seen, the bundle's status was still
-  0 more than ten minutes after the window had opened (in front), and no prompt was noticed.
+  recorded the grant at once. So neither the unsigned bundle, nor the interpreter's signature
+  that does not bind `Info.plist`, nor `LSUIElement` keeps the system from accepting the app;
+  `orch app install` therefore still signs only the interpreter copy and is unchanged.
+- **The system can decide without the request's answer ever reaching the process, in both
+  directions.** With the old code the status turned to 2 (allowed) within 8 seconds of the
+  request, but the answer never arrived in the 35 seconds the window ran: no grant was
+  written and every notice went to `osascript`. With the new code another test launcher's
+  status turned to 1 (denied) two seconds after its request, again without an answer. On the
+  installation where the defect was seen, the bundle's status was still 0 more than ten
+  minutes after the window had opened in front.
+- **Asking after the launch is not proven to help.** Asked once the window was shown, one
+  test launcher got its answer within a second, the other none (above).
 
-The window now takes the notices from its start whatever the answer, asks only once it is
-shown (after the launch, in front), reads the status on each poll instead of relying on the
-request's answer, and says each state where it can be read.
+The window therefore no longer depends on the answer: it takes the notices from its start,
+whatever its permission; reads the authorization status on each poll (every 2 seconds), so a
+decision the system made without answering is seen; shows a notice inside the window
+whenever it may not post it; and says each state in the places listed under
+[Where the window's notification state shows](#notifications-with-click-through). It still
+asks once the window is shown (in front, after the launch), as the moment that gave the
+prompt the best chance in the runs, not as the fix.
 
 ### Linux
 
@@ -596,14 +607,25 @@ other platforms it installs nothing.
 
 ## Known limitations
 
-- **Not verified by a real run** (the screen was locked during the unattended runs): posting a
-  notification as Spartito, a click on one, Spartito started by such a click, and the window
-  coming to the front after a second `orch app`. What was verified: the launcher's process is
-  the app for the system (`lsappinfo`, the main bundle), and the notification centre accepts
-  its request (a prompt instead of an immediate refusal) for both a framework build and a
-  uv-managed interpreter.
+- **Real runs** (test launchers, a temporary home, a fake `osascript`): a test launcher asked,
+  was allowed and posted a decision notice as itself (listed among the bundle's delivered
+  notifications, `osascript` not called); clicks on posted notifications were logged in
+  `logs/app.log` and brought the window to the front at the decision; the delegate, driven
+  with a delivered notification's `userInfo`, did the same; banners inside a real WebKit
+  window without a launcher appeared one per notice. **Not verified by a real run:** the Dock
+  bounce and badge as seen on screen, banners in the window of a launcher whose permission is
+  off, and Spartito started by a click while no window is open (step 3).
 - A denied permission for *Spartito* stays until it is changed in System Settings ›
-  Notifications; the notifications then come from `osascript`.
+  Notifications; meanwhile the open window shows the notices inside itself, and with no window
+  open they come from `osascript`.
+- The system may decide the permission without answering the request (see
+  [Why notices went to osascript](#why-notices-went-to-osascript)); the window then sees the
+  decision within 2 seconds through the status, but its state line says "no answer to the
+  request" first.
+- The window shows the state line and the banners through the page of the server it uses. A
+  dashboard service still running code from before this change serves a page without them:
+  the window then takes the notices, bounces the Dock icon and sets the badge, but shows no
+  banner until the service is restarted (`orch service install`).
 - A launcher bundle under a temporary folder (`/tmp`, `/var/folders`) is refused by the
   notification centre.
 - In the Chromium fallback window Spartito posts no notifications itself; the page in it can.
