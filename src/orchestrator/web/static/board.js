@@ -9,7 +9,8 @@
   const STATES = [['idea', 'Idea'], ['ready', 'Ready'], ['in_progress', 'In progress'], ['done', 'Done']];
   const LABEL = Object.fromEntries(STATES);
   const ORDER = STATES.map(([value]) => value);
-  const CLI = document.body.dataset.cliName;  // the command (config.CLI_NAME)
+  // The command (config.CLI_NAME); a server older than this page leaves the placeholder.
+  const CLI = /^[\w-]+$/.test(document.body.dataset.cliName || '') ? document.body.dataset.cliName : 'spartito';
   const SHOW_DONE = 'orch-board-done';  // localStorage: the Done column's cards are shown
 
   // Each later part plugs in here, so it can be taken out on its own:

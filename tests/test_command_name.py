@@ -139,10 +139,34 @@ SUBCOMMANDS = sorted({path[0] for path in command_paths() if path})
 OLD_COMMAND = re.compile(rf"(?<![\w./-]){cli.OLD_NAME}\s+(?:{'|'.join(SUBCOMMANDS)})\b")
 
 
-def test_the_pattern_knows_the_commands() -> None:
+# In README.md and docs/: `orch` as a word of its own is the command, unless it names the MCP
+# server (`orch` MCP server, `orch` server, `orch` tools) or the upgrade section.
+BARE_NAME = re.compile(
+    rf"(?<!Upgrading from )`{cli.OLD_NAME}`(?!\s+(?:MCP|server|tools)\b)", re.IGNORECASE
+)
+# In a Python string: the old name at the end of an f-string part that a value follows
+# (`f"orch {sub}"`), so the subcommand cannot be seen.
+NAME_BEFORE_VALUE = re.compile(rf"(?:^|[\s`(]){cli.OLD_NAME}\s+$")
+KEPT = "the `orch` MCP tools, the `orch` server, branch orch/x-1, [orch notification], .orch/"
+
+
+def test_the_patterns_know_the_commands_and_the_kept_names() -> None:
     assert {"app", "chat", "web", "service", "status", "board"} <= set(SUBCOMMANDS)
     assert OLD_COMMAND.search("run `orch app install`")
-    assert not OLD_COMMAND.search("the `orch` MCP tools, branch orch/x-1, [orch notification]")
+    assert BARE_NAME.search("puts `orch` on the PATH")
+    assert not OLD_COMMAND.search(KEPT) and not BARE_NAME.search(KEPT)
+    assert not BARE_NAME.search("[Upgrading from `orch`](docs/usage.md#upgrading-from-orch)")
+    source = (
+        'A = ["orch", "app"]\n'
+        'B = ("x", "orch")\n'
+        'C = f"run orch {sub} now"\n'
+        'D = f"`orch {sub}`"\n'
+        'E = FastMCP("orch")\n'
+        'F = {"orch": 1}\n'
+        'G = f"mcp__orch__{tool}"\n'
+        'H = f"[orch notification] {text}"\n'
+    )
+    assert [line for line, _ in python_commands(source)] == [1, 2, 3, 4]
 
 
 def python_texts(path: Path) -> list[tuple[int, str]]:
@@ -153,6 +177,30 @@ def python_texts(path: Path) -> list[tuple[int, str]]:
         for node in ast.walk(tree)
         if isinstance(node, ast.Constant) and isinstance(node.value, str)
     ]
+
+
+def python_commands(source: str) -> list[tuple[int, str]]:
+    """The old name used as the command in code: a list or tuple element that is exactly it
+    (an argv), or an f-string part ending in it before a value (`f"orch {sub}"`). The MCP
+    server's name (a call argument, a dict key) and the kept names do not match."""
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.List | ast.Tuple):
+            found += [
+                (item.lineno, item.value)
+                for item in node.elts
+                if isinstance(item, ast.Constant) and item.value == cli.OLD_NAME
+            ]
+        elif isinstance(node, ast.JoinedStr):
+            parts = node.values
+            found += [
+                (part.lineno, part.value)
+                for part, after in zip(parts, parts[1:], strict=False)
+                if isinstance(part, ast.Constant)
+                and isinstance(after, ast.FormattedValue)
+                and NAME_BEFORE_VALUE.search(part.value)
+            ]
+    return sorted(found)
 
 
 def file_texts(path: Path) -> list[tuple[int, str]]:
@@ -191,6 +239,25 @@ def test_no_text_tells_to_run_the_old_command() -> None:
     assert found == []
 
 
+def test_no_code_runs_the_old_command() -> None:
+    found = [
+        f"{path.relative_to(ROOT)}:{line}: {text!r}"
+        for path in [*sorted((ROOT / "scripts").glob("*.py")), *sorted(PACKAGE.rglob("*.py"))]
+        for line, text in python_commands(path.read_text())
+    ]
+    assert found == []
+
+
+def test_no_doc_names_the_old_command() -> None:
+    found = []
+    for path in [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]:
+        for _, text in file_texts(path):
+            for match in BARE_NAME.finditer(text):
+                line = 1 + text.count("\n", 0, match.start())
+                found.append(f"{path.relative_to(ROOT)}:{line}: {match.group()!r}")
+    assert found == []
+
+
 def test_the_allowed_section_exists() -> None:
     for path, heading in ALLOWED.items():
         assert heading in path.read_text().splitlines()
@@ -203,3 +270,28 @@ def test_no_help_page_names_the_old_command() -> None:
         assert result.exit_code == 0, path
         assert not re.search(rf"\b{cli.OLD_NAME}\b|{{cli}}", result.output), path
         assert f"Usage: {config.CLI_NAME}" in result.output
+
+
+# -- a script left by an older install -------------------------------------------------------
+
+
+@pytest.mark.parametrize("script", [cli.OLD_NAME, config.CLI_NAME])
+def test_only_the_old_script_warns(
+    script: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An editable install from before the rename keeps its `orch` script, which runs this
+    code until the tool is installed again: it works, and warns on every call."""
+    monkeypatch.setattr(sys, "argv", [f"/tools/bin/{script}", "roles"])
+    with pytest.raises(SystemExit) as done:
+        cli.main()
+    out, err = capsys.readouterr()
+    assert done.value.code == 0 and "worker" in out
+    if script == config.CLI_NAME:
+        assert err == ""
+        return
+    assert err == (
+        f"warning: `{cli.OLD_NAME}` is now `{config.CLI_NAME}`; this script is left from an older"
+        " install and goes away when the tool is installed again"
+        " (docs/usage.md#upgrading-from-orch)\n"
+    )
+    assert "## Upgrading from `orch`" in (ROOT / "docs" / "usage.md").read_text().splitlines()

@@ -75,7 +75,8 @@ spartito mcp
 - `web` serves the [dashboard](#dashboard). With a non-loopback `--host` it prints a warning:
   the dashboard has no authentication.
 - `mcp` runs the `orch` MCP server on stdio. `spartito chat` and the agents with a lead role
-  start the same server themselves; there is no need to run it by hand.
+  start the same server themselves, as `<python> -m orchestrator.mcp_server` (not through this
+  command); there is no need to run it by hand.
 
 ### Dashboard window, menu bar and background service
 

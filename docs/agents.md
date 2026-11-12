@@ -15,8 +15,9 @@ a role with `lead: true`: the orchestrator and the project leads.
 
 ## MCP tools
 
-Lead roles get the `orch` MCP server (`spartito mcp`, started by the CLI of each lead agent and by
-`spartito chat`; there is no need to run it by hand). An agent's own id reaches the server in
+Lead roles get the `orch` MCP server. The CLI of each lead agent, and `spartito chat`, start it
+as `<python> -m orchestrator.mcp_server` with the tool's own Python, never through the command
+(`spartito mcp` runs the same server by hand; there is no need to). An agent's own id reaches the server in
 `ORCH_AGENT_ID`: agents it starts become its children, and a project lead is confined to its
 own project. The orchestrator (and the interactive `spartito chat` session, which has no agent id)
 can act on every project.

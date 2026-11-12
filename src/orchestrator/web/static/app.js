@@ -43,7 +43,8 @@ const SUGGESTIONS = [
 
 // The names come with the page too, so no label waits for the first /api/state reply.
 // The command named in the texts that tell someone to run it (config.CLI_NAME).
-const CLI = document.body.dataset.cliName;
+// A server older than this page leaves the placeholder: the name it had when the page changed.
+const CLI = /^[\w-]+$/.test(document.body.dataset.cliName || '') ? document.body.dataset.cliName : 'spartito';
 let state = { orchestrator_name: document.body.dataset.orchestratorName, orchestrator: null, projects: [], providers: [], roles: [], tiers: [], archived: [], settings: { global: {}, projects: {} } };
 const hashTarget = () => decodeURIComponent(location.hash.slice(1));
 // The agent shown; a decision named by the hash is shown once the state is loaded (refresh).

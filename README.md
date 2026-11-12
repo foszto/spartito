@@ -14,8 +14,9 @@ you ── orchestrator (Maestro)
                         └─ ...
 ```
 
-The command is `spartito`; the Python package is `orchestrator`. Internal names keep `orch`:
-the MCP server and its tools, the `ORCH_*` variables, `orch.db` and the agents' `orch/` branches.
+The command is `spartito`; the Python package is `orchestrator`. The internal names stay as they
+were: the `orch` MCP server and its tools, the `ORCH_*` variables, `orch.db` and the agents'
+`orch/` branches.
 
 ## Features
 
@@ -58,7 +59,7 @@ uv tool install --editable .    # puts `spartito` on the PATH
 spartito --help
 ```
 
-Installed while the command was still called `orch`? See
+Installed before the command was renamed? See
 [Upgrading from `orch`](docs/usage.md#upgrading-from-orch).
 
 Without installing, prefix every command with `uv run` inside the checkout (`uv run spartito …`).
