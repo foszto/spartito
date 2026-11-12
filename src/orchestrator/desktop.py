@@ -47,7 +47,19 @@ home (config.TURN_HOME_ENV, set by the runner; e.g. a test run in a temporary OR
 an agent's shell, whose notices would otherwise reach the owner's desktop through osascript).
 
 On Linux: 3., then a detached helper with `notify-send` ("linux": a click opens `spartito
-app` at the target where notify-send has actions), else the notice waits for a page. Claims keep a notice to one showing: a taker claims only a
+app` at the target where notify-send has actions), else the notice waits for a page. The
+helpers are bounded: one waits for a click at most LINUX_WAIT_SECONDS (then notify-send is
+killed), and at most LINUX_SLOTS of them wait at once (a lock per slot under
+config.runtime_dir(); without a free slot the notice is shown without the wait, its text
+naming the command). A burst is coalesced: at most BURST_LIMIT popups per BURST_SECONDS
+for the home; the notices beyond are held back, each traced as `counted` on the path
+LINUX_SUMMARY (the helper gets the notice's id), and the first of them waits until the
+window frees up and shows "<n> more notices" in one popup (or itself, when it was the only
+one), traced as `shown`. The state (run/linux-burst.json) heals itself: a count whose
+summing helper ended or is overdue is discarded (logged), and a file that is not a burst
+state starts afresh.
+
+Claims keep a notice to one showing: a taker claims only a
 notice left to it or to a later way of the list (`may_take`; the window that may post, any),
 so a better way may still take it, and a worse one only once it was left to it. Who was
 chosen and does not take the notice within ESCALATE_SECONDS (CLAIM_WAIT_SECONDS for the
@@ -67,7 +79,12 @@ not take). `spartito notices` lists them.
 `osascript` gets the texts as arguments of its run handler, never inside the script source
 (they come from agents). Children are started and left alone: a reaper thread kills
 osascript after TIMEOUT_SECONDS, a helper ends itself; a missing binary or any error is
-ignored. Off with the global setting `desktop_notifications` (`spartito config
+ignored. Every child starts with SIGTERM, SIGINT, SIGHUP and SIGPIPE at their default
+(DEFAULT_SIGNALS): a runner ignores SIGTERM and SIGINT while it ends its turn, which is when
+it shows the notice, and an ignored signal is inherited across fork and exec. The helper sets
+them first thing (`helper`); osascript and the helper's own children start through
+EXEC_DEFAULT while this process ignores one (`with_default_signals`), or as they are when
+that interpreter cannot be started (`start_defaulted`), so the notice is still shown. Off with the global setting `desktop_notifications` (`spartito config
 desktop-notifications off`): then nothing is recorded either.
 """
 
@@ -77,6 +94,7 @@ import contextlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -119,12 +137,31 @@ CLAIM_WAIT_SECONDS = 15.0  # for the launcher's app to claim the notice (2.)
 ESCALATE_SECONDS = 20.0  # for the window process or a page to claim a notice left to it
 WAIT_STEP = 0.25  # between two looks at a notice the helper waits on
 OPEN_TIMEOUT = 10.0
-LINUX_WAIT_SECONDS = 1800.0  # a Linux helper waiting for a click ends after this
+# A Linux helper waiting for a click ends after this (notify-send killed with it): five
+# minutes covers a glance back at the desk, and keeps a burst from leaving helpers for long.
+LINUX_WAIT_SECONDS = 300.0
+LINUX_SLOTS = 3  # Linux helpers waiting for a click at once; beyond: shown without the wait
+LINUX_SLOT_DIR = "linux-waiting"  # in config.runtime_dir(): slot-<n>, locked while waiting
+BURST_LIMIT = 4  # Linux popups per BURST_SECONDS; the notices beyond are summed up in one
+BURST_SECONDS = 60.0
+BURST_STATE = "linux-burst.json"  # in config.runtime_dir(), changed under BURST_LOCK
+BURST_LOCK = "linux-burst.lock"
 CLAUSE_DECISION = " — open Spartito to answer"
 CLAUSE_FINISHED = " — open Spartito to see it"
 LINUX_ICON = Path(__file__).parent / "web" / "static" / "icon-192.png"
 DESKTOP_ENTRY = "spartito"  # the launcher's desktop file name (gui/launcher.py)
 HELPER = "import sys; from orchestrator import desktop; sys.exit(desktop.helper(sys.argv[1:]))"
+# Signals a child of this module starts with at their default, whatever this process does
+# with them: a runner ignores SIGTERM and SIGINT while it ends its turn (runner.main), when
+# the notices are shown, and an ignored signal stays ignored across fork and exec.
+DEFAULT_SIGNALS = ("SIGTERM", "SIGINT", "SIGHUP", "SIGPIPE")
+# Runs a command with those at their default (argv: the program's path, then its arguments).
+EXEC_DEFAULT = (
+    "import os, signal, sys\n"
+    f"for name in {DEFAULT_SIGNALS!r}:\n"
+    "    signal.signal(getattr(signal, name), signal.SIG_DFL)\n"
+    "os.execv(sys.argv[1], sys.argv[1:])"
+)
 
 # Whom a notice is left to (the `route` column), in the order of the module doc; a taker may
 # claim a notice left to it or to a later one (RANK), or recorded by older code (no route).
@@ -145,6 +182,7 @@ PATHS = {
 }
 DROPPED = "dropped"  # a path: nobody shows it (a decision answered before it was shown)
 COUNTED = "window-count"  # a path: counted in the window's "more" banner, not shown in one
+LINUX_SUMMARY = "linux-summary"  # a path: held back by the Linux burst limit, shown in a summary
 # The window process's notification states (gui/notifier.py) in which it takes notices to post.
 POSTING_STATES = ("allowed", "waiting", "asking", "")  # "": a window of older code
 ROLE: str | None = None  # this process's part, set by entry points; else guessed (`role`)
@@ -615,8 +653,8 @@ def carry_out(
         target = target_of(notice.get("agent_id"), decision_id)
         if detached:
             note(store, nid, step("shown", PATHS[LINUX], "notify-send"))
-            linux_helper(send, body, target)
-        elif spawn(["linux", send, body, target]):
+            linux_helper(send, body, target, nid, store)
+        elif spawn(["linux", send, body, target, str(nid)]):
             note(store, nid, step("shown", PATHS[LINUX], "notify-send helper started"), wait)
         else:
             gone = "the notify-send helper did not start"
@@ -984,7 +1022,8 @@ def plain(body: str, decision_id: int | None) -> threading.Thread | None:
         argv = command(config.PROJECT_NAME, one_line(body, TEXT_CHARS - len(clause)) + clause)
         if argv is None:
             return None
-        proc = subprocess.Popen(
+        proc = start_defaulted(
+            subprocess.Popen,
             argv,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -998,9 +1037,48 @@ def plain(body: str, decision_id: int | None) -> threading.Thread | None:
         return None
 
 
+def signals_ignored() -> list[str]:
+    """Which of DEFAULT_SIGNALS but SIGPIPE (Python's own, and Popen's restore_signals sets
+    it back in a child) this process ignores, so that its children would too."""
+    names = [name for name in DEFAULT_SIGNALS if name != "SIGPIPE" and hasattr(signal, name)]
+    return [name for name in names if signal.getsignal(getattr(signal, name)) == signal.SIG_IGN]
+
+
+def with_default_signals(argv: list[str]) -> list[str]:
+    """`argv`, started through EXEC_DEFAULT when this process ignores a signal it would pass
+    on: the program then starts with every one of DEFAULT_SIGNALS at its default, so a
+    SIGTERM ends it (no preexec_fn, which is unsafe with threads)."""
+    if not signals_ignored():
+        return argv
+    program = shutil.which(argv[0]) or argv[0]
+    return [sys.executable, "-c", EXEC_DEFAULT, program, *argv[1:]]
+
+
+def start_defaulted(start: Callable[..., Any], argv: list[str], **options: Any) -> Any:
+    """`start(argv, **options)` (Popen or run) through `with_default_signals`; when the shim's
+    interpreter cannot be started (OSError: say the tool environment was replaced during a
+    long turn), `argv` as it is, as before the shim, so the notice is still shown."""
+    wrapped = with_default_signals(argv)
+    if wrapped != argv:
+        with contextlib.suppress(OSError):
+            return start(wrapped, **options)
+    return start(argv, **options)
+
+
+def default_signals() -> None:
+    """Set DEFAULT_SIGNALS to their default in this process (the helper, before anything
+    else), so it and what it starts end on SIGTERM or SIGINT."""
+    if threading.current_thread() is not threading.main_thread():
+        return
+    for name in DEFAULT_SIGNALS:
+        if hasattr(signal, name):
+            with contextlib.suppress(OSError, ValueError):
+                signal.signal(getattr(signal, name), signal.SIG_DFL)
+
+
 def spawn(args: list[str]) -> bool:
-    """Start the detached helper (`helper(args)` in a process of its own); False when it
-    could not be started."""
+    """Start the detached helper (`helper(args)` in a process of its own, which sets its
+    signals to their default first: `helper`); False when it could not be started."""
     try:
         subprocess.Popen(
             [sys.executable, "-c", HELPER, *args],
@@ -1093,7 +1171,10 @@ def bundle_ready() -> Path | None:
 
 def helper(args: list[str]) -> int:
     """`spawn`'s process: ["deliver", notice, open], ["spool", file, open] or ["linux",
-    notify-send, body, target]. Never raises."""
+    notify-send, body, target, notice] (the notice, for its trace, may be left out, as older
+    code did, and is for a notice without an agent). Its signals are set to their default first: it may have been
+    started by a runner that ignores SIGTERM and SIGINT (`default_signals`). Never raises."""
+    default_signals()
     global ROLE
     was, ROLE = ROLE, "helper"
     try:
@@ -1101,8 +1182,9 @@ def helper(args: list[str]) -> int:
             deliver(Store(), int(args[1]), args[2])
         elif args and args[0] == "spool" and len(args) == 3:
             spool_helper(Path(args[1]), args[2])
-        elif args and args[0] == "linux" and len(args) == 4:
-            linux_helper(args[1], args[2], args[3])
+        elif args and args[0] == "linux" and len(args) in (4, 5):
+            notice = int(args[4]) if len(args) == 5 and args[4].isdigit() else None
+            linux_helper(args[1], args[2], args[3], notice)
     except Exception as exc:
         helper_failed(args, exc)
         return 1
@@ -1162,11 +1244,12 @@ def open_command(target: str) -> list[str]:
 
 def linux_env() -> dict[str, str]:
     """The environment for notify-send: the session bus at its usual place when the
-    variable is missing (a service started without it)."""
+    variable is missing (a service started without it) and a bus is there."""
     env = dict(os.environ)
     if not env.get("DBUS_SESSION_BUS_ADDRESS"):
-        runtime = env.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-        env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={runtime}/bus"
+        bus = Path(env.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "bus"
+        if bus.exists():
+            env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus}"
     return env
 
 
@@ -1191,29 +1274,229 @@ def display() -> bool:
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
-def linux_helper(send: str, body: str, target: str) -> None:
-    """Show the notification; with actions (and a display to open a window on), wait up to
-    LINUX_WAIT_SECONDS for its click and then start `spartito app` at the target."""
-    actions = display() and has_actions(send)
-    argv = linux_argv(send, body, target, actions)
-    try:
-        done = subprocess.run(
-            argv,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            env=linux_env(),
-            timeout=LINUX_WAIT_SECONDS if actions else 30,
-        )
-    except OSError, subprocess.TimeoutExpired:
+def linux_helper(
+    send: str, body: str, target: str, notice: int | None = None, store: Store | None = None
+) -> None:
+    """Show the notification unless a burst holds it back (`burst_turn`): a held one is
+    counted, and the first held one shows the count once the burst window has passed (or
+    itself, when it was the only one). Each held notice is traced (`counted`, path
+    LINUX_SUMMARY), and so is how the summing one was shown."""
+    began = time.monotonic()
+    turn, wake, token = burst_turn()
+    if turn == SHOW:
+        linux_show(send, body, target)
         return
+    trace = Tracer(notice, store)
+    if turn == HELD:
+        trace("counted", LINUX_SUMMARY, f"held back, {burst_why()}: in the summary popup")
+        return
+    due = max(0.0, min(wake - time.time(), BURST_SECONDS))
+    trace("counted", LINUX_SUMMARY, f"held back, {burst_why()}: shows the summary in {due:.0f} s")
+    time.sleep(due)
+    held = burst_summarised(token)
+    waited = time.monotonic() - began
+    if held <= 1:  # only this one was held back, or the count is gone: shown as itself
+        alone = "the only one held back, or the others' count was discarded"
+        trace("shown", PATHS[LINUX], f"after {waited:.1f} s, as itself: {alone}")
+        linux_show(send, body, target)
+        return
+    text = f"{held} more notices"
+    trace("shown", LINUX_SUMMARY, f'after {waited:.1f} s: {held} held back, shown as "{text}"')
+    linux_show(send, text, "")
+
+
+class Tracer:
+    """Traces steps of the helper's notice: in the store and the log, or the log alone for a
+    notice without an id (no agent, or started by older code)."""
+
+    def __init__(self, notice: int | None, store: Store | None) -> None:
+        self.notice, self.store = notice, store
+
+    def __call__(self, kind: str, path: str, detail: str) -> None:
+        if self.notice is None:
+            log_step(None, kind, path, actor(), detail)
+            return
+        if self.store is None:
+            with contextlib.suppress(Exception):
+                self.store = Store()
+        note(self.store, self.notice, step(kind, path, detail))
+
+
+def linux_show(send: str, body: str, target: str) -> None:
+    """Show the notification; with actions (a display to open a window on, and a free slot
+    of LINUX_SLOTS), wait up to LINUX_WAIT_SECONDS for its click and then start
+    `spartito app` at the target. notify-send is killed when the time is up."""
+    with waiting_slot(display() and has_actions(send)) as actions:
+        argv = linux_argv(send, body, target, actions)
+        try:
+            done = start_defaulted(
+                subprocess.run,
+                argv,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                env=linux_env(),
+                timeout=LINUX_WAIT_SECONDS if actions else 30,
+            )
+        except OSError, subprocess.TimeoutExpired:
+            return
     if actions and "default" in done.stdout.split():
         start_app(open_command(target))
 
 
+@contextlib.contextmanager
+def waiting_slot(wanted: bool):
+    """One of LINUX_SLOTS slots for a helper waiting for a click, held until the block ends
+    (a lock, so a helper that died frees its slot); yields whether it got one."""
+    if not wanted:
+        yield False
+        return
+    import fcntl
+
+    handles = []
+    try:
+        folder = config.runtime_dir() / LINUX_SLOT_DIR
+        folder.mkdir(exist_ok=True)
+        for n in range(LINUX_SLOTS):
+            handle = (folder / f"slot-{n}").open("a")
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                handle.close()
+                continue
+            handles.append(handle)
+            break
+    except OSError:
+        pass
+    try:
+        yield bool(handles)
+    finally:
+        for handle in handles:
+            handle.close()
+
+
+SHOW, HELD, SUMMARY = "show", "held", "summary"  # a helper's turn in a burst
+
+
+def _number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def burst_checked(data: Any) -> dict[str, Any] | None:
+    """The burst state when `data` has its shape, else None: {"shown": [times], "held": n,
+    "summary": {"pid", "deadline", "token"} or None}."""
+    if not isinstance(data, dict):
+        return None
+    shown, held, owner = data.get("shown"), data.get("held"), data.get("summary")
+    if not (isinstance(shown, list) and all(_number(t) for t in shown)):
+        return None
+    if not (isinstance(held, int) and not isinstance(held, bool) and held >= 0):
+        return None
+    if owner is not None and not (
+        isinstance(owner, dict)
+        and isinstance(owner.get("pid"), int)
+        and _number(owner.get("deadline"))
+        and isinstance(owner.get("token"), str)
+    ):
+        return None
+    return {"shown": [float(t) for t in shown], "held": held, "summary": owner}
+
+
+@contextlib.contextmanager
+def burst_state():
+    """The burst state (`burst_checked`), read and written under BURST_LOCK; a file that is
+    not one (unreadable, or of another shape) starts afresh, logged, and is rewritten."""
+    import fcntl
+
+    folder = config.runtime_dir()
+    with (folder / BURST_LOCK).open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        path = folder / BURST_STATE
+        try:
+            text = path.read_text()
+        except OSError:
+            text = None
+        state = None
+        if text is not None:
+            with contextlib.suppress(ValueError):
+                state = burst_checked(json.loads(text))
+            if state is None:
+                log_step(
+                    None, "fallback", LINUX_SUMMARY, actor(), f"{BURST_STATE}: unusable, reset"
+                )
+        state = state or {"shown": [], "held": 0, "summary": None}
+        yield state
+        temp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        temp.write_text(json.dumps(state))
+        temp.replace(path)
+
+
+def burst_heal(state: dict[str, Any], now: float) -> None:
+    """A summing helper that ended (killed while it waited) or is past its deadline: its
+    count of held notices is discarded (logged), not added to a later burst."""
+    owner = state["summary"]
+    if owner is not None and pid_running(owner["pid"]) and now <= owner["deadline"]:
+        return
+    if state["held"]:
+        gone = "ended" if owner is None or not pid_running(owner["pid"]) else "is overdue"
+        who = f" (pid {owner['pid']})" if owner else ""
+        why = f"{state['held']} held back; their summing helper{who} {gone}: discarded"
+        log_step(None, "drop", LINUX_SUMMARY, actor(), why)
+    state["held"], state["summary"] = 0, None
+
+
+def burst_turn() -> tuple[str, float, str]:
+    """This helper's turn: SHOW (fewer than BURST_LIMIT popups within BURST_SECONDS), HELD
+    (counted; another helper sums it up), or SUMMARY (counted, and this helper shows the sum
+    at the time returned, with the token that makes it the owner). Any error: SHOW."""
+    now = time.time()
+    try:
+        with burst_state() as state:
+            burst_heal(state, now)
+            shown = [t for t in state["shown"] if 0 <= now - t < BURST_SECONDS]
+            state["shown"] = shown
+            if len(shown) < BURST_LIMIT:
+                shown.append(now)
+                return SHOW, now, ""
+            state["held"] += 1
+            if state["summary"] is not None:
+                return HELD, now, ""
+            wake = min(shown) + BURST_SECONDS
+            token = uuid.uuid4().hex
+            state["summary"] = {
+                "pid": os.getpid(),
+                "deadline": wake + BURST_SECONDS,
+                "token": token,
+            }
+            return SUMMARY, wake, token
+    except Exception:
+        return SHOW, now, ""
+
+
+def burst_summarised(token: str) -> int:
+    """The summing helper's time has come: the count of the held notices (this one's
+    included), now taken; the summary counts as a popup. 1 when it is no longer the owner
+    (its count was discarded) or on an error: it shows itself."""
+    try:
+        with burst_state() as state:
+            owner = state["summary"]
+            if owner is None or owner["token"] != token:
+                return 1
+            held = state["held"]
+            state["held"], state["summary"] = 0, None
+            state["shown"] = [*state["shown"], time.time()]
+            return max(held, 1)
+    except Exception:
+        return 1
+
+
+def burst_why() -> str:
+    return f"over {BURST_LIMIT} popups in {BURST_SECONDS:g} s"
+
+
 def start_app(options: list[str]) -> None:
     subprocess.Popen(
-        [sys.executable, "-m", "orchestrator", "app", *options],
+        with_default_signals([sys.executable, "-m", "orchestrator", "app", *options]),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

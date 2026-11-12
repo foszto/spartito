@@ -570,6 +570,49 @@ def test_a_stop_stays_quiet_while_someone_waits(
     assert orch.wait_idle([parent], 1) and orch.store.runs_of(parent) == []
 
 
+def reconcile_on(orch: Orchestrator, monkeypatch: pytest.MonkeyPatch, sig: int) -> None:
+    """Someone else reconciles right after the stop sends `sig`, before the stop has
+    cleaned up (the runs have no live runner, nothing is signalled)."""
+
+    def kill(run: Run, sent: int) -> None:
+        if sent == sig:
+            orch.store.reconcile()
+
+    monkeypatch.setattr(orch, "_kill", kill)
+
+
+def test_a_stopped_notification_found_dead_by_someone_else_leaves_no_trace(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(launcher, "STOP_GRACE_SECONDS", 0.2)
+    parent = lead(orch, project)
+    finished_child(orch, project, parent)
+    pending = notify.queue_if_due(orch.store, parent)
+    orch.store.update_run(pending.id, pid=dead_pid())  # SIGTERM came before its handler
+    reconcile_on(orch, monkeypatch, signal.SIGKILL)
+
+    assert orch.stop(parent) == 1
+    assert orch.store.runs_of(parent) == []  # and no new notification for it
+
+
+@pytest.mark.parametrize("started", [False, True])
+def test_a_stopped_turn_found_dead_by_someone_else_ends_as_stopped(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch, started: bool
+) -> None:
+    monkeypatch.setattr(launcher, "STOP_GRACE_SECONDS", 0.2)
+    agent = orch.create_agent(project, name="a", worktree=False).id
+    run = orch.store.add_run(agent, "never launched")
+    if started:
+        with orch.store.transaction() as conn:
+            orch.store.start_run(conn, run.id)
+    orch.store.update_run(run.id, pid=dead_pid())
+    reconcile_on(orch, monkeypatch, signal.SIGTERM)
+
+    assert orch.stop(agent) == 1
+    stopped = orch.store.get_run(run.id)
+    assert (stopped.status, stopped.error) == (RunStatus.STOPPED, "stopped")
+
+
 # -- turn order ---------------------------------------------------------------
 
 
@@ -1003,5 +1046,5 @@ def test_a_first_version_run_meta_is_completed_without_waking_anyone(tmp_path: P
         names = [row[1] for row in conn.execute("PRAGMA table_info(run_meta)")]
         indexes = [row[1] for row in conn.execute("PRAGMA index_list(run_meta)")]
     conn.close()
-    assert names[-5:] == ["origin", "cause_run", "claimed", "checked", "auto"]
+    assert names[-6:] == ["origin", "cause_run", "claimed", "checked", "auto", "stopping"]
     assert "run_meta_unchecked" in indexes

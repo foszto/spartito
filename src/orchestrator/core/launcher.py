@@ -64,6 +64,9 @@ def stop_runs(orch: Facade, agent_id: str) -> list[int]:
     agent = orch.agent(agent_id)
     # Newest first, so a queued turn cannot start while the running one is going down.
     active = sorted(orch.store.active_runs(agent.id), key=lambda run: -run.id)
+    # Before any signal: a runner may die of SIGTERM before its handler exists, and
+    # whoever reconciles first must then take it for this stop, not for a crash.
+    orch.store.mark_stopping([run.id for run in active])
     for run in active:
         orch._kill(run, signal.SIGTERM)
     deadline = time.monotonic() + STOP_GRACE_SECONDS

@@ -142,7 +142,9 @@ def system_prompt(agent: Agent, project: Project | None, role: roles.Role) -> st
             f"You work on branch `{agent.branch}` in your own git worktree, "
             f"based on `{agent.base_ref}`. Never switch branches."
         )
-    return f"{role.prompt}\n\n## Context\n" + "\n".join(context)
+    credit = roles.attribution(agent.provider)
+    prompt = f"{role.prompt}\n\n{credit}" if credit else role.prompt
+    return f"{prompt}\n\n## Context\n" + "\n".join(context)
 
 
 def mcp_server(agent: Agent) -> McpServer:
@@ -894,4 +896,9 @@ def _drop_unstarted(store: Store, run_id: int, kind: str) -> bool:
 
 
 if __name__ == "__main__":
+    # A runner launched while another one ends its turn (a parent's notification run, from
+    # core/lifecycle.run_ended) would inherit its ignored SIGTERM and SIGINT until main
+    # sets its own handlers: the defaults, as for any other start.
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    signal.signal(signal.SIGINT, signal.default_int_handler)
     main(int(sys.argv[1]))

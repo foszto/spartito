@@ -167,9 +167,10 @@ def test_a_master_era_database_gets_every_new_table_and_column(tmp_path: Path) -
 
     tables = {row[0] for row in sqlite3.connect(path).execute("SELECT name FROM sqlite_master")}
     assert {"decisions", "board_items"} <= tables
-    assert "auto" in columns(path, "run_meta")
+    assert {"auto", "stopping"} <= set(columns(path, "run_meta"))
     assert "first_context_tokens" in columns(path, "run_usage")
     assert store.meta(1).auto == 0  # an old manual compaction stays manual
+    assert store.meta(1).stopping == 0
     assert store.get_usage(1).first_context_tokens is None
     agent = store.get_agent("a-1")
     decision = decisions.record(store, agent, "Keep it?", ["yes"], None)
