@@ -1539,6 +1539,108 @@ def list_roles() -> None:
         typer.echo(f"{role.name:<13} {flags:<14} {role.description}")
 
 
+# -- state: backup, list, restore -------------------------------------------
+
+state_app = typer.Typer(
+    no_args_is_help=True,
+    rich_markup_mode=MARKUP,
+    help="Back up the state (the database, your roles and loadout.toml, optionally the logs),"
+    " list the backups, restore one. Moving a home: docs/state.md.",
+)
+app.add_typer(state_app, name="state")
+
+
+def size_text(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return ""  # not reached
+
+
+@state_app.command("backup")
+def state_backup(
+    to: Annotated[
+        str | None,
+        typer.Option(
+            "--to", help="The new directory to write it to (default: one in the home's backups/)."
+        ),
+    ] = None,
+    logs: Annotated[bool, typer.Option("--logs", help="Include the logs/ directory.")] = False,
+) -> None:
+    """Back up the state, also while agents run: the database (through SQLite's online backup
+    API, then checked with `PRAGMA integrity_check`), the home's roles/ and loadout.toml, and
+    with `--logs` the logs. Nothing outside the home: no worktrees, no provider data.
+    `{cli} state list` lists them, `{cli} state restore` restores one."""
+    try:
+        result = orch().backup_state(to, logs)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    parts = ["database", *result["files"]]
+    typer.echo(f"backup: {result['path']}")
+    typer.echo(f"  {', '.join(parts)}; {size_text(result['size'])}")
+    for path in result["skipped"]:
+        typer.echo(f"  left out (a symbolic link): {path}")
+    typer.secho(f"warning: {result['warning']}", fg=typer.colors.YELLOW, err=True)
+
+
+@state_app.command("list")
+def state_list(as_json: Annotated[bool, typer.Option("--json", help="As JSON.")] = False) -> None:
+    """List the backups in the home's backups/, newest first: the directories `{cli} state
+    backup` made and database files (`*.db`) put there by hand."""
+    found = orch().list_backups()
+    if as_json:
+        typer.echo(json.dumps(found, indent=2))
+        return
+    if not found:
+        typer.echo("no backups")
+    for item in found:
+        when = item["time"].replace("T", " ").replace("+00:00", " UTC")
+        logs = "logs" if item["logs"] else ""
+        typer.echo(f"{item['name']:<34} {when}  {size_text(item['size']):>9}  {logs}".rstrip())
+
+
+@state_app.command("restore")
+def state_restore(
+    backup: Annotated[
+        str,
+        typer.Argument(
+            help="A name from `state list`, or the path of a backup directory or database file."
+        ),
+    ],
+    yes: Annotated[
+        bool, typer.Option("--yes", "-y", help="Restore; without it, only say what it would do.")
+    ] = False,
+    logs: Annotated[
+        bool, typer.Option("--logs", help="Also restore the backup's logs/, if it has them.")
+    ] = False,
+) -> None:
+    """Restore a backup into this home. Refuses while any turn is running or queued, and a file
+    that is not an intact state database. Without `--yes` it only says what it would do. The
+    state it replaces is first kept as a new backup, so nothing is lost; the database is
+    replaced in place, so a running dashboard keeps working, but restart it."""
+    try:
+        result = orch().restore_state(backup, confirm=yes, logs=logs)
+    except NeedsConfirmation as exc:
+        typer.echo(str(exc))
+        typer.secho(
+            f"nothing changed; run `{CLI} state restore {backup} --yes` to restore", err=True
+        )
+        raise typer.Exit(1) from None
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    typer.echo(f"restored {result['restored']}")
+    if result["files"]:
+        typer.echo(f"  and the backup's {', '.join(result['files'])}")
+    typer.echo(
+        f"the replaced state is kept in {result['kept']}"
+        f" (`{CLI} state restore {result['kept_name']} --yes` brings it back)"
+    )
+    if result["newer"]:
+        typer.secho(f"note: {result['newer']}", fg=typer.colors.YELLOW, err=True)
+    typer.secho(result["restart"], fg=typer.colors.YELLOW, err=True)
+
+
 def name_the_command(group: typer.Typer) -> None:
     """Put CLI where the docstrings of `group`'s commands and callbacks say `{cli}`."""
     for info in [*group.registered_commands, group.registered_callback]:

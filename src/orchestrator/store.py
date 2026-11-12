@@ -331,10 +331,93 @@ LOST_TRIGGER_SECONDS = 120  # an ended run still unchecked this long lost its tr
 
 EVENT_TEXT_LIMIT = 4000
 WAL_WAIT_SECONDS = 3.0
+# The tables every state database has had since the first release (tests/test_store.py:
+# OLD_SCHEMA): a file without them is not one. The newer ones are added when it is opened.
+STATE_TABLES = ("projects", "agents", "settings", "runs", "events")
 
 
 def now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _schema(conn: sqlite3.Connection) -> dict[str, set[str]]:
+    """The tables of a database and their columns."""
+    tables = [
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        )
+    ]
+    quoted = {table: table.replace('"', '""') for table in tables}
+    return {
+        table: {row[1] for row in conn.execute(f'PRAGMA table_info("{quoted[table]}")')}
+        for table in tables
+    }
+
+
+def known_schema() -> dict[str, set[str]]:
+    """The tables and columns this version creates: SCHEMA and the *_ADDED lists."""
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.executescript(SCHEMA)
+        added = (("run_meta", RUN_META_ADDED), ("run_usage", RUN_USAGE_ADDED))
+        for table, columns in (*added, ("notices", NOTICES_ADDED)):
+            present = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            for name, ddl in columns:
+                if name not in present:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+        return _schema(conn)
+    finally:
+        conn.close()
+
+
+def check_database(path: Path) -> list[str]:
+    """Raise ValueError unless the file `path` is an intact state database: readable as
+    SQLite, `PRAGMA integrity_check` ok, with the tables of STATE_TABLES. Else return the
+    tables and `table.column`s it has that this version does not know (a newer version
+    wrote it). Opening it may fold a -wal file beside it into it, as any open does."""
+    if not path.is_file():
+        raise ValueError(f"{path} is not a file")
+    try:
+        conn = sqlite3.connect(path, timeout=30)
+        try:
+            result = [row[0] for row in conn.execute("PRAGMA integrity_check")]
+            schema = _schema(conn)
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as exc:
+        raise ValueError(f"{path} is not a readable SQLite database ({exc})") from None
+    if result != ["ok"]:
+        raise ValueError(f"{path} fails the integrity check: {'; '.join(result[:5])}")
+    if missing := [table for table in STATE_TABLES if table not in schema]:
+        raise ValueError(f"{path} is not a state database (no table {', '.join(missing)})")
+    known = known_schema()
+    unknown: list[str] = []
+    for table, columns in sorted(schema.items()):
+        if table not in known:
+            unknown.append(table)
+        else:
+            unknown += [f"{table}.{column}" for column in sorted(columns - known[table])]
+    return unknown
+
+
+def _settle(conn: sqlite3.Connection, note: str, run_floor: int) -> None:
+    """Prepare a restored database (Store.replace_from): its queued and running turns end as
+    stopped with `note`, every ended run counts as checked (its parents are not woken), and
+    run ids continue above `run_floor`. Works on the schema of any version."""
+    with conn:
+        conn.execute(
+            f"UPDATE runs SET status = ?, error = ?, ended_at = ?"
+            f" WHERE status IN ('{ACTIVE[0]}', '{ACTIVE[1]}')",
+            (RunStatus.STOPPED.value, note, now()),
+        )
+        if "checked" in _schema(conn).get("run_meta", set()):
+            conn.execute("UPDATE run_meta SET checked = 1 WHERE checked = 0")
+        raised = conn.execute(
+            "UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'runs'", (run_floor,)
+        ).rowcount
+        if not raised and run_floor:
+            conn.execute("INSERT INTO sqlite_sequence (name, seq) VALUES ('runs', ?)", (run_floor,))
 
 
 def _older_than(timestamp: str | None, seconds: float) -> bool:
@@ -540,6 +623,58 @@ class Store:
             conn.execute("COMMIT")
         finally:
             conn.close()
+
+    # -- backup and restore (core/state.py) -------------------------------
+
+    def backup(self, dest: Path) -> None:
+        """Copy the database into the file `dest` (new, or empty) with SQLite's online backup
+        API: one consistent snapshot, taken in one step under a read transaction, so it is
+        safe while other processes write; never a copy of the file. The copy is in
+        rollback-journal mode: a single file, with no -wal beside it."""
+        source = sqlite3.connect(self.path, timeout=30)
+        try:
+            target = sqlite3.connect(dest)
+            try:
+                source.backup(target)
+                target.execute("PRAGMA journal_mode=DELETE")
+            finally:
+                target.close()
+        finally:
+            source.close()
+
+    def replace_from(
+        self, source: Path, note: str, before: Callable[[], None] = lambda: None
+    ) -> None:
+        """Make this database's content that of the database file `source`, in place with
+        the backup API: no file is swapped, so the connections other processes keep (a
+        dashboard) see the new content with their next transaction, and the database stays
+        in WAL. `source` is first read into memory and settled there (_settle: its queued and
+        running turns end as stopped with `note`, as their runners are gone; nothing wakes a
+        parent; run ids continue above the ones this database used, so a turn never reuses
+        an earlier turn's logs/run-<id>). `before` runs right before the copy: raising there
+        leaves the database as it was. The tables and columns `source` lacks (an older
+        version's) are added by the next open (Store())."""
+        with self._conn() as conn:
+            used = conn.execute(
+                "SELECT MAX(COALESCE((SELECT MAX(id) FROM runs), 0),"
+                " COALESCE((SELECT MAX(seq) FROM sqlite_sequence WHERE name = 'runs'), 0))"
+            ).fetchone()[0]
+        memory = sqlite3.connect(":memory:")
+        try:
+            disk = sqlite3.connect(source, timeout=30)
+            try:
+                disk.backup(memory)
+            finally:
+                disk.close()
+            _settle(memory, note, used)
+            before()
+            target = sqlite3.connect(self.path, timeout=30)
+            try:
+                memory.backup(target)
+            finally:
+                target.close()
+        finally:
+            memory.close()
 
     # -- projects ---------------------------------------------------------
 
