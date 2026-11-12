@@ -47,7 +47,16 @@ home (config.TURN_HOME_ENV, set by the runner; e.g. a test run in a temporary OR
 an agent's shell, whose notices would otherwise reach the owner's desktop through osascript).
 
 On Linux: 3., then a detached helper with `notify-send` ("linux": a click opens `spartito
-app` at the target where notify-send has actions), else the notice waits for a page. Claims keep a notice to one showing: a taker claims only a
+app` at the target where notify-send has actions), else the notice waits for a page. The
+helpers are bounded: one waits for a click at most LINUX_WAIT_SECONDS (then notify-send is
+killed), and at most LINUX_SLOTS of them wait at once (a lock per slot under
+config.runtime_dir(); without a free slot the notice is shown without the wait, its text
+naming the command). A burst is coalesced: at most BURST_LIMIT popups per BURST_SECONDS
+for the home; the notices beyond are counted (logged), and the first of them waits until
+the window frees up and shows "<n> more notices" in one popup (or itself, when it was the
+only one).
+
+Claims keep a notice to one showing: a taker claims only a
 notice left to it or to a later way of the list (`may_take`; the window that may post, any),
 so a better way may still take it, and a worse one only once it was left to it. Who was
 chosen and does not take the notice within ESCALATE_SECONDS (CLAIM_WAIT_SECONDS for the
@@ -119,7 +128,15 @@ CLAIM_WAIT_SECONDS = 15.0  # for the launcher's app to claim the notice (2.)
 ESCALATE_SECONDS = 20.0  # for the window process or a page to claim a notice left to it
 WAIT_STEP = 0.25  # between two looks at a notice the helper waits on
 OPEN_TIMEOUT = 10.0
-LINUX_WAIT_SECONDS = 1800.0  # a Linux helper waiting for a click ends after this
+# A Linux helper waiting for a click ends after this (notify-send killed with it): five
+# minutes covers a glance back at the desk, and keeps a burst from leaving helpers for long.
+LINUX_WAIT_SECONDS = 300.0
+LINUX_SLOTS = 3  # Linux helpers waiting for a click at once; beyond: shown without the wait
+LINUX_SLOT_DIR = "linux-waiting"  # in config.runtime_dir(): slot-<n>, locked while waiting
+BURST_LIMIT = 4  # Linux popups per BURST_SECONDS; the notices beyond are summed up in one
+BURST_SECONDS = 60.0
+BURST_STATE = "linux-burst.json"  # in config.runtime_dir(), changed under BURST_LOCK
+BURST_LOCK = "linux-burst.lock"
 CLAUSE_DECISION = " — open Spartito to answer"
 CLAUSE_FINISHED = " — open Spartito to see it"
 LINUX_ICON = Path(__file__).parent / "web" / "static" / "icon-192.png"
@@ -1192,23 +1209,141 @@ def display() -> bool:
 
 
 def linux_helper(send: str, body: str, target: str) -> None:
-    """Show the notification; with actions (and a display to open a window on), wait up to
-    LINUX_WAIT_SECONDS for its click and then start `spartito app` at the target."""
-    actions = display() and has_actions(send)
-    argv = linux_argv(send, body, target, actions)
-    try:
-        done = subprocess.run(
-            argv,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            env=linux_env(),
-            timeout=LINUX_WAIT_SECONDS if actions else 30,
-        )
-    except OSError, subprocess.TimeoutExpired:
+    """Show the notification unless a burst holds it back (`burst_turn`): a held one is
+    counted, and one helper shows the count once the burst window has passed."""
+    turn, wake = burst_turn()
+    if turn == SHOW:
+        linux_show(send, body, target)
         return
+    if turn == HELD:
+        log_step(None, "counted", PATHS[LINUX], actor(), f"{burst_why()}: in the summary")
+        return
+    time.sleep(max(0.0, min(wake - time.time(), BURST_SECONDS)))
+    held = burst_summarised()
+    if held <= 1:  # only this one was held back: shown as itself
+        linux_show(send, body, target)
+        return
+    text = f"{held} more notices"
+    log_step(None, "shown", PATHS[LINUX], actor(), f"{burst_why()}: {text} in one")
+    linux_show(send, text, "")
+
+
+def linux_show(send: str, body: str, target: str) -> None:
+    """Show the notification; with actions (a display to open a window on, and a free slot
+    of LINUX_SLOTS), wait up to LINUX_WAIT_SECONDS for its click and then start
+    `spartito app` at the target. notify-send is killed when the time is up."""
+    with waiting_slot(display() and has_actions(send)) as actions:
+        argv = linux_argv(send, body, target, actions)
+        try:
+            done = subprocess.run(
+                argv,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                env=linux_env(),
+                timeout=LINUX_WAIT_SECONDS if actions else 30,
+            )
+        except OSError, subprocess.TimeoutExpired:
+            return
     if actions and "default" in done.stdout.split():
         start_app(open_command(target))
+
+
+@contextlib.contextmanager
+def waiting_slot(wanted: bool):
+    """One of LINUX_SLOTS slots for a helper waiting for a click, held until the block ends
+    (a lock, so a helper that died frees its slot); yields whether it got one."""
+    if not wanted:
+        yield False
+        return
+    import fcntl
+
+    handles = []
+    try:
+        folder = config.runtime_dir() / LINUX_SLOT_DIR
+        folder.mkdir(exist_ok=True)
+        for n in range(LINUX_SLOTS):
+            handle = (folder / f"slot-{n}").open("a")
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                handle.close()
+                continue
+            handles.append(handle)
+            break
+    except OSError:
+        pass
+    try:
+        yield bool(handles)
+    finally:
+        for handle in handles:
+            handle.close()
+
+
+SHOW, HELD, SUMMARY = "show", "held", "summary"  # a helper's turn in a burst
+
+
+@contextlib.contextmanager
+def burst_state():
+    """The burst state, {"shown": [times], "held": n, "summary": [pid, since] or None},
+    read and written under BURST_LOCK."""
+    import fcntl
+
+    folder = config.runtime_dir()
+    with (folder / BURST_LOCK).open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        path = folder / BURST_STATE
+        try:
+            state = json.loads(path.read_text())
+            state = state if isinstance(state, dict) else {}
+        except OSError, ValueError:
+            state = {}
+        state.setdefault("shown", [])
+        state.setdefault("held", 0)
+        state.setdefault("summary", None)
+        yield state
+        temp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        temp.write_text(json.dumps(state))
+        temp.replace(path)
+
+
+def burst_turn() -> tuple[str, float]:
+    """This helper's turn: SHOW (fewer than BURST_LIMIT popups within BURST_SECONDS), HELD
+    (counted; another helper sums it up), or SUMMARY (counted, and this helper shows the sum
+    at the time returned). Any error: SHOW."""
+    now = time.time()
+    try:
+        with burst_state() as state:
+            shown = [float(t) for t in state["shown"] if 0 <= now - float(t) < BURST_SECONDS]
+            state["shown"] = shown
+            if len(shown) < BURST_LIMIT:
+                shown.append(now)
+                return SHOW, now
+            state["held"] = int(state["held"]) + 1
+            owner = state["summary"]
+            if owner and pid_running(int(owner[0])) and now - float(owner[1]) < 2 * BURST_SECONDS:
+                return HELD, now
+            state["summary"] = [os.getpid(), now]
+            return SUMMARY, min(shown) + BURST_SECONDS
+    except Exception:
+        return SHOW, now
+
+
+def burst_summarised() -> int:
+    """The summing helper's time has come: the count of the held notices (this one's
+    included), now taken; the summary counts as a popup."""
+    try:
+        with burst_state() as state:
+            held = int(state["held"])
+            state["held"], state["summary"] = 0, None
+            state["shown"] = [*state["shown"], time.time()]
+            return held
+    except Exception:
+        return 1
+
+
+def burst_why() -> str:
+    return f"over {BURST_LIMIT} popups in {BURST_SECONDS:.0f} s"
 
 
 def start_app(options: list[str]) -> None:

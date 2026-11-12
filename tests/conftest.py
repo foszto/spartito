@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import os
+import signal
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -19,7 +22,7 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ORCH_HOME", str(tmp_path / "home"))
     monkeypatch.delenv("ORCH_AGENT_ID", raising=False)
     # Neither the turn's home of an agent running the tests nor the switch: the tests of the
-    # desktop paths need them unset (the fake osascript keeps them off the desktop).
+    # desktop paths need them unset (the fake osascript and notify-send keep them off the desktop).
     monkeypatch.delenv("ORCH_TURN_HOME", raising=False)
     monkeypatch.delenv("ORCH_DESKTOP_NOTIFICATIONS", raising=False)
     monkeypatch.setenv("ORCH_NOTIFY_DELAY", "0")  # notifications start without the delay
@@ -94,6 +97,147 @@ def fake_osascript(
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
     monkeypatch.setenv("FAKE_OSASCRIPT_LOG", str(log))
     return log
+
+
+# Stands in for notify-send (Linux), so no test or child of one (a runner, an MCP server, the
+# detached helper) shows a real desktop notification or leaves a helper waiting for a click.
+# Appends one line per call to $FAKE_NOTIFY_SEND_LOG: its path, its session bus and its
+# arguments, each followed by \x1f; `--help` is not noted. It exits at once unless told:
+# FAKE_ACTIONS=1: its help lists --action and --wait; FAKE_SLEEP=<s>: sleeps first;
+# FAKE_INVOKED=<name>: prints it, as an invoked action.
+FAKE_NOTIFY_SEND = r"""#!/bin/sh
+if [ "$1" = "--help" ]; then
+    echo "Usage: notify-send [OPTION...] <SUMMARY> [BODY]"
+    [ -n "$FAKE_ACTIONS" ] && echo "  -A, --action=[NAME=]Text...  Specifies the actions to display."
+    [ -n "$FAKE_ACTIONS" ] && echo "  -w, --wait                    Wait for the notification to be closed."
+    exit 0
+fi
+if [ -n "$FAKE_NOTIFY_SEND_LOG" ]; then
+    { printf '%s\037%s\037' "$0" "$DBUS_SESSION_BUS_ADDRESS"
+      for arg in "$@"; do printf '%s\037' "$arg"; done; printf '\n'; } >> "$FAKE_NOTIFY_SEND_LOG"
+fi
+[ -n "$FAKE_SLEEP" ] && sleep "$FAKE_SLEEP"
+[ -n "$FAKE_INVOKED" ] && echo "$FAKE_INVOKED"
+exit 0
+"""
+
+
+class FakeNotifySend:
+    """The fake notify-send first on PATH, and the calls it noted."""
+
+    def __init__(self, path: Path, log: Path) -> None:
+        self.path = path
+        self.log = log
+
+    def lines(self) -> list[list[str]]:
+        text = self.log.read_text() if self.log.exists() else ""
+        return [line.split("\x1f")[:-1] for line in text.splitlines()]
+
+    def calls(self) -> list[list[str]]:
+        """The arguments of each call."""
+        return [line[2:] for line in self.lines()]
+
+    def buses(self) -> list[str]:
+        return [line[1] for line in self.lines()]
+
+    def programs(self) -> list[str]:
+        """The path each call was made through (always this fake's)."""
+        return [line[0] for line in self.lines()]
+
+
+# A session bus that is not there: even a notify-send that is not the fake reaches no desktop.
+NO_BUS = "no-session-bus"
+
+
+@pytest.fixture(autouse=True)
+def fake_notify_send(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> FakeNotifySend:
+    """A fake notify-send first on PATH, inherited by every child process; and, should a real
+    one run anyway, no session bus or display to reach: DBUS_SESSION_BUS_ADDRESS names a
+    socket that does not exist (desktop.linux_env keeps a set value), XDG_RUNTIME_DIR (its
+    fallback) is a temporary directory, DISPLAY and WAYLAND_DISPLAY are unset (tests that
+    need one set it)."""
+    bin_dir = tmp_path_factory.mktemp("fake-notify-send")
+    path = bin_dir / "notify-send"
+    path.write_text(FAKE_NOTIFY_SEND)
+    path.chmod(0o755)
+    log = bin_dir / "notify-send.log"
+    runtime = bin_dir / "runtime"
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.setenv("FAKE_NOTIFY_SEND_LOG", str(log))
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", f"unix:path={runtime / NO_BUS}")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    return FakeNotifySend(path, log)
+
+
+# Processes of the desktop's notifications that a test session may leave running for a while
+# (a detached helper waiting for a fake's answer, a burst summary): this long at the end.
+LEFTOVER_GRACE_SECONDS = 90.0
+NOTIFIER_WORDS = (b"desktop.helper", b"notify-send")
+
+
+def process_start_ticks(pid: int | str) -> int | None:
+    """When the process started, in clock ticks since boot (Linux), None: gone."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        return int(stat.rsplit(")", 1)[1].split()[19])
+    except OSError, ValueError, IndexError:
+        return None
+
+
+def session_notifiers(base: Path, since: int) -> dict[int, str]:
+    """The live processes of desktop notifications (a desktop.helper, a notify-send) this test
+    session started: started after it (`since`, in ticks) and with its temporary directory
+    `base` in their command line or environment (ORCH_HOME, PATH, HOME: every child of a test
+    has one of these). Linux only (/proc); pid: command line."""
+    mark = (str(base) + os.sep).encode()
+    found: dict[int, str] = {}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit() or int(entry.name) == os.getpid():
+            continue
+        try:
+            argv = (entry / "cmdline").read_bytes()
+            if not any(word in argv for word in NOTIFIER_WORDS):
+                continue
+            environ = (entry / "environ").read_bytes()
+        except OSError:
+            continue
+        started = process_start_ticks(entry.name)
+        if started is None or started < since or (mark not in argv and mark not in environ):
+            continue
+        found[int(entry.name)] = argv.replace(b"\0", b" ").decode(errors="replace").strip()
+    return found
+
+
+@pytest.fixture(scope="session", autouse=True)
+def no_leftover_notifiers(tmp_path_factory: pytest.TempPathFactory):
+    """At the end of the session (each xdist worker its own): no notification helper or
+    notify-send that it started still runs. Such a process would be a real notification
+    waiting on the desktop, or a fake that was never told to end. The ones found after
+    LEFTOVER_GRACE_SECONDS are killed and the session errs."""
+    if not Path("/proc/self/stat").exists():
+        yield
+        return
+    base = tmp_path_factory.getbasetemp().resolve()
+    since = process_start_ticks(os.getpid()) or 0
+    yield
+    deadline = time.monotonic() + LEFTOVER_GRACE_SECONDS
+    while (left := session_notifiers(base, since)) and time.monotonic() < deadline:
+        time.sleep(0.5)
+    if not left:
+        return
+    for pid in left:
+        with contextlib.suppress(OSError):  # with its children, when it leads its group
+            if os.getpgid(pid) == pid:
+                os.killpg(pid, signal.SIGKILL)
+            else:
+                os.kill(pid, signal.SIGKILL)
+    listed = "\n".join(f"  {pid}: {argv}" for pid, argv in left.items())
+    pytest.fail(f"the tests left notification processes running (now killed):\n{listed}")
 
 
 # Stands in for the service managers, so no test touches the real launchd or systemd. Appends

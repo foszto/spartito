@@ -1,8 +1,8 @@
 """Who shows a desktop notification (desktop.show): a page, the Spartito window process, the
 launcher's app started to post, the Linux helper, or osascript, and the fallbacks between them.
 
-Nothing real is shown or started: osascript is the fake of conftest.py, `open` and
-`notify-send` are fakes written here, and the helper runs in this process unless a test runs
+Nothing real is shown or started: osascript and notify-send are the fakes of conftest.py,
+`open` is a fake written here, and the helper runs in this process unless a test runs
 it as the detached process on purpose (with fakes only).
 """
 
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -17,6 +18,7 @@ import time
 from pathlib import Path
 
 import pytest
+from conftest import FakeNotifySend
 from test_decisions import calls
 from test_notifications import until
 
@@ -414,32 +416,16 @@ def test_the_detached_helper_runs_as_its_own_process(
 
 # -- 4. Linux --------------------------------------------------------------------------------
 
-FAKE_NOTIFY_SEND = """#!/bin/sh
-here=$(dirname "$0")
-if [ "$1" = "--help" ]; then
-    echo "Usage: notify-send [OPTION...] <SUMMARY> [BODY]"
-    [ -n "$FAKE_ACTIONS" ] && echo "  -A, --action=[NAME=]Text...  Specifies the actions to display."
-    [ -n "$FAKE_ACTIONS" ] && echo "  -w, --wait                    Wait for the notification to be closed."
-    exit 0
-fi
-printf '%s\\n' "$@" > "$here/notify.args"
-echo "$DBUS_SESSION_BUS_ADDRESS" > "$here/notify.bus"
-[ -n "$FAKE_SLEEP" ] && sleep "$FAKE_SLEEP"
-[ -n "$FAKE_INVOKED" ] && echo "$FAKE_INVOKED"
-exit 0
-"""
-
 
 @pytest.fixture
-def notify_send(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    path = tmp_path / "nbin" / "notify-send"
-    path.parent.mkdir()
-    path.write_text(FAKE_NOTIFY_SEND)
-    path.chmod(0o755)
-    monkeypatch.setattr(desktop, "NOTIFY_SEND", str(path))
+def notify_send(
+    fake_notify_send: FakeNotifySend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> FakeNotifySend:
+    """The fake notify-send of conftest.py, as this process's notify-send, and a display."""
+    monkeypatch.setattr(desktop, "NOTIFY_SEND", str(fake_notify_send.path))
     monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
-    return path
+    return fake_notify_send
 
 
 @pytest.fixture
@@ -449,8 +435,9 @@ def started(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     return noted
 
 
-def sent(notify_send: Path) -> list[str]:
-    return (notify_send.parent / "notify.args").read_text().splitlines()
+def sent(fake: FakeNotifySend) -> list[str]:
+    """The arguments of the last call of the fake notify-send."""
+    return fake.calls()[-1]
 
 
 def test_linux_with_notify_send_hands_the_claimed_notice_to_the_helper(
@@ -458,7 +445,7 @@ def test_linux_with_notify_send_hands_the_claimed_notice_to_the_helper(
 ):
     monkeypatch.setattr(desktop, "PLATFORM", "linux")
     desktop.show(orch.store, "Decision needed", "a-1", 9)
-    assert spawned == [["linux", str(notify_send), "Decision needed", "decision:9"]]
+    assert spawned == [["linux", str(notify_send.path), "Decision needed", "decision:9"]]
     assert orch.notices() == [] and calls(fake_osascript) == []  # claimed: shown once
 
 
@@ -476,7 +463,7 @@ def test_linux_with_actions_a_click_opens_the_window_at_the_target(
 ):
     monkeypatch.setenv("FAKE_ACTIONS", "1")
     monkeypatch.setenv("FAKE_INVOKED", "default")
-    desktop.linux_helper(str(notify_send), "Decision needed", "decision:5")
+    desktop.linux_helper(str(notify_send.path), "Decision needed", "decision:5")
     assert sent(notify_send) == [
         "--app-name=Spartito",
         f"--icon={desktop.LINUX_ICON}",
@@ -488,7 +475,7 @@ def test_linux_with_actions_a_click_opens_the_window_at_the_target(
         "Decision needed",
     ]
     assert started == [["--decision", "5"]]
-    desktop.linux_helper(str(notify_send), BODY, "a-1")
+    desktop.linux_helper(str(notify_send.path), BODY, "a-1")
     assert started[-1] == ["--agent", "a-1"]
 
 
@@ -499,20 +486,20 @@ def test_linux_without_a_click_nothing_opens(notify_send, started, monkeypatch, 
         monkeypatch.delenv("DISPLAY")
         monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
         monkeypatch.setenv("FAKE_INVOKED", "default")
-    desktop.linux_helper(str(notify_send), BODY, "a-1")
+    desktop.linux_helper(str(notify_send.path), BODY, "a-1")
     assert started == []
     assert ("--wait" in sent(notify_send)) == (why == "dismissed")
 
 
 def test_linux_without_actions_the_text_names_the_command(notify_send, started, monkeypatch):
     monkeypatch.setenv("FAKE_INVOKED", "default")  # not asked for: ignored
-    desktop.linux_helper(str(notify_send), "Decision needed", "decision:5")
+    desktop.linux_helper(str(notify_send.path), "Decision needed", "decision:5")
     args = sent(notify_send)
     assert "--wait" not in args and not any(a.startswith("--action") for a in args)
     assert args[-1] == "Decision needed — open it: spartito app --decision 5"
-    desktop.linux_helper(str(notify_send), BODY, "a-1")
+    desktop.linux_helper(str(notify_send.path), BODY, "a-1")
     assert sent(notify_send)[-1] == f"{BODY} — open it: spartito app --agent a-1"
-    desktop.linux_helper(str(notify_send), BODY, "")
+    desktop.linux_helper(str(notify_send.path), BODY, "")
     assert sent(notify_send)[-1] == f"{BODY} — open it: spartito app"
     assert started == []
 
@@ -520,7 +507,7 @@ def test_linux_without_actions_the_text_names_the_command(notify_send, started, 
 def test_linux_targets_are_checked_before_use(notify_send, started, monkeypatch):
     monkeypatch.setenv("FAKE_ACTIONS", "1")
     monkeypatch.setenv("FAKE_INVOKED", "default")
-    desktop.linux_helper(str(notify_send), BODY, "--port=1; rm -rf x")
+    desktop.linux_helper(str(notify_send.path), BODY, "--port=1; rm -rf x")
     assert started == [[]]  # the plain window
     assert desktop.open_command("decision:12") == ["--decision", "12"]
     assert desktop.open_command("decision:x") == []
@@ -532,18 +519,18 @@ def test_linux_helper_has_a_time_limit(notify_send, started, monkeypatch):
     monkeypatch.setenv("FAKE_INVOKED", "default")
     monkeypatch.setattr(desktop, "LINUX_WAIT_SECONDS", 0.5)
     begin = time.monotonic()
-    desktop.linux_helper(str(notify_send), BODY, "a-1")
+    desktop.linux_helper(str(notify_send.path), BODY, "a-1")
     assert time.monotonic() - begin < 5 and started == []
 
 
 def test_linux_session_bus_fallback(notify_send, started, monkeypatch, tmp_path):
     monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
     monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1000")
-    desktop.linux_helper(str(notify_send), BODY, "a-1")
-    assert (notify_send.parent / "notify.bus").read_text().strip() == "unix:path=/run/user/1000/bus"
+    desktop.linux_helper(str(notify_send.path), BODY, "a-1")
+    assert notify_send.buses()[-1] == "unix:path=/run/user/1000/bus"
     monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/elsewhere")
-    desktop.linux_helper(str(notify_send), BODY, "a-1")
-    assert (notify_send.parent / "notify.bus").read_text().strip() == "unix:path=/elsewhere"
+    desktop.linux_helper(str(notify_send.path), BODY, "a-1")
+    assert notify_send.buses()[-1] == "unix:path=/elsewhere"
 
 
 def test_linux_icon_prefers_the_installed_one(notify_send, tmp_path):
@@ -552,6 +539,135 @@ def test_linux_icon_prefers_the_installed_one(notify_send, tmp_path):
     icon.parent.mkdir(parents=True)
     icon.write_bytes(b"png")
     assert desktop.linux_icon() == str(icon)
+
+
+# -- no test reaches the real desktop --------------------------------------------------------
+
+
+def test_the_tests_and_their_children_find_only_fake_notifiers(
+    fake_notify_send: FakeNotifySend, fake_osascript: Path
+):
+    """Every process of a test resolves notify-send and osascript to the fakes of conftest.py,
+    and finds no session bus or display, even a child given no PATH of its own."""
+    assert shutil.which("notify-send") == str(fake_notify_send.path)
+    assert shutil.which("osascript") == str(fake_osascript.parent / "osascript")
+    bus = os.environ["DBUS_SESSION_BUS_ADDRESS"].removeprefix("unix:path=")
+    assert not Path(bus).exists() and Path(bus).is_relative_to(os.environ["XDG_RUNTIME_DIR"])
+    assert not desktop.display()
+    show = "import shutil; print(shutil.which('notify-send')); print(shutil.which('osascript'))"
+    done = subprocess.run([sys.executable, "-c", show], capture_output=True, text=True, check=True)
+    assert done.stdout.split() == [
+        str(fake_notify_send.path),
+        str(fake_osascript.parent / "osascript"),
+    ]
+
+
+def helper_pids(text: str) -> list[int]:
+    """The live desktop helpers and notify-sends whose command line has `text`."""
+    found = []
+    for entry in Path("/proc").iterdir():
+        try:
+            argv = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        if entry.name.isdigit() and text.encode() in argv and b"notify" in argv:
+            found.append(int(entry.name))
+    return found
+
+
+@pytest.mark.skipif(not Path("/proc").is_dir(), reason="looks for the helper in /proc")
+def test_a_linux_notice_through_the_detached_helper_reaches_only_the_fake(
+    orch: Orchestrator, fake_notify_send: FakeNotifySend, monkeypatch
+):
+    """The real path, as a runner or an MCP server takes it: notify-send looked up on PATH,
+    the detached helper started for real. The fake notes the call, and the helper ends."""
+    monkeypatch.setattr(desktop, "PLATFORM", "linux")
+    monkeypatch.setattr(desktop, "NOTIFY_SEND", "notify-send")  # as outside the tests
+    monkeypatch.setattr(desktop, "spawn", REAL_SPAWN)
+    text = f"guard-{os.getpid()}-{time.monotonic_ns()} finished"
+    desktop.show(orch.store, text, "a-1")
+    until(lambda: fake_notify_send.calls(), what="the fake notify-send's call")
+    assert fake_notify_send.programs() == [str(fake_notify_send.path)]
+    assert fake_notify_send.calls()[0][-2:] == [
+        "Spartito",
+        f"{text} — open it: spartito app --agent a-1",
+    ]
+    until(lambda: not helper_pids(text), what="the helper's end")
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the runner notifies as its platform")
+def test_a_runner_on_linux_notifies_through_the_fake(
+    orch: Orchestrator, project: str, fake_notify_send: FakeNotifySend
+):
+    """A runner process (the tests' in-process fakes do not reach it) finds the fake
+    notify-send on its PATH: the "finished" notice of a turn the owner asked for."""
+    agent, _ = orch.spawn(project, "hello", worktree=False)
+    until(lambda: fake_notify_send.calls(), what="the runner's notification")
+    assert fake_notify_send.programs() == [str(fake_notify_send.path)]
+    assert fake_notify_send.calls()[0][-1].startswith(f"{agent.id} finished")
+    assert fake_notify_send.buses() == [os.environ["DBUS_SESSION_BUS_ADDRESS"]]
+
+
+# -- Linux: bounded helpers -------------------------------------------------------------------
+
+
+def test_linux_helpers_waiting_for_a_click_are_capped(notify_send, started, monkeypatch):
+    monkeypatch.setenv("FAKE_ACTIONS", "1")
+    monkeypatch.setattr(desktop, "LINUX_SLOTS", 1)
+    assert desktop.LINUX_WAIT_SECONDS <= 300
+    with desktop.waiting_slot(True) as got:
+        assert got  # the one slot, held as by a helper that waits
+        desktop.linux_helper(str(notify_send.path), BODY, "a-1")
+        assert "--wait" not in sent(notify_send)
+        assert sent(notify_send)[-1] == f"{BODY} — open it: spartito app --agent a-1"
+    desktop.linux_helper(str(notify_send.path), BODY, "a-1")
+    assert "--wait" in sent(notify_send) and sent(notify_send)[-1] == BODY
+    with desktop.waiting_slot(False) as got:
+        assert not got
+
+
+def test_a_linux_burst_is_summed_up_in_one_popup(notify_send, started, monkeypatch):
+    monkeypatch.setattr(desktop, "BURST_LIMIT", 2)
+    monkeypatch.setattr(desktop, "BURST_SECONDS", 1.0)
+    for n in range(2):
+        desktop.linux_helper(str(notify_send.path), f"a-{n} finished", f"a-{n}")
+    assert [call[-1] for call in notify_send.calls()] == [
+        "a-0 finished — open it: spartito app --agent a-0",
+        "a-1 finished — open it: spartito app --agent a-1",
+    ]
+    summing = threading.Thread(
+        target=desktop.linux_helper, args=(str(notify_send.path), "a-2 finished", "a-2")
+    )
+    began = time.monotonic()
+    summing.start()
+    state = desktop.config.runtime_dir() / desktop.BURST_STATE
+    until(lambda: json.loads(state.read_text())["summary"], what="the summing helper")
+    for n in (3, 4):  # held: counted, nothing shown now
+        desktop.linux_helper(str(notify_send.path), f"a-{n} finished", f"a-{n}")
+    assert len(notify_send.calls()) == 2
+    summing.join(10)
+    assert not summing.is_alive() and time.monotonic() - began < 5
+    assert len(notify_send.calls()) == 3
+    assert sent(notify_send)[-1] == "3 more notices — open it: spartito app"
+    log = desktop.notice_log().read_text()
+    assert log.count("counted linux: over 2 popups in 1 s: in the summary") == 2
+    assert "shown linux: over 2 popups in 1 s: 3 more notices in one" in log
+
+
+def test_a_single_notice_held_by_a_burst_is_shown_as_itself(notify_send, started, monkeypatch):
+    monkeypatch.setattr(desktop, "BURST_LIMIT", 1)
+    monkeypatch.setattr(desktop, "BURST_SECONDS", 0.5)
+    desktop.linux_helper(str(notify_send.path), "a-0 finished", "a-0")
+    began = time.monotonic()
+    desktop.linux_helper(str(notify_send.path), "a-1 finished", "a-1")
+    assert 0.2 < time.monotonic() - began < 5
+    assert [call[-1] for call in notify_send.calls()] == [
+        "a-0 finished — open it: spartito app --agent a-0",
+        "a-1 finished — open it: spartito app --agent a-1",
+    ]
+    desktop.config.runtime_dir().joinpath(desktop.BURST_STATE).write_text("not json")
+    desktop.linux_helper(str(notify_send.path), "a-2 finished", "a-2")  # a broken state: shown
+    assert len(notify_send.calls()) == 3
 
 
 def test_the_app_open_target_rule_is_the_deep_link_rule():

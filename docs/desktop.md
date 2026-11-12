@@ -443,9 +443,14 @@ package's PNG.
 - **With click action**: when this `notify-send` lists `--action` and `--wait` in its help
   (libnotify 0.7.10 or later) and `DISPLAY` or `WAYLAND_DISPLAY` is set, the helper adds
   `--wait --action=default=Open` and, when the default action is invoked, starts
-  `spartito app --decision <n>` or `spartito app --agent <id>`. It waits at most 30 minutes; a click
-  after that does nothing.
+  `spartito app --decision <n>` or `spartito app --agent <id>`. It waits at most 5 minutes,
+  then ends `notify-send`; a click after that does nothing. At most 3 helpers wait for a
+  click at once; a notice beyond them is shown without the click action.
 - **Without**: the text ends with ` — open it: spartito app --decision <n>` (or `--agent <id>`).
+- **Bursts**: at most 4 popups a minute for one home. The notices beyond are not shown one by
+  one: once the minute has passed, one popup says `<n> more notices` and a click (or the
+  text) opens the plain window; when only one was held back it is shown as itself. Each
+  held notice has a `counted` line in `logs/notices.log`.
 - Without `DBUS_SESSION_BUS_ADDRESS` (a service started without it) the helper uses
   `unix:path=$XDG_RUNTIME_DIR/bus`.
 
