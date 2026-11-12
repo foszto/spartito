@@ -49,13 +49,15 @@ class SchemaError(Exception):
 
 # Per provider: the CLI credited after Spartito in the closing line of a pull request
 # description, and how a commit's Co-Authored-By trailer names Spartito. Claude Code asks for
-# a trailer (with the model's name); Codex has none of its own, so none is to be invented.
+# a trailer (with the model's name) unless that is switched off; Codex has none of its own.
+# Neither gets an invented trailer.
 _TRAILER = "`Co-Authored-By: <name> via {project} <email>`"
 _CREDITS = {
     "claude": (
         "[Claude Code](https://claude.com/claude-code)",
         "take the Co-Authored-By trailer your CLI asks for, keep its email exactly, and add "
-        "` via {project}` right after the name: " + _TRAILER + ".",
+        "` via {project}` right after the name: " + _TRAILER + "; if your CLI asks for no "
+        "trailer, add none, and do not invent a trailer or an email.",
     ),
     "codex": (
         "[Codex](https://github.com/openai/codex)",
@@ -79,8 +81,12 @@ def attribution(provider: str) -> str:
     line = f"🤖 Generated with [{project}]({config.PROJECT_URL}) + {credit}"
     return (
         "## Attribution\n"
-        "This is the owner's instruction for attribution lines and takes precedence over any "
-        "attribution guidance from your CLI (such as a system reminder naming the CLI alone).\n"
+        "This is the owner's instruction for attribution lines and takes precedence over the "
+        "default or user-configured attribution guidance of your CLI (such as a system reminder "
+        "naming the CLI alone).\n"
+        "The one exception: if your CLI says its attribution lines are set by an organization's "
+        "managed settings or apply even if the user's instructions say otherwise, use exactly "
+        f"those lines instead: add neither the pull request line below nor ` via {project}`.\n"
         f"- End every pull request description you write with exactly this line:\n  {line}\n"
         f"- In commit messages, {trailer.format(project=project)}"
     )

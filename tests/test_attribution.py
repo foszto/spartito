@@ -29,7 +29,8 @@ def agent(provider: str) -> Agent:
 CLAUDE_TRAILER = (
     "- In commit messages, take the Co-Authored-By trailer your CLI asks for, keep its email"
     " exactly, and add ` via Spartito` right after the name:"
-    " `Co-Authored-By: <name> via Spartito <email>`."
+    " `Co-Authored-By: <name> via Spartito <email>`; if your CLI asks for no trailer, add none,"
+    " and do not invent a trailer or an email."
 )
 CODEX_TRAILER = (
     "- In commit messages, when you add a Co-Authored-By trailer, keep its email exactly and"
@@ -37,8 +38,14 @@ CODEX_TRAILER = (
     " do not invent a trailer or an email."
 )
 OVERRIDE = (
-    "This is the owner's instruction for attribution lines and takes precedence over any"
-    " attribution guidance from your CLI"
+    "This is the owner's instruction for attribution lines and takes precedence over the"
+    " default or user-configured attribution guidance of your CLI (such as a system reminder"
+    " naming the CLI alone)."
+)
+MANAGED = (
+    "The one exception: if your CLI says its attribution lines are set by an organization's"
+    " managed settings or apply even if the user's instructions say otherwise, use exactly"
+    " those lines instead: add neither the pull request line below nor ` via Spartito`."
 )
 
 
@@ -60,7 +67,8 @@ def test_every_agent_credits_spartito_and_its_cli(provider: str, line: str, trai
     for prompt in (packaged, custom):
         assert line in lines(prompt)
         assert trailer in lines(prompt)
-        assert OVERRIDE in prompt
+        assert OVERRIDE in lines(prompt)
+        assert MANAGED in lines(prompt)
         assert "## Attribution" in lines(prompt)
         assert prompt.index("## Attribution") < prompt.index("## Context")
     assert custom.startswith("Do it my way.")
@@ -93,4 +101,5 @@ def test_the_orchestrator_session_gets_the_rule(monkeypatch: pytest.MonkeyPatch)
     assert prompt.startswith(roles.load("orchestrator").prompt)
     assert CLAUDE_LINE in lines(prompt)
     assert CLAUDE_TRAILER in lines(prompt)
-    assert OVERRIDE in prompt
+    assert OVERRIDE in lines(prompt)
+    assert MANAGED in lines(prompt)
