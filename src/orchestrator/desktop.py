@@ -881,7 +881,7 @@ def redirect(
     return choice
 
 
-REASONS = ("fallback", "escalate", "release", "drop", "error")
+REASONS = ("fallback", "escalate", "release", "drop", "counted", "error")
 OUTCOMES = ("shown", "counted", "drop", "claim")  # a step that says how a notice went
 
 

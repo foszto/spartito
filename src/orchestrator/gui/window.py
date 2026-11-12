@@ -563,6 +563,7 @@ class MacDock:
 # The page's hook for the window process (static/app.js: spartitoApp.sync): the view's version
 # it shows now, -1 before the page has the hook.
 SYNC_JS = "window.spartitoApp ? window.spartitoApp.sync({}) : -1"
+CLOSED_JS = "window.spartitoApp && window.spartitoApp.closed ? window.spartitoApp.closed() : []"
 
 
 class WindowView:
@@ -584,6 +585,15 @@ class WindowView:
         if not self.ready():
             return False  # evaluate_js would wait for the page; the next poll tries again
         return self.window.evaluate_js(SYNC_JS.format(json.dumps(view))) == view["version"]
+
+    def closed(self) -> set[int]:
+        """The notices the page closed (none from a page without the hook, or not ready)."""
+        if not self.ready():
+            return set()
+        ids = self.window.evaluate_js(CLOSED_JS)
+        if not isinstance(ids, list):
+            return set()
+        return {one for one in ids if isinstance(one, int) and not isinstance(one, bool)}
 
     def attention(self) -> None:
         if self.dock is not None:

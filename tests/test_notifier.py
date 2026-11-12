@@ -54,6 +54,7 @@ class FakeInside:
         self.attention_calls = 0
         self.holds: list[int] = []
         self.takes = True
+        self.closes: set[int] = set()  # what the page closed
 
     def show(self, view: dict) -> bool:
         if self.takes:
@@ -65,6 +66,9 @@ class FakeInside:
 
     def hold(self, count: int) -> None:
         self.holds.append(count)
+
+    def closed(self) -> set[int]:
+        return set(self.closes)
 
     @property
     def last(self) -> dict:
@@ -109,9 +113,10 @@ ALLOWED = "notifications: X shows them; a click opens it there"
 
 
 def test_before_it_may_post_the_window_takes_the_notices_and_shows_them_inside(
-    orch: Orchestrator, center: FakeCenter, window_notifier, inside: FakeInside, lines
+    orch: Orchestrator, center: FakeCenter, window_notifier, inside: FakeInside, lines, monkeypatch
 ):
     # not started: ticked by hand
+    monkeypatch.setattr(orch, "open_decisions", lambda: {4})  # decision 4 is open
     notice = orch.store.add_notice("decision", "a-1", "Decision needed", 4)
     window_notifier.tick()
     assert desktop.app_fresh()  # whatever the permission
@@ -121,7 +126,13 @@ def test_before_it_may_post_the_window_takes_the_notices_and_shows_them_inside(
     assert inside.last["state"] == "waiting"
     assert inside.last["line"] == f"notifications from X: not asked yet; {INSIDE}"
     assert inside.last["notices"] == [
-        {"id": notice, "kind": "decision", "text": "Decision needed", "target": "decision:4"}
+        {
+            "id": notice,
+            "kind": "decision",
+            "text": "Decision needed",
+            "target": "decision:4",
+            "decision_id": 4,
+        }
     ]
     assert inside.attention_calls == 1
 

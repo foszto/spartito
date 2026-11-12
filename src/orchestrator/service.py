@@ -175,6 +175,10 @@ class Orchestrator:
             )
         return listed
 
+    def open_decisions(self) -> set[int]:
+        """The numbers of the open decisions (one query)."""
+        return {decision.id for decision in decisions.listing(self.store)}
+
     def answer_decision(self, decision_id: int, answer: Any) -> dict[str, Any]:
         """Answer an open decision (an option number picks that option); the answer goes
         to the agent as a user message."""

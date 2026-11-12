@@ -199,8 +199,8 @@ CREATE TABLE IF NOT EXISTS notices (
 );
 -- How each notice went (desktop.py: the trace), one row per step, written by whichever process
 -- took the step; a table of its own, unknown to older code (its notices have no steps). step:
--- 'record' | 'route' | 'escalate' | 'claim' | 'shown' | 'counted' | 'release' | 'fallback' |
--- 'drop';
+-- 'record' | 'route' | 'escalate' | 'claim' | 'shown' | 'counted' | 'leave' | 'release' |
+-- 'fallback' | 'drop';
 -- path: the way it concerns ('window-system', 'launcher-helper', 'osascript', 'waiting', ...);
 -- actor: the process, '<role>:<pid>'; detail: the reason, in words. Pruned with the notices.
 CREATE TABLE IF NOT EXISTS notice_steps (

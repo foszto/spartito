@@ -170,11 +170,16 @@ def worth_showing(
 def settle(
     orch: Facade, notice: dict[str, Any], taker: str, kind: str, path: str, why: str
 ) -> bool:
-    """Claim a notice `taker` does not show one by one, with the step that says so."""
+    """Claim a notice `taker` does not show one by one, with the step that says so. A counted
+    one is claimed with a `claim` step on its path, then `counted`: code from before
+    `counted` reads the claim as its outcome."""
     item = desktop.step(kind, path, why, desktop.actor(taker))
+    first = desktop.step("claim", path, why, item.actor) if kind == "counted" else item
     routes = desktop.takeable(taker)
-    if orch.store.claim_notice(notice["id"], routes=routes, by=item.actor, step=item):
-        desktop.logged(notice["id"], [item])
+    if orch.store.claim_notice(notice["id"], routes=routes, by=item.actor, step=first):
+        desktop.logged(notice["id"], [first])
+        if first is not item:
+            desktop.note(orch.store, notice["id"], item)
         return True
     return False
 

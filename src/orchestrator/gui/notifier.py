@@ -12,7 +12,8 @@ inside itself when it may not post them:
   and the newest few finished ones, a count of the others; none for a decision no longer
   open: core/notices.worth_showing). Inside, IN_WINDOW banners show notices one by one
   (`arrange`: open decisions first); what does not fit, or is pushed out later, is counted
-  in one more banner, never lost unseen.
+  in one more banner, never lost unseen. On each poll a decision no longer open, and what the
+  page closed, leave the window (`tidy`); the banners freed go to what the count holds.
   It asks for permission once the window is shown (`ask`; asked earlier, during the launch, the answer was seen to get lost) and reads
   the authorization status on each poll, so a lost answer, or a change in System Settings, is
   seen within a poll. Allowed, it records the grant (desktop.record_grant) and posts the
@@ -254,6 +255,7 @@ class Facade(Protocol):
         self, found: list[dict[str, Any]], taker: str
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]: ...
     def ingest_notices(self) -> list[int]: ...
+    def open_decisions(self) -> set[int]: ...
 
 
 def text_of(notice: dict[str, Any]) -> str:
@@ -302,6 +304,7 @@ class InWindow(Protocol):
     def show(self, view: dict[str, Any]) -> bool: ...  # True: the page has this view now
     def attention(self) -> None: ...  # a new notice inside the window: draw the eye to it
     def hold(self, count: int) -> None: ...  # notices the page has not taken: keep the badge
+    def closed(self) -> set[int]: ...  # ids of the notices the page closed (a click or ×)
 
 
 class Nowhere:
@@ -316,6 +319,9 @@ class Nowhere:
     def hold(self, count: int) -> None:
         pass
 
+    def closed(self) -> set[int]:
+        return set()
+
 
 def in_window_item(notice: dict[str, Any]) -> dict[str, Any]:
     return {
@@ -323,6 +329,7 @@ def in_window_item(notice: dict[str, Any]) -> dict[str, Any]:
         "kind": notice.get("kind"),
         "text": text_of(notice),
         "target": desktop.target_of(notice["agent_id"], notice.get("decision_id")),
+        "decision_id": notice.get("decision_id"),
     }
 
 
@@ -330,7 +337,7 @@ def arrange(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dic
     """The one rule for the window's IN_WINDOW banners: of `items` (oldest first) the newest
     decision notices take them, the newest others the ones left; returns those (oldest first)
     and the rest, to be counted (oldest first). A finished notice never pushes a decision
-    out; once out, an item does not come back (only newer ones are added)."""
+    out. The window holds only decisions still open (WindowNotifier.tidy)."""
     decisions = [item for item in items if item.get("kind") == "decision"][-IN_WINDOW:]
     others = [item for item in items if item.get("kind") != "decision"]
     room = IN_WINDOW - len(decisions)
@@ -545,6 +552,7 @@ class WindowNotifier:
         self.check()
         with contextlib.suppress(Exception):
             self.orch.ingest_notices()  # what a busy store left in the spool
+        self.tidy()
         if not self.backlog_taken:
             self.take_backlog()
         for notice in self.orch.notices(self.cursor):
@@ -604,39 +612,86 @@ class WindowNotifier:
     def show_inside(self, notice: dict[str, Any], why: str = "", attention: bool = True) -> None:
         self.place([notice], why or "inside the window", attention)
 
+    def tidy(self) -> None:
+        """What no longer applies leaves the window: a decision notice whose decision is not
+        open any more (one listing of the open ones), a notice the page closed (its banner's
+        × or a click, or the count banner's for those it counts). The banners it frees go to
+        what the count holds, by `arrange`."""
+        with self.lock:
+            held = self.slots + self.counted
+        if not held:
+            return
+        closed: set[int] = set()
+        with contextlib.suppress(Exception):
+            closed = set(self.inside.closed())
+        still: set[int] | None = None
+        if any(item.get("decision_id") is not None for item in held):
+            with contextlib.suppress(Exception):
+                still = self.orch.open_decisions()
+        leaving = {}
+        for item in held:
+            number = item.get("decision_id")
+            if item["id"] in closed:
+                leaving[item["id"]] = "closed in the window's page"
+            elif number is not None and still is not None and number not in still:
+                leaving[item["id"]] = f"decision #{number} is no longer open"
+        if leaving:
+            self.place([], "", attention=False, leaving=leaving)
+
     def place(
         self,
         notices: list[dict[str, Any]],
         why: str,
         attention: bool = True,
         counted: list[dict[str, Any]] | None = None,
+        leaving: dict[int, str] | None = None,
     ) -> None:
-        """Show `notices` in the window as `arrange` places them among those shown, and count
-        `counted` (claimed and traced as counted already); each is traced as it went, and so
-        is one pushed out of its banner."""
+        """Show `notices` in the window, count `counted` (claimed and traced as counted
+        already), and take out `leaving` (id: why); then `arrange` places all it holds in the
+        banners and the count. Each change is traced: shown, counted (and why), out of the
+        window, back in a banner."""
+        leaving = leaving or {}
         with self.lock:
             late = self.handed
             if not late:
-                new = [in_window_item(notice) for notice in notices]
-                self.slots, out = arrange(self.slots + new)
-                self.counted += [in_window_item(notice) for notice in counted or []] + out
+                was = {item["id"]: "shown" for item in self.slots}
+                was |= {item["id"]: "counted" for item in self.counted}
+                was |= {notice["id"]: "counted" for notice in counted or []}
+                held = [item for item in self.slots + self.counted if item["id"] not in leaving]
+                held += [in_window_item(notice) for notice in [*(counted or []), *notices]]
+                self.slots, self.counted = arrange(sorted(held, key=lambda item: item["id"]))
                 for notice in notices:
                     self.unseen[notice["id"]] = notice
+                for number in leaving:
+                    self.unseen.pop(number, None)
+                slots, counts = list(self.slots), list(self.counted)
                 self.changed()
         if late:  # a post refused after the window closed
             for notice in notices:
                 self.hand_over(notice)
             return
-        out_ids = {item["id"] for item in out}
+        shown = {item["id"] for item in slots}
+        only_decisions = all(item.get("decision_id") is not None for item in slots)
         for notice in notices:
-            if notice["id"] in out_ids:
-                full = "no banner free (newer notices or open decisions hold them)"
-                self.trace(notice, "counted", desktop.COUNTED, f"{why}; {full}: {COUNT_BANNER}")
-            else:
+            if notice["id"] in shown:
                 self.trace(notice, "shown", desktop.PATHS[desktop.BANNER], why)
-        new_ids = {notice["id"] for notice in notices}
-        for item in out:
-            if item["id"] not in new_ids:
+            else:
+                full = (
+                    "all banners hold open decisions"
+                    if only_decisions and notice.get("decision_id") is None
+                    else "its banners hold newer notices"
+                )
+                self.trace(notice, "counted", desktop.COUNTED, f"{why}; {full}: {COUNT_BANNER}")
+        for number, reason in leaving.items():
+            path = desktop.PATHS[desktop.BANNER] if was.get(number) == "shown" else desktop.COUNTED
+            self.trace({"id": number}, "leave", path, f"{reason}: it leaves the window")
+        for item in [*slots, *counts]:
+            now = "shown" if item["id"] in shown else "counted"
+            if was.get(item["id"], now) == now:
+                continue
+            if now == "shown":
+                self.trace(item, "shown", desktop.PATHS[desktop.BANNER], "a banner came free")
+            else:
                 pushed = f"pushed out of its banner by a newer notice: {COUNT_BANNER}"
                 self.trace(item, "counted", desktop.COUNTED, pushed)
         if attention:

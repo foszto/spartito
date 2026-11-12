@@ -1622,7 +1622,7 @@ function pagePermission() {
 // (sessionStorage). The 'more' banner counts the hidden ones not closed yet; a click goes to
 // the newest decision among them (the Decisions window lists all open ones), and it or × closes
 // them all, so it comes back only for newer ones. sync returns the version it shows, so the
-// window process knows the page has it.
+// window process knows the page has it; closed() the ids closed here, which leave the window.
 const APP_CLOSED = 'orch-app-closed';  // sessionStorage key: ids of the banners closed here
 let appView = { version: -1, notices: [] };
 
@@ -1685,6 +1685,8 @@ window.spartitoApp = {
     }
     return appView.version;
   },
+  // The ids closed here: the window process takes them out (and refills the banners).
+  closed() { return [...closedBanners()].filter(id => typeof id === 'number' && id > 0); },
 };
 
 // -- theme -------------------------------------------------------------------

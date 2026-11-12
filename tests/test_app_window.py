@@ -367,6 +367,8 @@ class FakeWindow:
                 return -1
             self.synced.append(view)
             return view["version"]  # the page shows it now
+        if script == window.CLOSED_JS:
+            return []
         assert script == window.WHERE_JS
         return self.location
 
@@ -1511,6 +1513,7 @@ def test_with_the_window_open_a_decision_notice_reaches_its_page_and_never_osasc
 
     monkeypatch.setattr(desktop, "PLATFORM", "darwin")
     monkeypatch.setattr(notifier, "POLL_SECONDS", 0.05)
+    monkeypatch.setattr(Orchestrator, "open_decisions", lambda self: {9})  # decision 9 is open
     bounced: list[str] = []
 
     class Dock:
@@ -1544,6 +1547,7 @@ def test_with_the_window_open_a_decision_notice_reaches_its_page_and_never_osasc
             "kind": "decision",
             "text": "Decision needed (p): which?",
             "target": "decision:9",
+            "decision_id": 9,
         }
     ]
     assert bounced == ["bounce"]
@@ -1562,6 +1566,7 @@ def test_a_notice_the_page_never_took_is_shown_by_osascript_once_the_window_clos
 
     monkeypatch.setattr(desktop, "PLATFORM", "darwin")
     monkeypatch.setattr(notifier, "POLL_SECONDS", 0.05)
+    monkeypatch.setattr(Orchestrator, "open_decisions", lambda self: {9})  # decision 9 is open
     monkeypatch.setattr(notifier, "PAGE_WAIT_SECONDS", 0.2)
     held: list[int] = []
 

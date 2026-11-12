@@ -388,6 +388,11 @@ def test_the_window_shows_what_waited_for_it_once_without_a_flood(
         " that waited are shown one by one)",
     )
     assert trace_of(orch, waited[0])["summary"]["path"] == "window-count"
+    # read by code from before the `counted` step (its desktop.summary takes the last of these
+    # as the outcome; none: "not recorded … (older code)"): claimed on the same path
+    steps = trace_of(orch, waited[0])["steps"]
+    older = next(s for s in reversed(steps) if s["step"] in ("shown", "drop", "claim"))
+    assert (older["step"], older["path"]) == ("claim", "window-count")
     counted = trace_of(orch, waited[1])["steps"]  # in the backlog, but no banner was free
     assert [s["step"] for s in counted][-2:] == ["claim", "counted"]
     assert trace_of(orch, waited[1])["summary"]["path"] == "window-count"
@@ -453,33 +458,92 @@ def test_what_waited_for_the_window_is_in_a_banner_or_counted_and_decisions_keep
     assert calls(fake_osascript) == []
 
 
+def one_after_another(orch: Orchestrator, project: str, window, kinds_: str) -> list[int]:
+    """Notices left to the window one by one (d: a decision, open; f: finished), a poll after
+    each; their ids. The decision of a notice: orch.store.notice(id)["decision_id"]."""
+    orch.update_settings({settings.DESKTOP_NOTIFICATIONS: "off"})  # only these notices
+    lead_id = lead(orch, project)
+    window.tick()
+    made = []
+    for n, kind in enumerate(kinds_):
+        if kind == "d":
+            number = orch.request_decision(lead_id, f"Which {n}?").id
+            made.append(orch.store.add_notice("decision", lead_id, "?", number, route="banner"))
+        else:
+            made.append(orch.store.add_notice("finished", f"a-{n}", "done", route="banner"))
+        window.tick()
+    return made
+
+
+def decision_of(orch: Orchestrator, notice: int) -> int:
+    return orch.store.notice(notice)["decision_id"]
+
+
 def test_notices_shown_one_after_another_beyond_the_banners_are_counted(
-    orch: Orchestrator, window, fake_osascript, macos
+    orch: Orchestrator, project: str, window, fake_osascript, macos
 ):
     """The window may not post: each new notice is shown inside; one pushed out of its banner
     is counted (and traced so), a decision is never pushed out by a finished notice, and a
     finished one finding only decisions in the banners is counted at once."""
-    window.tick()
-    kinds_ = "dfffdddf"
-    made = []
-    for n, kind in enumerate(kinds_):
-        if kind == "d":
-            made.append(orch.store.add_notice("decision", f"a-{n}", "?", 50 + n, route="banner"))
-        else:
-            made.append(orch.store.add_notice("finished", f"a-{n}", "done", route="banner"))
-        window.tick()
-    d0, f1, f2, f3, d4, d5, d6, f7 = made
+    d0, f1, f2, f3, d4, d5, d6, f7 = one_after_another(orch, project, window, "dfffdddf")
     banners, hidden, more = placed(orch, window)
     assert banners == [d4, d5, d6]
-    assert hidden == [f1, f2, f3, d0, f7]
-    assert more["target"] == "decision:50" and ", 1 of them decision(s)" in more["text"]
+    assert hidden == [d0, f1, f2, f3, f7]
+    assert more["target"] == f"decision:{decision_of(orch, d0)}"
+    assert ", 1 of them decision(s)" in more["text"]
     pushed = trace_of(orch, f1)["steps"]
     assert [s["step"] for s in pushed][-2:] == ["shown", "counted"]  # it was shown, then out
     assert pushed[-1]["detail"].startswith("pushed out of its banner by a newer notice")
-    never = [s["step"] for s in trace_of(orch, f7)["steps"]]
-    assert "shown" not in never and never[-1] == "counted"
+    never = trace_of(orch, f7)["steps"]
+    assert "shown" not in [s["step"] for s in never] and never[-1]["step"] == "counted"
+    assert "all banners hold open decisions" in never[-1]["detail"]
+    assert trace_of(orch, f7)["summary"]["reason"] == never[-1]["detail"]
     assert window.inside.holds[-1:] in ([], [0])  # the page has them all: no badge left
     assert window.unseen == {}
+    assert calls(fake_osascript) == []
+
+
+def test_a_decision_no_longer_open_or_a_closed_banner_frees_its_place(
+    orch: Orchestrator, project: str, window, fake_osascript, macos
+):
+    """Decisions in the banners are answered (here: withdrawn) or banners closed in the page:
+    on the next poll they leave the window, and what waits in the count takes the freed
+    banners by the same rule; the count names only open decisions."""
+    d0, d1, d2, d3, f4, f5, f6 = one_after_another(orch, project, window, "ddddfff")
+    banners, hidden, more = placed(orch, window)
+    assert (banners, hidden) == ([d1, d2, d3], [d0, f4, f5, f6])
+    lead_id = orch.store.notice(d0)["agent_id"]
+    for notice in (d0, d1, d2, d3):
+        orch.withdraw_decision(decision_of(orch, notice), lead_id)
+    window.tick()
+    banners, hidden, more = placed(orch, window)
+    assert (banners, hidden) == ([f4, f5, f6], [])  # finished ones shown, no stale decision
+    assert more == {}
+    for notice in (d0, d1):
+        left = trace_of(orch, notice)["steps"][-1]
+        assert left["step"] == "leave"
+        assert left["detail"] == (
+            f"decision #{decision_of(orch, notice)} is no longer open: it leaves the window"
+        )
+    assert trace_of(orch, d0)["summary"]["path"] == "window-count"  # it never had a banner
+    assert trace_of(orch, d1)["summary"]["path"] == "window-banner"
+    came = trace_of(orch, f4)["steps"][-1]
+    assert (came["step"], came["detail"]) == ("shown", "a banner came free")
+    # more than fit again; then the page closes a banner, and the count with its ×
+    f7, f8, d9 = one_after_another(orch, project, window, "ffd")
+    banners, hidden, more = placed(orch, window)
+    assert (banners, hidden) == ([f7, f8, d9], [f4, f5, f6])
+    window.inside.closes.add(f8)
+    window.tick()
+    banners, hidden, more = placed(orch, window)
+    assert (banners, hidden) == ([f6, f7, d9], [f4, f5])
+    assert trace_of(orch, f8)["steps"][-1]["detail"] == (
+        "closed in the window's page: it leaves the window"
+    )
+    window.inside.closes |= {f4, f5}  # the count banner's ×: all it counted
+    window.tick()
+    banners, hidden, more = placed(orch, window)
+    assert (banners, hidden, more) == ([f6, f7, d9], [], {})
     assert calls(fake_osascript) == []
 
 

@@ -303,14 +303,17 @@ shows the notices left to it itself (step 4: no launcher's app and no page took 
   it. A closed banner stays closed after a reload of the page. There are three banners: open
   decisions take them first (the newest three), finished notices the ones left (the newest).
   A finished notice never pushes a decision out; one that finds only decisions there is not
-  shown one by one but counted;
+  shown one by one but counted. On each poll (every 2 seconds) a notice whose decision is no
+  longer open (answered, withdrawn), and one closed in the page (its banner's click or ×, or
+  the count banner's for all it counts), leave the window; the banners they free go to what
+  the count holds, by the same rule;
 - a **count banner** above them for every notice in the window that has no banner: those that
   did not fit, those pushed out by newer ones, and the backlog's older finished ones (see
-  below). It says how many, how many of them are decisions, and that `spartito notices` lists
-  them. A click on it opens the **Decisions** window on the newest
-  decision among them (it lists all open decisions); the finished ones are in `spartito
-  notices`. A click or **×** closes the count: the notices it counted are done with, and it
-  comes back only for newer ones, counting only those;
+  below). It says how many, how many of them are open decisions, and that `spartito notices`
+  lists them. A click on it opens the **Decisions** window on the newest open decision among
+  them (it lists all open decisions); the finished ones are in `spartito notices`. A click
+  or **×** closes the count: the notices it counted leave the window, and it comes back only
+  for newer ones, counting only those;
 - the **Dock**: when Spartito is not the active application, its icon bounces once and gets a
   badge with the number of notices shown since; the badge goes when the window becomes
   active (clicking it, the Dock icon, or a banner).
@@ -375,7 +378,10 @@ its `claimed_by`, else `unknown (older code)`, and when it was claimed). A notic
 `spartito notices -v` adds the text and each step: `record` (at once, or `spooled: the store
 was busy for <n> s`, then `recorded from the spool, <n> s after it was spooled`), `route`
 (the decision), `escalate` (who did not take it in time, and the new decision), `claim`,
-`shown`, `counted` (in the window's count banner, with why), `fallback` (a post the system refused: shown inside instead; a helper that did not
+`shown`, `counted` (in the window's count banner, with why; one cut from what waited for the
+window is claimed with a `claim` step on the path `window-count` first, so older code reads
+that path too), `leave` (out of the window:
+its decision is no longer open, or the page closed it), `fallback` (a post the system refused: shown inside instead; a helper that did not
 start), `release` (back to waiting, with the error or the permission status), `drop`,
 `error` (the background helper ended with an error, its text). `--json` gives the same as data.
 So for a notice that came from `osascript` while the window was open, the line says which
