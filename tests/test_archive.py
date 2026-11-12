@@ -20,7 +20,7 @@ from typer.testing import CliRunner
 
 from orchestrator import cli, config, git, mcp_server, notify
 from orchestrator.core import archive as archiving
-from orchestrator.models import Agent, RunStatus
+from orchestrator.models import COMPACT, Agent, RunStatus, Usage
 from orchestrator.service import NeedsConfirmation, Orchestrator, OrchestratorError
 from orchestrator.store import SCHEMA, Store
 from orchestrator.web.app import app
@@ -175,6 +175,37 @@ def test_an_agent_that_works_cannot_be_archived(orch: Orchestrator, project: str
     orch.archive(parent.id)
     with pytest.raises(OrchestratorError, match="orchestrator is not archived"):
         orch.archive(orch.orchestrator().id)
+
+
+def spent_turn(orch: Orchestrator, agent_id: str, usage: Usage | None, cost: float, **kind) -> None:
+    """A done turn with its usage record (None: written by old code, `cost` a session total)."""
+    run = orch.store.add_run(agent_id, "work", **kind)
+    if usage is not None:
+        orch.store.set_usage(run.id, agent_id, usage)
+    orch.store.finish_run(run.id, RunStatus.DONE, result="done", cost_usd=cost)
+
+
+def test_the_spent_total_counts_every_run_whatever_the_archive_did(
+    orch: Orchestrator, project: str, client: TestClient
+) -> None:
+    kept = orch.create_agent(project, name="kept", worktree=False)
+    gone = orch.create_agent(project, name="gone", worktree=False)
+    spent_turn(orch, kept.id, Usage(100, 10, 1000, 50, cost_usd=0.25), 0.25)
+    spent_turn(orch, gone.id, Usage(200, 20, 2000, 100, cost_usd=0.5), 0.5)
+    spent_turn(orch, gone.id, Usage(10, 1, 0, 0, cost_usd=0.125), 0.125, kind=COMPACT)
+    spent_turn(orch, gone.id, None, 1.0)  # old code: the session's 0.625 plus 0.375 of its own
+    expected = {
+        "cost_usd": 1.25,
+        "tokens": {"in": 310, "out": 31, "cache_read": 3000, "cache_write": 150},
+    }
+
+    totals = []
+    for step in (lambda: None, lambda: orch.archive(gone.id), lambda: orch.restore(gone.id)):
+        step()
+        state = client.get("/api/state").json()
+        totals.append((orch.total_spent(), state["spent"], len(state["projects"][0]["agents"])))
+
+    assert totals == [(expected, expected, 2), (expected, expected, 1), (expected, expected, 2)]
 
 
 # -- deleting -------------------------------------------------------------------

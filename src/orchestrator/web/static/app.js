@@ -290,8 +290,7 @@ function renderNav() {
     nav.append(empty, button('primary', 'plus', 'Add project', openProjectDialog));
   }
 
-  let total = 0, busy = 0, cost = orch ? orch.cost_usd : 0, used = tokens(orch && orch.tokens) || [0, 0];
-  const addTokens = counts => { const t = tokens(counts); if (t) used = [used[0] + t[0], used[1] + t[1]]; };
+  let total = 0, busy = 0;
   for (const project of state.projects) {
     const box = el('div', `project${collapsed.includes(project.name) ? ' collapsed' : ''}`);
     const head = el('div', 'project-head'), toggle = el('button', 'toggle');
@@ -316,7 +315,7 @@ function renderNav() {
     const ids = new Set(project.agents.map(a => a.id));
     const add = (parent, depth) => {
       for (const agent of project.agents.filter(a => (ids.has(a.parent_id) ? a.parent_id : null) === parent)) {
-        total++; cost += agent.cost_usd; addTokens(agent.tokens);
+        total++;
         if (isActive(agent)) busy++;
         const now = stateOf(agent);
         agents.append(navItem(agent.id, agent.provider, now.cls, agent.id, `${agent.role} · ${now.label}`, depth, agent.context));
@@ -334,7 +333,10 @@ function renderNav() {
     entry.classList.add('archive-entry');
     nav.append(entry);
   }
-  $('summary').textContent = `${total} agents · ${busy} active · ${count(used[0] + used[1])} tokens · $${cost.toFixed(2)} spent`;
+  // Tokens and cost of every run ever recorded (the server's `spent`), archived agents' too.
+  const used = tokens(state.spent.tokens) || [0, 0];
+  const cost = `$${state.spent.cost_usd.toFixed(2)}`;
+  $('summary').textContent = `${total} agents · ${busy} active · ${count(used[0] + used[1])} tokens · ${cost} spent`;
 }
 
 function navItem(id, providerName, status, name, sub, depth, context) {

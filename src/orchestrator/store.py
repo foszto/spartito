@@ -1131,6 +1131,18 @@ class Store:
         ).fetchall()
         return {row["run_id"]: from_row(Usage, row) for row in rows}
 
+    def all_usage(self) -> tuple[list[Run], dict[int, Usage]]:
+        """Every recorded run of every agent (archived ones too) with the usage records,
+        read together; for models.spent. The runs carry only id, agent_id and cost_usd
+        (the rest is left at its default): this is read on every dashboard refresh."""
+        with self._read() as conn:
+            rows = conn.execute("SELECT id, agent_id, cost_usd FROM runs").fetchall()
+            records = conn.execute(
+                "SELECT u.* FROM run_usage u JOIN runs r ON r.id = u.run_id"
+            ).fetchall()
+        runs = [Run(row["id"], row["agent_id"], "", cost_usd=row["cost_usd"]) for row in rows]
+        return runs, {row["run_id"]: from_row(Usage, row) for row in records}
+
     def get_usage(self, run_id: int) -> Usage | None:
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM run_usage WHERE run_id = ?", (run_id,)).fetchone()

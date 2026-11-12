@@ -142,6 +142,34 @@ def test_runs_after_a_session_restart_count_only_their_new_session(store: Store,
         assert view["tokens"] is None and view["cost_usd"] == 0.6
 
 
+def test_the_total_spent_adds_up_each_agents_own_total(store: Store) -> None:
+    """Old-code session totals count once per agent (a-1: 0.25 then 0.75 is 0.75), not
+    across agents; a usage row whose run is gone (older code deleted it) is not counted."""
+    store.add_agent(
+        Agent(id="b-1", project="p", name="b", role="worker", provider="claude", cwd="/w")
+    )
+    old = store.add_run("b-1", "x")
+    store.finish_run(old.id, RunStatus.DONE, cost_usd=0.5)
+    new = store.add_run("b-1", "y")
+    store.set_usage(new.id, "b-1", Usage(40, 4, 0, 0, cost_usd=0.125))
+    store.set_usage(999, "gone", Usage(1000, 1000, 0, 0, cost_usd=9.0))
+    orch = Orchestrator(store)
+    agents = [orch.view(agent) for agent in store.list_agents()]
+
+    assert sum(view["cost_usd"] for view in agents) == 1.375
+    assert orch.total_spent() == {
+        "cost_usd": 1.375,
+        "tokens": {"in": 40, "out": 4, "cache_read": 0, "cache_write": 0},
+    }
+
+
+def test_nothing_spent_yet_is_zero_without_tokens(tmp_path: Path) -> None:
+    assert Orchestrator(Store(tmp_path / "orch.db")).total_spent() == {
+        "cost_usd": 0,
+        "tokens": None,
+    }
+
+
 def test_a_run_usage_table_from_before_session_ids_is_upgraded(tmp_path: Path) -> None:
     path = tmp_path / "orch.db"
     with sqlite3.connect(path) as conn:

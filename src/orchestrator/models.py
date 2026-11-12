@@ -183,6 +183,18 @@ def running_total(runs: Iterable[Run], usage: dict[int, Usage]) -> Usage:
     return total
 
 
+def spent(runs: Iterable[Run], usage: dict[int, Usage]) -> Usage:
+    """Tokens and cost of the runs of any number of agents: each agent's running_total,
+    added up. Every run counts, compactions too, whatever happened to its agent since."""
+    by_agent: dict[str, list[Run]] = {}
+    for run in runs:
+        by_agent.setdefault(run.agent_id, []).append(run)
+    total = Usage()
+    for agent_runs in by_agent.values():
+        total = total + running_total(agent_runs, usage)
+    return total
+
+
 def answers(runs: Iterable[Run], compactions: Collection[int]) -> list[Run]:
     """The runs that answer something: all but compaction runs (`compactions`, from
     Store.compactions, read after the runs). A compaction is housekeeping: it is never an
