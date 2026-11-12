@@ -142,7 +142,9 @@ def system_prompt(agent: Agent, project: Project | None, role: roles.Role) -> st
             f"You work on branch `{agent.branch}` in your own git worktree, "
             f"based on `{agent.base_ref}`. Never switch branches."
         )
-    return f"{role.prompt}\n\n## Context\n" + "\n".join(context)
+    credit = roles.attribution(agent.provider)
+    prompt = f"{role.prompt}\n\n{credit}" if credit else role.prompt
+    return f"{prompt}\n\n## Context\n" + "\n".join(context)
 
 
 def mcp_server(agent: Agent) -> McpServer:

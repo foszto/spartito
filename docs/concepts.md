@@ -48,6 +48,19 @@ Roles with `lead: true` get the `orch` MCP tools and can start agents. `spartito
 roles available; custom roles are Markdown files, described in
 [configuration.md](configuration.md#roles).
 
+An agent's system prompt is its role prompt plus two sections that Spartito adds, even when
+the role file is your own: `Attribution` and `Context`. The `Context` section gives the agent's
+id, project, working directory and branch. The `Attribution` section tells the agent how to
+end each pull request description it writes: with
+`🤖 Generated with [Spartito](https://github.com/foszto/spartito) + [Claude Code](https://claude.com/claude-code)`,
+or `+ [Codex](https://github.com/openai/codex)` for a Codex agent. It also tells the agent to add
+` via Spartito` after the name in a commit's `Co-Authored-By` trailer and to keep the email, for
+example `Co-Authored-By: <model> via Spartito <noreply@anthropic.com>` from Claude Code. A Codex
+agent changes only a trailer it adds, and no agent invents a trailer or its email. These rules
+override the attribution guidance of the agent's CLI, except where an organization's managed
+settings prescribe the attribution lines: then the agent uses exactly those lines, without the
+Spartito line or ` via Spartito`. The orchestrator's session gets the Claude Code rules too.
+
 ## Worktrees and branches
 
 An agent whose role works in a worktree gets `~/.orchestrator/worktrees/<project>/<agent-id>`
