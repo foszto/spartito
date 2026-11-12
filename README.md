@@ -52,24 +52,21 @@ were: the `orch` MCP server and its tools, the `ORCH_*` variables, `orch.db` and
 
 ## Installation
 
-From a checkout of this repository:
+From a checkout of this repository, the recommended install:
 
 ```sh
-uv tool install --editable .    # puts `spartito` on the PATH
+uv tool install --editable '.[app,menubar]'    # puts `spartito` on the PATH
 spartito --help
 ```
 
-Installed before the command was renamed? See
+The extras bring the native window of `spartito app` (`app`) and the macOS menu-bar item
+(`menubar`; nothing on Linux). On Linux, `app` pulls in PyQt6, which is GPL-3.0-only: see
+[docs/desktop.md](docs/desktop.md#optional-dependencies).
+
+Alternatives: `uv tool install --editable .` without the extras (`spartito app` then opens a
+browser window), or no install at all, prefixing every command with `uv run` inside the
+checkout (`uv run spartito …`). Installed before the command was renamed? See
 [Upgrading from `orch`](docs/usage.md#upgrading-from-orch).
-
-Without installing, prefix every command with `uv run` inside the checkout (`uv run spartito …`).
-The native window of `spartito app` needs the optional extra `app`, the macOS menu-bar item the
-extra `menubar` (on Linux, `app` brings GPL-3.0-only PyQt6; see
-[docs/desktop.md](docs/desktop.md#optional-dependencies)):
-
-```sh
-uv tool install --editable '.[app,menubar]'
-```
 
 Spartito keeps its state in `~/.orchestrator/`. Set `ORCH_HOME` to use another directory.
 
@@ -83,14 +80,26 @@ spartito project add ~/src/my-app
 # added my-app  /home/dev/src/my-app  (base branch: main)
 ```
 
-**Through the orchestrator.** Start the dashboard:
+**Through the orchestrator.** The recommended way: the dashboard as a background service, and
+Spartito as an application:
 
 ```sh
-spartito web          # dashboard at http://127.0.0.1:8787
+spartito service install   # dashboard at http://127.0.0.1:8787, in the background and at login
+spartito app install       # a launcher with Spartito's own name and icon
+spartito app               # or open Spartito like any application
 ```
 
-The dashboard has no login: keep it on the loopback address (the default), as anyone who can
-reach it controls agents that run code ([docs/usage.md](docs/usage.md#dashboard)).
+The service is a launchd agent on macOS and a systemd user unit on Linux, restarted when it
+fails. The launcher is `~/Applications/Spartito.app` on macOS and a desktop entry on Linux;
+notifications come from Spartito, and a click opens the agent or decision (macOS: once
+Spartito is allowed to notify; Linux: with libnotify 0.7.10 or later). Both are undone with
+`spartito service uninstall` and `spartito app uninstall`. The dashboard has no login: keep it
+on the loopback address (the default), as anyone who can reach it controls agents that run
+code ([docs/usage.md](docs/usage.md#dashboard)). Details per platform:
+[docs/desktop.md](docs/desktop.md).
+
+Without the service or the window (or where no window is available): `spartito web` serves
+the dashboard at `http://127.0.0.1:8787` until Ctrl-C; open it in a browser.
 
 Select **Maestro** and describe the goal, for example: *"In my-app, fix the login redirect
 loop. Have a worker implement it with Claude and a reviewer check it with Codex."* The
