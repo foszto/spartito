@@ -2,8 +2,8 @@
 # this file (`release.yml`) and the environment of the publishing job: renaming either, or
 # moving the publishing job into a reusable workflow, breaks publishing.
 #
-# - a pushed tag `v<version>`: build, check the tag against the built version, publish to PyPI
-#   (environment `pypi`)
+# - a pushed tag `v<version>` on a commit of `master`: build, check the tag against the built
+#   version, publish to PyPI (environment `pypi`)
 # - run by hand (workflow_dispatch): build and publish to TestPyPI (environment `testpypi`);
 #   this path never publishes to PyPI
 # Nothing else starts it: no branch push, no pull request.
@@ -28,6 +28,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0 # the whole history of master, for the check below
+
+      - name: The tagged commit is on master
+        if: github.event_name == 'push'
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/master; then
+            echo "::error::$GITHUB_SHA is not on master; tag a commit of master"
+            exit 1
+          fi
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:

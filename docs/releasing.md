@@ -83,7 +83,7 @@ tag; the same rule applies to PyPI.
 ## Cutting a release
 
 1. On `master`, with the checks green: `uv version <new>` (see [The version](#the-version)),
-   and commit `pyproject.toml` and `uv.lock`.
+   commit `pyproject.toml` and `uv.lock`, and push the commit to `master`.
 2. Tag the commit and push the tag:
 
    ```sh
@@ -91,9 +91,9 @@ tag; the same rule applies to PyPI.
    git push origin v0.2.0
    ```
 
-3. The tag starts the `release` workflow. `build` builds the sdist and the wheel and checks
-   that the tag is `v` plus the built version; a mismatch stops the run before anything is
-   uploaded. It also installs the wheel once. `pypi` then waits for your approval of the
+3. The tag starts the `release` workflow. `build` checks that the tagged commit is on
+   `master`, builds the sdist and the wheel, and checks that the tag is `v` plus the built
+   version; either failure stops the run before anything is uploaded. It also installs the wheel once. `pypi` then waits for your approval of the
    `pypi` environment, and uploads both files with
    [digital attestations](https://docs.pypi.org/attestations/).
 4. Verify on <https://pypi.org/project/spartito/>, and in a temporary tool directory as
