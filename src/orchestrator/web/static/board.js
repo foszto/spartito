@@ -598,12 +598,15 @@
   }
 
   // What an open detail shows of an item besides its form: refilled when this changes (an
-  // edit, the agent's status, the branch's state, a decision answered or withdrawn). Not when
-  // only the time of the git check moves on.
+  // edit, the agent's status, the branch's state, a decision answered or withdrawn, a decision
+  // its Link list offers). Not when only the time of the git check moves on.
   function shownKey(item) {
     const live = item.live && item.live.git ? { ...item.live, git: { ...item.live.git, checked_at: null } } : item.live;
-    return JSON.stringify([item.updated_at, live, item.blockers]);
+    return JSON.stringify([item.updated_at, live, item.blockers, offered(item)]);
   }
+  // The open decisions of the item's project and the project-less ones, from the page's state
+  // (app.js), which the page reloads before each render of the board.
+  const offered = item => (state.decisions || []).filter(d => d.project == null || d.project === item.project).map(d => d.id);
 
   // The detail named by the route: opened once, kept while it stays named, closed when not.
   async function syncDetail(id) {
