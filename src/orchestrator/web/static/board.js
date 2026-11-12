@@ -236,16 +236,39 @@
   // place at the end of the previous or next state. Reordering is within the item's project:
   // in the all-projects view another project's group is no target.
 
-  async function moved(item, request) {
-    ui.focus = item.id;
-    try { await request(); }
+  // Moves run one after another, each worked out from the item as the board knows it after the
+  // move before (two quick Alt+Right presses move two states). `plan(now)`: the request for the
+  // item as it is now, or a text to announce when there is nothing to do.
+  let moving = Promise.resolve();
+  function moved(item, plan) {
+    moving = moving.then(() => step(item.id, plan)).catch(error => toast(error.message, true));
+    return moving;
+  }
+  async function step(id, plan) {
+    const now = find(id);
+    if (!now) return;
+    const request = plan(now);
+    if (typeof request === 'string') { announce(request); return; }
+    ui.focus = id;
+    let changed;
+    try { changed = await request; }
     catch (error) { ui.focus = null; toast(error.message, true); return; }
+    // The answer is the item as it is now: known at once, whatever the reload below brings.
+    if (ui.data) ui.data.items = ui.data.items.map(other => (other.id === id ? { ...other, ...changed } : other));
     ui.pending = true;
     await load();
-    announce(placeText(item.id));
+    announce(placeText(id));
   }
   const place = (item, state, before) => moved(item, () => call(`/api/board/${item.id}/place`, { state, before }));
-  const shift = (item, direction) => moved(item, () => call(`/api/board/${item.id}/move`, { direction }));
+  const shift = (item, direction) => moved(item, now => {
+    const row = siblings(now.project, now.state), at = row.findIndex(other => other.id === now.id);
+    if (!row[at + (direction === 'up' ? -1 : 1)]) return `#${now.id} is already ${direction === 'up' ? 'first' : 'last'} in ${LABEL[now.state]}`;
+    return call(`/api/board/${now.id}/move`, { direction });
+  });
+  const stepState = (item, step) => moved(item, now => {
+    const state = ORDER[ORDER.indexOf(now.state) + step];
+    return state ? call(`/api/board/${now.id}/place`, { state, before: null }) : `#${now.id} is already in ${LABEL[now.state]}`;
+  });
   // The moves an item has now: [label, action] with disabled ones for the ends.
   function moves(item) {
     const row = siblings(item.project, item.state), at = row.findIndex(other => other.id === item.id);
@@ -259,15 +282,8 @@
     const step = { ArrowUp: -1, ArrowDown: 1, ArrowLeft: -1, ArrowRight: 1 }[event.key];
     if (!step) return;
     event.preventDefault();
-    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
-      const row = siblings(item.project, item.state), at = row.findIndex(other => other.id === item.id);
-      if (row[at + step]) shift(item, step < 0 ? 'up' : 'down');
-      else announce(`#${item.id} is already ${step < 0 ? 'first' : 'last'} in ${LABEL[item.state]}`);
-      return;
-    }
-    const state = ORDER[ORDER.indexOf(item.state) + step];
-    if (state) place(item, state, null);
-    else announce(`#${item.id} is already in ${LABEL[item.state]}`);
+    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') shift(item, step < 0 ? 'up' : 'down');
+    else stepState(item, step);
   }
 
   function menu(anchor, item) {
