@@ -5,3 +5,7 @@ __pycache__/
 .ruff_cache/
 dist/
 .DS_Store
+# Claude Code's local files: personal settings and instructions, its own worktrees
+.claude/settings.local.json
+CLAUDE.local.md
+.claude/worktrees/
