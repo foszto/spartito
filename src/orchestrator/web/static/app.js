@@ -784,6 +784,7 @@ function appendEvents(events) {
     if (kind === 'reply') body.append(markdown(event.text)); else body.textContent = event.text;
     const when = kind === 'system' ? `notification · ${clock(event.ts)}` : clock(event.ts);
     message.append(el('div', 'when', when), body);
+    if (window.BoardView && kind !== 'error') BoardView.messageAction(message, event, selected);
     thread.append(message);
   }
   if (events.length && pinned) log.scrollTop = log.scrollHeight;

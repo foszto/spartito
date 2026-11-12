@@ -124,3 +124,27 @@ button.chip { border: 0; font: inherit; font-size: 12px; cursor: pointer; }
   .bv-cols { grid-template-columns: minmax(0, 1fr); padding: 12px; }
   .bv .top-bar { padding: 12px; }
 }
+
+/* from a message; decisions that block an item */
+.msg .bv-msg-add { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; padding: 0 6px; border: 0; border-radius: 6px;
+  background: none; color: var(--accent); font-size: 11px; text-decoration: none; opacity: 0; transition: opacity .12s; }
+.msg .bv-msg-add svg { width: 12px; height: 12px; }
+.msg:hover .bv-msg-add, .msg .bv-msg-add:focus-visible, .msg .bv-msg-added { opacity: 1; }
+.msg .bv-msg-add:hover { background: var(--accent-soft); }
+@media (hover: none) { .msg .bv-msg-add { opacity: 1; } }
+.bv-blocked-badge { color: var(--waiting); background: color-mix(in srgb, var(--waiting) 14%, transparent); }
+.bv-card.bv-blocked { box-shadow: inset 3px 0 0 var(--waiting); }
+.bv-card.bv-blocked.bv-picked { box-shadow: inset 3px 0 0 var(--waiting), 0 0 0 1px var(--accent); }
+.bv-source { color: var(--muted); }
+.bv-source:hover { color: var(--text); }
+.bv-extra { display: flex; flex-direction: column; }
+.bv-source-box { order: -2; }
+.bv-blockers { order: -1; margin-bottom: 6px; }
+.bv-source-box h4, .bv-blockers h4 { margin: 6px 0; font-size: 13px; }
+.bv-blockers h4:focus { outline: none; }
+.bv-blocker-list { list-style: none; margin: 0 0 8px; padding: 0; }
+.bv-blocker-list li { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; padding: 3px 0; font-size: 12.5px; }
+.bv-decision { color: var(--accent); font-weight: 500; overflow-wrap: anywhere; }
+.bv-unlink { height: 24px; padding: 0 8px; font-size: 12px; }
+.bv-link-row { display: flex; gap: 8px; align-items: center; }
+.bv-link-row select.input { flex: 1; min-width: 0; height: 32px; padding: 0 8px; }

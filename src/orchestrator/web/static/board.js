@@ -831,8 +831,176 @@
     return row;
   }
 
-  // From a conversation's message: added by a later part; until then it adds nothing.
-  function messageAction() {}
+  // -- items from a conversation's message; decisions that block items ---------------------
+  // A message gets "Add to board" (app.js calls messageAction for each one it shows); the item
+  // keeps its `source`. An item's `blockers` are the open decisions that block it: one linked to
+  // it, or one of its agent linked to no item. The detail links and unlinks the project's open
+  // decisions.
+
+  const ORCHESTRATOR = 'orchestrator';  // its conversation needs a project for the item
+  const cut = (text, limit) => (text.length > limit ? `${text.slice(0, limit - 1)}…` : text);
+
+  function messageAction(message, event, agentId) {
+    if (!event || !event.id || !event.text || !agentId || owns(agentId) || agentId.startsWith('lead:')) return;
+    const when = message.querySelector('.when');
+    if (!when) return;
+    const add = el('button', 'bv-msg-add');
+    add.type = 'button'; add.title = 'Add this message to the task board as an item';
+    add.append(icon('board'), 'Add to board');
+    add.onclick = () => fromMessage(add, event, agentId);
+    when.append(add);
+  }
+
+  let fromDialog = null;
+  function fromForm() {
+    if (fromDialog) return fromDialog;
+    const node = el('dialog', 'bv-dialog bv-from'), form = el('form');
+    form.method = 'dialog';
+    const field = (label, control, cls) => {
+      const box = el('label', `field${cls ? ` ${cls}` : ''}`); box.append(el('span', 'label', label), control); return box;
+    };
+    const title = el('input', 'input'), description = el('textarea', 'input'), state = el('select', 'input'), project = el('select', 'input');
+    title.name = 'title'; title.required = true; title.maxLength = 200; title.autocomplete = 'off';
+    description.name = 'description'; description.rows = 6; description.maxLength = 4000;
+    state.name = 'state'; state.replaceChildren(...STATES.map(([value, label]) => new Option(label, value)));
+    project.name = 'project';
+    const pair = el('div', 'grid-2');
+    pair.append(field('Project', project, 'bv-from-project'), field('State', state));
+    const head = el('div', 'dialog-head'), body = el('div', 'dialog-body'), foot = el('div', 'dialog-foot');
+    head.append(el('h3', 'bv-dialog-title', 'Add to the board'));
+    body.append(el('p', 'bv-stamp bv-from-note'), field('Title', title), field('Description', description), pair);
+    const cancel = el('button', 'btn', 'Cancel'), save = el('button', 'btn primary', 'Add');
+    cancel.value = 'cancel'; cancel.formNoValidate = true; save.value = 'ok';
+    foot.append(el('span', 'error'), cancel, save);
+    form.append(head, body, foot);
+    node.append(form);
+    form.onsubmit = async event => {
+      if (!event.submitter || event.submitter.value !== 'ok') return;
+      event.preventDefault();
+      save.disabled = true;
+      try { await node.submit(new FormData(form)); node.close(); }
+      catch (error) { foot.querySelector('.error').textContent = error.message; }
+      finally { save.disabled = false; }
+    };
+    document.body.append(node);
+    fromDialog = node;
+    return node;
+  }
+
+  async function fromMessage(button, event, agentId) {
+    const node = fromForm(), form = node.querySelector('form'), needsProject = agentId === ORCHESTRATOR;
+    const firstLine = event.text.split('\n').map(line => line.replace(/^[#>*\-\s]+/, '').trim()).find(Boolean) || '';
+    form.elements.title.value = cut(firstLine, 200);
+    form.elements.description.value = cut(event.text, 4000);
+    form.elements.state.value = 'idea';
+    node.querySelector('.error').textContent = '';
+    node.querySelector('.bv-from-note').textContent = `From a message of ${agentId}; the item keeps a link to it.`;
+    node.querySelector('.bv-from-project').hidden = !needsProject;
+    if (needsProject) {
+      const names = await call('/api/board/view?state=done').then(data => data.projects, () => []);
+      form.elements.project.replaceChildren(...names.map(name => new Option(name, name)));
+    }
+    node.submit = async data => {
+      const body = { agent_id: agentId, event_id: event.id, title: data.get('title'),
+        description: data.get('description'), state: data.get('state') };
+      if (needsProject) body.project = data.get('project');
+      const item = await call('/api/board/from-message', body);
+      toast(`#${item.id} added to the board of ${item.project}`);
+      const link = el('a', 'bv-msg-add bv-msg-added', `On the board: #${item.id}`);
+      link.href = `#${encodeURIComponent(route(item.project, item.id))}`;
+      link.title = 'Open the item on the board';
+      button.replaceWith(link);
+    };
+    node.showModal();
+    form.elements.title.focus();
+  }
+
+  // A decision opened from the board: the detail closes (back to its board), the decisions
+  // dialog opens on it (app.js follows #decision:<id>).
+  function openDecision(id) {
+    const shown = ui.detail;
+    if (shown && ui.dialog.open) { ui.detail = null; ui.dialog.close(); select(route(shown.project)); }
+    location.hash = `#decision:${id}`;
+  }
+  const blockText = blocker => `#${blocker.id} ${blocker.question}`;
+
+  hooks.card.push((node, item) => {
+    const blockers = item.blockers || [];
+    let meta = node.querySelector('.bv-meta');
+    if (!meta && (item.source || blockers.length)) { meta = el('div', 'bv-meta'); node.append(meta); }
+    if (blockers.length) {
+      const badge = el('button', 'chip bv-blocked-badge', `⚑ ${plural(blockers.length, 'decision')}`);
+      badge.type = 'button'; badge.dataset.part = 'blockers';
+      badge.title = `Blocked by ${blockers.map(blockText).join('; ')}${blockers.length === 1 ? ' · open it' : ' · open the item'}`;
+      badge.onclick = event => { event.stopPropagation(); if (blockers.length === 1) openDecision(blockers[0].id); else open(item); };
+      meta.prepend(badge);
+      node.classList.add('bv-blocked');
+    }
+    if (item.source) {
+      const from = el('button', 'chip bv-source', `from ${item.source.agent_id}`);
+      from.type = 'button'; from.dataset.part = 'source';
+      from.title = `Made from a message of ${item.source.agent_id}; open its conversation`;
+      from.onclick = event => { event.stopPropagation(); select(item.source.agent_id); };
+      meta.append(from);
+    }
+  });
+
+  hooks.detail.push((box, item) => {
+    if (item.source) {
+      const section = el('section', 'bv-source-box'), row = el('p', 'bv-live-row'), agent = el('button', 'link bv-live-agent', item.source.agent_id);
+      agent.type = 'button'; agent.title = 'Open its conversation';
+      agent.onclick = () => { select(item.source.agent_id); if (ui.dialog.open) ui.dialog.close(); };
+      row.append(el('span', '', 'Made from a message of'), agent,
+        el('span', 'bv-when', `message ${item.source.event_id}${item.source.run_id ? ` · run ${item.source.run_id}` : ''}`));
+      section.append(el('h4', '', 'Source'), row);
+      box.append(section);
+    }
+    box.append(blockerSection(item));
+  });
+
+  function blockerSection(item) {
+    const section = el('section', 'bv-blockers'), blockers = item.blockers || [], heading = el('h4', '', 'Blocked by');
+    heading.tabIndex = -1;  // the focus goes here after a link or unlink redrew the section
+    section.append(heading);
+    if (!blockers.length) section.append(el('p', 'bv-note', 'No open decision blocks it.'));
+    const list = el('ul', 'bv-blocker-list');
+    for (const blocker of blockers) {
+      const row = el('li'), link = el('a', 'bv-decision', blockText(blocker));
+      link.href = `#decision:${blocker.id}`;
+      link.title = 'Open the decision';
+      link.onclick = event => { event.preventDefault(); openDecision(blocker.id); };
+      row.append(link, el('span', 'bv-when', blocker.linked ? `linked · asked by ${blocker.agent_id}`
+        : `not linked: blocks every open item of ${blocker.agent_id}`));
+      if (blocker.linked) row.append(button('ghost bv-unlink', '', 'Unlink', () => linkDecision(item, blocker.id, false), `Unlink decision #${blocker.id}`));
+      list.append(row);
+    }
+    if (blockers.length) section.append(list);
+    // Link one of the project's open decisions not linked yet (from the page's state).
+    const pick = el('select', 'input bv-link-select'), add = button('', '', 'Link', () => pick.value && linkDecision(item, Number(pick.value), true));
+    pick.setAttribute('aria-label', 'An open decision of the project to link');
+    const row = el('div', 'bv-link-row');
+    row.append(pick, add);
+    section.append(row);
+    call('/api/state').then(state => {
+      const linked = new Set(blockers.filter(b => b.linked).map(b => b.id));
+      const open = (state.decisions || []).filter(d => d.project === item.project && !linked.has(d.id));
+      pick.replaceChildren(...open.map(d => new Option(`#${d.id} ${cut(d.question, 70)} (${d.agent_name})`, d.id)));
+      if (!open.length) { pick.append(new Option(`No other open decision in ${item.project}`, '')); pick.disabled = true; add.disabled = true; }
+    }, () => { row.hidden = true; });
+    return section;
+  }
+
+  async function linkDecision(item, decisionId, linked) {
+    try { await call(`/api/board/${item.id}/blockers`, { decision_id: decisionId, linked }); }
+    catch (error) { toast(error.message, true); return; }
+    announce(`Decision #${decisionId} ${linked ? 'linked to' : 'unlinked from'} #${item.id}`);
+    ui.pending = true;
+    await load();
+    if (ui.detail && ui.detail.id === item.id) {
+      extra(find(item.id) || item);
+      ui.dialog.querySelector('.bv-blockers h4').focus();
+    }
+  }
 
   window.BoardView = { ROUTE, owns, render, navEntry, messageAction };
 })();
