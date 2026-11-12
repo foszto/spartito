@@ -4,7 +4,7 @@ The server: this home's running one when `locate` finds it (never stopped here),
 one of its own on 127.0.0.1 in a thread, stopped when the window is gone.
 
 The window, by the first way that works; each step that fails says so in one line on stderr:
-  a. a native window with pywebview (the optional extra `orchestrator[app]`): Cocoa on macOS,
+  a. a native window with pywebview (the optional extra `spartito[app]`): Cocoa on macOS,
      Qt on Linux, where the backend is first started in a child process (Qt aborts the whole
      process, no exception, when it cannot load its platform plugin);
   b. a Chromium-family browser in app mode, with its own profile under `run/` and its DevTools
@@ -68,7 +68,7 @@ HOST = "127.0.0.1"
 STARTUP_TIMEOUT = 15.0  # seconds for the own server to listen
 STOP_TIMEOUT = 10.0  # seconds for the own server, or the browser, to finish
 WINDOW_SIZE = (1280, 860)
-INSTALL_HINT = "install the extra orchestrator[app]"
+INSTALL_HINT = "install the extra spartito[app]"
 LAUNCHER_HINT = f"then run `{config.CLI_NAME} app install`"
 DOCS_HINT = "see docs/desktop.md"
 ALREADY_OPEN = "the dashboard window of this home is already open"

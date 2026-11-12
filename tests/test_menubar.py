@@ -349,7 +349,7 @@ def test_without_the_extra_it_names_it(monkeypatch: pytest.MonkeyPatch, no_cocoa
 
     assert result.exit_code == 1
     assert result.stderr == (
-        "error: pyobjc-framework-Cocoa is not installed (install the extra orchestrator[menubar])\n"
+        "error: pyobjc-framework-Cocoa is not installed (install the extra spartito[menubar])\n"
     )
     assert no_cocoa == []
 

@@ -317,7 +317,7 @@ def web(host: str = "127.0.0.1", port: int = 8787) -> None:
 
 app_app = typer.Typer(
     rich_markup_mode=MARKUP,
-    help="Open the dashboard in its own window: a native one with the extra `orchestrator[app]`,"
+    help="Open the dashboard in its own window: a native one with the extra `spartito[app]`,"
     " else a Chromium-family browser in app mode, else the default browser. Uses the running"
     f" `{CLI} web` of this home, or serves the dashboard on 127.0.0.1 until the window is closed."
     " With the window open already, brings it to the front (at `--agent` or `--decision`)."
@@ -367,7 +367,7 @@ def app_window(
     name: LauncherName = None,
     directory: LauncherDir = None,
 ) -> None:
-    """Open the dashboard in its own window: a native one with the extra `orchestrator[app]`,
+    """Open the dashboard in its own window: a native one with the extra `spartito[app]`,
     else a Chromium-family browser in app mode, else the default browser. Uses the running
     `{cli} web` of this home, or serves the dashboard on 127.0.0.1 until the window is closed.
     With the window open already, brings it to the front (at `--agent` or `--decision`)."""
@@ -438,7 +438,7 @@ def menubar(
     ] = False,
 ) -> None:
     """Show the running agents and the open decisions in the macOS menu bar (the extra
-    `orchestrator[menubar]`); its menu opens a decision or the dashboard window."""
+    `spartito[menubar]`); its menu opens a decision or the dashboard window."""
     from .gui import menubar as item
 
     echo = (lambda text: typer.echo(text + "\n", nl=False)) if print_lines else None

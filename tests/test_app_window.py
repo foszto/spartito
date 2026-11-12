@@ -32,7 +32,7 @@ from orchestrator.web.app import app as web_app
 
 PACKAGE = Path(cli.__file__).parent
 NATIVE_MISSING = (
-    "no native window: pywebview is not installed (install the extra orchestrator[app],"
+    "no native window: pywebview is not installed (install the extra spartito[app],"
     " then run `spartito app install`; see docs/desktop.md); trying a Chromium-family browser in"
     " app mode"
 )
@@ -1763,7 +1763,7 @@ def test_the_app_log_is_emptied_at_start_when_too_big(monkeypatch):
     "bundled, own, installed, available, why",
     [
         (True, True, True, True, None),
-        (True, True, True, False, "UserNotifications is not installed (install the extra orchestrator[app])"),
+        (True, True, True, False, "UserNotifications is not installed (install the extra spartito[app])"),
         (True, False, True, True, "started without the launcher's copy of Python: run `spartito app install` again"),
         (False, False, True, True, "not started as the launcher's app"),
         (False, False, False, True, "no launcher: run `spartito app install`"),

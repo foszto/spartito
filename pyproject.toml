@@ -1,11 +1,36 @@
 [project]
-name = "orchestrator"
+name = "spartito"
+# The one place of the version: `uv version <new>` bumps it; the package reads it from the
+# installed metadata (orchestrator.__version__). A release tag is `v<version>` (docs/releasing.md).
 version = "0.1.0"
-description = "A small orchestrator for fleets of coding agents (Claude Code, Codex) in git worktrees"
+description = "Run Claude Code and Codex agents in parallel, each in its own git worktree, steered through one orchestrator agent"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.14"
+keywords = [
+    "agents",
+    "ai",
+    "claude-code",
+    "codex",
+    "coding-agents",
+    "git-worktree",
+    "mcp",
+    "orchestration",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "anyio>=4.16.0",
     "mcp>=2.3.0",
@@ -26,12 +51,22 @@ app = [
 # The menu-bar status item of `spartito menubar` (macOS only): Cocoa through pyobjc.
 menubar = ["pyobjc-framework-Cocoa>=13.0; sys_platform == 'darwin'"]
 
+[project.urls]
+Homepage = "https://github.com/foszto/spartito"
+Repository = "https://github.com/foszto/spartito"
+Issues = "https://github.com/foszto/spartito/issues"
+Documentation = "https://github.com/foszto/spartito/tree/master/docs"
+
 [project.scripts]
 spartito = "orchestrator.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.11.29,<0.12.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+# The distribution is `spartito`; the import package keeps its name `orchestrator`.
+module-name = "orchestrator"
 
 [dependency-groups]
 dev = [

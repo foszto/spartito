@@ -41,14 +41,14 @@ were: the `orch` MCP server and its tools, the `ORCH_*` variables, `orch.db` and
 
 ## Requirements
 
-- macOS or Linux (see [Platform support](#platform-support)).
+- macOS or Linux (see [Platform support](https://github.com/foszto/spartito#platform-support)).
 - Python 3.14 and [uv](https://docs.astral.sh/uv/).
 - `git`.
 - The `claude` (Claude Code) CLI, installed and logged in, and optionally the `codex` CLI.
   The defaults use Claude Code: the orchestrator agent, `spartito chat`, and every project
   registered without `--provider`, so the quick start below needs `claude`. A Codex-only or
   mixed setup is configured per project and per agent:
-  [docs/configuration.md](docs/configuration.md#providers-and-permissions).
+  [docs/configuration.md](https://github.com/foszto/spartito/blob/master/docs/configuration.md#providers-and-permissions).
 
 ## Installation
 
@@ -61,13 +61,13 @@ spartito --help
 
 The extras bring the native window of `spartito app` (`app`) and the macOS menu-bar item
 (`menubar`; nothing on Linux). On Linux, `app` pulls in PyQt6, which is GPL-3.0-only: see
-[docs/desktop.md](docs/desktop.md#optional-dependencies).
+[docs/desktop.md](https://github.com/foszto/spartito/blob/master/docs/desktop.md#optional-dependencies).
 
 Alternatives: `uv tool install --editable .` without the extras (`spartito app` then opens a
 browser window, and on macOS notifications do not come from Spartito itself), or no install
 at all, prefixing every command with `uv run` inside the checkout (`uv run spartito …`).
 Installed before the command was renamed? See
-[Upgrading from `orch`](docs/usage.md#upgrading-from-orch).
+[Upgrading from `orch`](https://github.com/foszto/spartito/blob/master/docs/usage.md#upgrading-from-orch).
 
 Spartito keeps its state in `~/.orchestrator/`. Set `ORCH_HOME` to use another directory.
 
@@ -96,8 +96,8 @@ notifications come from Spartito, and a click opens the agent or decision (macOS
 Spartito is allowed to notify; Linux: with libnotify 0.7.10 or later). Both are undone with
 `spartito service uninstall` and `spartito app uninstall`. The dashboard has no login: keep it
 on the loopback address (the default), as anyone who can reach it controls agents that run
-code ([docs/usage.md](docs/usage.md#dashboard)). Details per platform:
-[docs/desktop.md](docs/desktop.md).
+code ([docs/usage.md](https://github.com/foszto/spartito/blob/master/docs/usage.md#dashboard)). Details per platform:
+[docs/desktop.md](https://github.com/foszto/spartito/blob/master/docs/desktop.md).
 
 Without the service or the window (or where no window is available): `spartito web` serves
 the dashboard at `http://127.0.0.1:8787` until Ctrl-C; open it in a browser.
@@ -140,29 +140,29 @@ agent's worktree and records its output as events. The orchestrator and the proj
 get the `orch` MCP tools to start agents, wait for them, keep the task board and ask you for
 decisions; when an agent and its sub-agents are done, their parent receives their answers in
 an automatic notification turn. The command line, the dashboard, the desktop window and the
-MCP tools are views on the same database. More: [docs/concepts.md](docs/concepts.md),
-[docs/architecture.md](docs/architecture.md).
+MCP tools are views on the same database. More: [docs/concepts.md](https://github.com/foszto/spartito/blob/master/docs/concepts.md),
+[docs/architecture.md](https://github.com/foszto/spartito/blob/master/docs/architecture.md).
 
 ## Documentation
 
-- [docs/concepts.md](docs/concepts.md): orchestrator, leads, roles, worktrees, turns, results.
-- [docs/usage.md](docs/usage.md): every command and option, and the dashboard.
-- [docs/agents.md](docs/agents.md): MCP tools, queue, dependencies, notifications, decisions, archiving, compaction, cost.
-- [docs/configuration.md](docs/configuration.md): model and effort, settings, loadout, roles, providers, files.
-- [docs/board.md](docs/board.md): the task board across projects.
-- [docs/desktop.md](docs/desktop.md): background service, installable page, notifications, `spartito app`, menu bar.
-- [docs/desktop-checklist.md](docs/desktop-checklist.md): manual checks of the desktop app.
-- [docs/architecture.md](docs/architecture.md): how it works at run time, limitations, code layout.
-- [CONTRIBUTING.md](CONTRIBUTING.md): setup, checks, conventions, pull requests, bug reports.
-- [ROADMAP.md](ROADMAP.md): where Spartito is heading, in phases, with the open questions.
+- [docs/concepts.md](https://github.com/foszto/spartito/blob/master/docs/concepts.md): orchestrator, leads, roles, worktrees, turns, results.
+- [docs/usage.md](https://github.com/foszto/spartito/blob/master/docs/usage.md): every command and option, and the dashboard.
+- [docs/agents.md](https://github.com/foszto/spartito/blob/master/docs/agents.md): MCP tools, queue, dependencies, notifications, decisions, archiving, compaction, cost.
+- [docs/configuration.md](https://github.com/foszto/spartito/blob/master/docs/configuration.md): model and effort, settings, loadout, roles, providers, files.
+- [docs/board.md](https://github.com/foszto/spartito/blob/master/docs/board.md): the task board across projects.
+- [docs/desktop.md](https://github.com/foszto/spartito/blob/master/docs/desktop.md): background service, installable page, notifications, `spartito app`, menu bar.
+- [docs/desktop-checklist.md](https://github.com/foszto/spartito/blob/master/docs/desktop-checklist.md): manual checks of the desktop app.
+- [docs/architecture.md](https://github.com/foszto/spartito/blob/master/docs/architecture.md): how it works at run time, limitations, code layout.
+- [CONTRIBUTING.md](https://github.com/foszto/spartito/blob/master/CONTRIBUTING.md): setup, checks, conventions, pull requests, bug reports.
+- [ROADMAP.md](https://github.com/foszto/spartito/blob/master/ROADMAP.md): where Spartito is heading, in phases, with the open questions.
 
 ## Platform support
 
 Developed and used on macOS; Linux is supported, with parts not yet tested on a real machine;
 Windows is not supported (process handling relies on POSIX process groups and sessions).
 Details and other limitations:
-[docs/architecture.md](docs/architecture.md#platform-support-and-limitations); the desktop
-features per platform: [docs/desktop.md](docs/desktop.md#platform-support).
+[docs/architecture.md](https://github.com/foszto/spartito/blob/master/docs/architecture.md#platform-support-and-limitations); the desktop
+features per platform: [docs/desktop.md](https://github.com/foszto/spartito/blob/master/docs/desktop.md#platform-support).
 
 ## Development
 
@@ -175,8 +175,8 @@ node --check src/orchestrator/web/static/app.js
 ```
 
 How to contribute, the checks a change must pass and how to report a bug:
-[CONTRIBUTING.md](CONTRIBUTING.md).
+[CONTRIBUTING.md](https://github.com/foszto/spartito/blob/master/CONTRIBUTING.md).
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](https://github.com/foszto/spartito/blob/master/LICENSE).

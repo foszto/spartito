@@ -8,7 +8,7 @@ detached; with its window open already, it brings that forward (at the decision)
 The counts are read through the facade in this process every READ_EVERY seconds, in a
 thread of their own: Cocoa's main thread never waits on the database (a writer may hold it
 for long), it only shows the latest values. A failed read keeps the last ones. Everything but `show_item` is plain Python; `show_item` alone
-imports Cocoa (pyobjc-framework-Cocoa, the extra `orchestrator[menubar]`). One item per home
+imports Cocoa (pyobjc-framework-Cocoa, the extra `spartito[menubar]`). One item per home
 (`run/menubar.lock`); SIGTERM, SIGHUP and SIGINT end it as "Quit" does.
 """
 
@@ -31,7 +31,7 @@ READ_EVERY = 5.0  # seconds between two reads of the counts
 TICK = 0.25  # seconds between two looks at new counts, a stop signal and `close_after`
 QUESTION_WIDTH = 60  # characters of a question shown in the menu
 SHOWN_DECISIONS = 10
-INSTALL_HINT = "install the extra orchestrator[menubar]"
+INSTALL_HINT = "install the extra spartito[menubar]"
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
 APP_ARGV = (sys.executable, "-m", "orchestrator", "app")
 # What a menu entry does when clicked; None: it only informs.
