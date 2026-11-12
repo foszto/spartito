@@ -52,23 +52,26 @@ were: the `orch` MCP server and its tools, the `ORCH_*` variables, `orch.db` and
 
 ## Installation
 
-From a checkout of this repository, the recommended install:
+From PyPI, the recommended install:
 
 ```sh
-uv tool install --editable '.[app,menubar]'    # puts `spartito` on the PATH
+uv tool install --python 3.14 'spartito[app,menubar]'    # puts `spartito` on the PATH
 spartito --help
 ```
 
 The extras bring the native window of `spartito app` (`app`) and the macOS menu-bar item
 (`menubar`; nothing on Linux). On Linux, `app` pulls in PyQt6, which is GPL-3.0-only: see
-[docs/desktop.md](https://github.com/foszto/spartito/blob/master/docs/desktop.md#optional-dependencies).
+[docs/desktop.md](https://github.com/foszto/spartito/blob/master/docs/desktop.md#optional-dependencies). `--python 3.14` picks the Python
+the package needs even when uv's default is older; uv downloads it if it is missing.
 
-Alternatives: `uv tool install --editable .` without the extras (`spartito app` then opens a
-browser window, and on macOS notifications do not come from Spartito itself), or no install
-at all, prefixing every command with `uv run` inside the checkout (`uv run spartito …`).
+Alternatives: `uv tool install --python 3.14 spartito` without the extras (`spartito app` then
+opens a browser window, and on macOS notifications do not come from Spartito itself), or
+`pipx install --python python3.14 'spartito[app,menubar]'`. Upgrade with
+`uv tool upgrade spartito` (it keeps the extras), remove with `uv tool uninstall spartito`.
+To run a checkout instead, see [Development](https://github.com/foszto/spartito#development).
 Installed before the command was renamed? See
-[Upgrading from `orch`](https://github.com/foszto/spartito/blob/master/docs/usage.md#upgrading-from-orch). Installed from a checkout before the distribution was renamed
-to `spartito`? See
+[Upgrading from `orch`](https://github.com/foszto/spartito/blob/master/docs/usage.md#upgrading-from-orch). Installed from a checkout
+before the distribution was renamed to `spartito`? See
 [Upgrading to the distribution name `spartito`](https://github.com/foszto/spartito/blob/master/docs/usage.md#upgrading-to-the-distribution-name-spartito).
 
 Spartito keeps its state in `~/.orchestrator/`. Set `ORCH_HOME` to use another directory.
@@ -168,6 +171,15 @@ Details and other limitations:
 features per platform: [docs/desktop.md](https://github.com/foszto/spartito/blob/master/docs/desktop.md#platform-support).
 
 ## Development
+
+From a checkout of this repository, an install that runs the checkout's code:
+
+```sh
+uv tool install --editable '.[app,menubar]'    # puts `spartito` on the PATH
+```
+
+Or no install at all, prefixing every command with `uv run` inside the checkout
+(`uv run spartito …`). The checks:
 
 ```sh
 uv sync

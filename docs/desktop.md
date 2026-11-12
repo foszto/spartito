@@ -22,8 +22,9 @@ default install. The native window of `spartito app` needs the optional extra `a
 menu-bar item (macOS) the extra `menubar`:
 
 ```sh
-uv tool install --editable '.[app,menubar]'    # instead of `uv tool install --editable .`
-uv sync --extra app --extra menubar            # in a checkout, for `uv run spartito …`
+uv tool install --python 3.14 'spartito[app,menubar]'   # instead of `spartito`
+uv tool install --editable '.[app,menubar]'             # from a checkout
+uv sync --extra app --extra menubar                     # in a checkout, for `uv run spartito …`
 ```
 
 Over an existing install, the same `uv tool install` line adds the extras; no `--force` is

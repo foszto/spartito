@@ -1,7 +1,7 @@
 # Releasing
 
-Spartito is prepared to be published on PyPI as `spartito`; the import package is
-`orchestrator`. Releases are built and uploaded by GitHub Actions with
+Spartito is published on PyPI as `spartito`; the import package is `orchestrator`. Releases
+are built and uploaded by GitHub Actions with
 [Trusted Publishing](https://docs.pypi.org/trusted-publishers/): no token or password is
 stored anywhere.
 

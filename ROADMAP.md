@@ -242,9 +242,8 @@ asleep, and how cost is kept in check.
 package, a signed macOS launcher), a backup of the state before the schema changes, and no
 mismatch between the page and the server after an update.
 
-**Today.** Spartito is installed from a checkout (version 0.1.0, no changelog). The package
-is prepared for PyPI as `spartito`, to be published from a version tag by GitHub Actions
-([docs/releasing.md](docs/releasing.md)). Schema changes
+**Today.** Spartito is published on PyPI as `spartito` from a version tag by GitHub Actions
+([docs/releasing.md](docs/releasing.md)), without a changelog. Schema changes
 are additive and applied when the database opens. After an update, a running dashboard keeps
 its old code while the page is new, so it has to be restarted
 ([upgrading](docs/usage.md#upgrading-from-orch)). The launcher's copy of Python is signed ad

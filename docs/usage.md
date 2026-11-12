@@ -364,7 +364,7 @@ the service and the launcher on the old environment.
 ## Upgrading to the distribution name `spartito`
 
 The checkout used to install itself as the Python distribution `orchestrator`; it is now
-`spartito`, the name prepared for PyPI ([releasing.md](releasing.md)). The command, the import
+`spartito`, the name it has on PyPI ([releasing.md](releasing.md)). The command, the import
 package `orchestrator`, `-m orchestrator`, the home and every internal name stay. uv names a
 tool after its distribution, so `uv tool install --editable` now installs into a new tool
 directory, `<tool dir>/spartito` (`uv tool dir` shows the tool directory), next to the old
@@ -379,6 +379,7 @@ the version `0+unknown`. Then, from the checkout:
    `spartito chat` sessions, and quit `spartito app` and `spartito menubar`.
 2. `uv tool uninstall orchestrator`
 3. `uv tool install --editable '.[app,menubar]'`, with the extras you installed before.
+   To move to the package from PyPI instead: `uv tool install --python 3.14 'spartito[app,menubar]'`.
 4. `spartito service install`, with the `--host` and `--port` you used: it rewrites the unit
    with the new environment's Python and restarts the dashboard.
 5. `spartito app install`: a new copy of Python for the launcher, and its record.
