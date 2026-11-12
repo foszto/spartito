@@ -291,7 +291,7 @@
     section.append(el('h4', '', 'Live state'));
     if (live.agent) {
       const row = el('p', 'bv-live-row'), agent = el('button', 'link bv-live-agent');
-      agent.type = 'button'; agent.title = 'Open its conversation';
+      agent.type = 'button'; agent.title = 'Open its conversation'; agent.dataset.key = 'live-agent';
       agent.append(dot(live.agent.status), live.agent.id);
       agent.onclick = () => { select(live.agent.id); if (ui.dialog.open) ui.dialog.close(); };
       row.append(el('span', 'bv-live-key', 'Agent'), agent, el('span', 'bv-status', agentWord(live.agent)));
@@ -645,7 +645,7 @@
       await load();
       return item.id;
     };
-    extra(item);
+    extra(item, true);
     if (!node.open) node.showModal();
     form.elements.title.focus();
   }
@@ -705,7 +705,6 @@
     let detail;
     try { detail = await call(`/api/board/${item.id}/detail`); }
     catch (error) { history.querySelector('.bv-note').textContent = `Not available: ${error.message}`; return; }
-    if (!box.isConnected) return;
     const list = el('ol', 'bv-entries');
     for (const entry of [...detail.history].reverse()) {
       const row = el('li', entry.actor_kind ? '' : 'bv-gap'), when = el('time', 'bv-when', ago(entry.ts));
@@ -721,7 +720,7 @@
     const buttons = el('div', 'bv-run-list');
     for (const run of detail.runs) {
       const entry = el('button', 'bv-run');
-      entry.type = 'button';
+      entry.type = 'button'; entry.dataset.key = `run:${run.id}`;
       entry.title = `Open the conversation of ${run.agent_id}`;
       entry.append(el('span', 'mono', `#${run.id}`), el('span', 'bv-run-agent', run.agent_id),
         el('span', `pill ${run.status}`, run.status), el('span', 'bv-when', ago(run.ended_at || run.created_at)));
@@ -731,10 +730,54 @@
     runs.append(el('h4', '', 'Runs'), buttons);
   });
 
-  function extra(item) {
-    const box = ui.dialog.querySelector('.bv-extra');
-    box.replaceChildren();
-    for (const fillIn of hooks.detail) fillIn(box, item);
+  // The part under the form. Opening a detail (`fresh`) fills it in place. A refill of the open
+  // detail is built aside and swapped in once complete (its history and Link list are loaded),
+  // keeping the focus on the same control (else a neighbour in the dialog), the chosen Link
+  // option while it is still offered, and the scroll position. The form is not touched.
+  let fills = 0;
+  const FOCUSABLE = 'button:not(:disabled), a[href], select:not(:disabled), input:not(:disabled), [tabindex]';
+
+  async function extra(item, fresh) {
+    const box = ui.dialog.querySelector('.bv-extra'), turn = ++fills;
+    if (fresh || !box.childElementCount) {
+      box.replaceChildren();
+      for (const fillIn of hooks.detail) fillIn(box, item);
+      return;
+    }
+    const next = el('div', 'bv-extra');
+    await Promise.allSettled(hooks.detail.map(fillIn => fillIn(next, item)));
+    if (turn !== fills || !ui.dialog.open) return;  // a later refill, or closed meanwhile
+    const kept = heldState(box);
+    box.replaceChildren(...next.childNodes);
+    putBack(box, kept);
+  }
+
+  const focusables = root => [...root.querySelectorAll(FOCUSABLE)].filter(node => !node.closest('[hidden]'));
+
+  function heldState(box) {
+    const scrollers = [ui.dialog, ...ui.dialog.querySelectorAll('.dialog-body')];
+    const pick = box.querySelector('.bv-link-select'), active = document.activeElement;
+    const kept = { scroll: scrollers.map(node => [node, node.scrollTop]), choice: pick && !pick.disabled ? pick.value : '' };
+    if (!active || !box.contains(active)) return kept;
+    const section = active.closest('section'), own = section ? focusables(section) : [];
+    kept.focus = { key: active.dataset.key || null, part: section ? section.className : null,
+      inPart: own.indexOf(active), inBox: focusables(box).indexOf(active) };
+    return kept;
+  }
+
+  function putBack(box, kept) {
+    const pick = box.querySelector('.bv-link-select');
+    if (pick && kept.choice && [...pick.options].some(option => option.value === kept.choice)) pick.value = kept.choice;
+    const want = kept.focus;
+    if (want) {
+      const near = (list, at) => (list.length ? list[Math.min(Math.max(at, 0), list.length - 1)] : null);
+      const section = want.part && [...box.querySelectorAll('section')].find(node => node.className === want.part);
+      const same = want.key && focusables(box).find(node => node.dataset.key === want.key);
+      const target = same || (section && near(focusables(section), want.inPart)) || near(focusables(box), want.inBox)
+        || ui.dialog.querySelector('form').elements.title;
+      target.focus({ preventScroll: true });
+    }
+    for (const [node, top] of kept.scroll) node.scrollTop = top;
   }
 
   // -- selecting items and dispatching them ------------------------------------------------
@@ -968,40 +1011,47 @@
   hooks.detail.push((box, item) => {
     if (item.source) {
       const section = el('section', 'bv-source-box'), row = el('p', 'bv-live-row'), agent = el('button', 'link bv-live-agent', item.source.agent_id);
-      agent.type = 'button'; agent.title = 'Open its conversation';
+      agent.type = 'button'; agent.title = 'Open its conversation'; agent.dataset.key = 'source-agent';
       agent.onclick = () => { select(item.source.agent_id); if (ui.dialog.open) ui.dialog.close(); };
       row.append(el('span', '', 'Made from a message of'), agent,
         el('span', 'bv-when', `message ${item.source.event_id}${item.source.run_id ? ` · run ${item.source.run_id}` : ''}`));
       section.append(el('h4', '', 'Source'), row);
       box.append(section);
     }
-    box.append(blockerSection(item));
+    const section = blockerSection(item);
+    box.append(section);
+    return section.ready;  // its Link list, loaded
   });
 
   function blockerSection(item) {
     const section = el('section', 'bv-blockers'), blockers = item.blockers || [], heading = el('h4', '', 'Blocked by');
-    heading.tabIndex = -1;  // the focus goes here after a link or unlink redrew the section
+    heading.tabIndex = -1; heading.dataset.key = 'blockers';  // the focus goes here after a link or unlink
     section.append(heading);
     if (!blockers.length) section.append(el('p', 'bv-note', 'No open decision blocks it.'));
     const list = el('ul', 'bv-blocker-list');
     for (const blocker of blockers) {
       const row = el('li'), link = el('a', 'bv-decision', blockText(blocker));
-      link.href = `#decision:${blocker.id}`;
+      link.href = `#decision:${blocker.id}`; link.dataset.key = `decision:${blocker.id}`;
       link.title = 'Open the decision';
       link.onclick = event => { event.preventDefault(); openDecision(blocker.id); };
       row.append(link, el('span', 'bv-when', blocker.linked ? `linked · asked by ${blocker.agent_id}`
         : `not linked: blocks every open item of ${blocker.agent_id}`));
-      if (blocker.linked) row.append(button('ghost bv-unlink', '', 'Unlink', () => linkDecision(item, blocker.id, false), `Unlink decision #${blocker.id}`));
+      if (blocker.linked) {
+        const unlink = button('ghost bv-unlink', '', 'Unlink', () => linkDecision(item, blocker.id, false), `Unlink decision #${blocker.id}`);
+        unlink.dataset.key = `unlink:${blocker.id}`;
+        row.append(unlink);
+      }
       list.append(row);
     }
     if (blockers.length) section.append(list);
     // Link an open decision not linked yet (from the page's state).
     const pick = el('select', 'input bv-link-select'), add = button('', '', 'Link', () => pick.value && linkDecision(item, Number(pick.value), true));
     pick.setAttribute('aria-label', 'An open decision of the project to link');
+    pick.dataset.key = 'link-select'; add.dataset.key = 'link-add';
     const row = el('div', 'bv-link-row');
     row.append(pick, add);
     section.append(row);
-    call('/api/state').then(state => {
+    section.ready = call('/api/state').then(state => {
       const linked = new Set(blockers.filter(b => b.linked).map(b => b.id));
       // The project's and the orchestrator's (no project), as the server accepts both.
       const open = (state.decisions || []).filter(d => (d.project == null || d.project === item.project) && !linked.has(d.id));
@@ -1018,8 +1068,8 @@
     ui.pending = true;
     await load();
     if (ui.detail && ui.detail.id === item.id) {
-      extra(find(item.id) || item);
-      ui.dialog.querySelector('.bv-blockers h4').focus();
+      await extra(find(item.id) || item);
+      if (ui.detail && ui.detail.id === item.id) ui.dialog.querySelector('.bv-blockers h4').focus();
     }
   }
 
