@@ -1645,3 +1645,20 @@ def test_the_page_has_the_hook_and_the_places_for_the_banners():
     page = (PACKAGE / "web" / "index.html").read_text()
     assert "window.spartitoApp = {" in script and "sync(view)" in script
     assert 'id="appNotices"' in page and 'id="appNotify"' in page
+
+
+def test_the_app_log_says_why_the_window_ended(webview: FakeWebview):
+    assert run_app("--close-after", "0.1").exit_code == 0
+    assert run_app().exit_code == 0  # the user closed it
+    ended = [line.split("] ", 1)[1] for line in window.app_log().read_text().splitlines()]
+    ended = [line for line in ended if line.startswith("window ended")]
+    assert ended == [
+        "window ended: --close-after elapsed",
+        "window ended: the window was closed (its close button, Cmd-Q or Quit)",
+    ]
+
+
+def test_a_click_on_a_notification_is_logged_and_opens_its_target():
+    window.clicked_open("decision:3")
+    assert app_open.latest()["target"] == "decision:3"
+    assert window.app_log().read_text().endswith("a click on a notification: opening decision:3\n")

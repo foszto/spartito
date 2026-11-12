@@ -107,6 +107,11 @@ class AppError(Exception):
 def say(line: str) -> None:
     """One line about this window: on stderr and in the app log."""
     print(line, file=sys.stderr, flush=True)
+    log_line(line)
+
+
+def log_line(line: str) -> None:
+    """One line in the app log only (what happened, for a look afterwards)."""
     with contextlib.suppress(OSError), app_log().open("a", encoding="utf-8") as out:
         stamp = datetime.now().astimezone().isoformat(timespec="seconds")
         out.write(f"{stamp} [{os.getpid()}] {line}\n")
@@ -342,7 +347,7 @@ def native_window(session: Session) -> bool:
             " trying a Chromium-family browser in app mode"
         )
         return False
-    closed = threading.Event()
+    closed, timed_out = threading.Event(), threading.Event()
     icon = native_identity(session, gui)
     try:
         window = webview.create_window(
@@ -377,7 +382,8 @@ def native_window(session: Session) -> bool:
                     target=ask_when_shown, args=(window, notices), name="orch-app-ask", daemon=True
                 ).start()
             with watching_requests(session, lambda: bring_native_forward(window)):
-                session.done.wait(session.close_after)  # closed, a stop signal or time is up
+                if not session.done.wait(session.close_after):  # closed, a stop signal
+                    timed_out.set()  # or time is up
             if not closed.is_set():
                 window.destroy()
 
@@ -395,6 +401,7 @@ def native_window(session: Session) -> bool:
         finally:
             if notices is not None:
                 notices.close()
+            log_line(f"window ended: {end_reason(session, closed, timed_out)}")
     except Exception as exc:  # no GUI toolkit (Linux without Qt or GTK), and the like
         say(
             f"no native window: pywebview failed ({first_line(exc)});"
@@ -402,6 +409,16 @@ def native_window(session: Session) -> bool:
         )
         return False
     return True
+
+
+def end_reason(session: Session, closed: threading.Event, timed_out: threading.Event) -> str:
+    if session.signal:
+        return f"stop signal {signal.Signals(session.signal).name}"
+    if timed_out.is_set():
+        return "--close-after elapsed"
+    if closed.is_set():
+        return "the window was closed (its close button, Cmd-Q or Quit)"
+    return "the GUI loop ended"
 
 
 def ask_when_shown(window, notices: notifier.WindowNotifier) -> None:
@@ -439,7 +456,7 @@ def start_notifier(session: Session, window=None) -> notifier.WindowNotifier | N
     center: notifier.Center = notifier.Unavailable()
     if why is None:
         try:
-            center = notifier.MacCenter(notifier.opener(Orchestrator.request_app_open))
+            center = notifier.MacCenter(notifier.opener(clicked_open))
         except Exception as exc:
             why = first_line(exc)
     bundle = session.own_bundle
@@ -461,6 +478,14 @@ def start_notifier(session: Session, window=None) -> notifier.WindowNotifier | N
         say(f"notifications from {config.PROJECT_NAME}: not available ({first_line(exc)})")
         return None
     return notices
+
+
+def clicked_open(target: str) -> None:
+    """A click on one of this app's notifications reached this process: open its target."""
+    from ..service import Orchestrator
+
+    log_line(f"a click on a notification: opening {target or 'the window'}")
+    Orchestrator.request_app_open(target)
 
 
 class Dock(Protocol):
