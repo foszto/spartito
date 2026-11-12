@@ -501,10 +501,10 @@
       if (now && now.updated_at !== ui.detail.updated_at) { ui.detail.updated_at = now.updated_at; extra(now); }
       return;
     }
-    let item = find(id);
-    if (!item && ui.project) item = (await call('/api/board/view').catch(() => ({ items: [] }))).items.find(i => i.id === id);
+    // Only an item the route's board shows: #board:alpha/9 with an item of beta is refused.
+    const item = find(id);
     if (!item) {
-      toast(`There is no board item #${id}${ui.project ? ` in ${ui.project}` : ''}`, true);
+      toast(ui.project ? `#${id} is not an item of ${ui.project}` : `There is no board item #${id}`, true);
       select(route(ui.project));
       return;
     }
