@@ -22,8 +22,9 @@ import pytest
 from conftest import FakeNotifySend
 from test_decisions import calls
 from test_notifications import until
+from typer.testing import CliRunner
 
-from orchestrator import app_open, desktop
+from orchestrator import app_open, cli, desktop
 from orchestrator.service import Orchestrator
 
 BODY = "a-1 finished"
@@ -446,7 +447,7 @@ def test_linux_with_notify_send_hands_the_claimed_notice_to_the_helper(
 ):
     monkeypatch.setattr(desktop, "PLATFORM", "linux")
     desktop.show(orch.store, "Decision needed", "a-1", 9)
-    assert spawned == [["linux", str(notify_send.path), "Decision needed", "decision:9"]]
+    assert spawned == [["linux", str(notify_send.path), "Decision needed", "decision:9", "1"]]
     assert orch.notices() == [] and calls(fake_osascript) == []  # claimed: shown once
 
 
@@ -524,10 +525,14 @@ def test_linux_helper_has_a_time_limit(notify_send, started, monkeypatch):
 
 
 def test_linux_session_bus_fallback(notify_send, started, monkeypatch, tmp_path):
+    """Without the variable: the bus at its usual place, only when a bus is there."""
     monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
-    monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
     desktop.linux_helper(str(notify_send.path), BODY, "a-1")
-    assert notify_send.buses()[-1] == "unix:path=/run/user/1000/bus"
+    assert notify_send.buses()[-1] == ""  # no bus there: none invented
+    (tmp_path / "bus").touch()
+    desktop.linux_helper(str(notify_send.path), BODY, "a-1")
+    assert notify_send.buses()[-1] == f"unix:path={tmp_path}/bus"
     monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/elsewhere")
     desktop.linux_helper(str(notify_send.path), BODY, "a-1")
     assert notify_send.buses()[-1] == "unix:path=/elsewhere"
@@ -742,48 +747,118 @@ def test_linux_helpers_waiting_for_a_click_are_capped(notify_send, started, monk
         assert not got
 
 
-def test_a_linux_burst_is_summed_up_in_one_popup(notify_send, started, monkeypatch):
+def linux_notices(orch: Orchestrator, spawned: list, count: int) -> list[list[str]]:
+    """`count` finished notices recorded on Linux; the helper arguments of each."""
+    for n in range(count):
+        desktop.show(orch.store, f"a-{n} finished", f"a-{n}")
+    assert [args[4] for args in spawned] == [str(n + 1) for n in range(count)]
+    return list(spawned)
+
+
+def traced(orch: Orchestrator, notice: int) -> dict:
+    return next(n for n in orch.notice_trace() if n["id"] == notice)
+
+
+def test_a_linux_burst_is_summed_up_in_one_popup(
+    orch: Orchestrator, spawned, notify_send, started, monkeypatch
+):
+    """Held-back notices are traced by their id: `counted` on the path linux-summary, and the
+    summing one `shown` as the summary; `spartito notices` says so."""
+    monkeypatch.setattr(desktop, "PLATFORM", "linux")
     monkeypatch.setattr(desktop, "BURST_LIMIT", 2)
     monkeypatch.setattr(desktop, "BURST_SECONDS", 1.0)
-    for n in range(2):
-        desktop.linux_helper(str(notify_send.path), f"a-{n} finished", f"a-{n}")
+    helpers = linux_notices(orch, spawned, 5)
+    run = lambda args: desktop.linux_helper(*args[1:4], int(args[4]))  # noqa: E731
+    for args in helpers[:2]:
+        run(args)
     assert [call[-1] for call in notify_send.calls()] == [
         "a-0 finished — open it: spartito app --agent a-0",
         "a-1 finished — open it: spartito app --agent a-1",
     ]
-    summing = threading.Thread(
-        target=desktop.linux_helper, args=(str(notify_send.path), "a-2 finished", "a-2")
-    )
+    summing = threading.Thread(target=run, args=(helpers[2],))
     began = time.monotonic()
     summing.start()
     state = desktop.config.runtime_dir() / desktop.BURST_STATE
     until(lambda: json.loads(state.read_text())["summary"], what="the summing helper")
-    for n in (3, 4):  # held: counted, nothing shown now
-        desktop.linux_helper(str(notify_send.path), f"a-{n} finished", f"a-{n}")
+    for args in helpers[3:]:  # held: counted, nothing shown now
+        run(args)
     assert len(notify_send.calls()) == 2
     summing.join(10)
     assert not summing.is_alive() and time.monotonic() - began < 5
     assert len(notify_send.calls()) == 3
     assert sent(notify_send)[-1] == "3 more notices — open it: spartito app"
+    lines = {n: traced(orch, n)["summary"] for n in range(1, 6)}
+    assert [lines[n]["path"] for n in range(1, 6)] == ["linux"] * 2 + ["linux-summary"] * 3
+    assert lines[3]["reason"] == "held back, over 2 popups in 1 s: shows the summary in 1 s"
+    assert lines[4]["reason"] == "held back, over 2 popups in 1 s: in the summary popup"
+    steps = [s["step"] for s in traced(orch, 3)["steps"]]
+    assert steps[-2:] == ["counted", "shown"]
+    assert '3 held back, shown as "3 more notices"' in traced(orch, 3)["steps"][-1]["detail"]
     log = desktop.notice_log().read_text()
-    assert log.count("counted linux: over 2 popups in 1 s: in the summary") == 2
-    assert "shown linux: over 2 popups in 1 s: 3 more notices in one" in log
+    assert log.count("counted linux-summary: held back, over 2 popups in 1 s") == 3
+    assert "#4 " in log and "#5 " in log
+    out = CliRunner().invoke(cli.app, ["notices"]).output
+    assert out.count("linux-summary") == 3
 
 
-def test_a_single_notice_held_by_a_burst_is_shown_as_itself(notify_send, started, monkeypatch):
+def test_a_single_notice_held_by_a_burst_is_shown_as_itself_and_traced_as_late(
+    orch: Orchestrator, spawned, notify_send, started, monkeypatch
+):
+    monkeypatch.setattr(desktop, "PLATFORM", "linux")
     monkeypatch.setattr(desktop, "BURST_LIMIT", 1)
     monkeypatch.setattr(desktop, "BURST_SECONDS", 0.5)
-    desktop.linux_helper(str(notify_send.path), "a-0 finished", "a-0")
+    first, second = linux_notices(orch, spawned, 2)
+    desktop.linux_helper(*first[1:4], int(first[4]))
     began = time.monotonic()
-    desktop.linux_helper(str(notify_send.path), "a-1 finished", "a-1")
+    desktop.linux_helper(*second[1:4], int(second[4]))
     assert 0.2 < time.monotonic() - began < 5
     assert [call[-1] for call in notify_send.calls()] == [
         "a-0 finished — open it: spartito app --agent a-0",
         "a-1 finished — open it: spartito app --agent a-1",
     ]
-    desktop.config.runtime_dir().joinpath(desktop.BURST_STATE).write_text("not json")
-    desktop.linux_helper(str(notify_send.path), "a-2 finished", "a-2")  # a broken state: shown
-    assert len(notify_send.calls()) == 3
+    late = traced(orch, 2)
+    assert [s["step"] for s in late["steps"]][-2:] == ["counted", "shown"]
+    assert late["summary"]["path"] == "linux"
+    assert late["summary"]["reason"].startswith("held back, over 1 popups in 0.5 s")
+    assert "the only one held back: as itself" in late["steps"][-1]["detail"]
+    assert traced(orch, 1)["summary"]["reason"].startswith("notify-send;")  # not held
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["not json", '{"shown": "x", "held": "y", "summary": 5}', "[1, 2]", '{"held": -1}'],
+)
+def test_a_burst_state_that_is_not_one_is_reset(notify_send, started, content):
+    path = desktop.config.runtime_dir() / desktop.BURST_STATE
+    path.write_text(content)
+    desktop.linux_helper(str(notify_send.path), BODY, "a-1")
+    assert len(notify_send.calls()) == 1  # shown
+    state = json.loads(path.read_text())
+    assert desktop.burst_checked(state) is not None and len(state["shown"]) == 1
+    assert "linux-burst.json: unusable, reset" in desktop.notice_log().read_text()
+
+
+@pytest.mark.parametrize("why", ["ended", "is overdue"])
+def test_a_count_whose_summing_helper_is_gone_is_discarded(notify_send, started, why):
+    """A summing helper killed while it waited leaves its count behind: the next notice
+    discards it (logged) instead of adding it to a later burst."""
+    if why == "ended":
+        dead = subprocess.Popen([sys.executable, "-c", ""])
+        dead.wait()
+        owner = {"pid": dead.pid, "deadline": time.time() + 60, "token": "t"}
+    else:
+        owner = {"pid": os.getpid(), "deadline": time.time() - 1, "token": "t"}
+    path = desktop.config.runtime_dir() / desktop.BURST_STATE
+    path.write_text(json.dumps({"shown": [], "held": 3, "summary": owner}))
+    desktop.linux_helper(str(notify_send.path), BODY, "a-1")
+    assert len(notify_send.calls()) == 1
+    state = json.loads(path.read_text())
+    assert state["held"] == 0 and state["summary"] is None
+    log = desktop.notice_log().read_text()
+    assert (
+        f"drop linux-summary: 3 held back; their summing helper (pid {owner['pid']}) {why}" in log
+    )
+    assert desktop.burst_summarised("t") == 1  # an owner whose count is gone shows itself
 
 
 def test_the_app_open_target_rule_is_the_deep_link_rule():
