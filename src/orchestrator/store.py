@@ -126,7 +126,9 @@ CREATE TABLE IF NOT EXISTS deliveries (
 -- claimed: JSON list of the runs a notification reported (released if its turn fails);
 -- checked: 1 once the run has ended and its parents were checked for a notification;
 -- auto: 1 for a compaction queued automatically (Orchestrator.auto_compact), which goes
--- ahead of the agent's queued messages (older code ignores it and keeps queue order).
+-- ahead of the agent's queued messages (older code ignores it and keeps queue order);
+-- stopping: 1 once a stop signalled the run's runner (launcher.stop_runs), so that whoever
+-- finds the runner dead treats the run as stopped, not as crashed (older code ignores it).
 CREATE TABLE IF NOT EXISTS run_meta (
     run_id INTEGER PRIMARY KEY,
     agent_id TEXT NOT NULL,
@@ -137,7 +139,8 @@ CREATE TABLE IF NOT EXISTS run_meta (
     cause_run INTEGER,
     claimed TEXT,
     checked INTEGER NOT NULL DEFAULT 0,
-    auto INTEGER NOT NULL DEFAULT 0
+    auto INTEGER NOT NULL DEFAULT 0,
+    stopping INTEGER NOT NULL DEFAULT 0
 );
 -- Archived agents: hidden from the default listings, everything else kept. Its own table
 -- for the same reasons as run_usage. A row whose restored_at is set is no longer archived
@@ -301,6 +304,7 @@ RUN_META_ADDED = (
     ("claimed", "TEXT"),
     ("checked", "INTEGER NOT NULL DEFAULT 0"),
     ("auto", "INTEGER NOT NULL DEFAULT 0"),
+    ("stopping", "INTEGER NOT NULL DEFAULT 0"),
 )
 # notices columns added after its first version (desktop.py). route: whom the notice is left
 # to ('window', 'helper', 'page', 'banner', 'waiting'; 'osascript' or 'linux' when shown at
@@ -382,6 +386,7 @@ class RunMeta:
     claimed: str | None = None  # JSON list of run ids
     checked: int = 0
     auto: int = 0  # 1: an automatic compaction
+    stopping: int = 0  # 1: a stop signalled its runner
     known: bool = True  # False: queued by code from before run metadata
 
     @classmethod
@@ -399,7 +404,8 @@ def subtree_sql(column: str = "?") -> str:
 
 class Store:
     # Called as on_run_end(run_id, agent_id, recheck) when reconcile ended a run (or
-    # deleted a notification that never started: recheck, the agent may still be due one)
+    # deleted a notification that never started: recheck, the agent may still be due one,
+    # unless a stop ended it)
     # or found an ended run whose runner died before checking the parents. The
     # Orchestrator (a runner: core/lifecycle.attach) sets it so parents get notified.
     on_run_end: Callable[[int, str, bool], None] | None = None
@@ -964,6 +970,13 @@ class Store:
         with self._conn() as conn:
             conn.execute("UPDATE agents SET parent_id = ? WHERE id = ?", (parent_id, agent_id))
 
+    def mark_stopping(self, run_ids: list[int]) -> None:
+        """Record that a stop is about to signal these runs' runners (see reconcile)."""
+        with self._conn() as conn:
+            conn.executemany(
+                "UPDATE run_meta SET stopping = 1 WHERE run_id = ?", [(i,) for i in run_ids]
+            )
+
     def mark_checked(self, run_id: int) -> bool:
         """Record that the ended run's parents were checked; False if that was done before."""
         with self._conn() as conn:
@@ -1146,9 +1159,12 @@ class Store:
 
     def reconcile(self) -> None:
         """Fail active runs whose runner process no longer exists (crash, reboot); a
-        notification that never started is deleted instead. Then hand every run ended this
-        way, and every ended run whose runner died before checking the parents, to
-        `on_run_end`, once (whoever marks it checked first)."""
+        notification that never started is deleted instead. A run whose runner a stop
+        signalled (`stopping`) ends as stopped instead of failed, and a notification of it
+        that never started does not recheck its agent: the stop was deliberate, whichever
+        process sees the runner dead first. Then hand every run ended this way, and every
+        ended run whose runner died before checking the parents, to `on_run_end`, once
+        (whoever marks it checked first)."""
         ended: list[tuple[int, str, bool]] = []
         for run in self.active_runs():
             if run.pid is not None and not pid_alive(run.pid):
@@ -1156,11 +1172,15 @@ class Store:
                 fresh = self.get_run(run.id)
                 if not (fresh and fresh.status.active):
                     continue
-                if fresh.started_at is None and self.meta(run.id).kind == NOTIFICATION:
+                meta = self.meta(run.id)
+                if fresh.started_at is None and meta.kind == NOTIFICATION:
                     self.delete_run(run.id)
-                    ended.append((run.id, run.agent_id, True))
+                    ended.append((run.id, run.agent_id, not meta.stopping))
                 else:
-                    self.finish_run(run.id, RunStatus.FAILED, error="runner process died")
+                    if meta.stopping:
+                        self.finish_run(run.id, RunStatus.STOPPED, error="stopped")
+                    else:
+                        self.finish_run(run.id, RunStatus.FAILED, error="runner process died")
                     if self.mark_checked(run.id):
                         ended.append((run.id, run.agent_id, False))
         with self._conn() as conn:
