@@ -10,13 +10,16 @@ helper is noted, not started (`spawned`).
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
 import pytest
 from test_decisions import calls
 from test_desktop_paths import fake_bundle, left_to, steps_of
-from test_notifications import until
+from test_notifications import lead, until
 from typer.testing import CliRunner
 
 from orchestrator import autostart, cli, config, desktop, runner
@@ -246,6 +249,38 @@ def test_the_mcp_server_gets_the_turns_home(orch: Orchestrator, project: str, mo
     assert runner.mcp_server(orch.store.get_agent(agent.id)).env[config.TURN_HOME_ENV] == (
         "/elsewhere"
     )
+
+
+# As Codex starts an MCP server: a few variables of its own, and the env it was given.
+CODEX_MCP_BASE = ("HOME", "PATH", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG")
+RAISE = "from orchestrator import mcp_server; mcp_server.request_decision('Go ahead?')"
+
+
+def raise_decision(env: dict[str, str], fake_osascript: Path) -> None:
+    base = {k: os.environ[k] for k in CODEX_MCP_BASE if k in os.environ}
+    base["FAKE_OSASCRIPT_LOG"] = str(fake_osascript)  # only for the fake to note a call
+    subprocess.run([sys.executable, "-c", RAISE], env={**base, **env}, check=True, timeout=60)
+
+
+def test_the_switch_reaches_an_mcp_server_given_only_its_own_env(
+    orch: Orchestrator, project: str, fake_osascript: Path, monkeypatch
+):
+    agent = orch.store.get_agent(lead(orch, project))
+    monkeypatch.setenv(config.NOTIFICATIONS_ENV, "off")
+    env = runner.mcp_server(agent).env
+    assert env[config.NOTIFICATIONS_ENV] == "off"
+    raise_decision(env, fake_osascript)
+    time.sleep(0.3)
+    assert calls(fake_osascript) == [] and orch.notices() == []
+    (traced,) = orch.notice_trace(1)
+    assert traced["kind"] == "decision" and traced["route"] == desktop.QUIET
+    assert steps_of(orch, traced["id"]) == NOT_SHOWN
+    assert traced["summary"]["reason"] == "ORCH_DESKTOP_NOTIFICATIONS=off: not shown"
+    monkeypatch.delenv(config.NOTIFICATIONS_ENV)
+    assert config.NOTIFICATIONS_ENV not in runner.mcp_server(agent).env
+    if sys.platform == "darwin":  # without it, the same process posts (to the fake osascript)
+        raise_decision(runner.mcp_server(agent).env, fake_osascript)
+        until(lambda: calls(fake_osascript), what="the notification")
 
 
 def test_a_service_or_launcher_installed_from_an_agents_shell_has_neither(tmp_path: Path):

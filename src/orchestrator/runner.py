@@ -149,12 +149,9 @@ def mcp_server(agent: Agent) -> McpServer:
     return McpServer(
         command=sys.executable,
         args=["-m", "orchestrator.mcp_server"],
-        # Given here, not only inherited: Codex starts MCP servers with a few variables only.
-        env={
-            "ORCH_HOME": str(config.home()),
-            "ORCH_AGENT_ID": agent.id,
-            config.TURN_HOME_ENV: config.turn_home(),
-        },
+        # The turn's variables are given here, not only inherited: Codex starts MCP servers
+        # with a few variables only.
+        env={"ORCH_HOME": str(config.home()), "ORCH_AGENT_ID": agent.id, **config.turn_env()},
     )
 
 

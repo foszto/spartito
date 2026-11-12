@@ -35,6 +35,15 @@ def turn_home() -> str:
     return os.environ.get(TURN_HOME_ENV) or str(home().resolve())
 
 
+def turn_env() -> dict[str, str]:
+    """What a child of a turn must get even when it is given an environment of its own (an
+    MCP server under Codex): TURN_HOME_ENV, and NOTIFICATIONS_ENV when it is set here."""
+    env = {TURN_HOME_ENV: turn_home()}
+    if switch := os.environ.get(NOTIFICATIONS_ENV):
+        env[NOTIFICATIONS_ENV] = switch
+    return env
+
+
 def db_path() -> Path:
     return home() / "orch.db"
 
