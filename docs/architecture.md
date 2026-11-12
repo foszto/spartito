@@ -94,6 +94,7 @@ src/orchestrator/
   web/             dashboard: one page and a JSON API
     app.py           the page and the JSON API, with the guards against other origins
     board_api.py     the JSON API of the board view across projects
+    code_api.py      the JSON API of the code view of an agent's worktree (read-only)
     serve.py         running the dashboard server, shared by `spartito web` and `spartito app`
   gui/             `spartito app`: the window (window.py), finding a running server (locate.py),
                    the launcher (launcher.py), notifications posted by Spartito itself
@@ -116,6 +117,7 @@ src/orchestrator/
     boards.py        the task board across projects: the joined view, placing, dispatching
                      named items, an item's history
     board_git.py     the cached git state of the board items' branches
+    code_view.py     an agent's worktree, read-only: changed files, patches, files, contents
   runner.py        one turn in its own detached process
   store.py         SQLite (WAL): the only shared state
   providers/       base.py (protocol), claude.py, codex.py

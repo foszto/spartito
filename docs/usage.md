@@ -304,6 +304,21 @@ instructions) and **Archive** / **Restore**. The model and effort drop-downs:
   agent's own value and shows what applies instead (the tier setting or `CLI default`);
 - mark the agent's own value as `own`; a change applies from the next turn.
 
+**Code view.** **Code** in the header of an agent with a worktree of its own shows its code in
+place of the conversation, read-only, and loads it only when opened (**Refresh** loads it
+again):
+
+- **Changes**: the files changed against the base branch, counted from the commit the branch
+  shares with it, committed and uncommitted together, with added and removed lines;
+  untracked files that are not ignored are listed as `new`. Opening a file loads its patch.
+- **Files**: the worktree's files as folders; a click shows a file's content.
+
+Only files git tracks or would track are shown: an ignored file such as `.env` and anything
+under `.git` never are. A symbolic link is shown as its target and never followed. Binary
+files are named but not shown. Limits, each noted on the page when reached: 1,000 changed
+files, 5,000 files in the tree, 2,000 lines of one patch and 512 KB of one file. Nothing is
+edited, and the repository's own diff, textconv, filter and fsmonitor commands are not run.
+
 **New agent** (**+** in a project's row): task, role, provider, name, model, effort,
 workspace (own worktree, main checkout or another agent's worktree) and *Start after*
 dependencies.
@@ -338,6 +353,9 @@ convenient from scripts:
 - `POST /api/agents/<id>/model` with `{"model": "...", "effort": null}`: `null` clears a value,
   a missing key leaves it unchanged.
 - `POST /api/agents/<id>/compact` with `{"instructions": "..."}`.
+- `GET /api/agents/<id>/code/changes`, `…/code/patch?path=<path>`, `…/code/tree` and
+  `…/code/file?path=<path>`: the code view (`web/code_api.py`). Besides the Host check, these
+  refuse a request whose `Origin` or `Sec-Fetch-Site` names another site, GET included.
 
 ## Upgrading from `orch`
 
