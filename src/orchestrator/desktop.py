@@ -136,6 +136,7 @@ PATHS = {
     LINUX: "linux",
 }
 DROPPED = "dropped"  # a path: nobody shows it (a decision answered before it was shown)
+COUNTED = "window-count"  # a path: counted in the window's "more" banner, not shown in one
 # The window process's notification states (gui/notifier.py) in which it takes notices to post.
 POSTING_STATES = ("allowed", "waiting", "asking", "")  # "": a window of older code
 ROLE: str | None = None  # this process's part, set by entry points; else guessed (`role`)
@@ -881,6 +882,7 @@ def redirect(
 
 
 REASONS = ("fallback", "escalate", "release", "drop", "error")
+OUTCOMES = ("shown", "counted", "drop", "claim")  # a step that says how a notice went
 
 
 def summary(notice: dict[str, Any]) -> dict[str, Any]:
@@ -900,7 +902,7 @@ def summary(notice: dict[str, Any]) -> dict[str, Any]:
         }
     last = steps[-1]
     route_now = notice.get("route") or ""
-    outcome = next((s for s in reversed(steps) if s["step"] in ("shown", "drop", "claim")), None)
+    outcome = next((s for s in reversed(steps) if s["step"] in OUTCOMES), None)
     if claimed and outcome is None and route_now not in (OSASCRIPT, LINUX):
         return {
             "path": "not recorded",

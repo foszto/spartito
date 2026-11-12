@@ -10,7 +10,9 @@ inside itself when it may not post them:
   desktop.route left to it (through the facade, once each, as a page does). On its first poll
   it takes the notices that waited for a window (the backlog: shown inside, open decisions
   and the newest few finished ones, a count of the others; none for a decision no longer
-  open: core/notices.worth_showing).
+  open: core/notices.worth_showing). Inside, IN_WINDOW banners show notices one by one
+  (`arrange`: open decisions first); what does not fit, or is pushed out later, is counted
+  in one more banner, never lost unseen.
   It asks for permission once the window is shown (`ask`; asked earlier, during the launch, the answer was seen to get lost) and reads
   the authorization status on each poll, so a lost answer, or a change in System Settings, is
   seen within a poll. Allowed, it records the grant (desktop.record_grant) and posts the
@@ -44,7 +46,6 @@ from __future__ import annotations
 import contextlib
 import threading
 import time
-from collections import deque
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -59,7 +60,8 @@ LINGER_SECONDS = 1.0  # the posting process stays this long after posting, for a
 AUTHORIZED = frozenset({2, 3, 4})  # UNAuthorizationStatus: authorized, provisional, ephemeral
 DEFAULT_ACTION = "com.apple.UNNotificationDefaultActionIdentifier"
 TEXT_CHARS = 240
-IN_WINDOW = 3  # the newest notices the window shows inside itself; older ones drop out
+IN_WINDOW = 3  # banners the window shows notices in, one each; the others are counted
+COUNT_BANNER = "not shown, counted in the window's count banner"
 NO_ANSWER_SECONDS = 30.0  # asked this long ago without an answer: said once
 SETTINGS = "System Settings › Notifications"
 STATUS_WAIT_SECONDS = 10.0  # a status read without a completion this long: read again
@@ -245,10 +247,12 @@ class Facade(Protocol):
     def release_notice(self, notice_id: int, why: str, taker: str) -> bool: ...
     def leave_waiting(self, notice_id: int, why: str, taker: str) -> bool: ...
     def hand_over_notice(self, notice: dict[str, Any], taker: str = ...) -> None: ...
-    def notice_backlog(self, before: int, taker: str) -> tuple[list[dict[str, Any]], int]: ...
+    def notice_backlog(
+        self, before: int, taker: str
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]: ...
     def worth_showing(
         self, found: list[dict[str, Any]], taker: str
-    ) -> tuple[list[dict[str, Any]], int]: ...
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]: ...
     def ingest_notices(self) -> list[int]: ...
 
 
@@ -322,6 +326,20 @@ def in_window_item(notice: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def arrange(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The one rule for the window's IN_WINDOW banners: of `items` (oldest first) the newest
+    decision notices take them, the newest others the ones left; returns those (oldest first)
+    and the rest, to be counted (oldest first). A finished notice never pushes a decision
+    out; once out, an item does not come back (only newer ones are added)."""
+    decisions = [item for item in items if item.get("kind") == "decision"][-IN_WINDOW:]
+    others = [item for item in items if item.get("kind") != "decision"]
+    room = IN_WINDOW - len(decisions)
+    kept = {
+        item["id"] for item in decisions + (others[max(0, len(others) - room) :] if room else [])
+    }
+    return [i for i in items if i["id"] in kept], [i for i in items if i["id"] not in kept]
+
+
 class WindowNotifier:
     """The window process's part: marker, polling, permission and its state, clicks, and the
     notices shown inside the window. `why_not`: this process cannot post at all (the state is
@@ -343,7 +361,6 @@ class WindowNotifier:
         self.app_name = bundle.stem if bundle is not None else config.PROJECT_NAME
         self.cursor = orch.notice_cursor()  # older ones waited for a window: the backlog
         self.backlog_taken = False
-        self.earlier = 0  # backlog notices beyond the IN_WINDOW shown: a count
         self.stop = threading.Event()
         self.thread: threading.Thread | None = None
         self.lock = threading.RLock()
@@ -351,7 +368,8 @@ class WindowNotifier:
         self.asked_at: float | None = None
         self.no_answer_said = False
         self.checking_since: float | None = None  # a status request is out since then
-        self.shown: deque[dict[str, Any]] = deque(maxlen=IN_WINDOW)
+        self.slots: list[dict[str, Any]] = []  # shown in the banners (arrange)
+        self.counted: list[dict[str, Any]] = []  # in the window, not in a banner: the count
         self.unseen: dict[int, dict[str, Any]] = {}  # shown inside, not taken by the page yet
         self.held = 0  # the count the Dock's badge keeps for the page
         self.stuck_since: float | None = None  # the page has not taken new notices since then
@@ -383,9 +401,9 @@ class WindowNotifier:
         return f"notifications from {name}: not available ({self.detail}); {inside}"
 
     def view(self) -> dict[str, Any]:
-        notices = list(self.shown)
-        if self.earlier:
-            notices.insert(0, self.earlier_item())
+        notices = list(self.slots)
+        if self.counted:
+            notices.insert(0, self.more_item())
         return {
             "version": self.version,
             "state": self.state,
@@ -393,16 +411,20 @@ class WindowNotifier:
             "notices": notices,
         }
 
-    def earlier_item(self) -> dict[str, Any]:
-        """The banner that counts the backlog notices not shown one by one."""
+    def more_item(self) -> dict[str, Any]:
+        """The banner that counts the notices not shown in one (`hidden`, oldest first: the
+        page counts those not closed there); a click goes to the newest decision among them
+        (the Decisions window lists all open ones). `text`: for a page of older code."""
+        decisions = [item for item in self.counted if item.get("kind") == "decision"]
+        among = f", {len(decisions)} of them decision(s)" if decisions else ""
         return {
             "id": -self.cursor - 1,  # stays the same while this window runs
-            "kind": "earlier",
+            "kind": "more",
             "text": (
-                f"{self.earlier} earlier notice(s) waited while no window was open:"
-                f" `{config.CLI_NAME} notices` lists them"
+                f"{len(self.counted)} more notice(s){among}: `{config.CLI_NAME} notices` lists them"
             ),
-            "target": "",
+            "target": decisions[-1]["target"] if decisions else "",
+            "hidden": list(self.counted),
         }
 
     def become(self, state: str, detail: str = "") -> None:
@@ -538,8 +560,8 @@ class WindowNotifier:
     def take_backlog(self) -> None:
         """The notices that waited for a window: shown inside (not posted: no flood), as
         core/notices.worth_showing keeps them (open decisions and the newest few finished
-        ones one by one, decisions last; the others as a count; decisions no longer open
-        none)."""
+        ones, in the banners as `arrange` places them, the others counted; decisions no
+        longer open none)."""
         taken = []
         taker = self.taker
         backlog, counted = self.orch.notice_backlog(self.cursor, taker)
@@ -551,14 +573,10 @@ class WindowNotifier:
         self.backlog_taken = True
         if not taken and not counted:
             return
-        with self.lock:
-            self.earlier += counted
-        decision_last = sorted(taken, key=lambda notice: notice.get("decision_id") is not None)
-        for notice in decision_last:  # the view keeps the newest IN_WINDOW: decisions stay
-            self.show_inside(notice, "it waited for a window", attention=False)
+        self.place(taken, "it waited for a window", attention=False, counted=counted)
         with contextlib.suppress(Exception):
             self.inside.attention()
-        waited = len(taken) + counted
+        waited = len(taken) + len(counted)
         self.say(f"notifications: {waited} notice(s) waited for a window; shown in it")
 
     def trace(self, notice: dict[str, Any], kind: str, path: str | None, detail: str) -> None:
@@ -584,16 +602,43 @@ class WindowNotifier:
         self.show_inside(notice, "the post failed")
 
     def show_inside(self, notice: dict[str, Any], why: str = "", attention: bool = True) -> None:
+        self.place([notice], why or "inside the window", attention)
+
+    def place(
+        self,
+        notices: list[dict[str, Any]],
+        why: str,
+        attention: bool = True,
+        counted: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Show `notices` in the window as `arrange` places them among those shown, and count
+        `counted` (claimed and traced as counted already); each is traced as it went, and so
+        is one pushed out of its banner."""
         with self.lock:
             late = self.handed
             if not late:
-                self.shown.append(in_window_item(notice))
-                self.unseen[notice["id"]] = notice
+                new = [in_window_item(notice) for notice in notices]
+                self.slots, out = arrange(self.slots + new)
+                self.counted += [in_window_item(notice) for notice in counted or []] + out
+                for notice in notices:
+                    self.unseen[notice["id"]] = notice
                 self.changed()
         if late:  # a post refused after the window closed
-            self.hand_over(notice)
+            for notice in notices:
+                self.hand_over(notice)
             return
-        self.trace(notice, "shown", desktop.PATHS[desktop.BANNER], why or "inside the window")
+        out_ids = {item["id"] for item in out}
+        for notice in notices:
+            if notice["id"] in out_ids:
+                full = "no banner free (newer notices or open decisions hold them)"
+                self.trace(notice, "counted", desktop.COUNTED, f"{why}; {full}: {COUNT_BANNER}")
+            else:
+                self.trace(notice, "shown", desktop.PATHS[desktop.BANNER], why)
+        new_ids = {notice["id"] for notice in notices}
+        for item in out:
+            if item["id"] not in new_ids:
+                pushed = f"pushed out of its banner by a newer notice: {COUNT_BANNER}"
+                self.trace(item, "counted", desktop.COUNTED, pushed)
         if attention:
             with contextlib.suppress(Exception):
                 self.inside.attention()
@@ -618,7 +663,8 @@ class WindowNotifier:
                 self.dirty = False
             if taken:
                 for item in view["notices"]:
-                    self.unseen.pop(item["id"], None)
+                    for one in [item, *item.get("hidden", [])]:  # counted: the page has them
+                        self.unseen.pop(one["id"], None)
             waiting = self.dirty and bool(self.unseen)
             held = len(self.unseen) if waiting else 0
             if not waiting:

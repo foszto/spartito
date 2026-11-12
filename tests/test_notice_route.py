@@ -372,19 +372,114 @@ def test_the_window_shows_what_waited_for_it_once_without_a_flood(
     window.tick()
     view = window.inside.last
     assert [n["id"] for n in view["notices"]] == [-window.cursor - 1, *waited[-2:], open_one]
-    assert view["notices"][0]["text"].startswith("1 earlier notice(s) waited")
+    more = view["notices"][0]
+    assert more["kind"] == "more" and more["target"] == ""
+    assert more["text"] == "2 more notice(s): `spartito notices` lists them"
+    assert [n["id"] for n in more["hidden"]] == waited[:2]
     assert window.inside.attention_calls == 1
     assert orch.notices() == []
     assert trace_of(orch, dropped)["summary"]["path"] == "dropped"
     assert trace_of(orch, dropped)["summary"]["reason"] == f"decision #{answered.id} is withdrawn"
     counted = trace_of(orch, waited[0])["steps"][-1]
     assert (counted["step"], counted["path"], counted["detail"]) == (
-        "shown",
-        "window-banner",
-        "waited for a window; counted in its banner (the newest 3 finished notices that"
-        " waited are shown one by one)",
+        "counted",
+        "window-count",
+        "waited for a window; not shown, counted in its banner (the newest 3 finished notices"
+        " that waited are shown one by one)",
     )
+    assert trace_of(orch, waited[0])["summary"]["path"] == "window-count"
+    counted = trace_of(orch, waited[1])["steps"]  # in the backlog, but no banner was free
+    assert [s["step"] for s in counted][-2:] == ["claim", "counted"]
+    assert trace_of(orch, waited[1])["summary"]["path"] == "window-count"
+    for shown in (*waited[2:], open_one):
+        assert trace_of(orch, shown)["summary"]["path"] == "window-banner"
     assert window.lines[-1] == "notifications: 5 notice(s) waited for a window; shown in it"
+    assert calls(fake_osascript) == []
+
+
+def placed(orch: Orchestrator, window) -> tuple[list[int], list[int], dict]:
+    """The ids in the window's banners and those counted in its 'more' banner (oldest first),
+    and that banner (or {}), each checked against its trace."""
+    notices = window.inside.last["notices"]
+    more = next((n for n in notices if n["kind"] == "more"), {})
+    banners = [n["id"] for n in notices if n["kind"] != "more"]
+    hidden = [n["id"] for n in more.get("hidden", [])]
+    for notice in banners:
+        assert trace_of(orch, notice)["summary"]["path"] == "window-banner"
+    for notice in hidden:
+        steps = trace_of(orch, notice)["steps"]
+        assert trace_of(orch, notice)["summary"]["path"] == "window-count"
+        assert steps[-1]["step"] == "counted"
+    return banners, hidden, more
+
+
+@pytest.mark.parametrize(("deciding", "finishing", "cut"), [(2, 3, 0), (4, 3, 0), (1, 5, 2)])
+def test_what_waited_for_the_window_is_in_a_banner_or_counted_and_decisions_keep_theirs(
+    orch: Orchestrator, project: str, window, fake_osascript, macos, deciding, finishing, cut
+):
+    """More notices waited than the window has banners for: none drops out unseen and
+    uncounted; open decisions keep the banners (the newest of them), finished ones the rest."""
+    orch.update_settings({settings.DESKTOP_NOTIFICATIONS: "off"})
+    lead_id = lead(orch, project)
+    decided = []
+    for n in range(deciding):
+        number = orch.request_decision(lead_id, f"Which {n}?").id
+        decided.append(orch.store.add_notice("decision", lead_id, "?", number, route="waiting"))
+    finished = [
+        orch.store.add_notice("finished", f"a-{n}", f"a-{n} finished", route="waiting")
+        for n in range(finishing)
+    ]
+    window.cursor = orch.notice_cursor()
+    window.tick()
+    banners, hidden, more = placed(orch, window)
+    assert orch.notices() == []
+    assert sorted(banners + hidden) == sorted(decided + finished)  # each once, none lost
+    in_banners = decided[-notifier.IN_WINDOW :]
+    room = notifier.IN_WINDOW - len(in_banners)
+    in_banners += finished[len(finished) - room :] if room else []
+    assert sorted(banners) == sorted(in_banners)
+    assert hidden[:cut] == finished[:cut]  # cut from the backlog, counted first
+    pushed = [d for d in decided if d not in banners]
+    assert more["text"].startswith(f"{len(hidden)} more notice(s)")
+    if pushed:
+        assert f", {len(pushed)} of them decision(s)" in more["text"]
+        number = orch.store.notice(pushed[-1])["decision_id"]
+        assert more["target"] == f"decision:{number}"  # the Decisions window lists them all
+    else:
+        assert more["target"] == ""
+    assert window.lines[-1] == (
+        f"notifications: {deciding + finishing} notice(s) waited for a window; shown in it"
+    )
+    assert calls(fake_osascript) == []
+
+
+def test_notices_shown_one_after_another_beyond_the_banners_are_counted(
+    orch: Orchestrator, window, fake_osascript, macos
+):
+    """The window may not post: each new notice is shown inside; one pushed out of its banner
+    is counted (and traced so), a decision is never pushed out by a finished notice, and a
+    finished one finding only decisions in the banners is counted at once."""
+    window.tick()
+    kinds_ = "dfffdddf"
+    made = []
+    for n, kind in enumerate(kinds_):
+        if kind == "d":
+            made.append(orch.store.add_notice("decision", f"a-{n}", "?", 50 + n, route="banner"))
+        else:
+            made.append(orch.store.add_notice("finished", f"a-{n}", "done", route="banner"))
+        window.tick()
+    d0, f1, f2, f3, d4, d5, d6, f7 = made
+    banners, hidden, more = placed(orch, window)
+    assert banners == [d4, d5, d6]
+    assert hidden == [f1, f2, f3, d0, f7]
+    assert more["target"] == "decision:50" and ", 1 of them decision(s)" in more["text"]
+    pushed = trace_of(orch, f1)["steps"]
+    assert [s["step"] for s in pushed][-2:] == ["shown", "counted"]  # it was shown, then out
+    assert pushed[-1]["detail"].startswith("pushed out of its banner by a newer notice")
+    never = [s["step"] for s in trace_of(orch, f7)["steps"]]
+    assert "shown" not in never and never[-1] == "counted"
+    assert window.inside.holds[-1:] in ([], [0])  # the page has them all: no badge left
+    assert window.unseen == {}
     assert calls(fake_osascript) == []
 
 
@@ -423,6 +518,40 @@ def test_racing_posting_processes_show_each_notice_once(orch: Orchestrator, tmp_
         racer.join(30)
     posted = sorted(post[0] for center in centers for post in center.posted)
     assert posted == sorted(f"spartito-notice-{n}" for n in notices)  # each once
+    assert orch.notices() == []
+
+
+def test_racing_takers_announce_every_cut_notice_once(orch: Orchestrator, tmp_path):
+    """The launcher's posting process and a page take six finished notices that waited at
+    once: each is shown once, and the shown texts announce the three cut, however the claims
+    of the cut ones split between them."""
+    waited = [
+        orch.store.add_notice("finished", f"a-{n}", f"a-{n} finished", route="waiting")
+        for n in range(6)
+    ]
+    center = FakeCenter(status=2)
+    page: list[tuple[int, str]] = []
+    start = threading.Barrier(2)
+
+    def launcher() -> None:
+        start.wait()
+        notifier.post_pending(orch, center, tmp_path / "X.app", [])
+
+    def a_page() -> None:
+        start.wait()
+        for notice in orch.page_notices(0):
+            if orch.claim_notice(notice["id"], "page"):
+                page.append((notice["id"], notice["text"]))
+
+    racers = [threading.Thread(target=launcher), threading.Thread(target=a_page)]
+    for racer in racers:
+        racer.start()
+    for racer in racers:
+        racer.join(30)
+    shown = page + [(int(p[0].rsplit("-", 1)[1]), p[2]) for p in center.posted]
+    assert sorted(n for n, _ in shown) == waited[3:]  # each once
+    announced = [text.split(" more waited)")[0][1:] for _, text in shown if "more waited" in text]
+    assert announced == ["3"]
     assert orch.notices() == []
 
 

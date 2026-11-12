@@ -199,7 +199,8 @@ CREATE TABLE IF NOT EXISTS notices (
 );
 -- How each notice went (desktop.py: the trace), one row per step, written by whichever process
 -- took the step; a table of its own, unknown to older code (its notices have no steps). step:
--- 'record' | 'route' | 'escalate' | 'claim' | 'shown' | 'release' | 'fallback' | 'drop';
+-- 'record' | 'route' | 'escalate' | 'claim' | 'shown' | 'counted' | 'release' | 'fallback' |
+-- 'drop';
 -- path: the way it concerns ('window-system', 'launcher-helper', 'osascript', 'waiting', ...);
 -- actor: the process, '<role>:<pid>'; detail: the reason, in words. Pruned with the notices.
 CREATE TABLE IF NOT EXISTS notice_steps (
@@ -1429,6 +1430,17 @@ class Store:
             if cursor.rowcount == 1:
                 self._add_steps(conn, notice_id, [step])
         return cursor.rowcount == 1
+
+    def counted_in_text(self, notice_id: int) -> set[int]:
+        """The notices claimed as counted in the text of `notice_id` (by any taker: the step
+        written with the claim ends "counted in the text of #<notice_id>",
+        core/notices.worth_showing)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT notice_id FROM notice_steps WHERE step = 'drop' AND detail LIKE ?",
+                (f"%counted in the text of #{notice_id}",),
+            ).fetchall()
+        return {row[0] for row in rows}
 
     def notice_trace(self, limit: int = 20) -> list[dict[str, Any]]:
         """The newest `limit` notices, newest first, claimed or not, each with its `steps`

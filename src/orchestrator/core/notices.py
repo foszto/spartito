@@ -114,15 +114,17 @@ def waited(notice: dict[str, Any]) -> bool:
 
 def worth_showing(
     orch: Facade, found: list[dict[str, Any]], taker: str
-) -> tuple[list[dict[str, Any]], int]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """The one rule for what a taker shows of the notices it may take (`found`, oldest first),
     for Spartito's window, the launcher's posting process and a page alike. Every fresh
     notice is kept. Of those that `waited`: a decision notice is kept while its decision is
     open (never cut), else dropped; of the finished ones only the newest SHOW_AT_MOST are
-    kept, the older ones are claimed here and counted: in the window's count banner when
-    `taker` is the window (their number: the second value), else in the text of the newest
-    one kept ("(<n> more waited) …"). Kept: the ones for `taker` to claim and show, oldest
-    first. Each one claimed here is traced with its reason."""
+    kept, the older ones are claimed here and counted: in the window's "more" banner when
+    `taker` is the window (the second value: the ones it claimed, oldest first), else in the
+    text of the newest one kept ("(<n> more waited) …", n: all those counted in it, whichever
+    racing taker claimed them, so the one that shows that notice announces them all). Kept: the
+    ones for `taker` to claim and show, oldest first. Each one claimed here is traced with
+    its reason."""
     keep = []
     for notice in found:
         number = notice.get("decision_id")
@@ -138,26 +140,28 @@ def worth_showing(
     backlog = [n for n in keep if waited(n) and n.get("decision_id") is None]
     older, newer = backlog[:-SHOW_AT_MOST], backlog[-SHOW_AT_MOST:]
     window = taker in (desktop.WINDOW, desktop.BANNER)
-    counted = 0
+    counted = []
     for notice in older:
         if window:
             why = (
-                f"waited for a window; counted in its banner (the newest {SHOW_AT_MOST} finished"
-                " notices that waited are shown one by one)"
+                f"waited for a window; not shown, counted in its banner (the newest"
+                f" {SHOW_AT_MOST} finished notices that waited are shown one by one)"
             )
-            counted += settle(orch, notice, taker, "shown", desktop.PATHS[desktop.BANNER], why)
+            if settle(orch, notice, taker, "counted", desktop.COUNTED, why):
+                counted.append(notice)
         else:
             why = (
                 f"waited; only the newest {SHOW_AT_MOST} finished notices that waited are shown,"
                 f" this one is counted in the text of #{newer[-1]['id']}"
             )
-            counted += settle(orch, notice, taker, "drop", desktop.DROPPED, why)
+            settle(orch, notice, taker, "drop", desktop.DROPPED, why)
     cut = {notice["id"] for notice in older}
     keep = [notice for notice in keep if notice["id"] not in cut]
-    if counted and not window:
+    if older and not window:  # a racing taker may have claimed some before `found` was read
         last = newer[-1]["id"]
+        many = len(cut | orch.store.counted_in_text(last))
         keep = [
-            {**n, "text": f"({counted} more waited) {n['text']}"} if n["id"] == last else n
+            {**n, "text": f"({many} more waited) {n['text']}"} if n["id"] == last else n
             for n in keep
         ]
     return keep, counted
@@ -175,10 +179,12 @@ def settle(
     return False
 
 
-def notice_backlog(orch: Facade, before: int, taker: str) -> tuple[list[dict[str, Any]], int]:
+def notice_backlog(
+    orch: Facade, before: int, taker: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """The notices up to id `before` still unclaimed as Spartito's window opens (they waited
     for it) that `taker` may take, through `worth_showing`: those to show, oldest first, and
-    how many were counted instead."""
+    those it claimed to count instead."""
     found = [
         notice
         for notice in orch.store.notices(0)

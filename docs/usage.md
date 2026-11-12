@@ -109,10 +109,11 @@ spartito notices [--limit|-n 20] [--verbose|-v] [--json]
   also the last lines); `uninstall` stops and removes it.
 - `notices` lists the recent desktop notifications of this home, newest first, one line each:
   its number, when it was recorded, its kind, the way it was shown (`window-system`,
-  `window-banner`, `launcher-helper`, `page`, `linux`, `osascript`, `waiting`, `dropped`),
-  the process that showed or last moved it (`<role>:<pid>`), when, and the reason of its final
-  outcome (for an older finished notice of many that waited: `dropped`, counted in the text
-  of a newer one). `-v` adds each notice's text and steps, `--json` gives all of it.
+  `window-banner`, `window-count`, `launcher-helper`, `page`, `linux`, `osascript`, `waiting`,
+  `dropped`), the process that showed or last moved it (`<role>:<pid>`), when, and the reason
+  of its final outcome (for an older finished notice of many that waited: `dropped`, counted
+  in the text of a newer one; `window-count`: counted in the window's banner, not shown in
+  one). `-v` adds each notice's text and steps, `--json` gives all of it.
   How to read it: [desktop.md](desktop.md#reading-the-trace).
 
 Details: [desktop.md](desktop.md).

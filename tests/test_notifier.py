@@ -308,9 +308,10 @@ def test_only_the_newest_notices_are_kept_inside_each_drawing_the_eye(
     for n in range(notifier.IN_WINDOW + 2):
         orch.store.add_notice("finished", f"a-{n}", f"a-{n} finished")
     window_notifier.tick()
-    assert [n["target"] for n in inside.last["notices"]] == [
-        f"a-{n}" for n in range(2, notifier.IN_WINDOW + 2)
-    ]
+    more, *banners = inside.last["notices"]
+    assert [n["target"] for n in banners] == [f"a-{n}" for n in range(2, notifier.IN_WINDOW + 2)]
+    assert more["kind"] == "more"  # the older ones are counted, not lost
+    assert [n["target"] for n in more["hidden"]] == ["a-0", "a-1"]
     assert inside.attention_calls == notifier.IN_WINDOW + 2
 
 

@@ -1615,9 +1615,13 @@ function pagePermission() {
 // Its window process (gui/notifier.py) takes the notices while it is open; those macOS does
 // not let Spartito post (not asked yet, not allowed, refused, not available) it hands to this
 // page, together with a line on how its notifications stand: spartitoApp.sync(view), view =
-// {version, state, line, notices: [{id, kind, text, target}]}, the newest few. Each notice is
-// a banner at the top right: a click goes to the decision or agent, × closes it; closed ones
-// stay closed across a reload (sessionStorage). sync returns the version it shows, so the
+// {version, state, line, notices: [{id, kind, text, target}]}: those in its few banners, and
+// first, when there are others, one of kind 'more' with them in `hidden` (the window's rule,
+// notifier.arrange: open decisions keep the banners). Each notice is a banner at the top right:
+// a click goes to the decision or agent, × closes it; closed ones stay closed across a reload
+// (sessionStorage). The 'more' banner counts the hidden ones not closed yet; a click goes to
+// the newest decision among them (the Decisions window lists all open ones), and it or × closes
+// them all, so it comes back only for newer ones. sync returns the version it shows, so the
 // window process knows the page has it.
 const APP_CLOSED = 'orch-app-closed';  // sessionStorage key: ids of the banners closed here
 let appView = { version: -1, notices: [] };
@@ -1630,10 +1634,11 @@ function closedBanners() {
     return new Set();
   }
 }
-function closeBanner(id) {
+function closeBanner(closing) {  // ids: a banner's, or the 'more' banner's hidden ones
   const ids = closedBanners();
-  ids.add(id);
-  const kept = [...ids].filter(one => appView.notices.some(notice => notice.id === one));
+  for (const one of closing) ids.add(one);
+  const known = appView.notices.flatMap(notice => [notice, ...(notice.hidden || [])]);
+  const kept = [...ids].filter(one => known.some(notice => notice.id === one));
   try { sessionStorage.setItem(APP_CLOSED, JSON.stringify(kept)); } catch (error) { /* in memory only */ }
   renderBanners();
 }
@@ -1642,16 +1647,27 @@ function goToTarget(target) {
   const fragment = target.startsWith(DECISION) ? target : encodeURIComponent(target);
   if (location.hash === `#${fragment}`) followHash(); else location.hash = fragment;
 }
+// The 'more' banner as the page shows it: the hidden notices not closed here, counted.
+function moreBanner(more, closed) {
+  const hidden = more.hidden.filter(notice => !closed.has(notice.id));
+  if (!hidden.length) return null;
+  const decisions = hidden.filter(notice => notice.kind === 'decision');
+  const among = decisions.length ? `, ${decisions.length} of them decision(s): click for the Decisions window` : '';
+  return { ...more, text: `${hidden.length} more notice(s)${among}; \`${CLI} notices\` lists them`,
+    target: decisions.length ? decisions[decisions.length - 1].target : '', ids: hidden.map(notice => notice.id) };
+}
 function renderBanners() {
   const closed = closedBanners();
-  $('appNotices').replaceChildren(...appView.notices.filter(notice => !closed.has(notice.id)).map(notice => {
-    const banner = el('div', `app-notice ${notice.kind === 'decision' ? 'decision' : ''}`);
+  const shown = appView.notices.map(notice => Array.isArray(notice.hidden) ? moreBanner(notice, closed) : notice);
+  $('appNotices').replaceChildren(...shown.filter(notice => notice && !closed.has(notice.id)).map(notice => {
+    const target = notice.target || '', ids = notice.ids || [notice.id];
+    const banner = el('div', `app-notice ${target.startsWith(DECISION) ? 'decision' : ''}`);
     const open = el('button', 'app-notice-open');
     open.type = 'button';
-    open.title = notice.kind === 'decision' ? 'Open this decision' : 'Open this agent';
+    open.title = target.startsWith(DECISION) ? 'Open the decision' : target ? 'Open this agent' : 'Close';
     open.append(el('strong', '', state.project_name || 'Spartito'), el('span', '', notice.text));
-    open.onclick = () => { closeBanner(notice.id); goToTarget(notice.target); };
-    const close = button('ghost icon', 'x', '', () => closeBanner(notice.id), 'Close');
+    open.onclick = () => { closeBanner(ids); goToTarget(target); };
+    const close = button('ghost icon', 'x', '', () => closeBanner(ids), 'Close');
     banner.append(open, close);
     return banner;
   }));
