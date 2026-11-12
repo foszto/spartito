@@ -153,6 +153,7 @@ MCP tools are views on the same database. More: [docs/concepts.md](docs/concepts
 - [docs/desktop-checklist.md](docs/desktop-checklist.md): manual checks of the desktop app.
 - [docs/architecture.md](docs/architecture.md): how it works at run time, limitations, code layout.
 - [CONTRIBUTING.md](CONTRIBUTING.md): setup, checks, conventions, pull requests, bug reports.
+- [ROADMAP.md](ROADMAP.md): where Spartito is heading, in phases, with the open questions.
 
 ## Platform support
 
