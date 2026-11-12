@@ -56,10 +56,16 @@ end each pull request description it writes: with
 or `+ [Codex](https://github.com/openai/codex)` for a Codex agent. It also tells the agent to add
 ` via Spartito` after the name in a commit's `Co-Authored-By` trailer and to keep the email, for
 example `Co-Authored-By: <model> via Spartito <noreply@anthropic.com>` from Claude Code. A Codex
-agent changes only a trailer it adds, and no agent invents a trailer or its email. These rules
-override the attribution guidance of the agent's CLI, except where an organization's managed
-settings prescribe the attribution lines: then the agent uses exactly those lines, without the
-Spartito line or ` via Spartito`. The orchestrator's session gets the Claude Code rules too.
+agent changes only a trailer it adds, and no agent invents a trailer or its email. Besides that
+trailer, every agent adds one given line to each commit message it writes, exactly as written,
+also a Codex agent that adds no trailer of its own:
+`Co-Authored-By: spartito-dev[bot] <355965793+spartito-dev[bot]@users.noreply.github.com>`.
+It credits Spartito's GitHub App bot; `spartito config bot-coauthor off` leaves it out
+([configuration.md](configuration.md#bot-co-author-bot_coauthor)). These rules override the
+attribution guidance of the agent's CLI, except where an organization's managed settings
+prescribe the attribution lines: then the agent uses exactly those lines, without the Spartito
+line, ` via Spartito` or the bot's trailer. The orchestrator's session gets the Claude Code
+rules too.
 
 ## Worktrees and branches
 

@@ -78,6 +78,7 @@ starting with `-`.
 | `archive_after_hours` | `spartito config archive-after <hours>` | global, project | `24` |
 | `keep_awake` | `spartito config keep-awake on\|off` | global | `on` |
 | `desktop_notifications` | `spartito config desktop-notifications on\|off` | global | `on` |
+| `bot_coauthor` | `spartito config bot-coauthor on\|off` | global | `on` |
 
 A project value overrides the global one. An empty value (`""`) clears a setting, so that the
 global value or the default applies; `0` or `off` turns compaction and archiving off.
@@ -146,6 +147,36 @@ the first of these that is there:
 `spartito notices` lists how the recent ones were shown, by which process, and why.
 Off, nothing is recorded and nothing is shown. Details, including hidden tabs, the launcher and
 Linux: [desktop.md](desktop.md#notifications-with-click-through).
+
+### Bot co-author: `bot_coauthor`
+
+```sh
+spartito config bot-coauthor off           # on: the default again
+```
+
+On, the `Attribution` section of every agent's system prompt, and of the orchestrator's
+session, tells the agent to add this line to each commit message it writes, besides the
+`Co-Authored-By` trailer of its CLI (and also when it adds none of its own):
+
+```text
+Co-Authored-By: spartito-dev[bot] <355965793+spartito-dev[bot]@users.noreply.github.com>
+```
+
+GitHub lists someone under a repository's Contributors when a commit's co-author trailer
+carries the email of a GitHub account. A trailer such as
+`Co-Authored-By: <model> via Spartito <noreply@anthropic.com>` credits only the account of that
+email; the address above is the one of Spartito's GitHub App bot, so with it Spartito is listed
+too. Off, the section is what it was before this setting: the pull request line and
+` via Spartito` stay, the bot's trailer is left out. Where an organization's managed settings
+prescribe the attribution lines, they take precedence either way: the agent uses exactly those
+lines and adds no bot trailer. What the section says: [concepts.md](concepts.md#agents-and-roles).
+
+The setting is read when a turn starts, so a change applies to turns started afterwards. A
+headless Claude agent gets the section with every turn, so its next turn follows the new value.
+A Codex agent gets its role prompt and the section only in the first turn of its session and
+keeps that version: an existing Codex agent goes on as it started, and new agents follow the
+new value. A running `spartito chat` session keeps the section it started with; start the
+session again for the new value.
 
 ### Review rounds
 

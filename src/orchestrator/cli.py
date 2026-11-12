@@ -26,6 +26,7 @@ from .service import (
 from .settings import (
     ARCHIVE_AFTER,
     ARCHIVE_AFTER_DEFAULT,
+    BOT_COAUTHOR,
     COMPACT_AT,
     COMPACT_AT_DEFAULT,
     DESKTOP_NOTIFICATIONS,
@@ -250,7 +251,9 @@ def chat(
     """Open the orchestrator: an interactive Claude Code session that steers all agents."""
     if not shutil.which("claude"):
         raise fail("the `claude` CLI is not on PATH")
-    tier = orch().settings().get("orchestrator", {}).get("claude", {})
+    data = orch().settings()
+    tier = data.get("orchestrator", {}).get("claude", {})
+    bot_coauthor = data.get(BOT_COAUTHOR, True) is not False
     model = model or tier.get("model")
     effort = effort or tier.get("effort")
     if effort and effort not in providers.get("claude").efforts:
@@ -272,7 +275,8 @@ def chat(
     argv = [
         "claude",
         "--mcp-config", mcp_config(),
-        "--append-system-prompt", f"{role.prompt}\n\n{roles.attribution('claude')}",
+        "--append-system-prompt",
+        f"{role.prompt}\n\n{roles.attribution('claude', bot_coauthor=bot_coauthor)}",
         "--allowedTools", "mcp__orch", f"Bash({CLI} *)",
         *loadout_flags(chosen),
     ]  # fmt: skip
@@ -623,6 +627,9 @@ def config_show(project: Annotated[str | None, typer.Option("--project", "-p")] 
         on = data.get(DESKTOP_NOTIFICATIONS, True) is not False
         default = "" if DESKTOP_NOTIFICATIONS in data else " (default)"
         typer.echo(f"  desktop notifications: {'on' if on else 'off'}{default}")
+        on = data.get(BOT_COAUTHOR, True) is not False
+        default = "" if BOT_COAUTHOR in data else " (default)"
+        typer.echo(f"  bot co-author trailer in agents' commits: {'on' if on else 'off'}{default}")
     if COMPACT_AT in data:
         typer.echo(f"  compact automatically {compact_text(data[COMPACT_AT])}")
     elif not project:
@@ -746,6 +753,27 @@ def config_desktop_notifications(
     try:
         data = o.settings()
         data[DESKTOP_NOTIFICATIONS] = value
+        o.update_settings(data)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    config_show(None)
+
+
+@config_app.command("bot-coauthor")
+def config_bot_coauthor(
+    value: Annotated[str, typer.Argument(help='"on" or "off"; "" clears (default: on).')],
+) -> None:
+    """Whether agents add the trailer that credits the project's GitHub App bot to every
+    commit message (default on), so that GitHub lists the project under a repository's
+    Contributors.
+
+    Applies to turns started after the change. An organization's managed attribution
+    settings take precedence: then agents add exactly those lines and no bot trailer.
+    """
+    o = orch()
+    try:
+        data = o.settings()
+        data[BOT_COAUTHOR] = value
         o.update_settings(data)
     except OrchestratorError as exc:
         raise fail(exc) from None

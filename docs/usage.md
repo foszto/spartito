@@ -262,6 +262,7 @@ spartito config compact-at TOKENS [-p PROJECT]
 spartito config archive-after HOURS [-p PROJECT]
 spartito config keep-awake on|off
 spartito config desktop-notifications on|off
+spartito config bot-coauthor on|off
 spartito roles
 ```
 
