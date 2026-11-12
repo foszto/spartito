@@ -8,9 +8,9 @@ inside itself when it may not post them:
   runs and from then on, every POLL_SECONDS, keeps its markers fresh (desktop.app_present, with
   its state: desktop.route leaves notices to it while its process runs) and claims the notices
   desktop.route left to it (through the facade, once each, as a page does). On its first poll
-  it takes the notices that waited for a window (the backlog: shown inside, the newest
-  IN_WINDOW and a count of the others; none for a decision no longer open). It asks for permission once the window is
-  shown (`ask`; asked earlier, during the launch, the answer was seen to get lost) and reads
+  it takes the notices that waited for a window (the backlog: shown inside, the newest few
+  and a count of the others; none for a decision no longer open: core/notices.worth_showing).
+  It asks for permission once the window is shown (`ask`; asked earlier, during the launch, the answer was seen to get lost) and reads
   the authorization status on each poll, so a lost answer, or a change in System Settings, is
   seen within a poll. Allowed, it records the grant (desktop.record_grant) and posts the
   notices; otherwise (not asked yet, not allowed, refused by the system, not available) it
@@ -24,7 +24,7 @@ inside itself when it may not post them:
   one showing;
 - the posting process (`spartito app --notify`, started hidden by desktop.deliver when route
   chose the launcher's app): claims and posts the pending notices left to it (or waiting)
-  younger than MAX_AGE_SECONDS, then exits. When it may not post (not allowed: it forgets the
+  younger than MAX_AGE_SECONDS, as far as core/notices.worth_showing keeps them, then exits. When it may not post (not allowed: it forgets the
   grant; no answer from the system in time), or a post fails, the notices wait (traced); it
   never falls back to osascript.
 
@@ -244,7 +244,10 @@ class Facade(Protocol):
     def release_notice(self, notice_id: int, why: str, taker: str) -> bool: ...
     def leave_waiting(self, notice_id: int, why: str, taker: str) -> bool: ...
     def hand_over_notice(self, notice: dict[str, Any], taker: str = ...) -> None: ...
-    def notice_backlog(self, before: int, taker: str) -> list[dict[str, Any]]: ...
+    def notice_backlog(self, before: int, taker: str) -> tuple[list[dict[str, Any]], int]: ...
+    def worth_showing(
+        self, found: list[dict[str, Any]], taker: str
+    ) -> tuple[list[dict[str, Any]], int]: ...
     def ingest_notices(self) -> list[int]: ...
 
 
@@ -532,27 +535,28 @@ class WindowNotifier:
         self.push()
 
     def take_backlog(self) -> None:
-        """The notices that waited for a window: shown inside (not posted: no flood), the
-        newest IN_WINDOW one by one, the others as a count; decisions no longer open none."""
+        """The notices that waited for a window: shown inside (not posted: no flood), as
+        core/notices.worth_showing keeps them (the newest few one by one, the others as a
+        count; decisions no longer open none)."""
         taken = []
         taker = self.taker
-        for notice in self.orch.notice_backlog(self.cursor, taker):
+        backlog, counted = self.orch.notice_backlog(self.cursor, taker)
+        for notice in backlog:
             if self.stop.is_set():
                 return
             if self.orch.claim_notice(notice["id"], taker, "it waited for a window"):
                 taken.append(notice)
         self.backlog_taken = True
-        if not taken:
+        if not taken and not counted:
             return
         with self.lock:
-            self.earlier += max(0, len(taken) - IN_WINDOW)
-        for notice in taken[:-IN_WINDOW]:
-            self.trace(notice, "shown", desktop.PATHS[desktop.BANNER], "counted in the window")
-        for notice in taken[-IN_WINDOW:]:
+            self.earlier += counted
+        for notice in taken:
             self.show_inside(notice, "it waited for a window", attention=False)
         with contextlib.suppress(Exception):
             self.inside.attention()
-        self.say(f"notifications: {len(taken)} notice(s) waited for a window; shown in it")
+        waited = len(taken) + counted
+        self.say(f"notifications: {waited} notice(s) waited for a window; shown in it")
 
     def trace(self, notice: dict[str, Any], kind: str, path: str | None, detail: str) -> None:
         with contextlib.suppress(Exception):
@@ -755,7 +759,8 @@ def post_pending(
                 )
         finished.append(error)
 
-    for notice in fresh(orch):
+    shown, _ = orch.worth_showing(fresh(orch), desktop.HELPER_APP)  # no flood
+    for notice in shown:
         if not orch.claim_notice(notice["id"], desktop.HELPER_APP, "the posting process"):
             continue
         pending.append(notice["id"])

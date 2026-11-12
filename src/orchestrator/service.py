@@ -320,6 +320,7 @@ class Orchestrator:
     leave_waiting = notice_reads.leave_waiting
     hand_over_notice = notice_reads.hand_over_notice
     notice_backlog = notice_reads.notice_backlog
+    worth_showing = notice_reads.worth_showing
     ingest_notices = notice_reads.ingest_notices
     notice_trace = notice_reads.notice_trace
     page_present = notice_reads.page_present

@@ -641,13 +641,11 @@ def test_allowed_it_posts_the_fresh_pending_notices_once(
     age(orch, old, notifier.MAX_AGE_SECONDS + 60)
     taken = orch.store.add_notice("finished", "a-1", "taken")
     orch.claim_notice(taken)
-    fresh = orch.store.add_notice("decision", "a-2", "Decision needed", 3)
+    fresh = orch.store.add_notice("finished", "a-2", "a-2 finished")
     desktop.record_grant("local.x.app", tmp_path / "X.app")
     center.status_value = 2
     assert notifier.post_pending(orch, center, tmp_path / "X.app", []) is None
-    assert [(post[2], post[3]["target"]) for post in center.posted] == [
-        ("Decision needed", "decision:3")
-    ]
+    assert [(post[2], post[3]["target"]) for post in center.posted] == [("a-2 finished", "a-2")]
     assert [n["id"] for n in orch.notices()] == [old] and fresh
     assert desktop.granted_bundle() == tmp_path / "X.app"
     assert notifier.post_pending(orch, center, tmp_path / "X.app", []) is None

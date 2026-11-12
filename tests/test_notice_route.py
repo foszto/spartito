@@ -50,7 +50,7 @@ def test_a_store_busy_for_seconds_records_the_notice_late_and_the_window_takes_i
     orch: Orchestrator, fake_osascript, macos, no_detached_helpers, busy
 ):
     """The field case: the store held beyond STORE_WAIT_SECONDS while the window runs. The
-    caller returns after STORE_WAIT_SECONDS; the notice is spooled, recorded by the helper
+    caller returns after STORE_WAIT_SECONDS (0.25 s); the notice is spooled, recorded by the helper
     once the store is free, and left to the window: no osascript, nothing unrecorded."""
     desktop.app_present("allowed")
     holder = sqlite3.connect(orch.store.path, isolation_level=None, check_same_thread=False)
@@ -58,7 +58,7 @@ def test_a_store_busy_for_seconds_records_the_notice_late_and_the_window_takes_i
     threading.Timer(busy, lambda: (holder.execute("ROLLBACK"), holder.close())).start()
     begin = time.monotonic()
     desktop.show(orch.store, "a-1 finished", "a-1")
-    assert time.monotonic() - begin < desktop.STORE_WAIT_SECONDS + 1  # the caller goes on
+    assert time.monotonic() - begin < 0.5  # the caller goes on (STORE_WAIT_SECONDS: 0.25)
     ((kind, spooled, opener),) = no_detached_helpers
     assert kind == "spool" and Path(spooled).exists()
     helper = threading.Thread(target=desktop.helper, args=([kind, spooled, opener],))
@@ -80,8 +80,10 @@ def test_a_store_busy_for_seconds_records_the_notice_late_and_the_window_takes_i
         ("record", None),
         ("route", "window-system"),
     ]
-    assert traced["steps"][0]["detail"].startswith("spooled: the store was busy for 2.")
-    assert traced["steps"][2]["detail"] == "recorded from the spool"
+    assert traced["steps"][0]["detail"].startswith("spooled: the store was busy for 0.")
+    late = traced["steps"][2]["detail"]
+    assert late.startswith("recorded from the spool, ") and late.endswith(" s after it was spooled")
+    assert float(late.split(", ")[1].split(" s ")[0]) >= busy - 0.5  # how long it was busy
     assert traced["summary"]["path"] == "window-system"
     assert list(desktop.spool_dir().iterdir()) == []
 
@@ -99,6 +101,152 @@ def test_a_poll_records_a_spooled_notice_when_the_helper_did_not(
     desktop.page_present()
     assert orch.page_notices(0)[0]["text"] == "Decision needed"  # the page's poll took it in
     assert list(desktop.spool_dir().glob("*.json")) == []
+
+
+def spooled_notice(orch: Orchestrator, monkeypatch, no_detached_helpers) -> list[str]:
+    """A notice the busy store did not take: spooled; the args of its helper."""
+    real = orch.store.add_notice
+
+    def busy(*args: object, **options: object) -> int:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(orch.store, "add_notice", busy)
+    desktop.show(orch.store, "a-1 finished", "a-1")
+    monkeypatch.setattr(orch.store, "add_notice", real)
+    ((kind, spooled, opener),) = no_detached_helpers
+    assert kind == "spool"
+    return [kind, spooled, opener]
+
+
+def test_the_spool_helper_survives_a_store_that_does_not_open(
+    orch: Orchestrator, fake_osascript, macos, monkeypatch, no_detached_helpers
+):
+    """Opening the store is part of each try: a store busy beyond Store()'s own wait (it
+    raises then) neither ends the helper nor loses the notice; it is recorded late."""
+    desktop.app_present("allowed")
+    args = spooled_notice(orch, monkeypatch, no_detached_helpers)
+    opened: list[int] = []
+
+    def busy_then_free() -> Store:
+        opened.append(1)
+        if len(opened) < 4:
+            raise sqlite3.OperationalError("database is locked")
+        return Store(orch.store.path)
+
+    monkeypatch.setattr(desktop, "Store", busy_then_free)
+    helper = threading.Thread(target=desktop.helper, args=(args,))
+    helper.start()
+
+    def window_takes() -> bool:
+        listed = orch.notices()
+        return bool(listed) and orch.claim_notice(listed[0]["id"], "window")
+
+    until(window_takes, what="the notice recorded late")
+    helper.join(30)
+    assert len(opened) == 4 and not Path(args[1]).exists()
+    (traced,) = orch.notice_trace(1)
+    assert traced["steps"][2]["detail"].startswith("recorded from the spool, ")
+    assert "recorded from the spool, " in desktop.notice_log().read_text()
+    assert calls(fake_osascript) == []
+
+
+def test_the_spool_helper_says_when_it_gives_up_and_why(
+    orch: Orchestrator, macos, monkeypatch, no_detached_helpers
+):
+    args = spooled_notice(orch, monkeypatch, no_detached_helpers)
+    monkeypatch.setattr(desktop, "SPOOL_GIVE_UP_SECONDS", 0.3)
+
+    def busy() -> Store:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(desktop, "Store", busy)
+    assert desktop.helper(args) == 0
+    (line,) = [x for x in desktop.notice_log().read_text().splitlines() if " fallback " in x]
+    assert f"spool:{Path(args[1]).name} helper:{os.getpid()} fallback" in line
+    assert "gave up after 0." in line and "(OperationalError: database is locked)" in line
+    assert Path(args[1]).exists()  # left for the next poll
+    monkeypatch.setattr(desktop, "Store", Store)
+    desktop.page_present()
+    assert [n["text"] for n in orch.page_notices(0)] == ["a-1 finished"]
+
+
+def test_a_helper_ending_with_an_error_says_so(orch: Orchestrator, macos, monkeypatch):
+    notice = orch.store.add_notice("finished", "a-1", "a-1 finished", route="window")
+
+    def broken(*args: object) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(desktop, "deliver", broken)
+    assert desktop.helper(["deliver", str(notice), desktop.OPEN]) == 1
+    assert f"#{notice} helper:{os.getpid()} error -: the helper ended: RuntimeError: boom" in (
+        desktop.notice_log().read_text()
+    )
+    traced = trace_of(orch, notice)
+    assert traced["steps"][-1]["step"] == "error"
+    assert traced["summary"]["reason"] == "the helper ended: RuntimeError: boom"
+
+
+# -- notices that waited: one rule for the window, the launcher's app and a page -------------
+
+
+@pytest.mark.parametrize("taker", ["launcher", "page"])
+def test_what_waited_is_shown_only_while_worth_it_and_without_a_flood(
+    orch: Orchestrator, fake_osascript, macos, tmp_path, taker
+):
+    """Waiting notices for decisions that are gone are dropped; of the rest only the newest
+    few are shown, the older ones dropped, each traced (the window: its backlog test)."""
+    gone = [
+        orch.store.add_notice("decision", "a-0", "Which?", 900 + n, route="waiting")
+        for n in range(5)
+    ]
+    finished = [
+        orch.store.add_notice("finished", f"a-{n}", f"a-{n} finished", route="waiting")
+        for n in range(5)
+    ]
+    if taker == "launcher":
+        center = FakeCenter(status=2)
+        notifier.post_pending(orch, center, tmp_path / "X.app", [])
+        shown = [int(post[0].rsplit("-", 1)[1]) for post in center.posted]
+        assert orch.notices() == []
+    else:
+        shown = [n["id"] for n in orch.page_notices(orch.notice_cursor())]
+        assert [n["id"] for n in orch.notices()] == finished[2:]  # the page claims these
+    assert shown == finished[2:]
+    for n, notice in enumerate(gone):
+        traced = trace_of(orch, notice)["summary"]
+        assert (traced["path"], traced["reason"]) == ("dropped", f"decision #{900 + n} is gone")
+    for notice in finished[:2]:
+        traced = trace_of(orch, notice)["summary"]
+        assert traced["path"] == "dropped" and "only the newest 3 are shown" in traced["reason"]
+    assert calls(fake_osascript) == []
+
+
+# -- the one-line summary ----------------------------------------------------------------------
+
+
+def test_a_claim_by_older_code_says_only_what_is_known(orch: Orchestrator):
+    item = desktop.step("route", "window-system", "the window process takes it")
+    notice = orch.store.add_notice("finished", "a-1", "a-1 finished", route="window", steps=[item])
+    with sqlite3.connect(orch.store.path) as old:
+        old.execute(OLD_CLAIM, ("2026-01-01T00:00:00+00:00", notice))
+    old.close()
+    assert trace_of(orch, notice)["summary"] == {
+        "path": "not recorded",
+        "actor": "unknown (older code)",
+        "at": "2026-01-01T00:00:00+00:00",
+        "reason": "claimed by a process that records no steps (older code)",
+    }
+
+
+def test_the_summary_gives_the_reason_of_the_final_outcome(orch: Orchestrator, tmp_path):
+    notice = orch.store.add_notice("finished", "a-1", "a-1 finished", route="helper")
+    assert orch.claim_notice(notice, "helper", "the posting process")
+    assert orch.release_notice(notice, "post failed: boom", "helper")
+    notifier.post_pending(orch, FakeCenter(status=2), tmp_path / "X.app", [])
+    traced = trace_of(orch, notice)
+    assert traced["summary"]["path"] == "launcher-helper"
+    assert traced["summary"]["reason"] == "the posting process"
+    assert "post failed: boom" in [item["detail"] for item in traced["steps"]]  # kept
 
 
 # -- the window ------------------------------------------------------------------------------
@@ -161,7 +309,7 @@ def test_the_window_shows_what_waited_for_it_once_without_a_flood(
     assert (counted["step"], counted["path"], counted["detail"]) == (
         "shown",
         "window-banner",
-        "counted in the window",
+        "waited for a window; counted in it (3 newer shown one by one)",
     )
     assert window.lines[-1] == "notifications: 5 notice(s) waited for a window; shown in it"
     assert calls(fake_osascript) == []
@@ -201,7 +349,9 @@ def test_racing_posting_processes_show_each_notice_once(orch: Orchestrator, tmp_
     for racer in racers:
         racer.join(30)
     posted = sorted(post[0] for center in centers for post in center.posted)
-    assert posted == sorted(f"spartito-notice-{n}" for n in notices)
+    assert posted == sorted(f"spartito-notice-{n}" for n in notices[-3:])  # once, no flood
+    assert orch.notices() == []
+    assert {trace_of(orch, n)["summary"]["path"] for n in notices[:3]} == {"dropped"}
 
 
 def test_racing_escalations_move_a_notice_once(orch: Orchestrator, macos, monkeypatch):

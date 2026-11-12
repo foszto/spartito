@@ -35,7 +35,8 @@ window process, the launcher's posting process, the page). On macOS, in this ord
    ("banner", window-banner);
 5. none of these now, but a launcher that may post exists (2. failed) or a window runs: the
    notice waits unclaimed ("waiting"); the next posting process or page within its age
-   limit, or the window when it next opens (its backlog), takes it;
+   limit, or the window when it next opens (its backlog), takes it, each as
+   core/notices.worth_showing keeps it (decision still open; the newest few);
 6. no launcher that may post, no window, no page: `osascript`, whose click opens Script
    Editor, so its text ends with where to look (CLAUSE_DECISION, CLAUSE_FINISHED).
 
@@ -46,10 +47,11 @@ so a better way may still take it, and a worse one only once it was left to it. 
 chosen and does not take the notice within ESCALATE_SECONDS (CLAIM_WAIT_SECONDS for the
 launcher's app) is skipped: the helper process `deliver` routes it again without it.
 
-Never blocking: the notice is recorded with at most STORE_WAIT_SECONDS of waiting; a busy
-store gets it as a spool file (run/notices/<uuid>.json), which the detached helper keeps
-trying to record (SPOOL_GIVE_UP_SECONDS), as does every poll of the window, a page or the
-posting process. Nothing goes out unrecorded except a notice without an agent.
+Never blocking: the caller waits at most STORE_WAIT_SECONDS (0.25 s) for the store; a busy
+store gets the notice as a spool file (run/notices/<uuid>.json), which the detached helper
+keeps trying to record (opening the store is part of each try) for SPOOL_GIVE_UP_SECONDS, as
+does every poll of the window, a page or the posting process; the trace says how long it
+waited. Nothing goes out unrecorded except a notice without an agent.
 
 The trace: every step (record, route, escalate, claim, shown, release, fallback, drop) of every
 notice is a row of `notice_steps` (written by the process that took it, `actor`: role and pid)
@@ -95,7 +97,8 @@ PLATFORM = sys.platform  # tests set another
 DECISION, FINISHED = "decision", "finished"  # the kinds of notice
 PAGE_MARKER = "page-notifier"  # in config.runtime_dir()
 PAGE_FRESH_SECONDS = 15.0  # a page polls far more often while it is visible
-STORE_WAIT_SECONDS = 2.0  # for the write lock of a notice; then it is spooled
+STORE_WAIT_SECONDS = 0.25  # the caller waits this long for the write lock; then: spooled
+SPOOL_TRY_SECONDS = 5.0  # each try of the spool helper waits this long for the write lock
 APP_MARKER = "app-notifier"  # in config.runtime_dir(): the window process's pid (older readers)
 APP_STATE = "app-notifier.json"  # beside it: {"pid", "start", "state"}, rewritten each poll
 GRANT_FILE = "app-notify.json"  # in config.runtime_dir(): {"identifier", "bundle"} (2.)
@@ -628,20 +631,23 @@ def spool(
 
 def ingest(store: Store, path: Path, wait: float = STORE_WAIT_SECONDS) -> dict[str, Any] | None:
     """Record a spooled notice (taken by renaming its file, so only one process does), routed
-    as now; the notice row, or None (taken by another, or the store still busy)."""
+    as now; the notice row, or None (taken by another, or unreadable: dropped, logged). The
+    store's error when it did not take it (the file is back in the spool)."""
     taking = path.with_name(f"{path.name}.{os.getpid()}.taking")
     try:
         path.rename(taking)
         data = json.loads(taking.read_text())
+        items = [NoticeStep(**item) for item in data.get("steps", [])]
     except OSError:
         return None
-    except ValueError:
+    except (ValueError, TypeError) as exc:
         taking.unlink(missing_ok=True)
+        log_step(f"spool:{path.name}", "drop", DROPPED, actor(), f"unreadable spool file: {exc}")
         return None
     found = presence()
     choice = route(found)
-    items = [NoticeStep(**item) for item in data.get("steps", [])]
-    items.append(step("record", None, "recorded from the spool"))
+    late = spooled_for(items)
+    items.append(step("record", None, f"recorded from the spool{late}"))
     items.append(step("route", choice.path, f"{choice.reason}; {found.describe()}"))
     try:
         nid = store.add_notice(
@@ -655,10 +661,10 @@ def ingest(store: Store, path: Path, wait: float = STORE_WAIT_SECONDS) -> dict[s
             created_at=data.get("created_at"),
             steps=items,
         )
-    except Exception:
+    except BaseException:
         with contextlib.suppress(OSError):
             taking.rename(path)
-        return None
+        raise
     taking.unlink(missing_ok=True)
     logged(nid, items[-2:])
     return {
@@ -670,6 +676,15 @@ def ingest(store: Store, path: Path, wait: float = STORE_WAIT_SECONDS) -> dict[s
     }
 
 
+def spooled_for(items: list[NoticeStep]) -> str:
+    """ ", N s after it was spooled" from the first step's time ("" without one)."""
+    try:
+        since = datetime.fromisoformat(items[0].at)
+    except IndexError, ValueError, TypeError:
+        return ""
+    return f", {(datetime.now(UTC) - since).total_seconds():.1f} s after it was spooled"
+
+
 def ingest_spool(store: Store, detached: bool = False) -> list[int]:
     """Record every spooled notice the store takes now and carry out its route (a poll of the
     window, a page or the posting process does this). The ids recorded."""
@@ -679,26 +694,48 @@ def ingest_spool(store: Store, detached: bool = False) -> list[int]:
         return []
     done = []
     for path in paths:
-        row = ingest(store, path, wait=0.5)
+        try:
+            row = ingest(store, path, wait=0.5)
+        except Exception:
+            continue  # still busy: the helper or the next poll
         if row is not None:
             done.append(row["id"])
             carry_out(store, row, row["choice"], detached)
     return done
 
 
-def spool_helper(store: Store, path: Path, opener: str | None = None) -> None:
-    """The helper for a spooled notice: record it, however long the store is busy (up to
-    SPOOL_GIVE_UP_SECONDS), then carry out its route."""
-    deadline = time.monotonic() + SPOOL_GIVE_UP_SECONDS
-    while time.monotonic() < deadline:
+def spool_helper(path: Path, opener: str | None = None, store: Store | None = None) -> None:
+    """The helper for a spooled notice: record it, however long the store is busy (opening
+    the store is part of each try; up to SPOOL_GIVE_UP_SECONDS), then carry out its route.
+    How it ends is logged: recorded (a step, with how late), by a poll, or given up."""
+    name = f"spool:{path.name}"
+    began = time.monotonic()
+    tries, error = 0, "the store stayed busy"
+    while True:
         if not path.exists():
-            return  # a poll recorded it
-        row = ingest(store, path)
+            log_step(name, "record", None, actor(), "taken from the spool by a poll; helper ends")
+            return
+        tries += 1
+        try:
+            store = store or Store()
+            row = ingest(store, path, SPOOL_TRY_SECONDS)
+        except Exception as exc:  # busy (the store did not open, or did not take it)
+            row, error = None, f"{type(exc).__name__}: {exc}"
         if row is not None:
             carry_out(store, row, row["choice"], detached=True, opener=opener)
             return
+        if time.monotonic() - began >= SPOOL_GIVE_UP_SECONDS:
+            break
         time.sleep(0.5)
-    log_step(f"spool:{path.name}", "drop", DROPPED, actor(), "the store stayed busy; still spooled")
+    waited = time.monotonic() - began
+    log_step(
+        name,
+        "fallback",
+        None,
+        actor(),
+        f"gave up after {waited:.1f} s and {tries} tries ({error}); left in the spool for"
+        " the next poll of the window, a page or the posting process",
+    )
 
 
 # -- the detached helper: seeing a notice taken ----------------------------------------------
@@ -839,16 +876,18 @@ def redirect(
     return choice
 
 
-REASONS = ("fallback", "escalate", "release", "drop")
+REASONS = ("fallback", "escalate", "release", "drop", "error")
 
 
 def summary(notice: dict[str, Any]) -> dict[str, Any]:
     """How a traced notice (store.notice_trace) went, as one line's fields: path, actor, at
-    (of the step that showed, claimed or left it), reason (the last fallback, escalation,
-    release or drop, else the route's reason)."""
+    (of the step that showed, claimed or left it), reason (of the final outcome: the last
+    fallback, escalation, release, drop or error since the last release that was followed by
+    a claim, else the claim's or the route's reason; earlier ones stay in the steps). A claim
+    without a step (a process of older code) says only who and when."""
     steps = notice.get("steps") or []
+    claimed = notice.get("claimed_at")
     if not steps:
-        claimed = notice.get("claimed_at")
         return {
             "path": "shown (older code)" if claimed else "unclaimed (older code)",
             "actor": notice.get("claimed_by") or "-",
@@ -857,14 +896,29 @@ def summary(notice: dict[str, Any]) -> dict[str, Any]:
         }
     last = steps[-1]
     route_now = notice.get("route") or ""
-    if notice.get("claimed_at"):
-        last = next((s for s in reversed(steps) if s["step"] in ("shown", "drop", "claim")), last)
+    outcome = next((s for s in reversed(steps) if s["step"] in ("shown", "drop", "claim")), None)
+    if claimed and outcome is None and route_now not in (OSASCRIPT, LINUX):
+        return {
+            "path": "not recorded",
+            "actor": notice.get("claimed_by") or "unknown (older code)",
+            "at": claimed,
+            "reason": "claimed by a process that records no steps (older code)",
+        }
+    if claimed:
+        last = outcome or last
         path = last["path"] or "-"
     elif route_now == WAITING:
         path = PATHS[WAITING]
     else:
         path = f"{PATHS.get(route_now, 'unclaimed')} (not taken yet)"
-    why = next((s for s in reversed(steps) if s["step"] in REASONS), None)
+    current = steps
+    if claimed:  # a release before the final claim belongs to an earlier attempt
+        cut = max((i for i, s in enumerate(steps) if s["step"] == "release"), default=-1)
+        if any(s["step"] == "claim" for s in steps[cut + 1 :]):
+            current = steps[cut + 1 :]
+    why = next((s for s in reversed(current) if s["step"] in REASONS), None)
+    if why is None and current is not steps:
+        why = next((s for s in reversed(current) if s["step"] == "claim" and s["detail"]), None)
     why = why or next((s for s in reversed(steps) if s["step"] == "route"), last)
     return {"path": path, "actor": last["actor"], "at": last["at"], "reason": why["detail"]}
 
@@ -993,14 +1047,30 @@ def helper(args: list[str]) -> int:
         if args and args[0] == "deliver" and len(args) == 3:
             deliver(Store(), int(args[1]), args[2])
         elif args and args[0] == "spool" and len(args) == 3:
-            spool_helper(Store(), Path(args[1]), args[2])
+            spool_helper(Path(args[1]), args[2])
         elif args and args[0] == "linux" and len(args) == 4:
             linux_helper(args[1], args[2], args[3])
-    except Exception:
+    except Exception as exc:
+        helper_failed(args, exc)
         return 1
     finally:
         ROLE = was
     return 0
+
+
+def helper_failed(args: list[str], exc: Exception) -> None:
+    """The helper ends with an error: a line in the log, and a step when the store takes it."""
+    item = step("error", None, f"the helper ended: {type(exc).__name__}: {exc}")
+    if len(args) > 1 and args[0] == "deliver" and args[1].isdigit():
+        try:
+            store: Store | None = Store()
+        except Exception:
+            store = None
+        note(store, int(args[1]), item)
+        return
+    name = f"spool:{Path(args[1]).name}" if len(args) > 1 and args[0] == "spool" else None
+    with contextlib.suppress(Exception):
+        log_step(name, item.step, item.path, item.actor, item.detail)
 
 
 # -- 4. Linux --------------------------------------------------------------------------------

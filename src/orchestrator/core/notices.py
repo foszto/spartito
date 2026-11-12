@@ -1,7 +1,9 @@
 """Desktop-notification notices (see desktop.py) for a dashboard page and for Spartito's own
 notifications on macOS (gui/notifier.py): what they show with a click action, where they
-start, how one is taken (only as desktop.route left it: desktop.may_take), how a page says it
-is there, and the trace of each (`notice_trace`, for `spartito notices`)."""
+start, how one is taken (only as desktop.route left it: desktop.may_take), which of those that
+waited are still worth showing (`worth_showing`: one rule for the window, the launcher's
+posting process and a page), how a page says it is there, and the trace of each
+(`notice_trace`, for `spartito notices`)."""
 
 from __future__ import annotations
 
@@ -13,6 +15,7 @@ from ..store import Store
 
 PAGE_MAX_AGE_SECONDS = 600.0  # a page skips older notices (app.js NOTICE_MAX_AGE_MS)
 TAKERS = (desktop.WINDOW, desktop.HELPER_APP, desktop.PAGE, desktop.BANNER)
+SHOW_AT_MOST = 3  # of the notices that waited, a taker shows the newest this many one by one
 
 
 class Facade(Protocol):
@@ -40,20 +43,22 @@ def age_of(notice: dict[str, Any]) -> float | None:
 
 def page_notices(orch: Facade, after: int) -> list[dict[str, Any]]:
     """What a polling page may take, oldest first: the notices above `after` it may take, and
-    those left to a page or waiting from before `after` (escalated after the page passed
-    them), younger than PAGE_MAX_AGE_SECONDS. Spooled notices are recorded first."""
+    those that waited (left to waiting, or to a page from before `after`: escalated after the
+    page passed them) younger than PAGE_MAX_AGE_SECONDS, as far as `worth_showing` keeps
+    them. Spooled notices are recorded first."""
     desktop.ingest_spool(orch.store)
-    found = []
+    waited, new = [], []
     for notice in orch.store.notices(0):
         route = notice.get("route")
         if not desktop.may_take(desktop.PAGE, route):
             continue
-        late = route in (desktop.PAGE, desktop.WAITING) and (age_of(notice) or 0) < (
-            PAGE_MAX_AGE_SECONDS
-        )
-        if notice["id"] > after or late:
-            found.append(notice)
-    return found
+        late = route == desktop.WAITING or (route == desktop.PAGE and notice["id"] <= after)
+        if late and (age_of(notice) or 0) < PAGE_MAX_AGE_SECONDS:
+            waited.append(notice)
+        elif notice["id"] > after:
+            new.append(notice)
+    kept, _ = worth_showing(orch, waited, desktop.PAGE)
+    return sorted(kept + new, key=lambda notice: notice["id"])
 
 
 def notice_cursor(orch: Facade) -> int:
@@ -104,24 +109,58 @@ def hand_over_notice(orch: Facade, notice: dict[str, Any], taker: str = desktop.
     )
 
 
-def notice_backlog(orch: Facade, before: int, taker: str) -> list[dict[str, Any]]:
-    """The notices up to id `before` still unclaimed as Spartito's window opens (they waited
-    for it), oldest first, that `taker` may take; a decision notice whose decision is no
-    longer open is dropped instead (claimed, traced: shown by nobody)."""
-    found = []
-    for notice in orch.store.notices(0):
-        if notice["id"] > before or not desktop.may_take(taker, notice.get("route")):
-            continue
+def worth_showing(
+    orch: Facade, found: list[dict[str, Any]], taker: str
+) -> tuple[list[dict[str, Any]], int]:
+    """The one rule for notices that waited (`found`, oldest first, all left so that `taker`
+    may take them), for Spartito's window, the launcher's posting process and a page alike:
+    a decision notice whose decision is no longer open is dropped; of the others the newest
+    SHOW_AT_MOST are returned, for `taker` to claim and show; the older ones are claimed here,
+    counted in the window when `taker` is the window (their number: the second value), else
+    dropped. Each is traced."""
+    keep = []
+    for notice in found:
         number = notice.get("decision_id")
         decision = decisions.get(orch.store, number) if number is not None else None
         if number is not None and (decision is None or decision.state != decisions.OPEN):
             state = decision.state if decision is not None else "gone"
-            item = desktop.step("drop", desktop.DROPPED, f"decision #{number} is {state}")
-            if orch.store.claim_notice(notice["id"], by=item.actor, step=item):
-                desktop.logged(notice["id"], [item])
+            settle(orch, notice, taker, "drop", desktop.DROPPED, f"decision #{number} is {state}")
             continue
-        found.append(notice)
-    return found
+        keep.append(notice)
+    older, keep = keep[:-SHOW_AT_MOST], keep[-SHOW_AT_MOST:]
+    counted = 0
+    for notice in older:
+        if taker in (desktop.WINDOW, desktop.BANNER):
+            why = f"waited for a window; counted in it ({SHOW_AT_MOST} newer shown one by one)"
+            counted += settle(orch, notice, taker, "shown", desktop.PATHS[desktop.BANNER], why)
+        else:
+            why = f"waited; only the newest {SHOW_AT_MOST} are shown, not this older one"
+            settle(orch, notice, taker, "drop", desktop.DROPPED, why)
+    return keep, counted
+
+
+def settle(
+    orch: Facade, notice: dict[str, Any], taker: str, kind: str, path: str, why: str
+) -> bool:
+    """Claim a notice `taker` does not show one by one, with the step that says so."""
+    item = desktop.step(kind, path, why, desktop.actor(taker))
+    routes = desktop.takeable(taker)
+    if orch.store.claim_notice(notice["id"], routes=routes, by=item.actor, step=item):
+        desktop.logged(notice["id"], [item])
+        return True
+    return False
+
+
+def notice_backlog(orch: Facade, before: int, taker: str) -> tuple[list[dict[str, Any]], int]:
+    """The notices up to id `before` still unclaimed as Spartito's window opens (they waited
+    for it) that `taker` may take, through `worth_showing`: those to show, oldest first, and
+    how many were counted instead."""
+    found = [
+        notice
+        for notice in orch.store.notices(0)
+        if notice["id"] <= before and desktop.may_take(taker, notice.get("route"))
+    ]
+    return worth_showing(orch, found, taker)
 
 
 def ingest_notices(orch: Facade) -> list[int]:

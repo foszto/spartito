@@ -214,7 +214,7 @@ def test_a_store_that_fails_spools_the_notice_and_the_helper_shows_it(
     (spooled,) = desktop.spool_dir().glob("*.json")
     assert calls(fake_osascript) == []  # nothing unrecorded
     monkeypatch.setattr(orch.store, "add_notice", real)
-    desktop.spool_helper(orch.store, spooled)
+    desktop.spool_helper(spooled, store=orch.store)
     until(lambda: calls(fake_osascript), what="the notification")
     assert bodies(fake_osascript) == ["a-1 finished"]
     assert [row["text"] for row in rows(orch.store)] == ["a-1 finished"]
@@ -258,7 +258,7 @@ def test_a_busy_store_delays_the_caller_only_briefly_and_nothing_goes_out_unreco
         holder.execute("ROLLBACK")
         holder.close()
 
-    assert desktop.STORE_WAIT_SECONDS <= took < desktop.STORE_WAIT_SECONDS + 3
+    assert desktop.STORE_WAIT_SECONDS <= took < desktop.STORE_WAIT_SECONDS + 0.25
     (spooled,) = desktop.spool_dir().glob("*.json")
     assert no_detached_helpers == [["spool", str(spooled), desktop.OPEN]]
     time.sleep(0.3)
