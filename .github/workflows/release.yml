@@ -1,0 +1,114 @@
+# Publishes to PyPI with Trusted Publishing (docs/releasing.md). PyPI's trusted publisher names
+# this file (`release.yml`) and the environment of the publishing job: renaming either, or
+# moving the publishing job into a reusable workflow, breaks publishing.
+#
+# - a pushed tag `v<version>`: build, check the tag against the built version, publish to PyPI
+#   (environment `pypi`)
+# - run by hand (workflow_dispatch): build and publish to TestPyPI (environment `testpypi`);
+#   this path never publishes to PyPI
+# Nothing else starts it: no branch push, no pull request.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build the distributions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.14"
+          enable-cache: false
+
+      - name: Build the sdist and the wheel
+        run: uv build --no-sources
+
+      - name: The built version
+        id: version
+        run: |
+          version="$(unzip -p dist/*.whl '*.dist-info/METADATA' | sed -n 's/^Version: //p')"
+          test -n "$version"
+          test -f "dist/spartito-$version.tar.gz"
+          test -f "dist/spartito-$version-py3-none-any.whl"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "built spartito $version"
+
+      - name: The tag names the built version
+        if: github.event_name == 'push'
+        env:
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ "$TAG" != "v$VERSION" ]; then
+            echo "::error::tag $TAG does not match the built version $VERSION (expected v$VERSION)"
+            exit 1
+          fi
+
+      - name: The wheel installs and runs
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          ORCH_HOME: ${{ runner.temp }}/orch-home
+        run: |
+          wheel="$(ls dist/*.whl)"
+          uv run --isolated --no-project --with "$wheel" spartito --help
+          uv run --isolated --no-project --with "$wheel" python -I -c \
+            'import orchestrator, sys; assert orchestrator.__version__ == sys.argv[1], orchestrator.__version__' \
+            "$VERSION"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  pypi:
+    name: Publish to PyPI
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/spartito/
+    permissions:
+      id-token: write # Trusted Publishing; nothing else
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+
+  testpypi:
+    name: Publish to TestPyPI
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/spartito/
+    permissions:
+      id-token: write # Trusted Publishing; nothing else
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          repository-url: https://test.pypi.org/legacy/
