@@ -391,3 +391,39 @@ def test_claude_leads_cannot_start_background_commands(tmp_path: Path, lead: boo
 
     assert env == (NO_BACKGROUND_ENV if lead else {})
     assert NO_BACKGROUND_ENV == {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}
+
+
+# A runner started as `python -m orchestrator.runner` by a process that ignores SIGTERM and
+# SIGINT (a runner ending its turn starts a parent's notification run): what its __main__
+# leaves in effect before main() takes over, seen from main's first step (Store(), here a
+# probe that prints this process's ignored signals before and now, then sends itself SIGTERM).
+IGNORING_PARENT = """
+import os, runpy, signal, sys
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+signal.signal(signal.SIGINT, signal.SIG_IGN)
+mask = lambda: open("/proc/self/status").read().split("SigIgn:")[1].split()[0]
+before = mask()
+import orchestrator.store
+
+class Probe:
+    def __init__(self):
+        print(before, mask(), flush=True)
+        os.kill(os.getpid(), signal.SIGTERM)
+        sys.exit(0)
+
+orchestrator.store.Store = Probe
+sys.argv = ["runner", "1"]
+runpy.run_module("orchestrator.runner", run_name="__main__", alter_sys=True)
+"""
+
+
+@pytest.mark.skipif(not Path("/proc/self/status").exists(), reason="reads /proc")
+def test_a_runner_started_while_stop_signals_are_ignored_ends_on_sigterm():
+    done = subprocess.run(
+        [sys.executable, "-c", IGNORING_PARENT], capture_output=True, text=True, timeout=60
+    )
+    before, now = (int(mask, 16) for mask in done.stdout.split())
+    term, interrupt = 1 << (signal.SIGTERM - 1), 1 << (signal.SIGINT - 1)
+    assert before & term and before & interrupt  # inherited ignored, as from such a runner
+    assert not now & term and not now & interrupt
+    assert done.returncode == -signal.SIGTERM, done.stderr

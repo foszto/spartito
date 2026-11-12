@@ -894,4 +894,9 @@ def _drop_unstarted(store: Store, run_id: int, kind: str) -> bool:
 
 
 if __name__ == "__main__":
+    # A runner launched while another one ends its turn (a parent's notification run, from
+    # core/lifecycle.run_ended) would inherit its ignored SIGTERM and SIGINT until main
+    # sets its own handlers: the defaults, as for any other start.
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    signal.signal(signal.SIGINT, signal.default_int_handler)
     main(int(sys.argv[1]))
