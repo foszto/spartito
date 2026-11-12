@@ -17,7 +17,7 @@ laid out.
 
 ### Processes
 
-There is no daemon. `orch`, the dashboard and the MCP server write to a SQLite database and
+There is no daemon. `spartito`, the dashboard and the MCP server write to a SQLite database and
 start one detached runner process (`python -m orchestrator.runner <run-id>`) per turn. The
 runner waits for dependencies, creates the worktree if needed, runs `claude -p
 --output-format stream-json` or `codex exec --json`, and turns the output into uniform events.
@@ -32,7 +32,7 @@ State lives under `~/.orchestrator/` (or `$ORCH_HOME`):
 - `worktrees/<project>/<agent-id>/`: the agents' worktrees;
 - `workspace/`: the orchestrator's working directory;
 - `run/`: files about live processes: the running dashboard server's `web.json`, locks and
-  markers, the browser profile of `orch app`.
+  markers, the browser profile of `spartito app`.
 
 The full list of files: [configuration.md](configuration.md#files).
 
@@ -40,13 +40,13 @@ The full list of files: [configuration.md](configuration.md#files).
 
 Per turn in `logs/run-<id>/`: the CLI's raw output stream, stderr, `result.md` (the full
 final answer, or the error of a failed turn) and `result.json` for a structured answer. On
-macOS the background service writes to `logs/web.log`; the window of `orch app` writes to
+macOS the background service writes to `logs/web.log`; the window of `spartito app` writes to
 `logs/app.log`.
 
 ### Permissions and providers
 
 Claude agents run with `--permission-mode auto`, Codex agents in the `workspace-write`
-sandbox; `orch spawn --permission` overrides this per agent.
+sandbox; `spartito spawn --permission` overrides this per agent.
 
 Providers implement a small protocol (`providers/base.py`); further providers can be
 registered with `ORCH_PROVIDERS="name=package.module:Class"`. Details:
@@ -69,10 +69,10 @@ registered with `ORCH_PROVIDERS="name=package.module:Class"`. Details:
 - **Notifications.** A lead's answer reaches its parent only once the lead and all of its
   agents are idle.
 - **Role prompts.** A Codex agent receives its role prompt in the first turn of its session
-  and keeps that version; a running `orch chat` session keeps the prompt it started with.
+  and keeps that version; a running `spartito chat` session keeps the prompt it started with.
   Headless Claude agents receive the current role prompt with every turn.
-- **Upgrades.** A running `orch web` keeps the code it was started with; restart it after an
-  upgrade (for the background service: `orch service install` again). New turns start new
+- **Upgrades.** A running `spartito web` keeps the code it was started with; restart it after an
+  upgrade (for the background service: `spartito service install` again). New turns start new
   runner processes and use the new code.
 - **Automatic compaction** pauses for an agent when a compaction did not bring its context
   below the threshold ([agents.md](agents.md#automatic-compaction)).
@@ -88,18 +88,18 @@ Limitations of single features: [desktop.md](desktop.md#known-limitations),
 
 ```
 src/orchestrator/
-  cli.py           the `orch` command
+  cli.py           the `spartito` command
   __main__.py      `python -m orchestrator`: the same command line (what the background service runs)
   mcp_server.py    the MCP tools of the orchestrator and the leads
   web/             dashboard: one page and a JSON API
     app.py           the page and the JSON API, with the guards against other origins
     board_api.py     the JSON API of the board view across projects
-    serve.py         running the dashboard server, shared by `orch web` and `orch app`
-  gui/             `orch app`: the window (window.py), finding a running server (locate.py),
+    serve.py         running the dashboard server, shared by `spartito web` and `spartito app`
+  gui/             `spartito app`: the window (window.py), finding a running server (locate.py),
                    the launcher (launcher.py), notifications posted by Spartito itself
-                   (notifier.py); `orch menubar` (menubar.py)
-  app_open.py      deep-link requests to the open window of `orch app`
-  autostart.py     `orch service`: the launchd agent or systemd user unit
+                   (notifier.py); `spartito menubar` (menubar.py)
+  app_open.py      deep-link requests to the open window of `spartito app`
+  autostart.py     `spartito service`: the launchd agent or systemd user unit
   service.py       the facade `Orchestrator`, used by the CLI, the MCP server and the dashboard
   core/            the operations behind the facade, one module per area:
     dispatch.py      creating agents, queueing turns with dependencies, withdrawing a message

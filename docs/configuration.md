@@ -8,8 +8,8 @@
 - [Environment variables](#environment-variables)
 - [Files](#files)
 
-Settings are stored in the database (`~/.orchestrator/orch.db`). `orch config show` prints
-the global settings with their defaults, `orch config show -p <project>` a project's
+Settings are stored in the database (`~/.orchestrator/orch.db`). `spartito config show` prints
+the global settings with their defaults, `spartito config show -p <project>` a project's
 overrides. Every setting can also be changed in the dashboard's **Models and effort** window.
 
 ## Model and effort
@@ -21,17 +21,17 @@ names and effort levels differ between providers:
 
 | tier | agents |
 |---|---|
-| `orchestrator` | the top-level orchestrator (Maestro), and `orch chat` |
+| `orchestrator` | the top-level orchestrator (Maestro), and `spartito chat` |
 | `lead` | project leads (every role with `lead: true` inside a project) |
 | `worker` | every other role: worker, planner, reviewer, tester, custom roles |
 
 ```sh
-orch config set orchestrator --model opus --effort high
-orch config set lead --model sonnet --effort medium
-orch config set worker --model haiku --effort low
-orch config set worker --provider codex --model gpt-6-luna
-orch config set worker --model sonnet -p my-app     # only in my-app
-orch config set worker --model ""                   # clear the global worker model
+spartito config set orchestrator --model opus --effort high
+spartito config set lead --model sonnet --effort medium
+spartito config set worker --model haiku --effort low
+spartito config set worker --provider codex --model gpt-6-luna
+spartito config set worker --model sonnet -p my-app     # only in my-app
+spartito config set worker --model ""                   # clear the global worker model
 ```
 
 Effort levels: Claude `low`, `medium`, `high`, `xhigh`, `max`; Codex `low`, `medium`, `high`,
@@ -41,24 +41,24 @@ Effort levels: Claude `low`, `medium`, `high`, `xhigh`, `max`; Codex `low`, `med
 
 For each turn, the first value found applies:
 
-1. the agent's own value (`orch spawn --model/--effort`, the dashboard's new-agent form,
-   `orch model`, the agent header in the dashboard);
+1. the agent's own value (`spartito spawn --model/--effort`, the dashboard's new-agent form,
+   `spartito model`, the agent header in the dashboard);
 2. the project's setting for the agent's tier and provider;
 3. the global setting;
 4. the role's `model` frontmatter field (model only);
 5. nothing: the CLI's own default.
 
 Values are resolved when a turn starts, so a changed setting applies to existing agents from
-their next turn. `orch chat` uses the global Claude setting of the `orchestrator` tier;
+their next turn. `spartito chat` uses the global Claude setting of the `orchestrator` tier;
 `--model` and `--effort` override it.
 
 ### One agent
 
 ```sh
-orch model fix-login-3f2a                         # effective, own and inherited values
-orch model fix-login-3f2a --model opus --effort high
-orch model fix-login-3f2a --model ""              # clear: the tier setting applies again
-orch model orchestrator --effort high
+spartito model fix-login-3f2a                         # effective, own and inherited values
+spartito model fix-login-3f2a --model opus --effort high
+spartito model fix-login-3f2a --model ""              # clear: the tier setting applies again
+spartito model orchestrator --effort high
 ```
 
 A running turn keeps its model. In an existing session, a model change starts a new prompt
@@ -73,11 +73,11 @@ starting with `-`.
 
 | key | command | scope | default |
 |---|---|---|---|
-| tier values (model and effort) | `orch config set <tier>` | global, project | none: the CLI's default |
-| `compact_at_tokens` | `orch config compact-at <tokens>` | global, project | `256000` |
-| `archive_after_hours` | `orch config archive-after <hours>` | global, project | `24` |
-| `keep_awake` | `orch config keep-awake on\|off` | global | `on` |
-| `desktop_notifications` | `orch config desktop-notifications on\|off` | global | `on` |
+| tier values (model and effort) | `spartito config set <tier>` | global, project | none: the CLI's default |
+| `compact_at_tokens` | `spartito config compact-at <tokens>` | global, project | `256000` |
+| `archive_after_hours` | `spartito config archive-after <hours>` | global, project | `24` |
+| `keep_awake` | `spartito config keep-awake on\|off` | global | `on` |
+| `desktop_notifications` | `spartito config desktop-notifications on\|off` | global | `on` |
 
 A project value overrides the global one. An empty value (`""`) clears a setting, so that the
 global value or the default applies; `0` or `off` turns compaction and archiving off.
@@ -85,9 +85,9 @@ global value or the default applies; `0` or `off` turns compaction and archiving
 ### Automatic compaction: `compact_at_tokens`
 
 ```sh
-orch config compact-at 256k            # also 256000, 1M; 0 or off: never
-orch config compact-at 400k -p my-app
-orch config compact-at "" -p my-app    # inherit the global value again
+spartito config compact-at 256k            # also 256000, 1M; 0 or off: never
+spartito config compact-at 400k -p my-app
+spartito config compact-at "" -p my-app    # inherit the global value again
 ```
 
 When an agent's turn ends successfully with its context above the threshold, a compaction is
@@ -100,8 +100,8 @@ the window). How compaction works, and when automatic compaction pauses:
 ### Automatic archiving: `archive_after_hours`
 
 ```sh
-orch config archive-after 48           # 0 or off: never
-orch config archive-after off -p my-app
+spartito config archive-after 48           # 0 or off: never
+spartito config archive-after off -p my-app
 ```
 
 Archives idle agents whose work is safe after that many idle hours. Leads and the
@@ -125,7 +125,7 @@ agent started by a lead does not notify you.
 
 Each notification is recorded as a notice in the database (kept for one day). Who shows it:
 
-- an open dashboard page (a tab, the installed app, or the browser window of `orch app`) that
+- an open dashboard page (a tab, the installed app, or the browser window of `spartito app`) that
   is allowed to show notifications: the **Enable notifications** button in its header, or
   **Models and effort** › **Notifications** › **Allow in this browser**. It shows them as
   Web Notifications, and a click opens the agent or the decision. While such a page has
@@ -222,7 +222,7 @@ setting_sources = "user,project,local"   # Claude: ~/.claude/settings.json appli
 codex_user_config = true                 # Codex: ~/.codex/config.toml applies again
 ```
 
-A model can also be set with `orch config set` instead.
+A model can also be set with `spartito config set` instead.
 
 **User-level plugins and skills.** A project that needs them turns the three layers back on;
 `tools` is set per role, so `Skill` must be added to every role that uses skills:
@@ -247,8 +247,8 @@ tools = "Bash,Read,Glob,Grep,Skill"
 ### Notes
 
 - The flags are passed on every turn, resumed ones included.
-- `orch chat` uses the `orchestrator` role's loadout, with only the home-level
-  `loadout.toml` applied. `Bash` is always kept (for `orch` commands), and slash commands stay
+- `spartito chat` uses the `orchestrator` role's loadout, with only the home-level
+  `loadout.toml` applied. `Bash` is always kept (for `spartito` commands), and slash commands stay
   on so that `/compact`, `/clear`, `/model` and `/context` work; `slash_commands` affects only
   headless agents.
 - With Codex and `codex_user_config = false`, the model, MCP servers and plugins of the user
@@ -257,7 +257,7 @@ tools = "Bash,Read,Glob,Grep,Skill"
 - **`memory`** keeps Claude Code's memory (one file per fact and a `MEMORY.md` index) usable
   for the orchestrator and the leads; a lead's memory is the project's, shared with your own
   interactive sessions there. Only `Write` and `Edit` are confined, not `Bash`. It has no
-  effect when `tools` already grants a writing tool (`default` does), in `orch chat`, or with
+  effect when `tools` already grants a writing tool (`default` does), in `spartito chat`, or with
   Codex. It takes effect only when the session's hooks are proven to run: the prompt is sent
   after a marker file written by the hook appears. If hooks are disabled (`disableAllHooks`,
   the policy `allowManagedHooksOnly`), the turn restarts without `Write`/`Edit`; this is
@@ -279,10 +279,10 @@ A role is a Markdown file: frontmatter, then the prompt. Lookup order, first hit
 3. the packaged roles (`src/orchestrator/roles/`)
 
 A file with the name of a packaged role overrides it completely: copy the packaged file and
-change it, rather than writing only the keys that differ. `orch roles` lists the packaged roles
+change it, rather than writing only the keys that differ. `spartito roles` lists the packaged roles
 and those in `~/.orchestrator/roles/` (whether each is a lead role, and whether it works in a
 worktree or the checkout); it has no project option and does not list roles under
-`<project>/.orch/roles/`. Those are still used by `orch spawn -p <project> -r <name>` and are
+`<project>/.orch/roles/`. Those are still used by `spartito spawn -p <project> -r <name>` and are
 listed for agents by the MCP tool `list_roles(project)`.
 
 ### Frontmatter
@@ -327,15 +327,15 @@ optional value expressed as nullable or as an empty list.
 ## Providers and permissions
 
 A new agent's provider is, first hit wins: `--provider` (or `provider` in `spawn_agent`, or
-the dashboard's form), the role's `provider`, the project's default (`orch project add
+the dashboard's form), the role's `provider`, the project's default (`spartito project add
 --provider`, default `claude`). The orchestrator agent uses the `provider` of the
 `orchestrator` role (an override in `~/.orchestrator/roles/orchestrator.md`), otherwise
 `claude`; its provider is fixed when it is first created (by its first message, or by setting its model or
-effort). `orch chat` always
+effort). `spartito chat` always
 runs Claude Code.
 
 Claude agents run with `--permission-mode auto`, Codex agents in the `workspace-write`
-sandbox. `orch spawn --permission <mode>` sets another mode for one agent.
+sandbox. `spartito spawn --permission <mode>` sets another mode for one agent.
 
 A new agent CLI can be added by implementing the `Provider` protocol
 (`src/orchestrator/providers/base.py`) and registering it in `providers/__init__.py`, or from
@@ -353,9 +353,9 @@ no declarative pipeline layer.
 | `ORCH_PROVIDERS` | extra providers, `name=package.module:Class`, comma-separated |
 | `ORCH_NOTIFY_DELAY` | seconds a notification turn waits to collect results (default 5) |
 | `CODEX_HOME` | read for Codex rollout files and `config.toml` (Codex's own variable) |
-| `PYWEBVIEW_GUI` | the pywebview backend of `orch app` on Linux (pywebview's own variable; default Qt) |
+| `PYWEBVIEW_GUI` | the pywebview backend of `spartito app` on Linux (pywebview's own variable; default Qt) |
 
-The background service (`orch service install`) keeps only `PATH`, `LANG`, `LC_*`, `ORCH_*`,
+The background service (`spartito service install`) keeps only `PATH`, `LANG`, `LC_*`, `ORCH_*`,
 `CLAUDE_CONFIG_DIR` and `CODEX_HOME` from the shell it is installed from; run the install
 again after changing them. See [desktop.md](desktop.md#background-service).
 
@@ -373,7 +373,7 @@ The main files under `~/.orchestrator/` (or `$ORCH_HOME`):
 | `logs/web.log` | output of the background service (macOS; emptied at install above 5 MB) |
 | `hooks-off/` | agents whose memory hook did not run (see [Loadout](#notes)) |
 | `run/web.json` | the running dashboard server: pid, host, port, start time |
-| `run/app.lock` | held by the open `orch app` window |
+| `run/app.lock` | held by the open `spartito app` window |
 | `run/page-notifier` | touched by a dashboard page that shows notifications |
-| `run/app-profile/` | the browser profile of `orch app` in Chromium app mode |
+| `run/app-profile/` | the browser profile of `spartito app` in Chromium app mode |
 | `run/app-webview/` | the native window's web storage (Linux; macOS WebKit keeps its own) |

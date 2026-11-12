@@ -19,7 +19,7 @@ its target (`--agent`, `--decision`), through app_open.py, and leaves; one that 
 (c, or no display) gives that up, so the next one reuses its server. SIGTERM and SIGHUP end
 it as closing the window does.
 
-Identity: on macOS with the launcher of this home installed (launcher.py), an `spartito app`
+Identity: on macOS with the launcher of this home installed (launcher.py), a `spartito app`
 started from a terminal runs on as that app (exec of the launcher's interpreter copy, or with
 CFProcessPath without a current one; same pid, terminal and exit code), so the Dock shows its
 name and icon; without the launcher the Dock icon is set at run time. Run through the copy,

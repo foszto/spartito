@@ -87,21 +87,21 @@ tip, so one moved back by hand stays until new work is seen ahead and merged.
 
 The check runs at most once a minute across all processes and spends about 2 seconds; there
 is no background process: it runs inside the first board or overview read after that minute
-(the dashboard's polling, `orch board --live`, `list_board(live=true)`). Not
+(the dashboard's polling, `spartito board --live`, `list_board(live=true)`). Not
 detected: a squash merge of more than one commit, and commits whose content changed between
 the last check that saw them and the merge. Such items are moved by hand.
 
 ## Command line, MCP and API
 
 ```sh
-orch board --live                    # each item with its agent's status and branch state
-orch board dispatch 12 15 21         # those items (idea or ready, any project) to their leads
-orch board dispatch -p my-app        # the project's ready items
-orch board show 12                   # an item with its source, blockers, history and runs
-orch board link 12 7                 # decision 7 blocks item 12 (--remove: unlink)
+spartito board --live                    # each item with its agent's status and branch state
+spartito board dispatch 12 15 21         # those items (idea or ready, any project) to their leads
+spartito board dispatch -p my-app        # the project's ready items
+spartito board show 12                   # an item with its source, blockers, history and runs
+spartito board link 12 7                 # decision 7 blocks item 12 (--remove: unlink)
 ```
 
-`orch board --live` shows the branch as `+3 -1 dirty`, `even`, `merged`, `no branch` or
+`spartito board --live` shows the branch as `+3 -1 dirty`, `even`, `merged`, `no branch` or
 `error`.
 
 MCP tools: `list_board(project, state, live)` (`live` adds agent and git status),
@@ -147,16 +147,16 @@ cat > "$check/env.sh" <<EOF
 export CHECK_DIR="$check"
 export ORCH_HOME="$check/home"
 export PORT=18788
-export ORCH_BIN="$PWD/.venv/bin/orch"
-orch_test() { "\$ORCH_BIN" "\$@"; }
+export SPARTITO_BIN="$PWD/.venv/bin/spartito"
+spartito_test() { "\$SPARTITO_BIN" "\$@"; }
 EOF
 . "$check/env.sh"
 echo ". '$check/env.sh'"    # copy this line
 ```
 
 **Shell B**: open a second terminal and paste the line printed above; it loads the same
-environment. Every command below calls `orch_test` (the checkout's `orch`), never a bare
-`orch`. **Guard**, before each step in either shell: `echo "$ORCH_HOME $PORT"` prints
+environment. Every command below calls `spartito_test` (the checkout's `spartito`), never a bare
+`spartito`. **Guard**, before each step in either shell: `echo "$ORCH_HOME $PORT"` prints
 `<temporary directory>/home 18788`; if it prints nothing or `~/.orchestrator`, load the
 environment first.
 
@@ -165,15 +165,15 @@ Two projects and three items (**shell B**), then the dashboard (**shell A**, lef
 ```sh
 for p in alpha beta; do
   git init -q -b main "$CHECK_DIR/$p" && git -C "$CHECK_DIR/$p" commit -q --allow-empty -m init
-  orch_test project add "$CHECK_DIR/$p" --name "$p"
+  spartito_test project add "$CHECK_DIR/$p" --name "$p"
 done
-orch_test board add -p alpha "First task" --state ready
-orch_test board add -p alpha "Second task" --state idea
-orch_test board add -p beta "Third task" --state ready
+spartito_test board add -p alpha "First task" --state ready
+spartito_test board add -p alpha "Second task" --state idea
+spartito_test board add -p beta "Third task" --state ready
 ```
 
 ```sh
-orch_test web --port "$PORT"            # shell A; open http://127.0.0.1:18788/#board:
+spartito_test web --port "$PORT"            # shell A; open http://127.0.0.1:18788/#board:
 ```
 
 The numbered steps run in **shell B** unless they name shell A.
@@ -193,11 +193,11 @@ The numbered steps run in **shell B** unless they name shell A.
 7. A real merge: `git -C "$CHECK_DIR/alpha" switch -c feat/x`, commit a file
    (`echo x > "$CHECK_DIR/alpha/x.txt"; git -C "$CHECK_DIR/alpha" add x.txt;
    git -C "$CHECK_DIR/alpha" commit -m x`), `git -C "$CHECK_DIR/alpha" switch main`;
-   `orch_test board edit <id> --branch feat/x` on a `ready` item; after a minute the card shows
+   `spartito_test board edit <id> --branch feat/x` on a `ready` item; after a minute the card shows
    `↑1`; `git -C "$CHECK_DIR/alpha" merge --no-ff -m "merge feat/x" feat/x`; after another
    minute the item is in **Done** and its history names `merged` and the commit.
-8. `orch_test board edit <id> --branch feat/none` on a `ready` item: after a minute it shows
-   `no branch`, on the card and in the detail (`orch_test board --live` says the same).
+8. `spartito_test board edit <id> --branch feat/none` on a `ready` item: after a minute it shows
+   `no branch`, on the card and in the detail (`spartito_test board --live` says the same).
 9. Send any message to a lead; **Add to board** on a message opens the form; after **Add** the
    focus is on **On the board: #id**; reload the conversation and click **Add to board** on the
    same message again: no second item, the link is shown.
@@ -206,7 +206,7 @@ The numbered steps run in **shell B** unless they name shell A.
     see it under **Blocked by** and as the card's badge; unlink it; link and answer it: it goes.
 12. Switch the theme (moon button): cards, chips, menu and detail are readable in both.
 13. A narrow window (about 400 px wide): one column, nothing overlaps, cards still open.
-14. Shell A: stop `orch_test web` (Ctrl+C), then `orch_test app --port "$PORT"`: the board
+14. Shell A: stop `spartito_test web` (Ctrl+C), then `spartito_test app --port "$PORT"`: the board
     works the same in the window.
 15. Done: close the window, then in shell B `echo "$CHECK_DIR"` (a temporary directory) and
     `rm -rf "$CHECK_DIR"`.

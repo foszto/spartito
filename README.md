@@ -14,7 +14,8 @@ you ── orchestrator (Maestro)
                         └─ ...
 ```
 
-The command is `orch`; the Python package is `orchestrator`.
+The command is `spartito`; the Python package is `orchestrator`. Internal names keep `orch`:
+the MCP server and its tools, the `ORCH_*` variables, `orch.db` and the agents' `orch/` branches.
 
 ## Features
 
@@ -34,7 +35,7 @@ The command is `orch`; the Python package is `orchestrator`.
 - Automatic compaction of long conversations, automatic archiving of finished agents, keeping
   the machine awake while agents work, desktop notifications.
 - The dashboard as a desktop application: a background service, an installable page,
-  notifications whose click opens the agent or decision, and its own window (`orch app`).
+  notifications whose click opens the agent or decision, and its own window (`spartito app`).
 - No daemon: every turn is its own process; all state is in one SQLite database.
 
 ## Requirements
@@ -43,7 +44,7 @@ The command is `orch`; the Python package is `orchestrator`.
 - Python 3.14 and [uv](https://docs.astral.sh/uv/).
 - `git`.
 - The `claude` (Claude Code) CLI, installed and logged in, and optionally the `codex` CLI.
-  The defaults use Claude Code: the orchestrator agent, `orch chat`, and every project
+  The defaults use Claude Code: the orchestrator agent, `spartito chat`, and every project
   registered without `--provider`, so the quick start below needs `claude`. A Codex-only or
   mixed setup is configured per project and per agent:
   [docs/configuration.md](docs/configuration.md#providers-and-permissions).
@@ -53,12 +54,15 @@ The command is `orch`; the Python package is `orchestrator`.
 From a checkout of this repository:
 
 ```sh
-uv tool install --editable .    # puts `orch` on the PATH
-orch --help
+uv tool install --editable .    # puts `spartito` on the PATH
+spartito --help
 ```
 
-Without installing, prefix every command with `uv run` inside the checkout (`uv run orch …`).
-The native window of `orch app` needs the optional extra `app`, the macOS menu-bar item the
+Installed while the command was still called `orch`? See
+[Upgrading from `orch`](docs/usage.md#upgrading-from-orch).
+
+Without installing, prefix every command with `uv run` inside the checkout (`uv run spartito …`).
+The native window of `spartito app` needs the optional extra `app`, the macOS menu-bar item the
 extra `menubar` (on Linux, `app` brings GPL-3.0-only PyQt6; see
 [docs/desktop.md](docs/desktop.md#optional-dependencies)):
 
@@ -74,14 +78,14 @@ Register a git repository as a project. Its currently checked-out branch becomes
 project's base branch, from which agent branches start:
 
 ```sh
-orch project add ~/src/my-app
+spartito project add ~/src/my-app
 # added my-app  /home/dev/src/my-app  (base branch: main)
 ```
 
 **Through the orchestrator.** Start the dashboard:
 
 ```sh
-orch web          # dashboard at http://127.0.0.1:8787
+spartito web          # dashboard at http://127.0.0.1:8787
 ```
 
 The dashboard has no login: keep it on the loopback address (the default), as anyone who can
@@ -91,19 +95,19 @@ Select **Maestro** and describe the goal, for example: *"In my-app, fix the logi
 loop. Have a worker implement it with Claude and a reviewer check it with Codex."* The
 orchestrator passes the brief to the project lead, which starts the agents. They appear in the
 left-hand list as they start; click one to follow its conversation. When the lead's agents are
-done, the lead reports to the orchestrator, which reports to you. Alternatively, `orch chat`
+done, the lead reports to the orchestrator, which reports to you. Alternatively, `spartito chat`
 opens the orchestrator as an interactive Claude Code session in the terminal: a separate
 conversation with the same tools and the same state.
 
 **Directly from the command line.**
 
 ```sh
-orch spawn -p my-app -n fix-login "Fix the redirect loop after login. Add a regression test."
+spartito spawn -p my-app -n fix-login "Fix the redirect loop after login. Add a regression test."
 # fix-login-3f2a  run 1  /home/dev/.orchestrator/worktrees/my-app/fix-login-3f2a
 
-orch logs fix-login-3f2a -f     # follow what it does
-orch wait fix-login-3f2a        # block until it is done
-orch status fix-login-3f2a      # result, commits and changes in its worktree
+spartito logs fix-login-3f2a -f     # follow what it does
+spartito wait fix-login-3f2a        # block until it is done
+spartito status fix-login-3f2a      # result, commits and changes in its worktree
 ```
 
 The worker commits on branch `orch/fix-login-3f2a`. Review and merge it yourself; agents do
@@ -113,13 +117,13 @@ not merge:
 cd ~/src/my-app
 git log --oneline main..orch/fix-login-3f2a
 git merge orch/fix-login-3f2a
-orch archive fix-login-3f2a     # hide it from the lists; everything is kept
+spartito archive fix-login-3f2a     # hide it from the lists; everything is kept
 ```
 
 ## How it fits together
 
 Every agent is a headless Claude Code or Codex session with a role. A message to an agent
-starts a *turn*: `orch`, the dashboard or the MCP server records it in a SQLite database
+starts a *turn*: `spartito`, the dashboard or the MCP server records it in a SQLite database
 under `~/.orchestrator/` and starts one detached runner process, which runs the CLI in the
 agent's worktree and records its output as events. The orchestrator and the project leads
 get the `orch` MCP tools to start agents, wait for them, keep the task board and ask you for
@@ -135,7 +139,7 @@ MCP tools are views on the same database. More: [docs/concepts.md](docs/concepts
 - [docs/agents.md](docs/agents.md): MCP tools, queue, dependencies, notifications, decisions, archiving, compaction, cost.
 - [docs/configuration.md](docs/configuration.md): model and effort, settings, loadout, roles, providers, files.
 - [docs/board.md](docs/board.md): the task board across projects.
-- [docs/desktop.md](docs/desktop.md): background service, installable page, notifications, `orch app`, menu bar.
+- [docs/desktop.md](docs/desktop.md): background service, installable page, notifications, `spartito app`, menu bar.
 - [docs/desktop-checklist.md](docs/desktop-checklist.md): manual checks of the desktop app.
 - [docs/architecture.md](docs/architecture.md): how it works at run time, limitations, code layout.
 

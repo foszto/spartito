@@ -10,9 +10,9 @@ This section, and only this one, acts on your real install and home, on purpose.
 new terminal **without** the environment of the setup below, in the checkout that was merged:
 
 1. `uv tool install --editable '.[app,menubar]'` (no `--force` needed over an existing install).
-2. `orch app install`: two lines, `installed Spartito (local.spartito.app): …` and
+2. `spartito app install`: two lines, `installed Spartito (local.spartito.app): …` and
    `spartito-python: a copy of …, signed as local.spartito.app, …`.
-3. `orch app`: the window opens; Dock and app switcher show *Spartito* with its icon.
+3. `spartito app`: the window opens; Dock and app switcher show *Spartito* with its icon.
 4. Allow *Spartito* in the prompt that appears (or later: **System Settings › Notifications ›
    Spartito**).
 5. In any browser tab of the dashboard you use, click **Enable notifications** in the header
@@ -22,10 +22,10 @@ Repeat step 2 after every Python upgrade (Homebrew or uv).
 
 ### After a merge that changes notifications
 
-`orch app install` is **not** needed again when the merge changes neither the launcher nor the
-dependencies: the launcher only starts `orch app` from the tool environment, which with
+`spartito app install` is **not** needed again when the merge changes neither the launcher nor the
+dependencies: the launcher only starts `spartito app` from the tool environment, which with
 `--editable` is the merged checkout. It is needed after a Python upgrade, or when the state
-line below says `run orch app install again`. Nor is a restart of the dashboard service: it
+line below says `run spartito app install again`. Nor is a restart of the dashboard service: it
 reads the page (`index.html`) and its static files from disk on each request, so a running
 service already serves the merged page; the notices are taken by the window process, which
 the restart below replaces. Steps, on the real app:
@@ -62,7 +62,7 @@ not been seen on a live installation yet.
 ## Setup
 
 Everything runs with the code of the checkout under test, a temporary home and port 18787, so
-the installed `orch`, your real home (`~/.orchestrator`) and a live dashboard (port 8787 by
+the installed `spartito`, your real home (`~/.orchestrator`) and a live dashboard (port 8787 by
 default) are not involved.
 
 **Shell A**, in the checkout of the branch under test:
@@ -74,8 +74,8 @@ cat > "$check/env.sh" <<EOF
 export CHECK_DIR="$check"
 export ORCH_HOME="$check/home"
 export PORT=18787
-export ORCH_BIN="$PWD/.venv/bin/orch"
-orch_test() { "\$ORCH_BIN" "\$@"; }
+export SPARTITO_BIN="$PWD/.venv/bin/spartito"
+spartito_test() { "\$SPARTITO_BIN" "\$@"; }
 EOF
 . "$check/env.sh"
 echo ". '$check/env.sh'"    # copy this line
@@ -92,44 +92,44 @@ echo "$ORCH_HOME $PORT"
 ```
 
 This must print `<temporary directory>/home 18787`. If it prints nothing, or `~/.orchestrator`,
-stop and load the environment first. Every command below calls `orch_test` (the checkout's
-`orch`) or `"$ORCH_BIN"`, never a bare `orch`.
+stop and load the environment first. Every command below calls `spartito_test` (the checkout's
+`spartito`) or `"$SPARTITO_BIN"`, never a bare `spartito`.
 
 For steps 3 to 5, register a scratch repository as a project (**shell B**):
 
 ```sh
 git init -q "$CHECK_DIR/scratch" && git -C "$CHECK_DIR/scratch" commit -q --allow-empty -m init
-orch_test project add "$CHECK_DIR/scratch"
+spartito_test project add "$CHECK_DIR/scratch"
 ```
 
-## 1. `orch app`
+## 1. `spartito app`
 
 Long-running commands go in **shell A**, the others in **shell B**.
 
 | shell | do | expect |
 |---|---|---|
-| A | `orch_test app --port "$PORT"` | `web UI: http://127.0.0.1:18787/`; a window titled *Spartito* with the dashboard, no browser tabs or address bar |
+| A | `spartito_test app --port "$PORT"` | `web UI: http://127.0.0.1:18787/`; a window titled *Spartito* with the dashboard, no browser tabs or address bar |
 | — | Work in the window: select Maestro, open **Models and effort**, switch the theme | it behaves like the dashboard in a browser |
-| B | `orch_test app` (no `--port`: it stops at the lock) | `the dashboard window of this home is already open: brought it to the front`; no second window |
-| — | Click another application, then in B: `orch_test app --decision <an open decision id>` (or `--agent <id>`) | the window comes to the front showing that decision; B prints `…: brought it to the front, showing decision:<id>` |
-| — | Close the window | in shell A, `orch app` returns; `echo $?` prints `0` |
+| B | `spartito_test app` (no `--port`: it stops at the lock) | `the dashboard window of this home is already open: brought it to the front`; no second window |
+| — | Click another application, then in B: `spartito_test app --decision <an open decision id>` (or `--agent <id>`) | the window comes to the front showing that decision; B prints `…: brought it to the front, showing decision:<id>` |
+| — | Close the window | in shell A, `spartito app` returns; `echo $?` prints `0` |
 | B | `ls "$ORCH_HOME/run"; lsof -nP -iTCP:"$PORT" -sTCP:LISTEN` | no `web.json`; `lsof` prints nothing |
-| A | `"$ORCH_BIN" app --port "$PORT" & app_pid=$!` | the window opens again |
+| A | `"$SPARTITO_BIN" app --port "$PORT" & app_pid=$!` | the window opens again |
 | A | `kill -TERM "$app_pid"; wait "$app_pid"; echo $?` | the window closes; `143` |
-| A | `orch_test web --port "$PORT"` | `web UI: http://127.0.0.1:18787` |
-| B | `orch_test app` (no `--port`: it uses the running server) | `web UI: http://127.0.0.1:18787/ (the running server)` |
-| — | Close the window | `orch app` in shell B returns; `orch web` in shell A keeps running |
-| A | Ctrl-C | `orch web` ends |
+| A | `spartito_test web --port "$PORT"` | `web UI: http://127.0.0.1:18787` |
+| B | `spartito_test app` (no `--port`: it uses the running server) | `web UI: http://127.0.0.1:18787/ (the running server)` |
+| — | Close the window | `spartito app` in shell B returns; `spartito web` in shell A keeps running |
+| A | Ctrl-C | `spartito web` ends |
 
-Remembered port: **shell A** `orch_test app`, note the port it prints, close the window, run
-`orch_test app` again: the same port, and the theme you chose is still set. Close it.
+Remembered port: **shell A** `spartito_test app`, note the port it prints, close the window, run
+`spartito_test app` again: the same port, and the theme you chose is still set. Close it.
 
 Without the extra (**shell A**, in the checkout):
 
 | shell | do | expect |
 |---|---|---|
-| A | `uv sync` (removes the extras), then `orch_test app --port "$PORT"` | `no native window: pywebview is not installed (install the extra orchestrator[app], then run \`orch app install\`; …)`, then a Chrome (or Edge, Brave, Chromium) window in app mode, with the browser's name and icon in the Dock |
-| — | Close that window | `orch app` returns, and the browser instance it started ends (your own browser windows stay) |
+| A | `uv sync` (removes the extras), then `spartito_test app --port "$PORT"` | `no native window: pywebview is not installed (install the extra orchestrator[app], then run \`spartito app install\`; …)`, then a Chrome (or Edge, Brave, Chromium) window in app mode, with the browser's name and icon in the Dock |
+| — | Close that window | `spartito app` returns, and the browser instance it started ends (your own browser windows stay) |
 | A | `uv sync --extra app --extra menubar` | the extras are back |
 
 ## 1b. Launcher, name and icon (macOS)
@@ -139,17 +139,17 @@ touched; it carries the temporary home in its script. **Shell B**:
 
 | do | expect |
 |---|---|
-| `orch_test app install --name "Spartito Check"` | `installed Spartito Check (local.spartito-check-<8 hex>.app): …/Applications/Spartito Check.app` and the `spartito-python: a copy of …` line |
+| `spartito_test app install --name "Spartito Check"` | `installed Spartito Check (local.spartito-check-<8 hex>.app): …/Applications/Spartito Check.app` and the `spartito-python: a copy of …` line |
 | `codesign -dv ~/Applications/"Spartito Check.app"/Contents/MacOS/spartito-python 2>&1 \| grep -E 'Identifier\|Signature'` | `Identifier=local.spartito-check-<8 hex>.app`, `Signature=adhoc` |
 | `open -a ~/Applications/"Spartito Check.app"` | the window opens; Dock and app switcher (Cmd-Tab) show *Spartito Check* with the tree icon, not *Python*; a prompt asks to allow notifications for *Spartito Check*: allow |
 | `lsappinfo info -only bundleID,name $(lsappinfo find bundleID=$(defaults read ~/Applications/"Spartito Check.app"/Contents/Info CFBundleIdentifier))` | the name *Spartito Check* and its identifier; close the window afterwards |
-| **Shell A**: `orch_test app --name "Spartito Check"` | the window opens as *Spartito Check* (same Dock icon), from the terminal; stderr has no `the Dock shows this window as Python` line |
+| **Shell A**: `spartito_test app --name "Spartito Check"` | the window opens as *Spartito Check* (same Dock icon), from the terminal; stderr has no `the Dock shows this window as Python` line |
 
 Close the window afterwards.
 
 ## 2. Installing the page
 
-**Shell A**: `orch_test web --port "$PORT"`, and leave it running for steps 2 and 3. The
+**Shell A**: `spartito_test web --port "$PORT"`, and leave it running for steps 2 and 3. The
 browsers need no environment: they open `http://127.0.0.1:18787`, not your live dashboard.
 
 | do | expect |
@@ -163,15 +163,15 @@ Remove both afterwards: Chrome under `chrome://apps` (right-click › Remove), S
 
 ## 3. Notifications
 
-`orch web` from step 2 still runs in **shell A**; the commands below run in **shell B**. Make
-sure notifications are on: `orch_test config desktop-notifications on`.
+`spartito web` from step 2 still runs in **shell A**; the commands below run in **shell B**. Make
+sure notifications are on: `spartito_test config desktop-notifications on`.
 
 To trigger a notification, message an agent directly and let it finish, or have the project
 lead record a decision. Both run a real, short Claude Code turn with your login:
 
 ```sh
-orch_test spawn -p scratch "Reply with the word done."
-orch_test ask scratch "Record a decision asking me to choose A or B, then stop."
+spartito_test spawn -p scratch "Reply with the word done."
+spartito_test ask scratch "Record a decision asking me to choose A or B, then stop."
 ```
 
 **The page.** In Chrome, open `http://127.0.0.1:18787` (a fresh profile, or one that never
@@ -201,30 +201,30 @@ every dashboard page first and wait 20 s.
 | Switch to another app, trigger another | no macOS notification and no `osascript` one; the Dock icon bounces once with the badge `1`; a banner at the top right of the window; clicking the Dock icon removes the badge; clicking the banner opens the agent or decision and closes it |
 | Trigger four more, then reload the window (Cmd-R) | at most three banners, the newest; closed ones stay closed |
 | Close the window, trigger another | a plain macOS notification ending with `— open Spartito to see it` (or `to answer`) |
-| `orch_test config desktop-notifications off`, trigger another | no notification at all; then `orch_test config desktop-notifications on` |
+| `spartito_test config desktop-notifications off`, trigger another | no notification at all; then `spartito_test config desktop-notifications on` |
 
 If Safari blocked the prompt earlier: Safari **Settings › Websites › Notifications**.
 
 On Linux (with `notify-send`), close every page: a notification titled *Spartito* with the
-icon; with libnotify 0.7.10 or later a click opens `orch app` at the agent or decision,
-otherwise the text ends with `— open it: orch app --decision <n>`.
+icon; with libnotify 0.7.10 or later a click opens `spartito app` at the agent or decision,
+otherwise the text ends with `— open it: spartito app --decision <n>`.
 
-Leave one decision open for step 4. Stop `orch web` in **shell A** with Ctrl-C.
+Leave one decision open for step 4. Stop `spartito web` in **shell A** with Ctrl-C.
 
 ## 4. Menu-bar item
 
-macOS only. `orch menubar` and the `orch app` it starts take the environment of the shell it
-runs in, so they use the temporary home; the `orch app` it starts picks a free port.
+macOS only. `spartito menubar` and the `spartito app` it starts take the environment of the shell it
+runs in, so they use the temporary home; the `spartito app` it starts picks a free port.
 
 | shell | do | expect |
 |---|---|---|
-| A | `orch_test menubar` | `♪` (or `♪ <running> · <decisions>`) appears in the menu bar; no Dock icon |
+| A | `spartito_test menubar` | `♪` (or `♪ <running> · <decisions>`) appears in the menu bar; no Dock icon |
 | — | Open its menu | `Running agents: …`, `Open decisions: …`, one `#<id>  <question>` line per open decision, **Open Spartito**, **Quit** |
-| — | Click an open decision | the `orch app` window opens on that decision |
+| — | Click an open decision | the `spartito app` window opens on that decision |
 | — | Click another app, then the decision again | the same window comes to the front on that decision; no second window |
-| — | Close that window, click **Open Spartito** | the `orch app` window opens; the item stays |
-| — | Click **Quit** | the item disappears and `orch menubar` returns in shell A; the `orch app` window stays open |
-| — | Close the `orch app` window | it closes, and the server it started stops with it |
+| — | Close that window, click **Open Spartito** | the `spartito app` window opens; the item stays |
+| — | Click **Quit** | the item disappears and `spartito menubar` returns in shell A; the `spartito app` window stays open |
+| — | Close the `spartito app` window | it closes, and the server it started stops with it |
 
 ## 5. Background service
 
@@ -232,19 +232,19 @@ runs in, so they use the temporary home; the `orch app` it starts picks a free p
 (`local.spartito-<8 hex>.web`), so the service of your real home is not touched. The unit file
 itself goes where the system expects it (`~/Library/LaunchAgents/`, on Linux
 `~/.config/systemd/user/`), next to the real one; the last row removes it. Nothing else may
-listen on port 18787 (stop the `orch web` of the earlier steps).
+listen on port 18787 (stop the `spartito web` of the earlier steps).
 
 | do | expect |
 |---|---|
-| `orch_test service install --port "$PORT"` | `installed local.spartito-<8 hex>.web: http://127.0.0.1:18787`, the unit file and the log path |
-| `orch_test service status` | `state:   loaded, pid <pid>` and `web UI:  http://127.0.0.1:18787: answers` |
+| `spartito_test service install --port "$PORT"` | `installed local.spartito-<8 hex>.web: http://127.0.0.1:18787`, the unit file and the log path |
+| `spartito_test service status` | `state:   loaded, pid <pid>` and `web UI:  http://127.0.0.1:18787: answers` |
 | Open `http://127.0.0.1:18787` | the dashboard |
-| `kill <the pid shown by status>`, wait about 10 s, `orch_test service status` | a new pid; the dashboard answers again |
-| Log out and in again; open a terminal, paste the environment line, run the guard, then `orch_test service status` | the service is running and answers |
-| `orch_test service logs` | the log path and its last lines |
-| `orch_test service install --port "$PORT"` again | the service restarts (a new pid); still one service |
-| `orch_test service uninstall` | `removed local.spartito-<8 hex>.web: <unit file>` |
-| `orch_test service status` | `unit:    <unit file> (not installed)`, `state:   not loaded` and the `logs:` line; no `web UI` line |
+| `kill <the pid shown by status>`, wait about 10 s, `spartito_test service status` | a new pid; the dashboard answers again |
+| Log out and in again; open a terminal, paste the environment line, run the guard, then `spartito_test service status` | the service is running and answers |
+| `spartito_test service logs` | the log path and its last lines |
+| `spartito_test service install --port "$PORT"` again | the service restarts (a new pid); still one service |
+| `spartito_test service uninstall` | `removed local.spartito-<8 hex>.web: <unit file>` |
+| `spartito_test service status` | `unit:    <unit file> (not installed)`, `state:   not loaded` and the `logs:` line; no `web UI` line |
 
 The label comes from `ORCH_HOME`: run `uninstall` with the same environment as `install`. On
 Linux the state reads `active` (after uninstall `not active`), the logs are in
@@ -256,9 +256,9 @@ when it ended with an error (`kill -9 <pid>`).
 **Shell B**, after the guard:
 
 ```sh
-orch_test service uninstall      # if step 5 was interrupted; says "not installed" otherwise
+spartito_test service uninstall      # if step 5 was interrupted; says "not installed" otherwise
 id=$(defaults read ~/Applications/"Spartito Check.app"/Contents/Info CFBundleIdentifier)
-orch_test app uninstall --name "Spartito Check"
+spartito_test app uninstall --name "Spartito Check"
 rm -rf ~/Library/WebKit/"$id" ~/Library/Caches/"$id"
 rm -rf "$CHECK_DIR"
 ```

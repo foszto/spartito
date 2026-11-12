@@ -3,49 +3,50 @@
 - [Commands at a glance](#commands-at-a-glance)
 - [Command reference](#command-reference)
 - [Dashboard](#dashboard)
+- [Upgrading from `orch`](#upgrading-from-orch)
 
 Terms used here (see [concepts.md](concepts.md)): a *turn* is one prompt and
-the agent's answer; its *run id* is the number commands print as `run 12` and `orch status`
+the agent's answer; its *run id* is the number commands print as `run 12` and `spartito status`
 lists as `#12`. *Project lead* or *lead* is the agent with role `lead` of a project.
 
 ## Commands at a glance
 
 | command | purpose |
 |---|---|
-| `orch project add/list/rm` | register, list and unregister projects |
-| `orch chat` | interactive orchestrator session (Claude Code) |
-| `orch web` | dashboard |
-| `orch app` | dashboard in its own window |
-| `orch menubar` | running agents and open decisions in the macOS menu bar |
-| `orch service install/uninstall/status/logs` | dashboard as a background service |
-| `orch ask <project> "…"` | message the project lead (creates it) |
-| `orch spawn -p <project> "…"` | start an agent (`-r` role, `-n` name, `--provider`, `--after`, `--share`, `--base`) |
-| `orch send <agent> "…"` | follow-up message, queued if the agent is busy |
-| `orch ps` | tree of projects and agents: state, model/effort, context, tokens, cost |
-| `orch status <agent>` | one agent: last result, queue, context, commits and changes |
-| `orch logs <agent> -f` | activity: messages, tool calls, errors |
-| `orch wait <agent>…` | block until idle; exit code 0 done, 1 failed, 2 timeout |
-| `orch withdraw <run>`, `orch edit <run> "…"` | withdraw or rewrite a queued message |
-| `orch stop <agent>` | stop its running and queued turns |
-| `orch attach <agent>` | continue its session interactively in `claude` / `codex` |
-| `orch model <agent>` | show or set its own model and effort |
-| `orch compact <agent>` | compact its conversation |
-| `orch archive`, `orch restore`, `orch rm` | archive, bring back, delete for good |
-| `orch board …`, `orch decisions`, `orch decide` | task board and decisions |
-| `orch config …` | settings |
-| `orch roles` | available roles |
+| `spartito project add/list/rm` | register, list and unregister projects |
+| `spartito chat` | interactive orchestrator session (Claude Code) |
+| `spartito web` | dashboard |
+| `spartito app` | dashboard in its own window |
+| `spartito menubar` | running agents and open decisions in the macOS menu bar |
+| `spartito service install/uninstall/status/logs` | dashboard as a background service |
+| `spartito ask <project> "…"` | message the project lead (creates it) |
+| `spartito spawn -p <project> "…"` | start an agent (`-r` role, `-n` name, `--provider`, `--after`, `--share`, `--base`) |
+| `spartito send <agent> "…"` | follow-up message, queued if the agent is busy |
+| `spartito ps` | tree of projects and agents: state, model/effort, context, tokens, cost |
+| `spartito status <agent>` | one agent: last result, queue, context, commits and changes |
+| `spartito logs <agent> -f` | activity: messages, tool calls, errors |
+| `spartito wait <agent>…` | block until idle; exit code 0 done, 1 failed, 2 timeout |
+| `spartito withdraw <run>`, `spartito edit <run> "…"` | withdraw or rewrite a queued message |
+| `spartito stop <agent>` | stop its running and queued turns |
+| `spartito attach <agent>` | continue its session interactively in `claude` / `codex` |
+| `spartito model <agent>` | show or set its own model and effort |
+| `spartito compact <agent>` | compact its conversation |
+| `spartito archive`, `spartito restore`, `spartito rm` | archive, bring back, delete for good |
+| `spartito board …`, `spartito decisions`, `spartito decide` | task board and decisions |
+| `spartito config …` | settings |
+| `spartito roles` | available roles |
 
 ## Command reference
 
-`orch <command> --help` shows the same options. Agent ids are those printed by `orch spawn` and
-listed by `orch ps`; the top-level orchestrator's id is `orchestrator`.
+`spartito <command> --help` shows the same options. Agent ids are those printed by `spartito spawn` and
+listed by `spartito ps`; the top-level orchestrator's id is `orchestrator`.
 
 ### Projects
 
 ```sh
-orch project add [PATH] [--name NAME] [--provider claude|codex]
-orch project list
-orch project rm NAME
+spartito project add [PATH] [--name NAME] [--provider claude|codex]
+spartito project list
+spartito project rm NAME
 ```
 
 - `add` registers the git repository containing `PATH` (default: the current directory). The
@@ -60,45 +61,45 @@ orch project rm NAME
 ### Orchestrator
 
 ```sh
-orch chat [--continue|-c] [--here] [--model MODEL] [--effort EFFORT]
-orch web [--host 127.0.0.1] [--port 8787]
-orch mcp
+spartito chat [--continue|-c] [--here] [--model MODEL] [--effort EFFORT]
+spartito web [--host 127.0.0.1] [--port 8787]
+spartito mcp
 ```
 
 - `chat` opens the orchestrator as an interactive Claude Code session (requires `claude`). It
   runs in `~/.orchestrator/workspace/` unless `--here` is given; `--continue` continues the
   last conversation there. Model and effort default to the global Claude setting of the
-  `orchestrator` tier. The session gets the `orch` MCP tools and may run `orch …` commands
+  `orchestrator` tier. The session gets the `orch` MCP tools and may run `spartito …` commands
   through Bash. It is separate from the dashboard's orchestrator agent but sees the same state.
   Being interactive, it is never woken by notifications: use `wait_for_agents` there.
 - `web` serves the [dashboard](#dashboard). With a non-loopback `--host` it prints a warning:
   the dashboard has no authentication.
-- `mcp` runs the `orch` MCP server on stdio. `orch chat` and the agents with a lead role
+- `mcp` runs the `orch` MCP server on stdio. `spartito chat` and the agents with a lead role
   start the same server themselves; there is no need to run it by hand.
 
 ### Dashboard window, menu bar and background service
 
 ```sh
-orch app [--port PORT] [--agent ID | --decision N]
-orch app install | uninstall
-orch menubar
-orch service install [--host 127.0.0.1] [--port 8787]
-orch service status
-orch service logs [--lines|-n 20]
-orch service uninstall
+spartito app [--port PORT] [--agent ID | --decision N]
+spartito app install | uninstall
+spartito menubar
+spartito service install [--host 127.0.0.1] [--port 8787]
+spartito service status
+spartito service logs [--lines|-n 20]
+spartito service uninstall
 ```
 
 - `app` shows the dashboard in its own window: a native one with the extra `app`, else a
   Chromium-family browser in app mode, else the default browser. It uses the running
-  `orch web` (or service) of this home, or serves the dashboard on `127.0.0.1` (a free port,
-  or `--port`) until the window is closed. One window per home: a second `orch app` brings it
+  `spartito web` (or service) of this home, or serves the dashboard on `127.0.0.1` (a free port,
+  or `--port`) until the window is closed. One window per home: a second `spartito app` brings it
   to the front, at `--agent` or `--decision` when given.
 - `app install` adds a launcher with Spartito's name and icon (macOS:
   `~/Applications/Spartito.app`, which also posts notifications itself; Linux: a desktop
   entry); `app uninstall` removes it.
 - `menubar` (macOS, extra `menubar`) shows the running agents and open decisions of this home
-  in the menu bar; its menu opens a decision or `orch app`. One item per home.
-- `service install` runs `orch web --host … --port …` in the background, started at login and
+  in the menu bar; its menu opens a decision or `spartito app`. One item per home.
+- `service install` runs `spartito web --host … --port …` in the background, started at login and
   restarted when it stops (macOS: launchd agent; Linux: systemd user unit). Running it again
   replaces the unit and restarts the service. `status` shows whether it is installed and
   running and whether the dashboard answers; `logs` shows where its output goes (on macOS
@@ -109,11 +110,11 @@ Details: [desktop.md](desktop.md).
 ### Starting and talking to agents
 
 ```sh
-orch spawn TASK -p PROJECT [-n NAME] [-r ROLE] [--provider P] [--model M] [--effort E]
+spartito spawn TASK -p PROJECT [-n NAME] [-r ROLE] [--provider P] [--model M] [--effort E]
            [--worktree|--no-worktree] [--share AGENT] [--base REF_OR_AGENT]
            [--after AGENT_OR_RUN ...] [--permission MODE]
-orch ask PROJECT MESSAGE
-orch send AGENT MESSAGE [--after AGENT_OR_RUN ...]
+spartito ask PROJECT MESSAGE
+spartito send AGENT MESSAGE [--after AGENT_OR_RUN ...]
 ```
 
 - `spawn` starts a new agent and returns at once, printing its id, run id and working
@@ -130,11 +131,11 @@ orch send AGENT MESSAGE [--after AGENT_OR_RUN ...]
 Examples:
 
 ```sh
-orch spawn -p my-app -r planner "Plan the password reset flow."
-orch spawn -p my-app -n api --after planner-9c1e "Implement this plan: {{result:planner-9c1e}}"
-orch spawn -p my-app -r reviewer --provider codex --share api-b7d0 --after api-b7d0 "Review the change."
-orch send api-b7d0 "Address the review findings: {{result:reviewer-41aa}}"
-orch ask my-app "Add rate limiting to the login endpoint."
+spartito spawn -p my-app -r planner "Plan the password reset flow."
+spartito spawn -p my-app -n api --after planner-9c1e "Implement this plan: {{result:planner-9c1e}}"
+spartito spawn -p my-app -r reviewer --provider codex --share api-b7d0 --after api-b7d0 "Review the change."
+spartito send api-b7d0 "Address the review findings: {{result:reviewer-41aa}}"
+spartito ask my-app "Add rate limiting to the login endpoint."
 ```
 
 The text forms `{{result:<agent-id>}}` and `{{result:<agent-id>:full}}` are described in
@@ -143,10 +144,10 @@ The text forms `{{result:<agent-id>}}` and `{{result:<agent-id>:full}}` are desc
 ### Following agents
 
 ```sh
-orch ps [-p PROJECT] [--archived|-a]
-orch status AGENT
-orch logs AGENT [--follow|-f] [--tail|-n 50]
-orch wait AGENT... [--timeout 3600]
+spartito ps [-p PROJECT] [--archived|-a]
+spartito status AGENT
+spartito logs AGENT [--follow|-f] [--tail|-n 50]
+spartito wait AGENT... [--timeout 3600]
 ```
 
 - `ps` prints the orchestrator (once it exists), then each project with its agents as a tree:
@@ -165,10 +166,10 @@ orch wait AGENT... [--timeout 3600]
 ### Changing queued turns and stopping
 
 ```sh
-orch withdraw RUN_ID
-orch edit RUN_ID MESSAGE
-orch stop AGENT
-orch attach AGENT
+spartito withdraw RUN_ID
+spartito edit RUN_ID MESSAGE
+spartito stop AGENT
+spartito attach AGENT
 ```
 
 - `withdraw` removes a queued message or compaction before it starts; `edit` replaces a queued
@@ -181,32 +182,32 @@ orch attach AGENT
 ### Model, effort and compaction of one agent
 
 ```sh
-orch model AGENT [--model MODEL] [--effort EFFORT]
-orch compact AGENT [INSTRUCTIONS]
+spartito model AGENT [--model MODEL] [--effort EFFORT]
+spartito compact AGENT [INSTRUCTIONS]
 ```
 
 - `model` without options shows the effective, own and inherited values; with options it sets
   the agent's own value (`""` clears it). The change applies from the next turn. In an existing
   session a model change starts a new prompt cache (the next turn reads the whole conversation
   at full price); an effort change keeps the cache with Codex and may start a new one with
-  Claude. The orchestrator can be set too (`orch model orchestrator --effort high`).
+  Claude. The orchestrator can be set too (`spartito model orchestrator --effort high`).
 - `compact` queues a compaction of the agent's conversation. See
   [agents.md](agents.md#context-and-compaction).
 
 A model name can be any single word: names with whitespace or control characters, a leading
-`-`, or more than 200 characters are refused (`orch spawn`, `orch config set`, `orch model`
+`-`, or more than 200 characters are refused (`spartito spawn`, `spartito config set`, `spartito model`
 and the MCP `spawn_agent` check this).
 
 ### Archive
 
 ```sh
-orch archive AGENT [--yes|-y]
-orch archive --safe [-p PROJECT]
-orch restore AGENT
-orch rm AGENT [--delete-branch]
+spartito archive AGENT [--yes|-y]
+spartito archive --safe [-p PROJECT]
+spartito restore AGENT
+spartito rm AGENT [--delete-branch]
 ```
 
-- `archive` hides an agent from `orch ps`, the dashboard and `list_agents`; its record, turns,
+- `archive` hides an agent from `spartito ps`, the dashboard and `list_agents`; its record, turns,
   logs, branch and worktree are kept. It asks for confirmation when the branch has commits not
   in the base branch or the worktree has uncommitted changes (`--yes` skips the question). An
   agent that, or whose sub-agents, has a queued or running turn cannot be archived.
@@ -221,20 +222,20 @@ Safe work and automatic archiving: [agents.md](agents.md#archiving).
 ### Task board and decisions
 
 ```sh
-orch board [-p PROJECT] [--state|-s STATE] [--live]
-orch board add TITLE -p PROJECT [--description|-d TEXT] [--state|-s idea]
-orch board edit ITEM_ID [--title T] [-d TEXT] [-s STATE] [--agent AGENT] [--branch BRANCH]
-orch board move ITEM_ID up|down
-orch board dispatch -p PROJECT
-orch board dispatch ITEM_ID...
-orch board show ITEM_ID
-orch board link ITEM_ID DECISION_ID [--remove]
+spartito board [-p PROJECT] [--state|-s STATE] [--live]
+spartito board add TITLE -p PROJECT [--description|-d TEXT] [--state|-s idea]
+spartito board edit ITEM_ID [--title T] [-d TEXT] [-s STATE] [--agent AGENT] [--branch BRANCH]
+spartito board move ITEM_ID up|down
+spartito board dispatch -p PROJECT
+spartito board dispatch ITEM_ID...
+spartito board show ITEM_ID
+spartito board link ITEM_ID DECISION_ID [--remove]
 
-orch decisions [--all|-a]
-orch decide DECISION_ID ANSWER
+spartito decisions [--all|-a]
+spartito decide DECISION_ID ANSWER
 ```
 
-States: `idea`, `ready`, `in_progress`, `done`. `orch board` without `-p` lists every
+States: `idea`, `ready`, `in_progress`, `done`. `spartito board` without `-p` lists every
 project's board. In `board edit`, `""` clears `--agent` or `--branch`. `decide` takes an
 option number or free text. `--live`, `show`, `link` and dispatching named items:
 [board.md](board.md#command-line-mcp-and-api). See [agents.md](agents.md#task-board) and
@@ -243,20 +244,20 @@ option number or free text. `--live`, `show`, `link` and dispatching named items
 ### Settings and roles
 
 ```sh
-orch config show [-p PROJECT]
-orch config set TIER [--provider claude] [--model M] [--effort E] [-p PROJECT]
-orch config compact-at TOKENS [-p PROJECT]
-orch config archive-after HOURS [-p PROJECT]
-orch config keep-awake on|off
-orch config desktop-notifications on|off
-orch roles
+spartito config show [-p PROJECT]
+spartito config set TIER [--provider claude] [--model M] [--effort E] [-p PROJECT]
+spartito config compact-at TOKENS [-p PROJECT]
+spartito config archive-after HOURS [-p PROJECT]
+spartito config keep-awake on|off
+spartito config desktop-notifications on|off
+spartito roles
 ```
 
 See [configuration.md](configuration.md).
 
 ## Dashboard
 
-`orch web` serves a single page on `http://127.0.0.1:8787`. It reads the same database as the
+`spartito web` serves a single page on `http://127.0.0.1:8787`. It reads the same database as the
 command line, so both can be used side by side.
 
 **Left column.** **Maestro** (the orchestrator) at the top; then each project with its agents
@@ -321,3 +322,37 @@ convenient from scripts:
 - `POST /api/agents/<id>/model` with `{"model": "...", "effort": null}`: `null` clears a value,
   a missing key leaves it unchanged.
 - `POST /api/agents/<id>/compact` with `{"instructions": "..."}`.
+
+## Upgrading from `orch`
+
+The command used to be `orch`; it is now `spartito`, and `orch` is gone (there is no alias).
+Everything else keeps its name: the home `~/.orchestrator` with `orch.db`, the `ORCH_*`
+variables, the `orch` MCP server and its `mcp__orch__…` tools, the agents' `orch/` branches
+and the Python package `orchestrator`.
+
+A command's script is written when the tool is installed. Until it is installed again, an
+existing installation keeps its `orch`, which runs the new code and warns on every call, and
+has no `spartito`. Once the checkout has the new code, from the checkout:
+
+```sh
+uv tool install --editable '.[app,menubar]'   # the extras you installed before; no --force
+spartito --help
+```
+
+This removes `orch` and adds `spartito`. In a checkout used with `uv run`, `uv sync` does the
+same for `.venv`.
+
+- **Running agents**: nothing to do. A turn running during the reinstall finishes, and agents
+  created before take new messages as before: they reach the tool through its MCP server,
+  started as `<python> -m orchestrator.mcp_server`, never through the command.
+- **Background service and launcher**: they need no reinstall. Both run
+  `<python> -m orchestrator` of the tool's environment, whose path the reinstall keeps, and
+  the launcher's copy of Python stays current. A dashboard that is already running keeps the
+  code it started with while the page comes from the new code, so restart it: for the service,
+  `spartito service install` (with the `--host` and `--port` you used) restarts it and
+  rewrites its unit; `spartito web` or `spartito app` started by hand: stop it and start it
+  again. `spartito app install` only refreshes the comments of the launcher's script.
+- **An open `orch chat` session** was allowed `Bash(orch *)`, and `orch` no longer exists.
+  Leave it and continue it with `spartito chat --continue`, which allows `Bash(spartito *)`.
+  Its conversation still shows `orch …` commands: if it tries one, tell it the new name.
+- **Your own scripts, aliases and notes** that call `orch` need the new name.

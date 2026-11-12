@@ -21,13 +21,13 @@ you ── orchestrator (Maestro)
 The top-level agent, displayed as *Maestro*, agent id `orchestrator`. It belongs to no
 project and works through the `orch` MCP tools: it registers projects, briefs project leads
 and answers status questions. In the dashboard it is a headless agent like any other;
-`orch chat` is a separate interactive Claude Code session with the same tools and the same
+`spartito chat` is a separate interactive Claude Code session with the same tools and the same
 state.
 
 ## Project lead
 
 One long-lived agent per project (role `lead`), created by the first message to it
-(`orch ask`, the dashboard's lead conversation, or the orchestrator's `ask_project_lead`). It
+(`spartito ask`, the dashboard's lead conversation, or the orchestrator's `ask_project_lead`). It
 works in the project's main checkout, knows the codebase, splits work into tasks and starts
 its own agents. A lead is confined to its own project.
 
@@ -44,7 +44,7 @@ Every agent has a role, a Markdown prompt with a few settings:
 | `reviewer` | main checkout or a shared worktree, read-only | reviews changes, reports findings |
 | `tester` | own or shared worktree | writes and runs tests for a change |
 
-Roles with `lead: true` get the `orch` MCP tools and can start agents. `orch roles` lists the
+Roles with `lead: true` get the `orch` MCP tools and can start agents. `spartito roles` lists the
 roles available; custom roles are Markdown files, described in
 [configuration.md](configuration.md#roles).
 
@@ -53,7 +53,7 @@ roles available; custom roles are Markdown files, described in
 An agent whose role works in a worktree gets `~/.orchestrator/worktrees/<project>/<agent-id>`
 on a new branch `orch/<agent-id>`, started from the project's base branch (or from another ref
 or agent's branch with `--base`). The base branch is the branch checked out when the project
-was registered (`orch project add`). Agent ids are the given name (or role) plus four hex
+was registered (`spartito project add`). Agent ids are the given name (or role) plus four hex
 characters, e.g. `fix-login-3f2a`. An agent can also work in another agent's worktree
 (`--share`, for review, test or fix), or in the main checkout (`--no-worktree`).
 
@@ -65,7 +65,7 @@ A message to an agent starts a turn: one headless CLI invocation (`claude -p`, `
 that continues the agent's session (`claude --resume`, `codex exec resume`), so the agent
 keeps its conversation. An agent runs one turn at a time; further messages queue in order and
 can be edited or withdrawn until they start. Each turn has a run id (`run 12` in command
-output, `#12` in `orch status`), which commands such as `orch withdraw` take. Details:
+output, `#12` in `spartito status`), which commands such as `spartito withdraw` take. Details:
 [agents.md](agents.md#turns-and-the-queue).
 
 ## Results and notifications

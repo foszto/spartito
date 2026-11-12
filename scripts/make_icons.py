@@ -1,5 +1,5 @@
 """Draw the icons: the SVG favicon and the PNGs of the web app manifest, and the macOS app
-icon (ICNS) of the launcher `orch app install` writes.
+icon (ICNS) of the launcher `spartito app install` writes.
 
 The mark is the dashboard's "logo" glyph (three nodes joined like a small tree) in white on
 the accent colour, made bolder so it still reads at 16 px. One description of it below feeds

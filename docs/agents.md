@@ -15,10 +15,10 @@ a role with `lead: true`: the orchestrator and the project leads.
 
 ## MCP tools
 
-Lead roles get the `orch` MCP server (`orch mcp`, started by the CLI of each lead agent and by
-`orch chat`; there is no need to run it by hand). An agent's own id reaches the server in
+Lead roles get the `orch` MCP server (`spartito mcp`, started by the CLI of each lead agent and by
+`spartito chat`; there is no need to run it by hand). An agent's own id reaches the server in
 `ORCH_AGENT_ID`: agents it starts become its children, and a project lead is confined to its
-own project. The orchestrator (and the interactive `orch chat` session, which has no agent id)
+own project. The orchestrator (and the interactive `spartito chat` session, which has no agent id)
 can act on every project.
 
 | tool | purpose |
@@ -53,8 +53,8 @@ Replies are kept short: results and logs are cut to a budget, and say how to rea
 - An agent runs one turn at a time. Messages run in the order they were sent; a waiting
   notification turn comes after the messages that are ready to run.
 - `get_agent` shows the waiting turns in `queue`; every view shows the number of working
-  descendants in `children_running`. `orch status` lists the queue with run ids.
-- A queued message can be edited or withdrawn until it starts (`orch edit`, `orch withdraw`,
+  descendants in `children_running`. `spartito status` lists the queue with run ids.
+- A queued message can be edited or withdrawn until it starts (`spartito edit`, `spartito withdraw`,
   `withdraw_message`, the dashboard's **Queued** list). Through `withdraw_message` an agent
   can change only the messages it sent itself.
 
@@ -90,14 +90,14 @@ running.
   requested from the command line or the dashboard is not.
 - `notify: "each"` (default) reports each agent as soon as it is done; `notify: "all"` only
   once every agent the parent sent work to is done. The `next` field of the reply says whether
-  the caller will be woken. The interactive `orch chat` session never is: it uses
+  the caller will be woken. The interactive `spartito chat` session never is: it uses
   `wait_for_agents`.
 - The notification text is written when its turn starts, after a short delay
   (`ORCH_NOTIFY_DELAY`, 5 seconds by default), so results that arrive together share one turn.
   If by then there is nothing to report, or the turn never starts (stopped, runner gone), it is
   deleted without a trace. If a notification turn fails, its results come with the next
   notification (there is no automatic retry); until then `wait_for_agents` returns them.
-- Only the end of a turn triggers a notification, never waiting (`orch wait`,
+- Only the end of a turn triggers a notification, never waiting (`spartito wait`,
   `wait_for_agents`). A stopped agent stays silent until its next real finish.
 - Each result reaches the parent once: what `wait_for_agents` returned does not come again in
   a notification, and `wait_for_agents` marks a result already received in a notification as
@@ -120,15 +120,15 @@ within their state; a new item, and an item that changes state, goes to the end.
   move by drag or keyboard, a selection is dispatched to the leads, each card shows its
   agent's status and its branch's git state, and an item whose branch is merged moves to
   `done` by itself. See [board.md](board.md).
-- On the command line: `orch board`, `orch board add`, `orch board edit`, `orch board move`.
+- On the command line: `spartito board`, `spartito board add`, `spartito board edit`, `spartito board move`.
 
 ```sh
-orch board add -p my-app "Password reset" -d "Email link, expires in 1 hour" --state ready
-orch board -p my-app
-orch board dispatch -p my-app
+spartito board add -p my-app "Password reset" -d "Email link, expires in 1 hour" --state ready
+spartito board -p my-app
+spartito board dispatch -p my-app
 ```
 
-**Dispatch** (`orch board dispatch -p <project>`, or the dashboard after a confirmation) sends
+**Dispatch** (`spartito board dispatch -p <project>`, or the dashboard after a confirmation) sends
 all of the project's `ready` items to its lead in one message, as if you had written it: each
 item's id, title and description, and the request to keep their states up to date with
 `update_board_item`. The items move to `in_progress`, linked to the lead, so a second dispatch
@@ -141,7 +141,7 @@ The headless orchestrator and the project leads record what needs the owner's de
 `request_decision(question, options, recommendation)`: a question of at most 500 characters,
 at most 6 short options, one recommendation. They continue with whatever does not depend on
 the answer, and close a decision that has become moot with `withdraw_decision(decision_id)`
-(only their own, only while open). The interactive `orch chat` session asks you directly
+(only their own, only while open). The interactive `spartito chat` session asks you directly
 instead.
 
 Open decisions from all projects are listed in one place: the dashboard's question-mark button
@@ -149,9 +149,9 @@ Open decisions from all projects are listed in one place: the dashboard's questi
 recommendation, age); on the command line:
 
 ```sh
-orch decisions            # open decisions; --all includes closed ones
-orch decide 12 2          # option 2
-orch decide 12 "Use Postgres"
+spartito decisions            # open decisions; --all includes closed ones
+spartito decide 12 2          # option 2
+spartito decide 12 "Use Postgres"
 ```
 
 The answer reaches the agent as an ordinary message from you (`Decision #12 — <question>` and
@@ -162,10 +162,10 @@ answer, with a note. A waiting decision also triggers a desktop notification (se
 
 ## Archiving
 
-An archived agent disappears from `orch ps`, the dashboard's list and `list_agents`; its
+An archived agent disappears from `spartito ps`, the dashboard's list and `list_agents`; its
 record, turns, logs, branch and worktree are kept. The archive is shown by
-`orch ps --archived`, the dashboard's **Archive** entry and `list_agents(archived=true)`. An
-agent comes back with `orch restore`, **Restore** in the dashboard, `archive_agent(restore=true)`,
+`spartito ps --archived`, the dashboard's **Archive** entry and `list_agents(archived=true)`. An
+agent comes back with `spartito restore`, **Restore** in the dashboard, `archive_agent(restore=true)`,
 or any message to it (command line, dashboard, `send_message`, `ask_project_lead`, an answered
 decision).
 
@@ -178,10 +178,10 @@ decision).
 - **Automatic archiving** (`archive_after_hours`, default 24) archives only idle agents whose
   work is safe, whose parent has already received their result, and in whose worktree no other
   agent is working; never a lead or the orchestrator, and never on a git error or timeout.
-  There is no background process: the listings (the dashboard's polling, `orch ps`,
+  There is no background process: the listings (the dashboard's polling, `spartito ps`,
   `list_agents`) run the check, at most every 5 minutes across processes and for at most about
   5 seconds per pass.
-- Permanent deletion (`orch rm`, or the dashboard's archive) is possible only for archived
+- Permanent deletion (`spartito rm`, or the dashboard's archive) is possible only for archived
   agents and only by you; agents can archive but not delete.
 
 ## Context and compaction
@@ -197,7 +197,7 @@ context window.
   (`$CODEX_HOME/sessions/…/rollout-…-<thread>.jsonl`), read only. With a missing file or an
   unknown format there is no figure.
 
-`orch ps`, `orch status`, `list_agents`, `get_agent` (`context` field) and the dashboard show
+`spartito ps`, `spartito status`, `list_agents`, `get_agent` (`context` field) and the dashboard show
 it, for example `780k/1M 78%`; above the automatic compaction threshold (or from 80% of the
 window when automatic compaction is off) in a warning colour. After a compaction the size is
 unknown until the next request and `compacted` is shown.
@@ -205,7 +205,7 @@ unknown until the next request and `compacted` is shown.
 ### Compaction
 
 ```sh
-orch compact fix-login-3f2a ["what the summary must keep"]
+spartito compact fix-login-3f2a ["what the summary must keep"]
 ```
 
 The dashboard's **Compact** button does the same. A compaction is queued like a message and
@@ -221,7 +221,7 @@ runs the CLI's own compaction in the same session:
 The result is a short summary such as `compacted 91k -> 1k tokens`. A compaction is not the
 agent's answer: it is not delivered to the parent, wakes nobody, and does not change the
 agent's status, its last turn or what `{{result:<agent>}}` refers to. Its outcome is shown
-separately (`orch status`, `get_agent`'s `last_compaction`, the dashboard). A queued
+separately (`spartito status`, `get_agent`'s `last_compaction`, the dashboard). A queued
 compaction can be withdrawn, not edited. Compaction can lose details from earlier in the
 conversation.
 
@@ -252,7 +252,7 @@ not by the CLI's own post-compaction figure: the compacting turn's own measureme
 one, otherwise the first request of the next turn (Claude), otherwise the size at the end of
 that next turn (Codex). If that is still above the threshold, automatic compaction pauses for
 the agent: an `info` event (`automatic compaction paused: …`) is written once, and the
-`context.compact_paused` field, `orch status` and the dashboard show it. A compaction that
+`context.compact_paused` field, `spartito status` and the dashboard show it. A compaction that
 brings the size below the threshold, or a threshold above the measured size, lifts the pause.
 While no size has been measured since the last compaction, nothing is queued.
 
@@ -261,7 +261,7 @@ size is known, and runs the turn with the lowered limit. If the model does not c
 that turn, the compaction fails (`nothing was compacted`), the context stays above the
 threshold, and automatic compaction pauses for that agent as described above.
 
-If `orch stop`
+If `spartito stop`
 arrives while a compaction is being queued, the turn becomes `stopped` and the compaction is
 withdrawn.
 
@@ -273,7 +273,7 @@ always, Claude in some cases), the sum of the session's earlier turns is subtrac
 inaccuracy: the tokens of a turn that failed or was stopped without a result are counted in
 the agent's next turn; the agent's total is correct. Codex reports no cost.
 
-`orch ps`, `orch status`, `list_agents` and `get_agent` (with the last 10 turns) and the
+`spartito ps`, `spartito status`, `list_agents` and `get_agent` (with the last 10 turns) and the
 dashboard show the figures. `model` and `effort` in these views are the values the next turn
 will use; the agent's own values appear in the detailed views as
 `model_override`/`effort_override`. The lists give per agent only `cost_usd` and a short
