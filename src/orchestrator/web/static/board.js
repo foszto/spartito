@@ -566,8 +566,11 @@
   // the runs the history names; a change made by an older orch process shows as not recorded.
 
   const ACTIONS = { add: 'added', edit: 'edited', state: 'moved', place: 'moved', move: 'reordered', dispatch: 'dispatched',
-    restore: 'put back: the dispatch could not be sent', unrecorded: 'changed by an older orch process' };
-  const FIELDS = { title: 'title', agent_id: 'agent', branch: 'branch' };
+    restore: 'put back: the dispatch could not be sent', unrecorded: 'changed by an older orch process',
+    link: 'linked', unlink: 'unlinked' };
+  // Fields shown by name; any other is shown as it comes: [old, new] as a change, a text as it is
+  // (the merge's `commit`, an item's `source`).
+  const FIELDS = { title: 'title', agent_id: 'agent', branch: 'branch', decision: 'decision' };
   const clip = text => (text.length > 60 ? `${text.slice(0, 59)}…` : text);
 
   function actor(entry) {
@@ -583,12 +586,14 @@
   function change(entry) {
     const parts = [], changes = entry.changes || {};
     const value = (field, v) => (v === null || v === undefined || v === '' ? '—'
-      : field === 'state' ? LABEL[v] || v : field === 'title' ? `“${clip(String(v))}”` : String(v));
+      : field === 'state' ? LABEL[v] || v : field === 'title' ? `“${clip(String(v))}”`
+        : field === 'decision' ? `#${v}` : String(v));
     for (const [field, pair] of Object.entries(changes)) {
       if (field === 'description') parts.push('description changed');
       else if (field === 'state') parts.push(entry.action === 'add' ? `in ${value('state', pair[1])}` : `${value('state', pair[0])} → ${value('state', pair[1])}`);
       else if (field === 'position' && !changes.state) parts.push(pair[1] < pair[0] ? 'up' : 'down');
-      else if (FIELDS[field]) parts.push(`${FIELDS[field]} ${value(field, pair[0])} → ${value(field, pair[1])}`);
+      else if (Array.isArray(pair) && field !== 'position') parts.push(`${FIELDS[field] || field} ${value(field, pair[0])} → ${value(field, pair[1])}`);
+      else if (!Array.isArray(pair) && pair !== null && typeof pair !== 'object') parts.push(`${field} ${clip(String(pair))}`);
     }
     if (entry.action === 'dispatch' && entry.run_id) parts.push(`run ${entry.run_id}`);
     return [ACTIONS[entry.action] || entry.action, parts.join(', ')].filter(Boolean).join(' · ');
