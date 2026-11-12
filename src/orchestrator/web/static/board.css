@@ -1,0 +1,150 @@
+/* The task board across projects (board.js): a view in #view, its dialog, its entry in the nav. */
+.bv { --bv-col: var(--sunken); --bv-card: var(--surface);
+  container-type: inline-size; display: flex; flex-direction: column; min-height: 0; height: 100%; }
+:root[data-theme="dark"] .bv { --bv-col: var(--surface); --bv-card: var(--raised); }
+.bv-avatar { background: var(--accent-soft); color: var(--accent); }
+.bv .top-bar { flex-wrap: wrap; row-gap: 8px; }
+.bv .top-bar .who { min-width: 160px; }
+.bv-sub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.bv-said { color: var(--text); font-weight: 500; }
+.bv-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.bv-tools select.input { width: auto; max-width: 220px; height: 32px; padding: 0 8px; }
+.bv-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; white-space: nowrap; cursor: pointer; }
+
+/* four columns; in the all-projects view each is grouped by project */
+.bv-cols { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr); gap: 12px; padding: 16px 20px 20px; overflow: auto; }
+.bv-col { display: flex; flex-direction: column; min-height: 0; min-width: 0; padding: 8px; border-radius: var(--radius);
+  background: var(--bv-col); border: 1px solid var(--line); }
+.bv-col h3 { display: flex; align-items: center; gap: 6px; margin: 2px 4px 8px; font-size: 12px; font-weight: 600;
+  color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.bv-col h3 .count { color: var(--faint); font-weight: 500; }
+.bv-list { flex: 1; min-height: 64px; overflow: auto; display: flex; flex-direction: column; gap: 10px; padding: 2px; }
+.bv-group { display: flex; flex-direction: column; gap: 6px; border-radius: 10px; }
+.bv-group h4 { margin: 0 2px; font-size: 12px; font-weight: 600; color: var(--muted); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.bv-empty { color: var(--faint); font-size: 12.5px; padding: 4px; }
+.bv-more { width: 100%; justify-content: flex-start; }
+.bv-failed .btn { margin-top: 4px; }
+
+/* live state: the linked agent's status dot and word, the branch's git state */
+.bv-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--faint); }
+.bv-dot[data-status="running"] { background: var(--running); animation: pulse 1.2s ease-in-out infinite; }
+.bv-dot[data-status="waiting"] { background: var(--waiting); }
+.bv-dot[data-status="done"] { background: var(--done); }
+.bv-dot[data-status="failed"] { background: var(--failed); }
+.bv-dot[data-status="stopped"], .bv-dot[data-status="skipped"] { background: var(--other); }
+.bv-dot[data-status="archived"], .bv-dot[data-status="unknown"] { background: none; box-shadow: inset 0 0 0 1.5px var(--faint); }
+.bv-status { color: var(--muted); }
+.bv-git { font-variant-numeric: tabular-nums; }
+.bv-git.dirty { color: var(--waiting); background: color-mix(in srgb, var(--waiting) 14%, transparent); }
+.bv-git.merged { color: var(--done); background: color-mix(in srgb, var(--done) 14%, transparent); }
+.bv-git.error { color: var(--failed); background: var(--failed-soft); }
+.bv-synced { color: var(--faint); }
+.bv-extra { display: flex; flex-direction: column; }
+.bv-live { order: -3; }
+.bv-live h4 { margin: 6px 0; font-size: 13px; }
+.bv-live-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin: 0 0 6px; font-size: 12.5px; }
+.bv-live-key { width: 52px; color: var(--muted); }
+.bv-live-agent { display: inline-flex; align-items: center; gap: 6px; border: 0; background: none; padding: 0; color: var(--accent); font-weight: 500; }
+.bv-live-agent:hover { text-decoration: underline; }
+
+/* a card */
+.bv-card { position: relative; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--bv-card);
+  cursor: pointer; box-shadow: 0 1px 2px rgba(20, 24, 40, .05); }
+.bv-card:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.bv-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.bv-card-head { display: flex; align-items: center; gap: 6px; min-height: 20px; }
+.bv-id { color: var(--faint); font-size: 11.5px; }
+.bv-title { margin-top: 2px; font-weight: 500; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3; overflow: hidden; }
+.bv-desc { margin-top: 2px; color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; display: -webkit-box;
+  -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.bv-meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; min-width: 0; }
+.bv-meta .chip { max-width: 100%; }
+button.chip { border: 0; font: inherit; font-size: 12px; cursor: pointer; }
+.bv-agent { color: var(--accent); }
+.bv-agent:hover { background: var(--accent-soft); }
+
+/* moving: the "⋯" menu, and the drop marker of a drag */
+.bv-more-button { margin-left: auto; width: 24px; height: 22px; font-size: 15px; line-height: 1; letter-spacing: 0; }
+.bv-menu { position: fixed; z-index: 20; min-width: 180px; padding: 4px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--surface); box-shadow: var(--shadow); display: flex; flex-direction: column; }
+.bv-menu-item { padding: 6px 10px; border: 0; border-radius: 7px; background: none; text-align: left; white-space: nowrap; }
+.bv-menu-item:hover:not(:disabled), .bv-menu-item:focus { background: var(--accent-soft); outline: none; }
+.bv-menu-item:disabled { color: var(--faint); cursor: default; }
+.bv-menu-item:last-child { margin-top: 3px; padding-top: 7px; border-top: 1px solid var(--line); border-radius: 0 0 7px 7px; }
+.bv-card.bv-dragged { opacity: .45; }
+.bv-col.bv-over { border-color: var(--accent); }
+.bv-marker { height: 3px; margin: -2px 2px; border-radius: 2px; background: var(--accent); flex: none; }
+.bv-group.bv-refused { outline: 2px dashed var(--failed); outline-offset: 2px; }
+.bv-group.bv-refused::after { content: "not allowed: an item stays in its own project"; color: var(--failed); font-size: 12px; padding: 0 2px 4px; }
+
+/* the item dialog */
+.bv-dialog { width: min(680px, calc(100vw - 32px)); }
+.bv-stamp { margin: -4px 0 10px; color: var(--muted); font-size: 12.5px; }
+/* the detail's history and runs */
+.bv-history h4, .bv-runs h4 { margin: 6px 0 6px; font-size: 13px; }
+.bv-note { margin: 0 0 6px; color: var(--muted); font-size: 12.5px; }
+.bv-entries { list-style: none; margin: 0 0 12px; padding: 0; border-left: 2px solid var(--line); }
+.bv-entries li { display: grid; grid-template-columns: 92px minmax(0, max-content) minmax(0, 1fr); gap: 2px 10px; padding: 3px 0 3px 12px;
+  font-size: 12.5px; align-items: baseline; }
+.bv-when { color: var(--faint); font-size: 12px; white-space: nowrap; }
+.bv-actor { font-weight: 600; white-space: nowrap; }
+.bv-what { color: var(--muted); overflow-wrap: anywhere; }
+.bv-gap .bv-actor, .bv-note.bv-gap { color: var(--waiting); }
+.bv-run-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+.bv-run { display: flex; align-items: center; gap: 10px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px;
+  background: none; text-align: left; font-size: 12.5px; }
+.bv-run:hover { background: var(--sunken); }
+.bv-run-agent { flex: 1; min-width: 0; color: var(--accent); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 560px) {
+  .bv-entries li { grid-template-columns: minmax(0, max-content) minmax(0, 1fr); }
+  .bv-entries .bv-what { grid-column: 1 / -1; }
+}
+
+.bv-extra:empty { display: none; }
+
+/* the selection and its dispatch */
+.bv-selbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; padding: 8px 20px; border-bottom: 1px solid var(--line);
+  background: var(--accent-soft); font-size: 13px; }
+.bv-selcount { font-weight: 600; }
+.bv-selids { flex: 1; min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bv-selbar .btn { height: 28px; }
+.bv-pick { margin: 0; accent-color: var(--accent); cursor: pointer; }
+.bv-card.bv-picked { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+
+/* narrow: two columns, then one; the lists grow instead of scrolling */
+@container (max-width: 760px) {
+  .bv-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: auto; }
+  .bv-col { min-height: auto; }
+  .bv-list { flex: none; overflow: visible; }
+}
+@container (max-width: 460px) {
+  .bv-cols { grid-template-columns: minmax(0, 1fr); padding: 12px; }
+  .bv .top-bar { padding: 12px; }
+}
+
+/* from a message; decisions that block an item */
+.msg .bv-msg-add { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; padding: 0 6px; border: 0; border-radius: 6px;
+  background: none; color: var(--accent); font-size: 11px; text-decoration: none; opacity: 0; transition: opacity .12s; }
+.msg .bv-msg-add svg { width: 12px; height: 12px; }
+.msg:hover .bv-msg-add, .msg .bv-msg-add:focus-visible, .msg .bv-msg-added { opacity: 1; }
+.msg .bv-msg-add:hover { background: var(--accent-soft); }
+@media (hover: none) { .msg .bv-msg-add { opacity: 1; } }
+.bv-blocked-badge { color: var(--waiting); background: color-mix(in srgb, var(--waiting) 14%, transparent); }
+.bv-card.bv-blocked { box-shadow: inset 3px 0 0 var(--waiting); }
+.bv-card.bv-blocked.bv-picked { box-shadow: inset 3px 0 0 var(--waiting), 0 0 0 1px var(--accent); }
+.bv-source { color: var(--muted); }
+.bv-source:hover { color: var(--text); }
+.bv-extra { display: flex; flex-direction: column; }
+.bv-source-box { order: -2; }
+.bv-blockers { order: -1; margin-bottom: 6px; }
+.bv-source-box h4, .bv-blockers h4 { margin: 6px 0; font-size: 13px; }
+.bv-blockers h4:focus { outline: none; }
+.bv-blocker-list { list-style: none; margin: 0 0 8px; padding: 0; }
+.bv-blocker-list li { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; padding: 3px 0; font-size: 12.5px; }
+.bv-decision { color: var(--accent); font-weight: 500; overflow-wrap: anywhere; }
+.bv-unlink { height: 24px; padding: 0 8px; font-size: 12px; }
+.bv-link-row { display: flex; gap: 8px; align-items: center; }
+.bv-link-row select.input { flex: 1; min-width: 0; height: 32px; padding: 0 8px; }

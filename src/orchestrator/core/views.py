@@ -45,6 +45,8 @@ class Facade(Protocol):
 
     def tidy(self) -> list[str]: ...
 
+    def board_sync(self) -> dict[str, Any]: ...
+
 
 QUEUE_PREVIEW_CHARS = 120
 QUEUE_LISTED = 20  # waiting runs in the detail view's `queue`; `queued_runs` has the count
@@ -216,6 +218,7 @@ def overview(
     orch.store.reconcile()
     if not archived:
         orch.tidy()
+        orch.board_sync()  # throttled, never raises
     marks = orch.store.archived(project)
     views = []
     for agent in orch.store.list_agents(project):

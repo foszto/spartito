@@ -12,9 +12,10 @@ marks them `in_progress` and links them to the lead.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 from .store import Store, now
@@ -25,6 +26,20 @@ TITLE_CHARS = 200
 DESCRIPTION_CHARS = 4000
 BRANCH_CHARS = 200
 FIELDS = ("title", "description", "state", "agent_id", "branch")
+OWNER_KIND, AGENT_KIND, AUTO_KIND = "owner", "agent", "auto"
+
+
+@dataclass(frozen=True)
+class Actor:
+    """Who changes the board: the owner (dashboard, CLI), an agent through the MCP server
+    (`name`: its id; None for the interactive `orch chat` session) or an automatic rule
+    (`name`: the rule)."""
+
+    kind: str = OWNER_KIND
+    name: str | None = None
+
+
+OWNER = Actor()
 
 
 @dataclass
@@ -68,6 +83,168 @@ def check_state(state: Any) -> str:
     return state
 
 
+def record_gap(conn: sqlite3.Connection, item_id: int, since: str) -> None:
+    """Called just before `record` for a change of an existing item, in its transaction:
+    `since` is the item's updated_at before this change. Later than the item's last entry
+    (or it has none), the item was changed by code that keeps no history (an older process
+    on the same database): an entry `unrecorded` without actor, at `since`, keeps that gap
+    for good. A change by such code within the same second as the last entry cannot be told
+    apart (the times are in seconds) and stays undetected."""
+    last = conn.execute(
+        "SELECT ts FROM board_history WHERE item_id = ? ORDER BY id DESC LIMIT 1", (item_id,)
+    ).fetchone()
+    if last is None or since > last["ts"]:
+        conn.execute(
+            "INSERT INTO board_history (item_id, ts, actor_kind, actor, action, changes)"
+            " VALUES (?, ?, NULL, NULL, 'unrecorded', '{}')",
+            (item_id, since),
+        )
+
+
+def link_run(conn: sqlite3.Connection, item_ids: list[int], stamp: str, run_id: int) -> None:
+    """The run of the dispatch recorded at `stamp` for these items, known once its message
+    was sent."""
+    marks = ", ".join("?" for _ in item_ids)
+    conn.execute(
+        "UPDATE board_history SET run_id = ? WHERE action = 'dispatch' AND ts = ?"
+        f" AND run_id IS NULL AND item_id IN ({marks})",
+        (run_id, stamp, *item_ids),
+    )
+
+
+# -- where an item came from, what blocks it -------------------------------------------
+
+
+def save_source(
+    conn: sqlite3.Connection, item_id: int, agent_id: str, event_id: int, run_id: int
+) -> dict[str, Any]:
+    """Keep the conversation message an item was made from (board_sources), in the item's
+    transaction; what its `add` entry adds."""
+    conn.execute(
+        "INSERT INTO board_sources (item_id, agent_id, event_id, run_id) VALUES (?, ?, ?, ?)",
+        (item_id, agent_id, event_id, run_id),
+    )
+    return {"source": f"{agent_id} message {event_id}"}
+
+
+def sources(store: Store, item_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """The message each of the items was made from, by id: {agent_id, event_id, run_id}."""
+    with store.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM board_sources WHERE item_id IN (SELECT value FROM json_each(?))",
+            (json.dumps(item_ids),),
+        ).fetchall()
+    return {
+        row["item_id"]: {key: row[key] for key in ("agent_id", "event_id", "run_id")}
+        for row in rows
+    }
+
+
+def links(store: Store, decision_ids: list[int]) -> list[tuple[int, int]]:
+    """The (item id, decision id) links of these decisions."""
+    with store.connection() as conn:
+        rows = conn.execute(
+            "SELECT item_id, decision_id FROM board_blockers"
+            " WHERE decision_id IN (SELECT value FROM json_each(?)) ORDER BY item_id",
+            (json.dumps(decision_ids),),
+        ).fetchall()
+    return [(row["item_id"], row["decision_id"]) for row in rows]
+
+
+def link(store: Store, item_id: int, decision_id: int, linked: bool, actor: Actor = OWNER) -> bool:
+    """Link a decision to the item as one that blocks it (`linked` False: unlink it), with
+    its history entry `link` / `unlink` in that transaction; the item's fields and
+    updated_at stay. Already so: nothing is written (False). The caller checks the
+    decision. Raises ValueError for an unknown item."""
+    run_id = _run_of(store, actor)
+    with store.transaction() as conn:
+        item = _get(conn, item_id)
+        if item is None:
+            raise ValueError(f"there is no board item #{item_id}")
+        if linked:
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO board_blockers (item_id, decision_id, linked_at)"
+                " VALUES (?, ?, ?)",
+                (item_id, decision_id, now()),
+            )
+        else:
+            cursor = conn.execute(
+                "DELETE FROM board_blockers WHERE item_id = ? AND decision_id = ?",
+                (item_id, decision_id),
+            )
+        if not cursor.rowcount:
+            return False
+        change = [None, decision_id] if linked else [decision_id, None]
+        record_gap(conn, item_id, item.updated_at)
+        record(
+            conn,
+            item_id,
+            actor,
+            "link" if linked else "unlink",
+            {"decision": change},
+            now(),
+            run_id,
+        )
+    return True
+
+
+def _diff(before: Item | None, after: Item, fields: tuple[str, ...]) -> dict[str, Any]:
+    """The fields that differ as {field: [old, new]}; the description only as "changed"."""
+    out: dict[str, Any] = {}
+    for key in fields:
+        old, new = getattr(before, key) if before else None, getattr(after, key)
+        if old != new:
+            out[key] = "changed" if key == "description" else [old, new]
+    return out
+
+
+def _run_of(store: Store, actor: Actor) -> int | None:
+    """The acting agent's running turn (read before the change's transaction)."""
+    if actor.kind != AGENT_KIND or not actor.name:
+        return None
+    run = store.running_run(actor.name)
+    return run.id if run else None
+
+
+def record(
+    conn: sqlite3.Connection,
+    item_id: int,
+    actor: Actor,
+    action: str,
+    changes: dict[str, Any],
+    stamp: str,
+    run_id: int | None = None,
+) -> None:
+    """Every change of an item comes here, in the transaction that makes it, and is kept in
+    board_history: who made it, the action (add, edit, state, move, place, dispatch), what
+    changed ({field: [old, new]}, see `_diff`), `stamp` (the item's new updated_at, see
+    `unrecorded`) and the run (a dispatch's, or the acting agent's turn)."""
+    conn.execute(
+        "INSERT INTO board_history (item_id, ts, actor_kind, actor, action, changes, run_id)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (item_id, stamp, actor.kind, actor.name, action, json.dumps(changes), run_id),
+    )
+
+
+def history(store: Store, item_id: int) -> list[dict[str, Any]]:
+    """The item's recorded changes, oldest first: {ts, actor_kind, actor, action, changes,
+    run_id}."""
+    with store.connection() as conn:
+        rows = conn.execute(
+            "SELECT ts, actor_kind, actor, action, changes, run_id FROM board_history"
+            " WHERE item_id = ? ORDER BY id",
+            (item_id,),
+        ).fetchall()
+    return [{**dict(row), "changes": json.loads(row["changes"])} for row in rows]
+
+
+def unrecorded(item: Item, entries: list[dict[str, Any]]) -> bool:
+    """Whether the item changed after its last recorded change (or has none): code from
+    before the history (a lead's MCP server still running it) changed it. Such a gap
+    before a later recorded change is an `unrecorded` entry (see `record_gap`)."""
+    return not entries or item.updated_at > entries[-1]["ts"]
+
+
 def _end(conn: sqlite3.Connection, project: str, state: str) -> int:
     """The position after the last item in this state of the project."""
     row = conn.execute(
@@ -76,7 +253,12 @@ def _end(conn: sqlite3.Connection, project: str, state: str) -> int:
     return 0 if row[0] is None else row[0] + 1
 
 
+SQLITE_IDS = range(-(2**63), 2**63)  # an id outside (OverflowError in sqlite3) is unknown
+
+
 def _get(conn: sqlite3.Connection, item_id: int) -> Item | None:
+    if item_id not in SQLITE_IDS:
+        return None
     row = conn.execute("SELECT * FROM board_items WHERE id = ?", (item_id,)).fetchone()
     return Item.from_row(row) if row else None
 
@@ -117,15 +299,19 @@ def add(
     state: Any = IDEA,
     agent_id: Any = None,
     branch: Any = None,
+    actor: Actor = OWNER,
+    extra: Callable[[sqlite3.Connection, Item], dict[str, Any]] | None = None,
 ) -> Item:
     """A new item at the end of its state, with its links checked first (as in `cleaned`):
     either it is stored whole or not at all. `project` must be registered (the caller
-    checks). Raises ValueError."""
+    checks). `extra(conn, item)`, in the transaction, stores more about it and returns what
+    its history entry adds. Raises ValueError."""
     title = _text(title, "title", TITLE_CHARS, required=True)
     description = _text(description, "description", DESCRIPTION_CHARS)
     state = check_state(state or IDEA)
     given = {"agent_id": agent_id, "branch": branch}
     links = cleaned(store, Item(0, project, title), {k: v for k, v in given.items() if v})
+    run_id = _run_of(store, actor)
     with store.transaction() as conn:
         stamp = now()
         cursor = conn.execute(
@@ -144,7 +330,11 @@ def add(
             ),
         )
         item = _get(conn, cursor.lastrowid)
-    assert item is not None
+        assert item is not None
+        changes = _diff(None, item, ("state", "agent_id", "branch"))
+        if extra is not None:
+            changes.update(extra(conn, item))
+        record(conn, item.id, actor, "add", changes, stamp, run_id)
     return item
 
 
@@ -172,33 +362,99 @@ def cleaned(store: Store, item: Item, changes: dict[str, Any]) -> dict[str, Any]
     return out
 
 
-def update(store: Store, item_id: int, changes: dict[str, Any]) -> Item:
+def update(store: Store, item_id: int, changes: dict[str, Any], actor: Actor = OWNER) -> Item:
     """Change some FIELDS of an item; a new state puts it at the end of that state.
     Raises ValueError."""
     item = get(store, item_id)
     fields = cleaned(store, item, changes)
+    run_id = _run_of(store, actor)
     with store.transaction() as conn:
         current = _get(conn, item_id)
         if current is None:
             raise ValueError(f"there is no board item #{item_id}")
-        if fields.get("state", current.state) != current.state:
+        fields = {key: value for key, value in fields.items() if getattr(current, key) != value}
+        if "state" in fields:
             fields["position"] = _end(conn, current.project, fields["state"])
-        if fields:
+        if fields:  # a change that changes nothing writes nothing
             fields["updated_at"] = now()
             assignments = ", ".join(f"{key} = ?" for key in fields)
             conn.execute(
                 f"UPDATE board_items SET {assignments} WHERE id = ?", (*fields.values(), item_id)
             )
         item = _get(conn, item_id)
+        assert item is not None
+        if fields:
+            diff = _diff(current, item, FIELDS)
+            action = "state" if set(diff) == {"state"} else "edit"
+            record_gap(conn, item_id, current.updated_at)
+            record(conn, item_id, actor, action, diff, item.updated_at, run_id)
+    return item
+
+
+def _ids(conn: sqlite3.Connection, project: str, state: str) -> list[int]:
+    """The ids in one state of a project, in their order."""
+    rows = conn.execute(
+        "SELECT id FROM board_items WHERE project = ? AND state = ? ORDER BY position, id",
+        (project, state),
+    )
+    return [row["id"] for row in rows]
+
+
+def _renumber(conn: sqlite3.Connection, ids: list[int]) -> None:
+    for position, item_id in enumerate(ids):
+        conn.execute("UPDATE board_items SET position = ? WHERE id = ?", (position, item_id))
+
+
+def place(store: Store, item_id: int, state: Any, before: Any = None, actor: Actor = OWNER) -> Item:
+    """Put the item into `state` (its own or another one) just before the item `before`,
+    which must be in that state of the same project (None: at the end). The state's
+    positions are renumbered 0, 1, …, and so are those of the state it left; where it
+    already is, nothing changes. One transaction. Raises ValueError."""
+    state = check_state(state)
+    if before is not None and type(before) is not int:
+        raise ValueError("before must be a board item id or null")
+    if before == item_id:
+        raise ValueError(f"#{item_id} cannot be placed before itself")
+    run_id = _run_of(store, actor)
+    with store.transaction() as conn:
+        item = _get(conn, item_id)
+        if item is None:
+            raise ValueError(f"there is no board item #{item_id}")
+        current = _ids(conn, item.project, state)
+        order = [other for other in current if other != item_id]
+        if before is None:
+            order.append(item_id)
+        elif before in order:
+            order.insert(order.index(before), item_id)
+        elif _get(conn, before) is None:
+            raise ValueError(f"there is no board item #{before}")
+        else:
+            raise ValueError(f"#{before} is not in {item.project} · {state}")
+        if state != item.state or order != current:
+            _renumber(conn, order)
+            if state != item.state:
+                _renumber(conn, [i for i in _ids(conn, item.project, item.state) if i != item_id])
+            stamp = now()
+            conn.execute(
+                "UPDATE board_items SET state = ?, updated_at = ? WHERE id = ?",
+                (state, stamp, item_id),
+            )
+            placed = _get(conn, item_id)
+            assert placed is not None
+            changes = _diff(item, placed, ("state", "position"))
+            record_gap(conn, item_id, item.updated_at)
+            record(conn, item_id, actor, "place", changes, stamp, run_id)
+        item = _get(conn, item_id)
     assert item is not None
     return item
 
 
-def move(store: Store, item_id: int, direction: str) -> Item:
+def move(store: Store, item_id: int, direction: str, actor: Actor = OWNER) -> Item:
     """Swap the item with its neighbour above (`up`) or below (`down`) in its state; at the
     edge nothing changes. The state's positions are renumbered 0, 1, … Raises ValueError."""
     if direction not in ("up", "down"):
         raise ValueError(f"direction must be 'up' or 'down', not {direction!r}")
+    run_id = _run_of(store, actor)
     with store.transaction() as conn:
         item = _get(conn, item_id)
         if item is None:
@@ -218,15 +474,19 @@ def move(store: Store, item_id: int, direction: str) -> Item:
             for position, moved in enumerate(ids):
                 conn.execute("UPDATE board_items SET position = ? WHERE id = ?", (position, moved))
             conn.execute("UPDATE board_items SET updated_at = ? WHERE id = ?", (stamp, item_id))
+            changes = {"position": [item.position, other]}
+            record_gap(conn, item_id, item.updated_at)
+            record(conn, item_id, actor, "move", changes, stamp, run_id)
         item = _get(conn, item_id)
     assert item is not None
     return item
 
 
-def message(project: str, items: list[Item]) -> str:
+def message(project: str, items: list[Item], actor: Actor = OWNER) -> str:
     """The one message that hands a project's ready items to its lead."""
     count = f"{len(items)} item" + ("" if len(items) == 1 else "s")
-    parts = [f"Board items ready for project {project} ({count}), dispatched by the owner:"]
+    by = actor.name if actor.kind == AGENT_KIND and actor.name else "the owner"
+    parts = [f"Board items ready for project {project} ({count}), dispatched by {by}:"]
     for item in items:
         parts.append(
             f"#{item.id} {item.title}" + (f"\n{item.description}" if item.description else "")
@@ -245,15 +505,21 @@ def dispatch(
     lead_id: str,
     send: Callable[[str, str], int],
     ids: list[int] | None = None,
+    actor: Actor = OWNER,
+    states: tuple[str, ...] = (READY,),
 ) -> tuple[list[Item], int | None]:
     """Hand the project's `ready` items (with `ids`: only those of them, the ones the owner
     confirmed) to its lead: mark them `in_progress` and linked to `lead_id`, then send them
     as one message with `send(lead_id, text)` (returns the run id). No such item: nothing
-    is sent (run id None). If sending fails, the items are restored as they were."""
+    is sent (run id None). If sending fails, the items are restored as they were.
+    `states`: the states an item may be taken from (ready first, then by position); with
+    `ids`, (IDEA, READY) also takes the ideas named."""
     with store.transaction() as conn:  # claimed at once: a second dispatch finds none
+        marks = ", ".join("?" for _ in states)
         rows = conn.execute(
-            "SELECT * FROM board_items WHERE project = ? AND state = ? ORDER BY position, id",
-            (project, READY),
+            f"SELECT * FROM board_items WHERE project = ? AND state IN ({marks})"
+            " ORDER BY CASE state WHEN ? THEN 0 ELSE 1 END, position, id",
+            (project, *(check_state(state) for state in states), READY),
         ).fetchall()
         before = [Item.from_row(row) for row in rows]
         if ids is not None:
@@ -265,14 +531,21 @@ def dispatch(
                 " WHERE id = ?",
                 (IN_PROGRESS, start + offset, lead_id, stamp, item.id),
             )
+            # The history follows each step: the claim here, its run once known (link_run),
+            # a restore as `restore`.
+            claimed = replace(item, state=IN_PROGRESS, agent_id=lead_id)
+            changes = _diff(item, claimed, ("state", "agent_id"))
+            record_gap(conn, item.id, item.updated_at)
+            record(conn, item.id, actor, "dispatch", changes, stamp)
     if not before:
         return [], None
     try:
-        run_id = send(lead_id, message(project, before))
+        run_id = send(lead_id, message(project, before, actor))
     except BaseException:
-        with store.connection() as conn:
+        with store.transaction() as conn:
+            restored = now()
             for item in before:
-                conn.execute(
+                cursor = conn.execute(
                     "UPDATE board_items SET state = ?, position = ?, agent_id = ?, updated_at = ?"
                     " WHERE id = ? AND state = ?",
                     (
@@ -284,5 +557,44 @@ def dispatch(
                         IN_PROGRESS,
                     ),
                 )
+                if cursor.rowcount:  # its old updated_at comes back: the entry is later
+                    claimed = replace(item, state=IN_PROGRESS, agent_id=lead_id)
+                    back = _diff(claimed, item, ("state", "agent_id"))
+                    record(conn, item.id, actor, "restore", back, restored)
         raise
+    with store.transaction() as conn:
+        link_run(conn, [item.id for item in before], stamp, run_id)
     return [get(store, item.id) for item in before], run_id
+
+
+# -- live state ------------------------------------------------------------------------
+
+
+def record_moved(
+    conn: sqlite3.Connection, before: Item, actor: Actor, extra: dict[str, Any]
+) -> None:
+    """Record a change of `before` that other code made in `conn` (core/board_git.py's
+    move to done), as `state` with what changed and `extra` ({"commit": …}), in that
+    transaction."""
+    after = _get(conn, before.id)
+    assert after is not None
+    record_gap(conn, before.id, before.updated_at)
+    record(
+        conn, before.id, actor, "state", {**_diff(before, after, FIELDS), **extra}, after.updated_at
+    )
+
+
+def git_text(git: dict[str, Any]) -> str:
+    """A branch's cached state in a few chars: "merged", "+3 -1 dirty" (ahead, behind),
+    "even", "no branch" or "error"."""
+    if git["error"]:
+        return "error"
+    if git["merged"]:
+        return "merged"
+    if git["ahead"] is None:
+        return "no branch"
+    parts = [
+        f"+{git['ahead']}" if git["ahead"] else "",
+        f"-{git['behind']}" if git["behind"] else "",
+    ]
+    return " ".join(part for part in [*parts, "dirty" if git["dirty"] else ""] if part) or "even"

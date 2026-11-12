@@ -367,7 +367,10 @@ the packaged ones by name, in that order of precedence. Reference:
 **Task board.** Each project has a persistent board of items in four states: `idea`, `ready`,
 `in_progress`, `done`. You and the agents (orchestrator, the project's lead) keep it up to
 date; it survives across sessions. **Dispatch** sends all `ready` items to the project lead in
-one message and moves them to `in_progress`.
+one message and moves them to `in_progress`. The dashboard's **Board** shows every project's
+board in one view: items move by drag or keyboard, a selection is dispatched to the leads, each
+card shows its agent's status and its branch's git state, an item whose branch is merged moves
+to `done` by itself. Details: [docs/board.md](docs/board.md).
 
 ```sh
 orch board add -p my-app "Password reset" -d "Email link, expires in 1 hour" --state ready

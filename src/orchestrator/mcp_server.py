@@ -9,6 +9,7 @@ for the interactive `orch chat` session) and may act everywhere.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 import anyio
@@ -19,7 +20,7 @@ from .core.access import Caller
 from .core.delivery import delivery_floor as _delivery_floor  # noqa: F401 (old import path)
 from .core.delivery import wait_for_agents as _wait  # noqa: F401 (old import path)
 from .replies import clip, structured_page
-from .service import Orchestrator, OrchestratorError, result_file, run_usage
+from .service import ORCHESTRATOR_ID, Orchestrator, OrchestratorError, result_file, run_usage
 
 MAX_WAIT_SECONDS = 1800
 WAIT_SECONDS = 120  # default wait_for_agents timeout
@@ -66,6 +67,16 @@ NEXT = {
     "all": "end your turn; an [orch notification] wakes you when all your agents are done",
 }
 NEXT_UNNOTIFIED = "nothing will wake you: call wait_for_agents"
+
+
+def _lean(name: str, *fields: str) -> None:
+    """Drop the title and the default of new optional parameters from a tool's listed input
+    schema, so that adding one costs every agent only `"field": {"type": …}`: not listed in
+    "required", it stays optional. Validation uses the function's model, not this."""
+    properties = server._tool_manager.get_tool(name).parameters["properties"]
+    for field in fields:
+        properties[field].pop("title", None)
+        properties[field].pop("default", None)
 
 
 @server.tool()
@@ -430,17 +441,29 @@ DECISION_NEXT = (
 
 @server.tool()
 def request_decision(
-    question: str, options: list[str] | None = None, recommendation: str | None = None
+    question: str,
+    options: list[str] | None = None,
+    recommendation: str | None = None,
+    item: int = 0,
 ) -> dict[str, Any]:
     """Ask the owner for a decision only they can make; it waits in their decisions list.
     `question` at most 500 chars; `options` up to 6 short choices (they may also answer
-    freely); `recommendation`: what you would choose and why, in a sentence."""
+    freely); `recommendation`: what you would choose and why, in a sentence. `item`: the
+    board item it blocks."""
     orch = _orch()
-    caller = Caller.from_env(orch).agent()
+    access = Caller.from_env(orch)
+    caller = access.agent()
     if caller is None:
         raise OrchestratorError("this session talks to the user directly: ask them here")
+    if item:
+        access.project(orch.board_item(item).project)  # a lead stays within its project
     decision = orch.request_decision(caller.id, question, options, recommendation)
+    if item:
+        orch.link_decision(item, decision.id, actor=_actor(access))
     return {"decision_id": decision.id, "next": DECISION_NEXT}
+
+
+_lean("request_decision", "item")
 
 
 @server.tool()
@@ -460,6 +483,11 @@ def _short(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _actor(access: Caller) -> board.Actor:
+    """The calling agent as the one who changes the board (no id: the `orch chat` session)."""
+    return board.Actor(board.AGENT_KIND, access.id or None)
+
+
 def _board_line(item: Any) -> dict[str, Any]:
     line: dict[str, Any] = {"id": item.id, "state": item.state}
     for key, limit in BOARD_CLIPS.items():
@@ -468,21 +496,37 @@ def _board_line(item: Any) -> dict[str, Any]:
     return line
 
 
+def _live_line(live: dict[str, Any]) -> dict[str, Any]:
+    """What `live` adds to an item's line: `run` (its agent's status) and `git`, if known."""
+    line: dict[str, Any] = {}
+    if live["agent"]:
+        line["run"] = live["agent"]["status"]
+    if live["git"]:
+        line["git"] = board.git_text(live["git"])
+    return line
+
+
 @server.tool()
-def list_board(project: str, state: str | None = None) -> dict[str, Any]:
+def list_board(project: str, state: str | None = None, live: bool = False) -> dict[str, Any]:
     """The project's task board (ideas and tasks kept across sessions): in_progress, ready,
     idea, then done, each in its order; `state` lists one state only. Short: titles and
     descriptions are cut, and what does not fit in about 6000 chars is only counted
-    (`counts` has every state's total). Leads: their own project only."""
+    (`counts` has every state's total). Leads: their own project only. `live` adds agent
+    and git status."""
     orch = _orch()
     name = Caller.from_env(orch).project(project)
+    if live:
+        orch.board_sync()
     items = orch.board_items(name, state)
+    lives = orch.board_live(items) if live else {}
     items.sort(key=lambda item: BOARD_ORDER.index(item.state))  # stable: keeps the order
     counts = {key: n for key in BOARD_ORDER if (n := sum(i.state == key for i in items))}
     reply: dict[str, Any] = {"project": name, "counts": counts, "items": []}
     left = LOG_CHARS - len(json.dumps(reply)) - 200  # room for the note
     for item in items:
         line = _board_line(item)
+        if live:
+            line.update(_live_line(lives[item.id]))
         left -= len(json.dumps(line)) + 2
         if left < 0:
             break
@@ -495,6 +539,9 @@ def list_board(project: str, state: str | None = None) -> dict[str, Any]:
     return reply
 
 
+_lean("list_board", "live")
+
+
 @server.tool()
 def add_board_item(
     project: str, title: str, description: str = "", state: str = "idea"
@@ -503,7 +550,10 @@ def add_board_item(
     200 chars, `description` at most 4000; `state`: idea (default), ready, in_progress, done.
     Leads: their own project only."""
     orch = _orch()
-    item = orch.add_board_item(Caller.from_env(orch).project(project), title, description, state)
+    access = Caller.from_env(orch)
+    item = orch.add_board_item(
+        access.project(project), title, description, state, actor=_actor(access)
+    )
     return {"id": item.id, "project": item.project, "state": item.state}
 
 
@@ -534,10 +584,55 @@ def update_board_item(
         raise OrchestratorError(
             "nothing to change: pass state, title, description, agent or branch"
         )
-    return _board_line(orch.update_board_item(item_id, changes))
+    return _board_line(orch.update_board_item(item_id, changes, _actor(access)))
+
+
+# A tuple and no output schema: the shortest listing (every orchestrator turn pays for it).
+@server.tool(structured_output=False)
+def dispatch_board(project: str, items: tuple[int, ...] = ()) -> dict[str, Any]:
+    """Send board items to the project's lead as one message (they become in_progress).
+    `items`: ids, idea or ready; default: all ready."""
+    orch = _orch()
+    access = Caller.from_env(orch)
+    if access.scoped():
+        raise OrchestratorError("only the top-level orchestrator dispatches board items")
+    actor = _actor(access)
+    if not items:
+        result = orch.dispatch_board(project, actor=actor)
+        sent = {"items": result["items"], "agent_id": result["agent_id"]}
+        run_id, skipped = result["run_id"], []
+    else:
+        result = orch.dispatch_items(list(items), project, actor)
+        sent = result["results"][0] if result["results"] else {"items": [], "agent_id": None}
+        run_id, skipped = sent.get("run_id"), result["skipped"]
+    reply: dict[str, Any] = {"sent": [item["id"] for item in sent["items"]]}
+    if skipped:
+        reply["skipped"] = {str(s["id"]): s["reason"] for s in skipped}
+    return {**reply, "lead": sent["agent_id"], "run_id": run_id}
+
+
+def _without_titles(name: str) -> None:
+    """Drop the titles pydantic writes into a tool's input schema (they repeat the names):
+    the listing is sent in every turn. Validation uses the function's model, not this."""
+    schema = server._tool_manager.get_tool(name).parameters
+    schema.pop("title", None)
+    for field in schema.get("properties", {}).values():
+        field.pop("title", None)
+
+
+_without_titles("dispatch_board")
+
+
+# Tools only the top-level orchestrator (and the interactive session) sees: every other
+# agent pays for each tool's description in every turn.
+ORCHESTRATOR_TOOLS = ("dispatch_board",)
 
 
 def main() -> None:
+    caller = os.environ.get("ORCH_AGENT_ID")
+    if caller and caller != ORCHESTRATOR_ID:
+        for name in ORCHESTRATOR_TOOLS:
+            server.remove_tool(name)
     server.run("stdio")
 
 

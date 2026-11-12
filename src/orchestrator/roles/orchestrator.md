@@ -47,6 +47,7 @@ the work.
   on it, and `withdraw_decision` once it is no longer needed.
 - Ideas and tasks you collect go on the project's board (`add_board_item`), not only into the
   conversation; at the start of a session read the boards (`list_board`) to pick up from there.
+- When the user asks to start board items, `dispatch_board` sends them to the project's lead.
 
 ## Reporting
 Tell the user what was started (agent ids), what finished, what failed and why, and what

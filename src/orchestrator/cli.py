@@ -822,15 +822,24 @@ def board_line(item) -> str:
 
 @board_app.callback(invoke_without_command=True)
 def board_list(
-    ctx: typer.Context, project: ProjectOption = None, state: StateOption = None
+    ctx: typer.Context,
+    project: ProjectOption = None,
+    state: StateOption = None,
+    live: Annotated[
+        bool, typer.Option("--live", help="Each item's agent status and branch state.")
+    ] = False,
 ) -> None:
     """List the board by project and state (add, edit, move and dispatch below)."""
     if ctx.invoked_subcommand:
         return
+    o = orch()
+    if live:
+        o.board_sync()
     try:
-        items = orch().board_items(project, state)
+        items = o.board_items(project, state)
     except OrchestratorError as exc:
         raise fail(exc) from None
+    lives = o.board_live(items) if live else {}
     if not items:
         typer.echo("the board is empty")
     heading = None
@@ -838,9 +847,21 @@ def board_list(
         if (item.project, item.state) != heading:
             heading = (item.project, item.state)
             typer.secho(f"{item.project} · {item.state}", bold=True)
-        typer.echo(board_line(item))
+        typer.echo(board_line(item) + (board_live_text(lives[item.id]) if live else ""))
         if item.description:
             typer.echo(f"      {item.description.splitlines()[0][:100]}")
+
+
+def board_live_text(live: dict) -> str:
+    """ "  · agent running · branch +3 dirty", what is known of it."""
+    from .board import git_text
+
+    parts = []
+    if live["agent"]:
+        parts.append(f"agent {live['agent']['status']}")
+    if live["git"]:
+        parts.append(f"branch {git_text(live['git'])}")
+    return "".join(f"  · {part}" for part in parts)
 
 
 def board_fail(action):
@@ -885,6 +906,63 @@ def board_edit(
     typer.echo(board_line(item))
 
 
+def board_change(changes: dict) -> str:
+    """{field: [old, new]} as "field: old → new", the description as "description changed"."""
+    parts = []
+    for key, value in changes.items():
+        if isinstance(value, list):
+            old, new = ("–" if part in (None, "") else part for part in value)
+            parts.append(f"{key}: {old} → {new}")
+        else:
+            parts.append(f"{key} {value}")
+    return ", ".join(parts)
+
+
+def board_actor(entry: dict) -> str:
+    kind, name = entry["actor_kind"], entry["actor"]
+    if kind is None:  # an unrecorded gap: nobody known
+        who = "–"
+    elif kind == "owner":
+        who = "owner"
+    elif kind == "agent":
+        who = f"agent {name}" if name else "chat session"
+    else:
+        who = f"{kind}: {name}"
+    return who + (f" (run {entry['run_id']})" if entry["run_id"] else "")
+
+
+@board_app.command("show")
+def board_show(item_id: int) -> None:
+    """Show an item with its history and the runs that worked on it."""
+    detail = board_fail(lambda: orch().board_detail(item_id))
+    item = detail["item"]
+    links = " ".join(f"[{link}]" for link in (item["agent_id"], item["branch"]) if link)
+    typer.secho(f"#{item['id']}  {item['title']}", bold=True)
+    typer.echo(f"  {item['project']} · {item['state']}" + (f"  {links}" if links else ""))
+    typer.echo(f"  added {item['created_at']} · changed {item['updated_at']}")
+    for line in item["description"].splitlines():
+        typer.echo(f"  | {line}")
+    if source := detail.get("source"):
+        typer.echo(f"  from {source['agent_id']}, message {source['event_id']}")
+    for blocker in detail.get("blockers", []):
+        typer.echo(f"  blocked by decision #{blocker['id']}: {blocker['question']}")
+    typer.secho("history", bold=True)
+    for entry in detail["history"]:
+        change = board_change(entry["changes"])
+        line = f"  {entry['ts']}  {board_actor(entry)}  {entry['action']}"
+        typer.echo(line + (f"  {change}" if change else ""))
+    if detail["unrecorded"]:
+        gap = "a later change" if detail["history"] else "its changes so far"
+        typer.echo(f"  ({gap} not recorded)")
+    if detail["runs"]:
+        typer.secho("runs", bold=True)
+    for run in detail["runs"]:
+        ended = f" → {run['ended_at']}" if run["ended_at"] else ""
+        typer.echo(
+            f"  run {run['id']}  {run['agent_id']}  {run['status']}  {run['created_at']}{ended}"
+        )
+
+
 @board_app.command("move")
 def board_move(item_id: int, direction: Annotated[str, typer.Argument(help="up or down")]) -> None:
     """Move an item up or down within its state."""
@@ -895,15 +973,54 @@ def board_move(item_id: int, direction: Annotated[str, typer.Argument(help="up o
     typer.echo(f"#{item.id} is now {place} in {item.project} · {item.state}")
 
 
+@board_app.command("link")
+def board_link(
+    item_id: int,
+    decision_id: int,
+    remove: Annotated[bool, typer.Option("--remove", help="Unlink it.")] = False,
+) -> None:
+    """Link a decision to the item as one that blocks it (--remove: unlink it)."""
+    blockers = board_fail(lambda: orch().link_decision(item_id, decision_id, not remove))
+    if not blockers:
+        typer.echo(f"#{item_id} is not blocked")
+    for blocker in blockers:
+        how = "linked" if blocker["linked"] else "unlinked, of its agent"
+        typer.echo(
+            f"#{item_id} blocked by decision #{blocker['id']} ({how}): {blocker['question']}"
+        )
+
+
 @board_app.command("dispatch")
-def board_dispatch(project: Annotated[str, typer.Option("--project", "-p")]) -> None:
-    """Send the project's ready items to its lead as one message (they become in_progress)."""
+def board_dispatch(
+    ids: Annotated[
+        list[int] | None, typer.Argument(help="Item ids (idea or ready), in any project.")
+    ] = None,
+    project: ProjectOption = None,
+) -> None:
+    """Send board items to their project's lead, one message per project (they become
+    in_progress): the ids named, or with -p alone the project's ready items."""
+    if ids:
+        board_dispatch_items(ids, project)
+        return
+    if not project:
+        raise fail("name item ids or --project")
     result = board_fail(lambda: orch().dispatch_board(project))
     if not result["items"]:
         typer.echo(f"no ready items in {project}; nothing sent")
         return
     ids = ", ".join(f"#{item['id']}" for item in result["items"])
     typer.echo(f"{ids} -> {result['agent_id']}  run {result['run_id']}")
+
+
+def board_dispatch_items(ids: list[int], project: str | None) -> None:
+    result = board_fail(lambda: orch().dispatch_items(ids, project))
+    for sent in result["results"]:
+        names = ", ".join(f"#{item['id']}" for item in sent["items"])
+        typer.echo(f"{names} -> {sent['agent_id']}  run {sent['run_id']}")
+    for skipped in result["skipped"]:
+        typer.echo(f"#{skipped['id']} not sent: {skipped['reason']}")
+    if not result["results"]:
+        typer.echo("nothing sent")
 
 
 # -- agents -----------------------------------------------------------------

@@ -279,6 +279,7 @@ function renderNav() {
     orch ? `${stateOf(orch).label} · talks to every project` : 'Tell it what you want built', 0, orch?.context);
   top.classList.add('orchestrator');
   nav.append(top);
+  if (window.BoardView) nav.append(BoardView.navEntry(selected));
 
   const section = el('div', 'section');
   section.append(el('span', '', 'Projects'), button('ghost icon', 'plus', '', openProjectDialog, 'Add project'));
@@ -787,6 +788,7 @@ function appendEvents(events) {
     if (kind === 'reply') body.append(markdown(event.text)); else body.textContent = event.text;
     const when = kind === 'system' ? `notification · ${clock(event.ts)}` : clock(event.ts);
     message.append(el('div', 'when', when), body);
+    if (window.BoardView && kind !== 'error') BoardView.messageAction(message, event, selected);
     thread.append(message);
   }
   if (events.length && pinned) log.scrollTop = log.scrollHeight;
@@ -1629,6 +1631,7 @@ async function refresh() {
     renderBoard();
     const target = selected;
     if (target === ARCHIVE) { await renderArchive(); return; }
+    if (window.BoardView && BoardView.owns(target)) { shown = await BoardView.render($('view'), target, shown); return; }
     const exists = Boolean(findAgent(target)) || isArchived(target);
     const virtual = !exists && (target === ORCH || target.startsWith('lead:'));
     if (!exists && !virtual) {
