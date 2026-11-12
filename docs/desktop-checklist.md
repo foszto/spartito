@@ -9,7 +9,9 @@ noted where they differ. Background: [desktop.md](desktop.md).
 This section, and only this one, acts on your real install and home, on purpose. Run it in a
 new terminal **without** the environment of the setup below, in the checkout that was merged:
 
-1. `uv tool install --editable '.[app,menubar]'` (no `--force` needed over an existing install).
+1. `uv tool install --editable '.[app,menubar]'` (no `--force` needed over an existing install;
+   the tool `orchestrator` of an older install is replaced instead:
+   [upgrading](usage.md#upgrading-to-the-distribution-name-spartito)).
 2. `spartito app install`: two lines, `installed Spartito (local.spartito.app): …` and
    `spartito-python: a copy of …, signed as local.spartito.app, …`.
 3. `spartito app`: the window opens; Dock and app switcher show *Spartito* with its icon.
@@ -135,7 +137,7 @@ Without the extra (**shell A**, in the checkout):
 
 | shell | do | expect |
 |---|---|---|
-| A | `uv sync` (removes the extras), then `spartito_test app --port "$PORT"` | `no native window: pywebview is not installed (install the extra orchestrator[app], then run \`spartito app install\`; …)`, then a Chrome (or Edge, Brave, Chromium) window in app mode, with the browser's name and icon in the Dock |
+| A | `uv sync` (removes the extras), then `spartito_test app --port "$PORT"` | `no native window: pywebview is not installed (install the extra spartito[app], then run \`spartito app install\`; …)`, then a Chrome (or Edge, Brave, Chromium) window in app mode, with the browser's name and icon in the Dock |
 | — | Close that window | `spartito app` returns, and the browser instance it started ends (your own browser windows stay) |
 | A | `uv sync --extra app --extra menubar` | the extras are back |
 

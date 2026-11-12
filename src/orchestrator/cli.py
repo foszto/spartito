@@ -317,7 +317,7 @@ def web(host: str = "127.0.0.1", port: int = 8787) -> None:
 
 app_app = typer.Typer(
     rich_markup_mode=MARKUP,
-    help="Open the dashboard in its own window: a native one with the extra `orchestrator[app]`,"
+    help="Open the dashboard in its own window: a native one with the extra `spartito[app]`,"
     " else a Chromium-family browser in app mode, else the default browser. Uses the running"
     f" `{CLI} web` of this home, or serves the dashboard on 127.0.0.1 until the window is closed."
     " With the window open already, brings it to the front (at `--agent` or `--decision`)."
@@ -367,7 +367,7 @@ def app_window(
     name: LauncherName = None,
     directory: LauncherDir = None,
 ) -> None:
-    """Open the dashboard in its own window: a native one with the extra `orchestrator[app]`,
+    """Open the dashboard in its own window: a native one with the extra `spartito[app]`,
     else a Chromium-family browser in app mode, else the default browser. Uses the running
     `{cli} web` of this home, or serves the dashboard on 127.0.0.1 until the window is closed.
     With the window open already, brings it to the front (at `--agent` or `--decision`)."""
@@ -438,7 +438,7 @@ def menubar(
     ] = False,
 ) -> None:
     """Show the running agents and the open decisions in the macOS menu bar (the extra
-    `orchestrator[menubar]`); its menu opens a decision or the dashboard window."""
+    `spartito[menubar]`); its menu opens a decision or the dashboard window."""
     from .gui import menubar as item
 
     echo = (lambda text: typer.echo(text + "\n", nl=False)) if print_lines else None
@@ -1530,11 +1530,11 @@ OLD_NAME = "orch"  # the command's name before CLI_NAME; an older install's scri
 def main() -> None:
     """The command line under CLI_NAME, whatever the script that started it is called. An
     editable install from before the rename still has its `orch` script, running this code
-    until the tool is installed again: it works, and says so on every call."""
+    until that install is replaced (docs/usage.md): it works, and says so on every call."""
     if os.path.basename(sys.argv[0]) == OLD_NAME:
         typer.secho(
             f"warning: `{OLD_NAME}` is now `{config.CLI_NAME}`; this script is left from an"
-            " older install and goes away when the tool is installed again"
+            " older install and goes away when that install is replaced"
             " (docs/usage.md#upgrading-from-orch)",
             fg=typer.colors.YELLOW,
             err=True,

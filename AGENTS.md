@@ -61,4 +61,5 @@ for f in src/orchestrator/web/static/*.js; do node --check "$f"; done
 - `docs/agents.md`: MCP tools, dependencies, notifications, decisions, compaction.
 - `docs/desktop.md`: background service, notifications, `spartito app`, launcher, menu bar.
 - `docs/board.md`: the task board.
+- `docs/releasing.md`: the version, PyPI and the release workflow.
 - `ROADMAP.md`: where the project is heading.

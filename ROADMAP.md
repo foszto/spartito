@@ -78,11 +78,12 @@ ties this item to authentication.
 **What it means.** Tests and linters would run on every pull request, so that outside
 contributions are checked before review.
 
-**Today.** The repository has no CI. The checks run locally, as
-[CONTRIBUTING.md](CONTRIBUTING.md#checks) lists them. The suite needs only git, Python 3.14
-and uv, and makes no provider calls.
+**Today.** GitHub Actions runs the checks of [CONTRIBUTING.md](CONTRIBUTING.md#checks) on
+every push to `master` and every pull request: the suite on Linux and on macOS (with the
+desktop extras there), the linters and the link test.
 
-**Open questions.** macOS and Linux runners, with or without the desktop extras.
+**Open questions.** Whether the Linux run should include the `app` extra (PyQt6), which no
+test needs today.
 
 ### Platforms
 
@@ -241,13 +242,15 @@ asleep, and how cost is kept in check.
 package, a signed macOS launcher), a backup of the state before the schema changes, and no
 mismatch between the page and the server after an update.
 
-**Today.** Spartito is installed from a checkout (version 0.1.0, no changelog). Schema changes
+**Today.** Spartito is installed from a checkout (version 0.1.0, no changelog). The package
+is prepared for PyPI as `spartito`, to be published from a version tag by GitHub Actions
+([docs/releasing.md](docs/releasing.md)). Schema changes
 are additive and applied when the database opens. After an update, a running dashboard keeps
 its old code while the page is new, so it has to be restarted
 ([upgrading](docs/usage.md#upgrading-from-orch)). The launcher's copy of Python is signed ad
 hoc only.
 
-**Open questions.** Versioning and the package's published name. Whether the page should
+**Open questions.** Versioning. Whether the page should
 notice a server of another version (`/api/ping` reports it).
 
 #### Observability

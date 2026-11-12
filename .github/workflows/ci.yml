@@ -1,0 +1,62 @@
+# The checks of CONTRIBUTING.md on every push to master and every pull request (forks too:
+# `pull_request` runs without secrets and with a read-only token).
+name: ci
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint, format, scripts, links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.14"
+
+      - run: uv sync --locked
+      - run: uv run ruff check
+      - run: uv run ruff format --check
+      - name: node --check on the dashboard's scripts
+        run: for f in src/orchestrator/web/static/*.js; do node --check "$f"; done
+      - name: Links and the command's name in the docs
+        run: uv run pytest tests/test_docs_links.py tests/test_command_name.py
+
+  test:
+    name: Tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS with the extras (pyobjc and pywebview install without a display); Linux
+        # without: there `app` is PyQt6 and Qt WebEngine, which no test needs.
+        include:
+          - os: ubuntu-latest
+            sync: uv sync --locked
+          - os: macos-latest
+            sync: uv sync --locked --extra app --extra menubar
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.14"
+
+      - run: ${{ matrix.sync }}
+      - run: uv run pytest -n auto

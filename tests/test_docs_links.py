@@ -1,5 +1,7 @@
 """Every relative link in README.md and docs/*.md resolves: the file exists and the `#anchor`
-names a heading of the target (GitHub's heading-to-anchor rule)."""
+names a heading of the target (GitHub's heading-to-anchor rule). README.md is also PyPI's
+project page, where relative links lead nowhere: its links into this repository are absolute
+(REPO), and they are checked as the files they name."""
 
 from __future__ import annotations
 
@@ -17,6 +19,17 @@ INLINE_CODE = re.compile(r"(`+).*?\1")
 # [text](target) or ![alt](target); the target ends at whitespace or ")".
 LINK = re.compile(r"!?\[(?:[^\[\]]|\[[^\]]*\])*\]\(\s*<?([^)\s>]*)>?(?:\s+\"[^\"]*\")?\s*\)")
 EXTERNAL = re.compile(r"^[a-z][a-z0-9+.-]*:", re.IGNORECASE)
+REPO = "https://github.com/foszto/spartito"
+
+
+def local(target: str) -> str:
+    """A link to this repository's files on master as the local path; others unchanged."""
+    for prefix in (f"{REPO}/blob/master/", f"{REPO}/tree/master/"):
+        if target.startswith(prefix):
+            return str(ROOT / target.removeprefix(prefix))
+    if target.partition("#")[0] == REPO:
+        return str(ROOT / "README.md") + target.removeprefix(REPO)
+    return target
 
 
 def prose_lines(path: Path) -> list[tuple[int, str]]:
@@ -57,7 +70,7 @@ def links(path: Path) -> list[tuple[int, str]]:
     found = []
     for number, line in prose_lines(path):
         for match in LINK.finditer(INLINE_CODE.sub("", line)):
-            target = match.group(1)
+            target = local(match.group(1))
             if target and not EXTERNAL.match(target):
                 found.append((number, target))
     return found
@@ -83,7 +96,7 @@ def test_relative_links_resolve(path: Path):
 
 def test_the_check_sees_links():
     """Guards the checker itself: it finds links, and GitHub's rule on a few headings."""
-    assert any(target.startswith("docs/") for _, target in links(ROOT / "README.md"))
+    assert any(target.startswith(str(ROOT / "docs")) for _, target in links(ROOT / "README.md"))
     assert slug("Overrides: `loadout.toml`") == "overrides-loadouttoml"
     assert slug("Desktop notifications: `desktop_notifications`") == (
         "desktop-notifications-desktop_notifications"
@@ -93,3 +106,14 @@ def test_the_check_sees_links():
     )
     assert slug("Command line, MCP and API") == "command-line-mcp-and-api"
     assert slug("1b. Launcher, name and icon (macOS)") == "1b-launcher-name-and-icon-macos"
+
+
+def test_the_readme_links_work_on_pypi():
+    """PyPI shows README.md without the repository: no relative link, no bare #anchor."""
+    found = [
+        f"README.md:{number}: {match.group(1)}"
+        for number, line in prose_lines(ROOT / "README.md")
+        for match in LINK.finditer(INLINE_CODE.sub("", line))
+        if not EXTERNAL.match(match.group(1))
+    ]
+    assert not found, "relative links in README.md:\n" + "\n".join(found)

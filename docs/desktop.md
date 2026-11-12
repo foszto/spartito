@@ -27,7 +27,9 @@ uv sync --extra app --extra menubar            # in a checkout, for `uv run spar
 ```
 
 Over an existing install, the same `uv tool install` line adds the extras; no `--force` is
-needed. On macOS, run `spartito app install` afterwards (see
+needed. An install from before the distribution was renamed to `spartito` (the tool
+`orchestrator` in `uv tool list`) is replaced instead:
+[upgrading](usage.md#upgrading-to-the-distribution-name-spartito). On macOS, run `spartito app install` afterwards (see
 [Launcher](#launcher-name-and-icon)).
 
 Without the extra, `spartito app` falls back to a browser (see [Own window](#own-window)). On
@@ -252,7 +254,7 @@ notifications from <app>: not available (<why>); notices are shown in this windo
 
 `<why>` is `no launcher: run `spartito app install``, `not started as the launcher's app`,
 `started without the launcher's copy of Python: run `spartito app install` again`,
-`UserNotifications is not installed (install the extra orchestrator[app])`, or the error of
+`UserNotifications is not installed (install the extra spartito[app])`, or the error of
 the notification centre. The second line comes once, 30 seconds after asking without an
 answer; the third when the status read, not the request's answer, told the decision.
 Besides these, `logs/app.log` gets `a click on a notification: opening <target>` for each
@@ -478,7 +480,7 @@ and moves on:
    Linux.
 
    ```
-   no native window: pywebview is not installed (install the extra orchestrator[app], then run `spartito app install`; see docs/desktop.md); trying a Chromium-family browser in app mode
+   no native window: pywebview is not installed (install the extra spartito[app], then run `spartito app install`; see docs/desktop.md); trying a Chromium-family browser in app mode
    no native window: pywebview cannot start its GUI backend (<reason>); trying a Chromium-family browser in app mode
    no native window: pywebview failed (<first line of the error>); trying a Chromium-family browser in app mode
    ```
@@ -682,7 +684,7 @@ Errors, each with exit code 1:
 
 ```
 error: spartito menubar runs on macOS only
-error: pyobjc-framework-Cocoa is not installed (install the extra orchestrator[menubar])
+error: pyobjc-framework-Cocoa is not installed (install the extra spartito[menubar])
 ```
 
 ## Security
