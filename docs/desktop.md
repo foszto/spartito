@@ -9,6 +9,7 @@ Spartito; each piece works on its own.
 - [Installable page](#installable-page)
 - [Notifications with click-through](#notifications-with-click-through)
 - [Own window](#own-window)
+- [Launcher: name and icon](#launcher-name-and-icon)
 - [Menu-bar item](#menu-bar-item)
 - [Security](#security)
 - [Optional dependencies](#optional-dependencies)
@@ -25,6 +26,10 @@ uv tool install --editable '.[app,menubar]'    # instead of `uv tool install --e
 uv sync --extra app --extra menubar            # in a checkout, for `uv run orch …`
 ```
 
+Over an existing install, the same `uv tool install` line adds the extras; no `--force` is
+needed. On macOS, run `orch app install` afterwards (see
+[Launcher](#launcher-name-and-icon)).
+
 Without the extra, `orch app` falls back to a browser (see [Own window](#own-window)). On
 Linux the extra installs PyQt6 and PyQt6-WebEngine, which are GPL-3.0-only, and the Qt
 libraries they bring, which are LGPL-3.0 (see
@@ -37,7 +42,8 @@ nothing.
 |---|---|---|
 | background service (`orch service`) | launchd agent | systemd user unit |
 | installable page | Chrome (and other Chromium-family browsers), Safari | Chromium-family browsers |
-| notification click-through | in an open dashboard page; without one, `osascript` without a click action | in an open dashboard page; without one, none |
+| notification click-through | an open dashboard page; else Spartito itself (launcher installed and allowed); else `osascript`, whose text says where to look | an open dashboard page; else `notify-send`, with a click action from libnotify 0.7.10 |
+| launcher (`orch app install`) | `~/Applications/Spartito.app` | desktop entry and icons |
 | `orch app` native window | Cocoa (WebKit), extra `app` | Qt WebEngine, extra `app` |
 | `orch app` browser fallback | Chromium-family browser in app mode, else the default browser | the same |
 | menu-bar item (`orch menubar`) | yes, extra `menubar` | no |
@@ -145,57 +151,115 @@ messaged directly has finished together with all its agents (details:
 [configuration.md](configuration.md#desktop-notifications-desktop_notifications)). Each one is
 recorded as a *notice* in the database; notices are kept for one day.
 
-**Shown by the page.** An open dashboard page (a tab, the installed app, or the browser
-window of `orch app`) that is allowed to show notifications shows them itself as Web
-Notifications, titled *Spartito*. A click brings the page to the front and opens the agent, or
-the **Decisions** window on that decision with its answer box focused; a decision that is no
-longer open selects the agent that asked it.
+**Who shows a notice.** The first of these that can, in this order; whoever shows it claims it
+first, so it is shown once:
 
-To allow it, once per browser and address: **Models and effort** (the settings button) ›
-**Notifications** › **Allow in this browser**, then accept the browser's prompt. If the
+1. **An open dashboard page** allowed to show notifications (a tab, the installed page, or the
+   browser window of `orch app`): a Web Notification titled *Spartito*. A click brings the
+   page to the front and opens the agent, or the **Decisions** window on that decision with
+   its answer box focused; a decision that is no longer open selects the agent that asked it.
+2. **The Spartito window** (macOS, `orch app` started through the launcher, allowed to
+   notify): it posts the notification itself. A click brings the window to the front at the
+   agent or decision.
+3. **The Spartito app, started to post** (macOS, no window open, launcher installed and
+   allowed): the background process starts the app hidden, without a window or Dock icon; it
+   posts the pending notices and exits. A click starts Spartito and opens the window at the
+   agent or decision.
+4. **`notify-send`** (Linux): see [Linux](#linux).
+5. **`osascript`** (macOS, otherwise). Its click opens Script Editor and cannot be changed, so
+   the text ends with ` — open Spartito to answer` (a decision) or ` — open Spartito to see it`.
+
+A path that cannot be started falls through to the next one in the same call: when the app
+of step 3 cannot be started, or has not taken the notice within 15 seconds, `osascript` shows
+it. Without an agent (nothing recorded) step 4 or 5 shows it. Nothing here makes a turn or the
+decision tool wait: the notice is recorded with at most a 2-second wait for the database, and
+everything else runs in detached processes.
+
+**Allowing the page.** Once per browser and address: the **Enable notifications** button in
+the dashboard's header (shown while the browser has not decided), or **Models and effort** ›
+**Notifications** › **Allow in this browser**; then accept the browser's prompt. If the
 browser blocks notifications for the page, allow them in its site settings (Chrome: the icon
-left of the address; Safari: **Settings › Websites › Notifications**).
+left of the address; Safari: **Settings › Websites › Notifications**). Before the header
+button, the only control sat inside the settings dialog, so a fresh browser profile never
+asked and the page never showed a notification. The permission belongs to the address, port
+included; `orch app` therefore reuses the port of its last own server (`run/app-port`).
 
-**Who shows a notice.** A permitted page polls the server every 4 seconds. While such a page
-has polled within the last 15 seconds, new notices are left to it; each notice is shown once,
-even with several pages open. Otherwise:
+**Allowing Spartito** (macOS). The first `orch app` started through the launcher asks once
+for permission for *Spartito*; allow it in the prompt or later under **System Settings ›
+Notifications › Spartito**. The window process asks at each start (the system prompts only
+once) and, when allowed, writes `run/app-notify.json` (the bundle's identifier and path):
+from then on step 3 is used when no window is open. A posting app that finds the permission
+withdrawn removes the file and leaves the notices to `osascript`; one that gets no answer from
+the system in time leaves them to `osascript` this once and keeps the file. Spartito posts
+notifications itself only through the interpreter copy of the launcher (see
+[Launcher](#launcher-name-and-icon)): the notification centre refuses a process that only
+names the bundle through `CFProcessPath`.
 
-- macOS: `osascript` shows the plain notification, as before, without a click action;
-- Linux: none is shown.
-
-Some cases in detail:
+**How the page and the window are found.** A permitted page polls the server every 4 seconds
+and touches `run/page-notifier`; the allowed window process touches `run/app-notifier` every
+2 seconds and writes its pid into it. Each counts as present for 15 seconds after its last
+touch, the window only while its process runs. Some cases in detail:
 
 - **Hidden tabs.** The poll runs from a small worker, so the throttling of hidden tabs does
   not stop it. A tab the browser freezes (for example Chrome's Energy Saver) stops polling;
-  after 15 seconds `osascript` takes over again.
+  after 15 seconds the next path takes over.
 - **Reloads.** A reloaded page carries on from the last notice it handled, so a notice
   recorded during the reload is still shown. A notice older than 10 minutes when a page first
-  sees it is skipped.
-- **The native window of `orch app`** shows no Web Notifications: with it, macOS shows the
-  plain notification and Linux none.
+  sees it is skipped; so does the posting app of step 3.
+- **The native window** shows no Web Notifications (its WebKit has none); with the launcher it
+  posts them itself (step 2).
 - **Off.** With `orch config desktop-notifications off`, nothing is recorded and nothing is
-  shown, by the page or by `osascript`.
+  shown.
+
+**What a notification carries** (steps 2 and 3): the text, and a `userInfo` of
+`{"home": <the home digest of /api/ping>, "target": "decision:<n>" | "<agent id>"}`. A click is
+acted on only for the notification itself (not a dismissal), for this home, and for a target
+that passes the deep-link check; it then becomes a deep-link request to the window (see
+[Own window](#own-window)).
+
+**`orch app --notify`** is internal: the hidden start of step 3 (`open -n -g -j -a <bundle>
+--args --notify`). It claims and posts the pending notices, waits up to 5 seconds for the
+system, and exits; a click that reaches it in that time opens the window at the target.
+
+### Linux
+
+When `notify-send` is on `PATH`, a detached helper shows the notice:
+`notify-send --app-name=Spartito --icon=<icon> --hint=string:desktop-entry:spartito -- Spartito
+<text>`. The icon is the one `orch app install` put into the hicolor theme, else the
+package's PNG.
+
+- **With click action**: when this `notify-send` lists `--action` and `--wait` in its help
+  (libnotify 0.7.10 or later) and `DISPLAY` or `WAYLAND_DISPLAY` is set, the helper adds
+  `--wait --action=default=Open` and, when the default action is invoked, starts
+  `orch app --decision <n>` or `orch app --agent <id>`. It waits at most 30 minutes; a click
+  after that does nothing.
+- **Without**: the text ends with ` — open it: orch app --decision <n>` (or `--agent <id>`).
+- Without `DBUS_SESSION_BUS_ADDRESS` (a service started without it) the helper uses
+  `unix:path=$XDG_RUNTIME_DIR/bus`.
+
+Without `notify-send`, Linux shows none; a page still can.
 
 **Links.** `#<agent-id>` selects an agent and `#decision:<id>` opens a decision, for example
 `http://127.0.0.1:8787/#decision:12`.
 
-Considered and not built: clickable native notifications through `terminal-notifier`, which
-would need an extra program.
-
 ## Own window
 
 ```sh
-orch app [--port PORT]
+orch app [--port PORT] [--agent ID | --decision N]
 ```
 
-`orch app` shows the dashboard in its own window and returns when the window is closed.
+`orch app` shows the dashboard in its own window, at the agent or decision when given, and
+returns when the window is closed.
 
 **Server.** If an `orch web` (or the background service) of this home is running, `orch app`
 uses it and leaves it running. It finds it through `$ORCH_HOME/run/web.json`, which a running
 dashboard server keeps, and accepts it only when `/api/ping` on the loopback address at that
 port reports this tool and this home. Otherwise `orch app` serves the dashboard itself on
-`127.0.0.1`, on a free port or `--port`, and stops that server when the window is closed. It
-prints `web UI: <url>`, followed by ` (the running server)` when it uses one.
+`127.0.0.1` and stops that server when the window is closed. Without `--port` it uses the port
+of its last own server, kept in `run/app-port`, when nothing listens there (on 127.0.0.1 or
+::1); otherwise a free one, which it then keeps. The page's preferences and notification
+permission belong to its address, so they carry over. It prints `web UI: <url>`, followed by
+` (the running server)` when it uses one.
 
 **Window.** The first of these that works; each step that fails says so in one line on stderr
 and moves on:
@@ -204,18 +268,25 @@ and moves on:
    Linux.
 
    ```
-   no native window: pywebview is not installed (install the extra orchestrator[app]); trying a Chromium-family browser in app mode
+   no native window: pywebview is not installed (install the extra orchestrator[app], then run `orch app install`; see docs/desktop.md); trying a Chromium-family browser in app mode
    no native window: pywebview cannot start its GUI backend (<reason>); trying a Chromium-family browser in app mode
    no native window: pywebview failed (<first line of the error>); trying a Chromium-family browser in app mode
    ```
+
+   The `then run `orch app install`` part is left out when the launcher is installed. On
+   macOS without the launcher, the Dock shows the window as *Python* with the tool's icon set
+   at run time, and stderr says:
+   ``the Dock shows this window as Python: `orch app install` gives it Spartito's name and icon``.
 
 2. **A Chromium-family browser in app mode** (a window without tabs or address bar): on macOS
    Google Chrome, Chromium, Microsoft Edge or Brave Browser in `/Applications` or
    `~/Applications`; on Linux `google-chrome`, `google-chrome-stable`, `chromium`,
    `chromium-browser`, `microsoft-edge` or `brave-browser` on `PATH`, in that order. It runs
    with its own profile in `$ORCH_HOME/run/app-profile`, separate from your browser profile
-   (its own notification permission, no extensions or logins). When its window is closed,
-   `orch app` ends the browser.
+   (its own notification permission, no extensions or logins). The window carries the
+   browser's name and icon, not Spartito's; the page in it can show Web Notifications (step 1
+   of [Notifications](#notifications-with-click-through)), but Spartito posts none itself.
+   When its window is closed, `orch app` ends the browser.
 
    ```
    no Chromium-family browser found (Chrome, Chromium, Edge or Brave); opening the default browser
@@ -235,10 +306,25 @@ On Linux without a display none of these is tried:
 `no display (DISPLAY and WAYLAND_DISPLAY are unset): open <url> in a browser`, followed by
 `, serving it until Ctrl-C` with its own server.
 
-**One window per home.** A second `orch app` for the same home prints
-`the dashboard window of this home is already open` and exits with code 0; it does not bring
-the open window to the front. An `orch app` that only serves (the default browser, or no
-display) does not hold this lock, so the next `orch app` opens its own window on that server.
+**One window per home; deep links.** A second `orch app` for the same home asks the open
+window to come to the front and, with `--agent` or `--decision`, to show that target, then
+exits with code 0 after one line:
+
+```
+the dashboard window of this home is already open: brought it to the front[, showing <target>]
+the dashboard window of this home is already open: asked its browser to bring it to the front[, showing <target>]
+the dashboard window of this home is already open, but it could not be brought to the front (<why>)[; asked it to show <target>]
+```
+
+The request goes through `run/app-open.json` (`{"id", "target"}`, the target being
+`decision:<n>`, an agent id or empty, checked against a strict pattern wherever it is read).
+The `orch app` that holds the window watches it, brings the window forward (the native window
+on macOS counts only once it is the active application; the browser window through its
+DevTools endpoint, not checked) and answers in `run/app-open.done`, which the second call
+waits up to 5 seconds for. The page in the window, opened with `?app=<last id>`, gets requests
+younger than 15 seconds with `/api/state` and applies each newer one once. An `orch app` that
+only serves (the default browser, or no display) does not hold the window lock, so the next
+`orch app` opens its own window on that server.
 
 **Ending it.** Closing the window ends `orch app` with exit code 0. SIGTERM and SIGHUP close
 the window too, with exit code 128 + the signal (143, 129). If `--port` is taken:
@@ -267,6 +353,86 @@ the window too, with exit code 128 + the signal (143, 129). If `--port` is taken
   platform plugin; this adds about one Qt start-up to each `orch app` (at most 60 s). When it
   fails, `orch app` falls back to a browser.
 
+## Launcher: name and icon
+
+```sh
+orch app install
+orch app uninstall
+```
+
+`orch app install` adds a launcher that starts `orch app` like an application, with
+Spartito's name and icon; running it again rewrites it. `orch app uninstall` removes exactly
+what install wrote (macOS: also `lsregister -u`, so the system forgets the bundle).
+
+**Identifier.** `local.spartito.app` for the default home (`~/.orchestrator`), else
+`local.spartito-<8 hex>.app` from a hash of the resolved `ORCH_HOME` (the label rule of the
+service). Each command acts on the launcher of the current home; a launcher of another home
+at the same place is replaced, never removed.
+
+**Environment.** The launcher sets the variables `orch service` captures (`PATH`, `LANG`,
+`LC_*`, `ORCH_*`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, as in the shell you install from); names
+that are not valid shell names are left out. Run `orch app install` again after changing them
+or after moving or reinstalling the Python environment.
+
+**macOS:** `~/Applications/Spartito.app`, a minimal bundle:
+
+| file | what |
+|---|---|
+| `Contents/Info.plist` | name, identifier, icon, version; `LSUIElement` (no Dock icon until a window is shown) |
+| `Contents/Resources/Spartito.icns` | the icon |
+| `Contents/MacOS/Spartito` | a shell script that sets the environment and starts `orch app` |
+| `Contents/MacOS/spartito-python` | a copy of the Python interpreter, signed ad hoc with the bundle's identifier |
+| `Contents/Resources/interpreter.json` | what the copy was made from: source, size, time, environment, Python version |
+
+The copy is the binary that actually runs: for a framework build (python.org, Homebrew) the
+one inside its `Python.app`, otherwise the interpreter the environment's `python` resolves to
+(for example a uv-managed one). Install signs it (`codesign -s - --force --identifier <id>`),
+runs it once to check that it finds this environment, and prints:
+
+```
+installed Spartito (local.spartito.app): ~/Applications/Spartito.app
+spartito-python: a copy of <source> (Python <version>), signed as local.spartito.app, so Spartito can post notifications itself; run `orch app install` again after upgrading Python
+```
+
+The script runs the copy with `__PYVENV_LAUNCHER__` naming the environment's interpreter, so
+`sys.prefix` and the packages are the environment's, and the process is the bundle's own
+executable: macOS shows it as *Spartito* with its icon, and the notification centre accepts
+it. When no working copy can be made, install says
+`notifications from Spartito itself are not available (<why>); notifications without an open dashboard page come from osascript`
+and the script runs the environment's interpreter with `CFProcessPath` set to the script:
+CoreFoundation then takes the script for the process's executable, which gives name, icon and
+identifier, but no notifications of its own.
+
+**After a Python upgrade** the copy is stale: a Homebrew upgrade removes the versioned library
+(`…/Cellar/python@3.14/<version>/…`) the copy loads, and any upgrade changes what the record
+names. The script tries the copy first (a trial start); one that cannot start makes it start
+the window the earlier way (`CFProcessPath`), so the window still opens, and that window says
+on stderr
+`the launcher's copy of Python is stale (<why>): run `orch app install` again; until then Spartito posts no notifications itself`.
+A stale copy is not used for posting notifications (`osascript` shows them). Running
+`orch app install` again replaces it and says
+`replaced the stale copy of the Python interpreter (<why>)`.
+
+**From a terminal.** With this home's launcher installed and pywebview present, `orch app`
+re-executes itself as the launcher's app (same pid, terminal and exit code): through the copy
+when it is current, else with `CFProcessPath`. Both variables naming the bundle are removed
+after start, so agents and browsers started from the window do not take its identity. In the
+real runs, `lsappinfo` showed the launcher's name, bundle identifier and bundle path for both
+a Finder-style start (`open`) and a terminal start, type `Foreground` for the window and
+`UIElement` (no Dock icon) for the hidden `--notify` start.
+
+**Linux:** `$XDG_DATA_HOME/applications/spartito.desktop` (default `~/.local/share`), whose
+`Exec=` runs `env <variables> <python> -m orchestrator app` (quoted as the Desktop Entry
+specification asks), with `Icon=spartito`, `StartupWMClass=Spartito` and
+`X-Orchestrator-Id=<identifier>`, and the icon at
+`icons/hicolor/{192x192,512x512}/apps/spartito.png` of the same data home. The Qt window
+reports the class `Spartito` and the desktop file name `spartito`.
+
+Messages: `installed <name> (<identifier>): <path>`, `removed <name>: <path>`,
+`<name> is not installed (<path>)`. Errors (exit code 1):
+`error: <path> exists and was not written by `orch app install`; it is left alone` and
+`error: the launcher is supported on macOS and Linux, not <platform>`.
+
 ## Menu-bar item
 
 ```sh
@@ -282,12 +448,12 @@ Its menu, from the top:
 - `Running agents: N` and `Open decisions: M`;
 - one line per open decision, `#<id>  <question>` with the question cut to 60 characters; at
   most 10, then `… and K more`;
-- **Open Spartito** starts `orch app` for the same home, as a separate process;
+- **Open Spartito** starts `orch app` for the same home, as a separate process (or brings its
+  window to the front);
 - **Quit** ends the menu-bar item only; an `orch app` window it opened stays open.
 
-A click on a decision opens `<dashboard URL>#decision:<id>` in the default browser when a
-dashboard server of this home is running (found as `orch app` finds it), otherwise it starts
-`orch app`.
+A click on a decision starts `orch app --decision <id>`: it opens the window there, or brings
+the open window to the front at that decision.
 
 The counts are read from the home's database every 5 seconds; no dashboard server is needed
 for them. One item per home: a second `orch menubar` prints
@@ -309,7 +475,13 @@ error: pyobjc-framework-Cocoa is not installed (install the extra orchestrator[m
   `orch app` always listens on `127.0.0.1`. The dashboard still has no login, and the Host and
   origin checks are unchanged (see [usage.md](usage.md#dashboard)).
 - **Notifications.** The poll and the claim of a notice are same-origin JSON POSTs, so another
-  website cannot keep `osascript` quiet or take notices.
+  website cannot keep `osascript` quiet or take notices. A clicked notification's target, like
+  a deep link's, is checked against a strict pattern before it is used, and one for another
+  home is ignored. Texts from agents reach `osascript` and `notify-send` as arguments, never
+  as script source.
+- **Launcher.** The script and the desktop entry hold the captured variables in clear text, as
+  the service's unit does; keep secrets out of them. The interpreter copy is signed ad hoc
+  (no developer identity) and runs only this environment's code.
 - **`/api/ping`** reports the tool, its version and a digest of the home, never a path.
 - **`orch app`** contacts only the loopback address of a recorded server, never the host
   written in `web.json`, and its requests to local servers ignore proxy settings and do not
@@ -330,6 +502,7 @@ packages is part of this repository.
 | macOS, Linux | pywebview | BSD-3-Clause |
 | macOS, Linux | bottle, proxy-tools (pulled by pywebview) | MIT |
 | macOS | pyobjc-core and the pyobjc frameworks Cocoa, Quartz, WebKit, Security, UniformTypeIdentifiers | MIT |
+| macOS | pyobjc-framework-UserNotifications 13.0 (extra `app`) | MIT |
 | Linux | QtPy | MIT |
 | Linux | packaging | Apache-2.0 or BSD-2-Clause |
 | Linux | PyQt6, PyQt6-WebEngine | GPL-3.0-only |
@@ -345,14 +518,32 @@ other platforms it installs nothing.
 
 ## Known limitations
 
-- A second `orch app` does not bring the open window to the front.
+- **Not verified by a real run** (the screen was locked during the unattended runs): posting a
+  notification as Spartito, a click on one, Spartito started by such a click, and the window
+  coming to the front after a second `orch app`. What was verified: the launcher's process is
+  the app for the system (`lsappinfo`, the main bundle), and the notification centre accepts
+  its request (a prompt instead of an immediate refusal) for both a framework build and a
+  uv-managed interpreter.
+- A denied permission for *Spartito* stays until it is changed in System Settings ›
+  Notifications; the notifications then come from `osascript`.
+- A launcher bundle under a temporary folder (`/tmp`, `/var/folders`) is refused by the
+  notification centre.
+- In the Chromium fallback window Spartito posts no notifications itself; the page in it can.
+- A click on an `osascript` notification opens Script Editor and cannot be redirected; its text
+  says where to look instead.
+- After a Python upgrade, Spartito posts no notifications itself until `orch app install` runs
+  again.
+- A Spartito started by a click while an `orch app` that is not the launcher's app holds the
+  window lock does not pass the click's target on.
+- With the launcher, the native window's WebKit data is under
+  `~/Library/WebKit/<identifier>` and `~/Library/Caches/<identifier>`, so the page's
+  preferences start afresh once; `orch app uninstall` does not remove them. Without it, they
+  are under `org.python.python`, shared by every Python app that uses WebKit.
+- One launcher place per machine and name: the launcher of another home at the same path is
+  replaced.
+- Qt's raise can un-maximize a maximized window.
 - If a link in the browser window of `orch app` opens another window, `orch app` keeps running
   until that one is closed too.
-- The page's preferences (such as the theme) and the notification permission belong to its
-  address, port included. With `orch app` serving on a free port they start afresh each time;
-  they carry over with a fixed `--port` or a running server.
-- On macOS the native window's WebKit data goes to `~/Library/WebKit/org.python.python` and
-  `~/Library/Caches/org.python.python`, shared by every Python app that uses WebKit.
 - `orch app` finds a running server only through `run/web.json`: an `orch web` started before
   this version is found once it has been restarted.
 - On Linux the backend check adds start-up time to every `orch app`, and a stop signal that
@@ -369,5 +560,5 @@ other platforms it installs nothing.
 - There is no `/favicon.ico` or `/apple-touch-icon.png` at the root; browsers that ask for them
   get a 404. Which icon Safari uses for **Add to Dock** is not documented; the page offers the
   manifest icons and an `apple-touch-icon`.
-- The only place to allow notifications is the **Notifications** section of the settings.
-- Notifications shown by `osascript` have no click action.
+- Linux paths (the desktop entry, the Qt window's class, `notify-send` with actions) are
+  covered by tests with fakes only, not by a run on a Linux desktop.
