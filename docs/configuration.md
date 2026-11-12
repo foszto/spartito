@@ -134,7 +134,9 @@ the first of these that is there:
   is allowed to show notifications: the **Enable notifications** button in its header, or
   **Models and effort** › **Notifications** › **Allow in this browser**. It shows them as
   Web Notifications, and a click opens the agent or the decision. It counts while it has
-  polled within the last 15 seconds; on Linux it comes first, then `notify-send`;
+  polled within the last 15 seconds; on Linux it comes first, then `notify-send`. The native
+  window of `spartito app` is not such a page: it has no **Enable notifications** button, and
+  Spartito shows the notifications itself there (on Linux with `notify-send`);
 - with a launcher that may post or a window, but none of these able to take it now: the
   notice waits, and the window shows it when it next opens;
 - otherwise, on macOS, `osascript` shows a plain notification, whose text ends with where to

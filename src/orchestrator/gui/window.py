@@ -90,6 +90,8 @@ STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
 APP_LOG = "app.log"  # in config.logs_dir(): what the window process says
 APP_LOG_LIMIT = 1024 * 1024  # bytes; emptied at the next start when above
 ASK_WAIT = 20.0  # seconds for the native window to be shown before permission is asked anyway
+QT_MODULE = "webview.platforms.qt"  # pywebview's Qt backend, once pywebview has loaded it
+MEDIA_FEATURES = ("MediaAudioCapture", "MediaVideoCapture", "MediaAudioVideoCapture")
 LINUX_BROWSERS = (
     "google-chrome",
     "google-chrome-stable",
@@ -207,10 +209,12 @@ class Session:
     done: threading.Event = field(default_factory=threading.Event)  # end now
     signal: int | None = None  # the SIGTERM or SIGHUP that ended it
 
-    def window_url(self) -> str:
+    def window_url(self, native: bool = False) -> str:
         """The page in the window: marked as the window's (`?app=<baseline>`, see app_open.py),
-        at its target."""
-        return f"{self.url}?app={self.baseline}{fragment(self.target)}"
+        and as pywebview's (`&native=1`: the page leaves the notifications to this process and
+        the notices, app.js), at its target."""
+        mark = "&native=1" if native else ""
+        return f"{self.url}?app={self.baseline}{mark}{fragment(self.target)}"
 
     def elapsed(self, since: float) -> bool:
         return self.close_after is not None and time.monotonic() - since >= self.close_after
@@ -352,7 +356,7 @@ def native_window(session: Session) -> bool:
     try:
         window = webview.create_window(
             config.PROJECT_NAME,
-            session.window_url(),
+            session.window_url(native=True),
             width=WINDOW_SIZE[0],
             height=WINDOW_SIZE[1],
             text_select=True,
@@ -371,6 +375,9 @@ def native_window(session: Session) -> bool:
             session.done.set()
 
         window.events.closed += on_closed
+        if this_platform().startswith("linux"):
+            # Once pywebview has loaded its backend, before it makes the window's page.
+            window.events.initialized += qt_permissions_for
 
         def close_later() -> None:  # runs in pywebview's own thread, once the GUI runs
             if this_platform() == "darwin" and not session.bundled:
@@ -639,6 +646,56 @@ def name_qt_app() -> None:
         return
     QGuiApplication.setApplicationName(launcher.WM_CLASS)
     QGuiApplication.setDesktopFileName(launcher.slug(config.PROJECT_NAME))
+
+
+def qt_permissions_for(renderer: str) -> None:
+    """pywebview's `initialized` event (on the main thread, its backend loaded, no window yet):
+    patch the Qt backend's permission handler when that is the backend. Returns None: False
+    would cancel the window."""
+    if renderer == "qtwebengine":
+        patch_qt_permissions()
+
+
+def patch_qt_permissions() -> bool:
+    """Replace the permission handler of pywebview's Qt pages (`BrowserView.WebPage
+    .onFeaturePermissionRequested`, connected when a page is made) with one that answers as it
+    does, media capture granted and the rest (notifications too) denied, but with the
+    PermissionPolicy members: pywebview 6.2 passes plain ints, which PyQt6 refuses with a
+    TypeError in the slot. Only an already loaded backend is patched, so Qt is never imported
+    here; without it, or without the handler (a pywebview that changed it), nothing changes."""
+    qt = sys.modules.get(QT_MODULE)
+    page = getattr(getattr(qt, "BrowserView", None), "WebPage", None)
+    if page is None or not callable(getattr(page, "onFeaturePermissionRequested", None)):
+        log_line("Qt permissions: pywebview's handler not found; left as it is")
+        return False
+    page.onFeaturePermissionRequested = answer_permission
+    log_line("Qt permissions: pywebview's handler replaced (media granted, the rest denied)")
+    return True
+
+
+def answer_permission(page, url, feature) -> None:
+    """A Qt page's permission request: media capture granted, the rest denied. Runs as a Qt
+    slot, so nothing escapes it: PyQt6 aborts the process on an exception a slot lets out, so
+    not even the line about a failure (stderr may be a closed pipe)."""
+    try:
+        kind = type(page)
+        features = getattr(kind, "Feature", kind)
+        media = [getattr(features, name) for name in MEDIA_FEATURES if hasattr(features, name)]
+        page.setFeaturePermission(url, feature, permission_policy(kind, feature in media))
+    except Exception as exc:
+        with contextlib.suppress(Exception):
+            name = getattr(feature, "name", feature)
+            say(f"a page's request for {name}: not answered ({first_line(exc)})")
+
+
+def permission_policy(kind: type, grant: bool):
+    """QWebEnginePage's PermissionPolicy member (scoped in PyQt6 and PySide6, also on the class in
+    PyQt5); the int only where the binding has no such enum."""
+    name = "PermissionGrantedByUser" if grant else "PermissionDeniedByUser"
+    for holder in (getattr(kind, "PermissionPolicy", None), kind):
+        if holder is not None and (member := getattr(holder, name, None)) is not None:
+            return member
+    return 1 if grant else 2
 
 
 def bring_native_forward(window) -> tuple[bool, str]:

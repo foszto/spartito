@@ -5,9 +5,11 @@ test uses port 8787 or opens a real window or browser."""
 from __future__ import annotations
 
 import ast
+import enum
 import json
 import os
 import platform
+import shutil
 import signal
 import socket
 import subprocess
@@ -334,16 +336,16 @@ class Event:
         self.handlers.append(handler)
         return self
 
-    def fire(self) -> None:
+    def fire(self, *args) -> None:
         for handler in self.handlers:
-            handler()
+            handler(*args)
 
 
 class FakeWindow:
     def __init__(self, title: str, url: str, **options) -> None:
         self.title, self.url, self.options = title, url, options
         self.base = url.split("?")[0]  # the server's URL
-        self.events = types.SimpleNamespace(closed=Event())
+        self.events = types.SimpleNamespace(closed=Event(), initialized=Event())
         self.destroyed = threading.Event()
         self.raised: list[str] = []  # restore and show, as called
         self.location = url  # what evaluate_js("location.href") answers
@@ -387,6 +389,7 @@ class FakeWebview(types.ModuleType):
         self.main_thread = False
         self.open_for: float | None = 0.5  # seconds until the user closes it; None: never
         self.on_start = lambda: None  # what happens once the window is up
+        self.renderer = "cocoa"  # what the `initialized` event gets: the backend's renderer
 
     def create_window(self, title: str, url: str, **options) -> FakeWindow:
         self.windows.append(FakeWindow(title, url, **options))
@@ -398,6 +401,7 @@ class FakeWebview(types.ModuleType):
         self.options = options
         self.main_thread = threading.current_thread() is threading.main_thread()
         win = self.windows[-1]
+        win.events.initialized.fire(self.renderer)  # the backend loaded, no window yet
         self.ping = get_json(win.base + "api/ping")
         if func:
             threading.Thread(target=func, daemon=True).start()
@@ -562,7 +566,7 @@ def test_native_window_on_an_own_server(webview: FakeWebview):
     assert result.stderr == DOCK_HINT + "\n" + NO_LAUNCHER  # macOS without the launcher
     (win,) = webview.windows
     assert result.stdout == f"web UI: {win.base}\n"
-    assert win.url == f"{win.base}?app=0"  # the window's page, before any request
+    assert win.url == f"{win.base}?app=0&native=1"  # the window's page, before any request
     assert webview.options["icon"] == str(launcher.ICNS)  # the Dock icon
     assert win.title == config.PROJECT_NAME
     assert win.options["text_select"] is True
@@ -859,6 +863,215 @@ def test_linux_backend_that_cannot_start(
     assert_own_server_gone(url)
 
 
+# -- pywebview's Qt permission handler (window.patch_qt_permissions) -------------------------
+
+
+class FakeQtPage:
+    """A QWebEnginePage as PyQt6 has it: scoped enums, and a setFeaturePermission that refuses
+    a plain int as the policy (pywebview 6.2's bug)."""
+
+    Feature = enum.Enum(
+        "Feature",
+        "Notifications Geolocation MediaAudioCapture MediaVideoCapture MediaAudioVideoCapture",
+    )
+    PermissionPolicy = enum.Enum(
+        "PermissionPolicy", "PermissionGrantedByUser PermissionDeniedByUser"
+    )
+
+    def __init__(self) -> None:
+        self.answers: list[tuple] = []
+
+    def setFeaturePermission(self, url, feature, policy) -> None:  # noqa: N802 (Qt's name)
+        if not isinstance(policy, self.PermissionPolicy):
+            raise TypeError("setFeaturePermission(): argument 3 has unexpected type 'int'")
+        self.answers.append((url, feature, policy))
+
+    def onFeaturePermissionRequested(self, url, feature) -> None:  # noqa: N802 (pywebview's)
+        self.setFeaturePermission(url, feature, 1 if "Media" in feature.name else 2)
+
+
+@pytest.fixture
+def qt_backend(monkeypatch: pytest.MonkeyPatch) -> type[FakeQtPage]:
+    """pywebview's Qt backend, as loaded by pywebview: BrowserView.WebPage is the page class."""
+    page = type("WebPage", (FakeQtPage,), {})
+    module = types.ModuleType(window.QT_MODULE)
+    module.BrowserView = type("BrowserView", (), {"WebPage": page})  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, window.QT_MODULE, module)
+    return page
+
+
+def test_pywebviews_handler_fails_without_the_patch(qt_backend):
+    page = qt_backend()
+    with pytest.raises(TypeError):
+        page.onFeaturePermissionRequested("url", page.Feature.Notifications)
+
+
+def test_patched_handler_grants_media_and_denies_the_rest(qt_backend):
+    assert window.patch_qt_permissions() is True
+    page, feature, policy = qt_backend(), qt_backend.Feature, qt_backend.PermissionPolicy
+    for one in feature:
+        page.onFeaturePermissionRequested("url", one)
+    granted = {f for f in feature if f.name.startswith("Media")}
+    assert page.answers == [
+        (
+            "url",
+            one,
+            policy.PermissionGrantedByUser if one in granted else policy.PermissionDeniedByUser,
+        )
+        for one in feature
+    ]
+    assert (
+        window.app_log()
+        .read_text()
+        .endswith("Qt permissions: pywebview's handler replaced (media granted, the rest denied)\n")
+    )
+
+
+def test_patched_handler_lets_no_exception_out(qt_backend, capsys):
+    def refuse(self, url, feature, policy) -> None:
+        raise RuntimeError("the page is gone")
+
+    qt_backend.setFeaturePermission = refuse
+    window.patch_qt_permissions()
+    qt_backend().onFeaturePermissionRequested("url", qt_backend.Feature.Notifications)
+    said = "a page's request for Notifications: not answered (the page is gone)\n"
+    assert capsys.readouterr().err == said
+    assert window.app_log().read_text().endswith(said)
+
+
+def test_patched_handler_lets_no_exception_out_of_its_failure_line(qt_backend, monkeypatch):
+    def refuse(self, url, feature, policy) -> None:
+        raise RuntimeError("the page is gone")
+
+    def broken_pipe(line: str) -> None:
+        raise BrokenPipeError(32, "Broken pipe")  # stderr gone
+
+    qt_backend.setFeaturePermission = refuse
+    monkeypatch.setattr(window, "say", broken_pipe)
+    window.patch_qt_permissions()
+    qt_backend().onFeaturePermissionRequested("url", qt_backend.Feature.Notifications)  # no raise
+
+
+def test_policy_of_a_binding_with_unscoped_or_no_enums():
+    unscoped = type("Page", (), {"PermissionGrantedByUser": "g", "PermissionDeniedByUser": "d"})
+    assert (
+        window.permission_policy(unscoped, True),
+        window.permission_policy(unscoped, False),
+    ) == (
+        "g",
+        "d",
+    )
+    assert (window.permission_policy(object, True), window.permission_policy(object, False)) == (
+        1,
+        2,
+    )
+
+
+@pytest.mark.parametrize("missing", ["module", "class", "method"])
+def test_patch_without_pywebviews_handler_changes_nothing(monkeypatch, missing):
+    module = types.ModuleType(window.QT_MODULE)
+    if missing == "class":
+        module.BrowserView = type("BrowserView", (), {})  # type: ignore[attr-defined]
+    elif missing == "method":
+        module.BrowserView = type("BrowserView", (), {"WebPage": type("WebPage", (), {})})  # type: ignore[attr-defined]
+    if missing == "module":
+        monkeypatch.delitem(sys.modules, window.QT_MODULE, raising=False)
+    else:
+        monkeypatch.setitem(sys.modules, window.QT_MODULE, module)
+    assert window.patch_qt_permissions() is False
+    assert (
+        window.app_log()
+        .read_text()
+        .endswith("Qt permissions: pywebview's handler not found; left as it is\n")
+    )
+
+
+@pytest.mark.parametrize(
+    ("platform_name", "renderer", "patched"),
+    [("linux", "qtwebengine", True), ("linux", "gtkwebkit2", False), ("darwin", "cocoa", False)],
+)
+def test_native_window_patches_only_the_qt_backend(
+    webview: FakeWebview, qt_backend, linux: Path, monkeypatch, platform_name, renderer, patched
+):
+    monkeypatch.setattr(window, "BACKEND_PROBE", NOTE_GUI)
+    monkeypatch.setattr(window, "this_platform", lambda: platform_name)
+    webview.renderer = renderer
+    original = qt_backend.onFeaturePermissionRequested
+    assert run_app().exit_code == 0
+    assert (qt_backend.onFeaturePermissionRequested is window.answer_permission) is patched
+    if not patched:
+        assert qt_backend.onFeaturePermissionRequested is original
+    handlers = webview.windows[0].events.initialized.handlers
+    assert handlers == ([window.qt_permissions_for] if platform_name == "linux" else [])
+
+
+def test_the_window_url_keeps_the_native_mark_when_rewritten():
+    """The page rewrites its query once it applied a request (a reload applies it no more):
+    only through appSearch, which keeps `&native=1`, or a reload would bring the Notification
+    API back in the native window."""
+    script = (PACKAGE / "web" / "static" / "app.js").read_text()
+    assert script.count("`?app=${") == 1  # a template building the query: appSearch only
+    rewrites = [line for line in script.splitlines() if "replaceState(" in line]
+    assert all("appSearch(" in line or "`#" in line for line in rewrites)  # or a hash only
+    assert any("appSearch(request.id)" in line for line in rewrites)
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    (helper,) = [line for line in script.splitlines() if line.startswith("const appSearch =")]
+    for native, query in ((True, "?app=7&native=1"), (False, "?app=7")):
+        code = f"const nativeWindow = {str(native).lower()};\n{helper}\nprocess.stdout.write(appSearch(7));"
+        done = subprocess.run([node, "-e", code], capture_output=True, text=True, check=True)
+        assert done.stdout == query
+
+
+def test_the_native_window_page_leaves_notifications_to_spartito():
+    """The page of pywebview's window (`&native=1`) has no Notification API: no header button,
+    no permission asked, no polls; its settings say who shows them."""
+    script = (PACKAGE / "web" / "static" / "app.js").read_text()
+    assert "get('native') === '1'" in script
+    assert "const PageNotification = nativeWindow ? undefined : window.Notification;" in script
+    assert "box.append(nativeWindowNotify())" in script
+    assert script.count("PageNotification.requestPermission()") == 2  # header and settings only
+
+
+@pytest.mark.parametrize(
+    ("search", "native"),
+    [
+        ("?app=7&native=1", True),  # pywebview's window
+        ("", False),  # a browser tab
+        ("?app=7", False),  # Chromium in app mode
+        ("?app=7&native=0", False),
+        ("?app=7&native=true", False),
+        ("?native=1", False),  # no window of `spartito app`
+    ],
+)
+def test_the_page_tells_the_native_window_from_its_query(search, native):
+    """The page's own lines, run under node with a fake location and Notification API: only
+    the native window's query hides the Notification API."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    script = (PACKAGE / "web" / "static" / "app.js").read_text()
+    names = ("appParam", "nativeWindow", "PageNotification")
+    lines = [
+        line for line in script.splitlines() for name in names if line.startswith(f"const {name} =")
+    ]
+    assert len(lines) == len(names)
+    code = "\n".join(
+        [
+            f"const location = {{ search: {json.dumps(search)} }};",
+            "function FakeNotification() {}",
+            "const window = { Notification: FakeNotification };",
+            *lines,
+            "process.stdout.write(JSON.stringify({ nativeWindow,"
+            " fake: PageNotification === FakeNotification,"
+            " absent: PageNotification === undefined }));",
+        ]
+    )
+    done = subprocess.run([node, "-e", code], capture_output=True, text=True, check=True)
+    assert json.loads(done.stdout) == {"nativeWindow": native, "fake": not native, "absent": native}
+
+
 # -- signals, the lock while serving --------------------------------------------------------
 
 
@@ -1005,7 +1218,7 @@ def test_a_request_from_before_the_window_is_not_applied(webview: FakeWebview):
     webview.open_for = 0.5
     assert run_app().exit_code == 0
     (win,) = webview.windows
-    assert win.url == f"{win.base}?app={earlier}"  # the page applies only later ones
+    assert win.url == f"{win.base}?app={earlier}&native=1"  # the page applies only later ones
     assert win.raised == []
     assert app_open.answered(earlier) is None
 
@@ -1021,7 +1234,7 @@ def test_a_request_from_before_the_window_is_not_applied(webview: FakeWebview):
 def test_the_window_opens_at_its_target(webview: FakeWebview, args, fragment):
     assert run_app(*args).exit_code == 0
     (win,) = webview.windows
-    assert win.url == f"{win.base}?app=0{fragment}"
+    assert win.url == f"{win.base}?app=0&native=1{fragment}"
 
 
 def test_the_default_browser_opens_at_the_target(nothing_real: list[str], monkeypatch):

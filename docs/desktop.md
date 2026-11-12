@@ -188,7 +188,8 @@ the notice first, so it is shown once. On macOS, in this order:
    ` — open Spartito to answer` (a decision) or ` — open Spartito to see it`.
 
 On Linux: a permitted page, else `notify-send` (see [Linux](#linux)), else the notice waits
-for a page.
+for a page. The native window of `spartito app` is no such page there: Spartito shows the
+notices itself with `notify-send`, and a click brings the window forward at the target.
 
 **When the chosen way does not take it.** A background helper watches each notice left to
 the window, the launcher's app or a page. The window or a page that has not claimed it
@@ -220,6 +221,13 @@ left of the address; Safari: **Settings › Websites › Notifications**). Befor
 button, the only control sat inside the settings dialog, so a fresh browser profile never
 asked and the page never showed a notification. The permission belongs to the address, port
 included; `spartito app` therefore reuses the port of its last own server (`run/app-port`).
+The native window of `spartito app` (opened with `?app=<id>&native=1`) has no **Enable
+notifications** button and asks for nothing: the page there leaves the Web Notifications
+API alone, and **Notifications** in its settings says that Spartito shows them itself. On
+macOS its WebKit has no such API and the window process takes the notices; on Linux Qt
+WebEngine has no dependable way to show them, so `notify-send` does (see [Linux](#linux)).
+The browser window of `spartito app` (a Chromium-family browser in app mode) is a page like any
+other and can be allowed.
 
 **Allowing Spartito** (macOS). The window of `spartito app` started through the launcher asks
 for permission for *Spartito* once it is shown, the first time it runs; allow it in the
@@ -465,7 +473,9 @@ package's PNG.
   `unix:path=$XDG_RUNTIME_DIR/bus` (`/run/user/<uid>/bus` without that variable), when that
   socket exists.
 
-Without `notify-send`, Linux shows none; a page still can.
+Without `notify-send`, Linux shows none; a page in a browser still can, the native window of
+`spartito app` cannot (install `notify-send`: the `libnotify-bin` package on Debian and
+Ubuntu, `libnotify` on Fedora and Arch).
 
 **Links.** `#<agent-id>` selects an agent and `#decision:<id>` opens a decision, for example
 `http://127.0.0.1:8787/#decision:12`.
@@ -579,6 +589,14 @@ the window too, with exit code 128 + the signal (143, 129). If `--port` is taken
   `QTWEBENGINE_DISABLE_SANDBOX=1` or `QTWEBENGINE_CHROMIUM_FLAGS=--no-sandbox`; `spartito app`
   never turns it off itself. In a container, a small `/dev/shm` can crash it (raise Docker's
   `--shm-size`), and Chromium refuses to run as root unless the sandbox is off.
+- **Permissions.** pywebview 6.2's Qt handler for a page's permission requests passes plain
+  numbers where PyQt6 wants its `PermissionPolicy` enum, so any request (such as a page asking
+  to show notifications) ended in a `TypeError` in the window process. `spartito app` replaces
+  that handler, once pywebview has loaded its Qt backend and before the window's page is made,
+  with one that answers the same way (microphone and camera allowed, everything else,
+  notifications included, denied) with the enum; `logs/app.log` says
+  `Qt permissions: pywebview's handler replaced …`, or `… not found; left as it is` when a
+  later pywebview has no such handler.
 - **Backend.** `spartito app` tells pywebview to use Qt, unless `PYWEBVIEW_GUI` chooses another
   backend (for example `gtk`, whose packages the extra does not install). The backend is
   first started in a child process, because Qt ends the whole process when it cannot load its
