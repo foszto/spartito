@@ -47,6 +47,11 @@ def kinds(orch: Orchestrator, notice: int) -> list[tuple[str, str | None]]:
 PROMPT_SECONDS = 2.0  # a caller that did not wait for the busy store (held 3 s or longer)
 
 
+def seconds_in(text: str, before: str) -> float:
+    """The number of seconds in `text` right after `before` ("… busy for 0.3 s …")."""
+    return float(text.split(before, 1)[1].split(" s", 1)[0])
+
+
 @pytest.mark.parametrize("busy", [3.0, 10.0])
 def test_a_store_busy_for_seconds_records_the_notice_late_and_the_window_takes_it(
     orch: Orchestrator, fake_osascript, macos, no_detached_helpers, busy
@@ -57,12 +62,13 @@ def test_a_store_busy_for_seconds_records_the_notice_late_and_the_window_takes_i
     desktop.app_present("allowed")
     holder = sqlite3.connect(orch.store.path, isolation_level=None, check_same_thread=False)
     holder.execute("BEGIN IMMEDIATE")
+    begin = time.monotonic()  # before the timer: the store is free `busy` s after it, or later
     threading.Timer(busy, lambda: (holder.execute("ROLLBACK"), holder.close())).start()
-    begin = time.monotonic()
     desktop.show(orch.store, "a-1 finished", "a-1")
+    returned = time.monotonic() - begin  # the notice was spooled before this
     # The caller goes on after STORE_WAIT_SECONDS (0.25 s), not once the store is free: the
     # bound leaves a slow runner room and is still well below the 3 s the store is busy.
-    assert time.monotonic() - begin < PROMPT_SECONDS
+    assert returned < PROMPT_SECONDS
     ((kind, spooled, opener),) = no_detached_helpers
     assert kind == "spool" and Path(spooled).exists()
     helper = threading.Thread(target=desktop.helper, args=([kind, spooled, opener],))
@@ -84,10 +90,14 @@ def test_a_store_busy_for_seconds_records_the_notice_late_and_the_window_takes_i
         ("record", None),
         ("route", "window-system"),
     ]
-    assert traced["steps"][0]["detail"].startswith("spooled: the store was busy for 0.")
+    spooled_why = traced["steps"][0]["detail"]
+    assert spooled_why.startswith("spooled: the store was busy for ")
+    assert seconds_in(spooled_why, "busy for ") < PROMPT_SECONDS  # STORE_WAIT_SECONDS, not `busy`
     late = traced["steps"][2]["detail"]
     assert late.startswith("recorded from the spool, ") and late.endswith(" s after it was spooled")
-    assert float(late.split(", ")[1].split(" s ")[0]) >= busy - 0.5  # how long it was busy
+    # Spooled at most `returned` s after `begin`, recorded once the store was free (`busy` s
+    # after it at the earliest); 0.1 s for the rounding to tenths and the wall clock.
+    assert seconds_in(late, "spool, ") >= busy - returned - 0.1
     assert traced["summary"]["path"] == "window-system"
     assert list(desktop.spool_dir().iterdir()) == []
 
@@ -167,7 +177,10 @@ def test_the_spool_helper_says_when_it_gives_up_and_why(
     assert desktop.helper(args) == 0
     (line,) = [x for x in desktop.notice_log().read_text().splitlines() if " fallback " in x]
     assert f"spool:{Path(args[1]).name} helper:{os.getpid()} fallback" in line
-    assert "gave up after 0." in line and "(OperationalError: database is locked)" in line
+    # SPOOL_GIVE_UP_SECONDS (0.3 s here) and one pause of 0.5 s, with room for a slow runner;
+    # not the 600 s default
+    assert 0.3 <= seconds_in(line, "gave up after ") < 0.5 + PROMPT_SECONDS
+    assert "(OperationalError: database is locked)" in line
     assert Path(args[1]).exists()  # left for the next poll
     monkeypatch.setattr(desktop, "Store", Store)
     desktop.page_present()
@@ -290,7 +303,9 @@ def test_the_osascript_path_keeps_the_caller_quick_when_the_store_locks_after_re
     finally:
         holder.execute("ROLLBACK")
         holder.close()
-    assert took < desktop.STORE_WAIT_SECONDS + 0.4
+    # The steps after recording wait STORE_WAIT_SECONDS for the store, not the 5 s of the
+    # detached helper or the store's 30 s; the bound leaves a slow runner room.
+    assert took < PROMPT_SECONDS
     until(lambda: calls(fake_osascript), what="the notification")
     log = desktop.notice_log().read_text()
     assert " shown osascript: osascript started" in log and " lost osascript: " in log
