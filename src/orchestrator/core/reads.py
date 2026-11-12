@@ -74,9 +74,13 @@ def get_usage(orch: Facade, run_id: int) -> Usage | None:
 
 
 def total_spent(orch: Facade) -> dict[str, Any]:
-    """Tokens and cost of every run recorded so far (models.spent): archiving or restoring
-    an agent leaves them as they are. `tokens` as in the agent view (null: none reported)."""
-    total = spent(*orch.store.all_usage())
+    """Tokens and cost of every run recorded so far (models.spent: the agents with a run by
+    old code walked in order, the others summed by the store): archiving or restoring an
+    agent leaves them as they are. `tokens` as in the agent view (null: none reported)."""
+    sums, runs, usage = orch.store.usage_sums()
+    total = spent(runs, usage)
+    for agent_sum in sums:
+        total = total + agent_sum
     return {"cost_usd": total.cost or 0, "tokens": total.tokens()}
 
 

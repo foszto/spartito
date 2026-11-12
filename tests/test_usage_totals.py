@@ -12,7 +12,7 @@ import pytest
 from test_store import OLD_SCHEMA
 
 from orchestrator import store as store_module
-from orchestrator.models import Agent, Event, RunStatus, Usage
+from orchestrator.models import COMPACT, Agent, Event, RunStatus, Usage, spent
 from orchestrator.runner import record_usage
 from orchestrator.service import Orchestrator
 from orchestrator.store import Store
@@ -161,6 +161,53 @@ def test_the_total_spent_adds_up_each_agents_own_total(store: Store) -> None:
         "cost_usd": 1.375,
         "tokens": {"in": 40, "out": 4, "cache_read": 0, "cache_write": 0},
     }
+
+
+def test_the_stores_sums_give_what_walking_every_run_gives(store: Store) -> None:
+    """usage_sums (summed in SQL, old-code agents walked) against models.spent over all
+    runs, on a mixed history: usage records, old-code session totals between them, a
+    compaction, a failed run, runs without a cost, a zero cost, an archived agent and a
+    record whose run is gone."""
+    for agent_id in ("b-1", "c-1", "d-1"):
+        store.add_agent(
+            Agent(id=agent_id, project="p", name=agent_id, role="worker", provider="claude",
+                  cwd="/w")
+        )  # fmt: skip
+
+    def turn(agent_id: str, usage: Usage | None, cost: float | None, **options) -> None:
+        status = options.pop("status", RunStatus.DONE)
+        run = store.add_run(agent_id, "x", **options)
+        if usage is not None:
+            store.set_usage(run.id, agent_id, usage)
+        store.finish_run(run.id, status, cost_usd=cost)
+
+    turn("a-1", Usage(30, 3, 300, 30, cost_usd=0.1), 0.1)  # after the fixture's old runs
+    turn("a-1", None, 1.3)  # old code again: a session total
+    turn("b-1", Usage(10, 1, 100, 10, cost_usd=0.3), 0.3)
+    turn("b-1", Usage(5, 1, 0, 0, cost_usd=0.07), 0.07, kind=COMPACT)
+    turn("b-1", None, None, status=RunStatus.FAILED)  # no result, no usage
+    turn("b-1", Usage(7, 2, 0, 0), None)  # tokens without a cost (Codex)
+    turn("c-1", None, 0.0)  # a zero cost: not an old-code session total
+    turn("c-1", Usage(1, 1, 1, 1, cost_usd=0.2), 0.2)
+    turn("d-1", Usage(2, 2, 2, 2, cost_usd=0.4), 0.4)
+    store.archive("d-1")
+    store.set_usage(999, "gone", Usage(1000, 1000, 0, 0, cost_usd=9.0))
+    every_run, every_record = [], {}
+    for agent in store.list_agents():
+        runs, _, usage, _ = store.snapshot(agent.id)
+        every_run += runs
+        every_record |= usage
+    walked = spent(every_run, every_record)
+
+    sums, old_code_runs, _ = store.usage_sums()
+
+    assert len(sums) == 3 and {run.agent_id for run in old_code_runs} == {"a-1"}
+    assert Orchestrator(store).total_spent() == {
+        "cost_usd": walked.cost,
+        "tokens": walked.tokens(),
+    }
+    assert walked.cost == 2.27  # a-1: 0.75 + 0.1 raised to 1.3; b-1: 0.37; c-1: 0.2; d-1: 0.4
+    assert walked.tokens() == {"in": 55, "out": 10, "cache_read": 403, "cache_write": 43}
 
 
 def test_nothing_spent_yet_is_zero_without_tokens(tmp_path: Path) -> None:

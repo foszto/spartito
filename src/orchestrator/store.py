@@ -197,6 +197,9 @@ CREATE TABLE IF NOT EXISTS notices (
     claimed_at TEXT
 );
 CREATE INDEX IF NOT EXISTS runs_agent ON runs(agent_id, id);
+-- Covers what Store.usage_sums reads of every run (agent_id, cost_usd and the id), so the
+-- dashboard's total never reads the runs' text.
+CREATE INDEX IF NOT EXISTS runs_spend ON runs(agent_id, cost_usd);
 CREATE INDEX IF NOT EXISTS events_agent ON events(agent_id, id);
 -- What happened to each board item (board.py), written in the same transaction as the
 -- change; a table of its own, unknown to older code (a change it makes is a gap, shown as
@@ -1131,17 +1134,35 @@ class Store:
         ).fetchall()
         return {row["run_id"]: from_row(Usage, row) for row in rows}
 
-    def all_usage(self) -> tuple[list[Run], dict[int, Usage]]:
-        """Every recorded run of every agent (archived ones too) with the usage records,
-        read together; for models.spent. The runs carry only id, agent_id and cost_usd
-        (the rest is left at its default): this is read on every dashboard refresh."""
+    def usage_sums(self) -> tuple[list[Usage], list[Run], dict[int, Usage]]:
+        """What models.spent needs of every agent's runs (archived agents too), read
+        together and cheaply enough for every dashboard refresh: the sums of the usage
+        records per agent, for the agents without a run by old code; and, for those with
+        one (no record but a cost: a session total, see models.running_total), their runs
+        (only id, agent_id and cost_usd; the rest left at its default) and records, to be
+        walked in order. Reads the runs through the runs_spend index, never their text."""
+        sums = ", ".join(f"SUM(u.{key}) AS {key}" for key in (*TOKEN_FIELDS, "cost_usd"))
         with self._read() as conn:
-            rows = conn.execute("SELECT id, agent_id, cost_usd FROM runs").fetchall()
+            rows = conn.execute(
+                f"SELECT r.agent_id, {sums},"
+                " SUM(u.run_id IS NULL AND COALESCE(r.cost_usd, 0) <> 0) AS old_code"
+                " FROM runs r LEFT JOIN run_usage u ON u.run_id = r.id GROUP BY r.agent_id"
+            ).fetchall()
+            walked = [row["agent_id"] for row in rows if row["old_code"]]
+            marks = ", ".join("?" * len(walked))
+            runs = conn.execute(
+                f"SELECT id, agent_id, cost_usd FROM runs WHERE agent_id IN ({marks})", walked
+            ).fetchall()
             records = conn.execute(
                 "SELECT u.* FROM run_usage u JOIN runs r ON r.id = u.run_id"
+                f" WHERE r.agent_id IN ({marks})",
+                walked,
             ).fetchall()
-        runs = [Run(row["id"], row["agent_id"], "", cost_usd=row["cost_usd"]) for row in rows]
-        return runs, {row["run_id"]: from_row(Usage, row) for row in records}
+        return (
+            [from_row(Usage, row) for row in rows if not row["old_code"]],
+            [Run(row["id"], row["agent_id"], "", cost_usd=row["cost_usd"]) for row in runs],
+            {row["run_id"]: from_row(Usage, row) for row in records},
+        )
 
     def get_usage(self, run_id: int) -> Usage | None:
         with self._conn() as conn:
