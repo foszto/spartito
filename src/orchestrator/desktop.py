@@ -548,14 +548,17 @@ def carry_out(
 ) -> None:
     """Do what `route` chose for a recorded notice (a row: id, text, agent_id, decision_id):
     show it at once (osascript, notify-send; claimed with the choice), or have the detached
-    helper see it taken (`deliver`, run here when this is that helper)."""
+    helper see it taken (`deliver`, run here when this is that helper). The caller's steps
+    wait at most STORE_WAIT_SECONDS for the store (else only the log has them)."""
     nid, body, decision_id = notice["id"], str(notice["text"]), notice.get("decision_id")
+    wait = 5.0 if detached else STORE_WAIT_SECONDS
     if choice.taker == OSASCRIPT:
         shown = plain(body, decision_id)
         if shown is not None:
-            note(store, nid, step("shown", PATHS[OSASCRIPT], "osascript started"))
+            note(store, nid, step("shown", PATHS[OSASCRIPT], "osascript started"), wait)
         else:
-            note(store, nid, step("drop", PATHS[OSASCRIPT], "osascript could not be started"))
+            gone = "osascript could not be started"
+            note(store, nid, step("drop", PATHS[OSASCRIPT], gone), wait)
         if detached and shown is not None:
             shown.join(TIMEOUT_SECONDS + 1)  # this process ends next
         return
@@ -566,7 +569,7 @@ def carry_out(
             note(store, nid, step("shown", PATHS[LINUX], "notify-send"))
             linux_helper(send, body, target)
         elif spawn(["linux", send, body, target]):
-            note(store, nid, step("shown", PATHS[LINUX], "notify-send helper started"))
+            note(store, nid, step("shown", PATHS[LINUX], "notify-send helper started"), wait)
         else:
             gone = "the notify-send helper did not start"
             store.release_notice(
@@ -583,6 +586,7 @@ def carry_out(
             store,
             nid,
             step("fallback", choice.path, "the helper did not start; nobody escalates it"),
+            wait,
         )
 
 
@@ -914,7 +918,7 @@ def summary(notice: dict[str, Any]) -> dict[str, Any]:
     current = steps
     if claimed:  # a release before the final claim belongs to an earlier attempt
         cut = max((i for i, s in enumerate(steps) if s["step"] == "release"), default=-1)
-        if any(s["step"] == "claim" for s in steps[cut + 1 :]):
+        if cut >= 0 and any(s["step"] == "claim" for s in steps[cut + 1 :]):
             current = steps[cut + 1 :]
     why = next((s for s in reversed(current) if s["step"] in REASONS), None)
     if why is None and current is not steps:

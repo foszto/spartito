@@ -189,36 +189,108 @@ def test_a_helper_ending_with_an_error_says_so(orch: Orchestrator, macos, monkey
 # -- notices that waited: one rule for the window, the launcher's app and a page -------------
 
 
+def shown_by(orch: Orchestrator, taker: str, tmp_path: Path, after: int) -> list[tuple]:
+    """(id, text) of what the launcher's posting process posts (fake centre, allowed) or what
+    a page's poll lists, in order."""
+    if taker == "launcher":
+        center = FakeCenter(status=2)
+        notifier.post_pending(orch, center, tmp_path / "X.app", [])
+        return [(int(post[0].rsplit("-", 1)[1]), post[2]) for post in center.posted]
+    return [(n["id"], n["text"]) for n in orch.page_notices(after)]
+
+
 @pytest.mark.parametrize("taker", ["launcher", "page"])
-def test_what_waited_is_shown_only_while_worth_it_and_without_a_flood(
-    orch: Orchestrator, fake_osascript, macos, tmp_path, taker
+def test_a_burst_routed_at_once_is_shown_in_full(
+    orch: Orchestrator, fake_osascript, macos, tmp_path, no_detached_helpers, taker
 ):
-    """Waiting notices for decisions that are gone are dropped; of the rest only the newest
-    few are shown, the older ones dropped, each traced (the window: its backlog test)."""
+    """Notices routed to a taker just now are fresh, however many: none is cut."""
+    if taker == "launcher":
+        desktop.record_grant("local.x.app", fake_bundle(tmp_path))
+    else:
+        desktop.page_present()
+    before = orch.notice_cursor()
+    for n in range(5):
+        desktop.show(orch.store, f"a-{n} finished", f"a-{n}")
+    burst = [n["id"] for n in orch.notices()]
+    assert len(burst) == 5 and {n["route"] for n in orch.notices()} == {
+        "helper" if taker == "launcher" else "page"
+    }
+    shown = shown_by(orch, taker, tmp_path, before)
+    assert shown == [(nid, f"a-{n} finished") for n, nid in enumerate(burst)]
+    if taker == "launcher":
+        for nid in burst:
+            traced = trace_of(orch, nid)["summary"]
+            assert traced["path"] == "launcher-helper"
+            assert traced["reason"].startswith("the launcher's app may post")
+    assert calls(fake_osascript) == []
+
+
+@pytest.mark.parametrize("taker", ["launcher", "page"])
+def test_a_backlog_is_cut_and_counted_and_fresh_ones_and_open_decisions_are_not(
+    orch: Orchestrator, project: str, fake_osascript, macos, tmp_path, taker
+):
+    """Mixed: waiting notices (decisions open and gone, finished ones) and fresh ones. Gone
+    decisions are dropped; open decisions and fresh notices are all shown; of the finished
+    ones that waited the newest three, the newest of them saying how many more waited."""
+    orch.update_settings({settings.DESKTOP_NOTIFICATIONS: "off"})
+    lead_id = lead(orch, project)
+    still = orch.request_decision(lead_id, "Which one?")
+    open_one = orch.store.add_notice("decision", lead_id, "Which one?", still.id, route="waiting")
     gone = [
         orch.store.add_notice("decision", "a-0", "Which?", 900 + n, route="waiting")
-        for n in range(5)
+        for n in range(2)
     ]
     finished = [
         orch.store.add_notice("finished", f"a-{n}", f"a-{n} finished", route="waiting")
         for n in range(5)
     ]
-    if taker == "launcher":
-        center = FakeCenter(status=2)
-        notifier.post_pending(orch, center, tmp_path / "X.app", [])
-        shown = [int(post[0].rsplit("-", 1)[1]) for post in center.posted]
-        assert orch.notices() == []
-    else:
-        shown = [n["id"] for n in orch.page_notices(orch.notice_cursor())]
-        assert [n["id"] for n in orch.notices()] == finished[2:]  # the page claims these
-    assert shown == finished[2:]
+    after = orch.notice_cursor()
+    route = "helper" if taker == "launcher" else "page"
+    fresh = [
+        orch.store.add_notice("finished", f"b-{n}", f"b-{n} finished", route=route)
+        for n in range(4)
+    ]
+    shown = dict(shown_by(orch, taker, tmp_path, after))
+    assert list(shown) == [open_one, *finished[2:], *fresh]
+    assert shown[finished[-1]] == "(2 more waited) a-4 finished"  # the owner learns of them
+    assert shown[finished[2]] == "a-2 finished" and shown[fresh[0]] == "b-0 finished"
     for n, notice in enumerate(gone):
         traced = trace_of(orch, notice)["summary"]
         assert (traced["path"], traced["reason"]) == ("dropped", f"decision #{900 + n} is gone")
     for notice in finished[:2]:
         traced = trace_of(orch, notice)["summary"]
-        assert traced["path"] == "dropped" and "only the newest 3 are shown" in traced["reason"]
+        assert traced["path"] == "dropped"
+        assert traced["reason"] == (
+            "waited; only the newest 3 finished notices that waited are shown, this one is"
+            f" counted in the text of #{finished[-1]}"
+        )
     assert calls(fake_osascript) == []
+
+
+def test_the_osascript_path_keeps_the_caller_quick_when_the_store_locks_after_recording(
+    orch: Orchestrator, fake_osascript, macos, monkeypatch
+):
+    real = orch.store.add_notice
+    holder = sqlite3.connect(orch.store.path, isolation_level=None, check_same_thread=False)
+
+    def recorded_then_locked(*args: object, **options: object) -> int:
+        notice = real(*args, **options)
+        holder.execute("BEGIN IMMEDIATE")  # another process takes the lock right after
+        return notice
+
+    monkeypatch.setattr(orch.store, "add_notice", recorded_then_locked)
+    begin = time.monotonic()
+    try:
+        desktop.show(orch.store, "a-1 finished", "a-1")
+        took = time.monotonic() - begin
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+    assert took < desktop.STORE_WAIT_SECONDS + 0.4
+    until(lambda: calls(fake_osascript), what="the notification")
+    log = desktop.notice_log().read_text()
+    assert " shown osascript: osascript started" in log and " lost osascript: " in log
+    assert trace_of(orch, 1)["summary"]["path"] == "osascript"
 
 
 # -- the one-line summary ----------------------------------------------------------------------
@@ -300,7 +372,7 @@ def test_the_window_shows_what_waited_for_it_once_without_a_flood(
     window.tick()
     view = window.inside.last
     assert [n["id"] for n in view["notices"]] == [-window.cursor - 1, *waited[-2:], open_one]
-    assert view["notices"][0]["text"].startswith("2 earlier notice(s) waited")
+    assert view["notices"][0]["text"].startswith("1 earlier notice(s) waited")
     assert window.inside.attention_calls == 1
     assert orch.notices() == []
     assert trace_of(orch, dropped)["summary"]["path"] == "dropped"
@@ -309,7 +381,8 @@ def test_the_window_shows_what_waited_for_it_once_without_a_flood(
     assert (counted["step"], counted["path"], counted["detail"]) == (
         "shown",
         "window-banner",
-        "waited for a window; counted in it (3 newer shown one by one)",
+        "waited for a window; counted in its banner (the newest 3 finished notices that"
+        " waited are shown one by one)",
     )
     assert window.lines[-1] == "notifications: 5 notice(s) waited for a window; shown in it"
     assert calls(fake_osascript) == []
@@ -349,9 +422,8 @@ def test_racing_posting_processes_show_each_notice_once(orch: Orchestrator, tmp_
     for racer in racers:
         racer.join(30)
     posted = sorted(post[0] for center in centers for post in center.posted)
-    assert posted == sorted(f"spartito-notice-{n}" for n in notices[-3:])  # once, no flood
+    assert posted == sorted(f"spartito-notice-{n}" for n in notices)  # each once
     assert orch.notices() == []
-    assert {trace_of(orch, n)["summary"]["path"] for n in notices[:3]} == {"dropped"}
 
 
 def test_racing_escalations_move_a_notice_once(orch: Orchestrator, macos, monkeypatch):

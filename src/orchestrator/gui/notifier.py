@@ -8,8 +8,9 @@ inside itself when it may not post them:
   runs and from then on, every POLL_SECONDS, keeps its markers fresh (desktop.app_present, with
   its state: desktop.route leaves notices to it while its process runs) and claims the notices
   desktop.route left to it (through the facade, once each, as a page does). On its first poll
-  it takes the notices that waited for a window (the backlog: shown inside, the newest few
-  and a count of the others; none for a decision no longer open: core/notices.worth_showing).
+  it takes the notices that waited for a window (the backlog: shown inside, open decisions
+  and the newest few finished ones, a count of the others; none for a decision no longer
+  open: core/notices.worth_showing).
   It asks for permission once the window is shown (`ask`; asked earlier, during the launch, the answer was seen to get lost) and reads
   the authorization status on each poll, so a lost answer, or a change in System Settings, is
   seen within a poll. Allowed, it records the grant (desktop.record_grant) and posts the
@@ -536,8 +537,9 @@ class WindowNotifier:
 
     def take_backlog(self) -> None:
         """The notices that waited for a window: shown inside (not posted: no flood), as
-        core/notices.worth_showing keeps them (the newest few one by one, the others as a
-        count; decisions no longer open none)."""
+        core/notices.worth_showing keeps them (open decisions and the newest few finished
+        ones one by one, decisions last; the others as a count; decisions no longer open
+        none)."""
         taken = []
         taker = self.taker
         backlog, counted = self.orch.notice_backlog(self.cursor, taker)
@@ -551,7 +553,8 @@ class WindowNotifier:
             return
         with self.lock:
             self.earlier += counted
-        for notice in taken:
+        decision_last = sorted(taken, key=lambda notice: notice.get("decision_id") is not None)
+        for notice in decision_last:  # the view keeps the newest IN_WINDOW: decisions stay
             self.show_inside(notice, "it waited for a window", attention=False)
         with contextlib.suppress(Exception):
             self.inside.attention()
@@ -759,7 +762,7 @@ def post_pending(
                 )
         finished.append(error)
 
-    shown, _ = orch.worth_showing(fresh(orch), desktop.HELPER_APP)  # no flood
+    shown, _ = orch.worth_showing(fresh(orch), desktop.HELPER_APP)  # what waited: no flood
     for notice in shown:
         if not orch.claim_notice(notice["id"], desktop.HELPER_APP, "the posting process"):
             continue

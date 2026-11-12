@@ -1,8 +1,8 @@
 """Desktop-notification notices (see desktop.py) for a dashboard page and for Spartito's own
 notifications on macOS (gui/notifier.py): what they show with a click action, where they
-start, how one is taken (only as desktop.route left it: desktop.may_take), which of those that
-waited are still worth showing (`worth_showing`: one rule for the window, the launcher's
-posting process and a page), how a page says it is there, and the trace of each
+start, how one is taken (only as desktop.route left it: desktop.may_take), what of them is worth
+showing (`worth_showing`: decisions still open, all fresh notices, a bounded count of those
+that waited; one rule for the window, the launcher's posting process and a page), how a page says it is there, and the trace of each
 (`notice_trace`, for `spartito notices`)."""
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from ..store import Store
 
 PAGE_MAX_AGE_SECONDS = 600.0  # a page skips older notices (app.js NOTICE_MAX_AGE_MS)
 TAKERS = (desktop.WINDOW, desktop.HELPER_APP, desktop.PAGE, desktop.BANNER)
-SHOW_AT_MOST = 3  # of the notices that waited, a taker shows the newest this many one by one
+SHOW_AT_MOST = 3  # finished notices that waited: a taker shows the newest this many one by one
 
 
 class Facade(Protocol):
@@ -42,23 +42,20 @@ def age_of(notice: dict[str, Any]) -> float | None:
 
 
 def page_notices(orch: Facade, after: int) -> list[dict[str, Any]]:
-    """What a polling page may take, oldest first: the notices above `after` it may take, and
-    those that waited (left to waiting, or to a page from before `after`: escalated after the
-    page passed them) younger than PAGE_MAX_AGE_SECONDS, as far as `worth_showing` keeps
-    them. Spooled notices are recorded first."""
+    """What a polling page may take, oldest first, as `worth_showing` keeps it: the notices
+    above `after` it may take, and those left to waiting or to a page from before `after`
+    (escalated after the page passed them) younger than PAGE_MAX_AGE_SECONDS. Spooled
+    notices are recorded first."""
     desktop.ingest_spool(orch.store)
-    waited, new = [], []
+    found = []
     for notice in orch.store.notices(0):
         route = notice.get("route")
         if not desktop.may_take(desktop.PAGE, route):
             continue
-        late = route == desktop.WAITING or (route == desktop.PAGE and notice["id"] <= after)
-        if late and (age_of(notice) or 0) < PAGE_MAX_AGE_SECONDS:
-            waited.append(notice)
-        elif notice["id"] > after:
-            new.append(notice)
-    kept, _ = worth_showing(orch, waited, desktop.PAGE)
-    return sorted(kept + new, key=lambda notice: notice["id"])
+        late = route in (desktop.WAITING, desktop.PAGE)
+        if notice["id"] > after or (late and (age_of(notice) or 0) < PAGE_MAX_AGE_SECONDS):
+            found.append(notice)
+    return worth_showing(orch, found, desktop.PAGE)[0]
 
 
 def notice_cursor(orch: Facade) -> int:
@@ -109,33 +106,60 @@ def hand_over_notice(orch: Facade, notice: dict[str, Any], taker: str = desktop.
     )
 
 
+def waited(notice: dict[str, Any]) -> bool:
+    """A notice that waited: its recorded route is `waiting` (nobody could show it when it was
+    decided, or a taker gave it back); one routed to a taker is fresh, however old."""
+    return notice.get("route") == desktop.WAITING
+
+
 def worth_showing(
     orch: Facade, found: list[dict[str, Any]], taker: str
 ) -> tuple[list[dict[str, Any]], int]:
-    """The one rule for notices that waited (`found`, oldest first, all left so that `taker`
-    may take them), for Spartito's window, the launcher's posting process and a page alike:
-    a decision notice whose decision is no longer open is dropped; of the others the newest
-    SHOW_AT_MOST are returned, for `taker` to claim and show; the older ones are claimed here,
-    counted in the window when `taker` is the window (their number: the second value), else
-    dropped. Each is traced."""
+    """The one rule for what a taker shows of the notices it may take (`found`, oldest first),
+    for Spartito's window, the launcher's posting process and a page alike. Every fresh
+    notice is kept. Of those that `waited`: a decision notice is kept while its decision is
+    open (never cut), else dropped; of the finished ones only the newest SHOW_AT_MOST are
+    kept, the older ones are claimed here and counted: in the window's count banner when
+    `taker` is the window (their number: the second value), else in the text of the newest
+    one kept ("(<n> more waited) …"). Kept: the ones for `taker` to claim and show, oldest
+    first. Each one claimed here is traced with its reason."""
     keep = []
     for notice in found:
         number = notice.get("decision_id")
-        decision = decisions.get(orch.store, number) if number is not None else None
-        if number is not None and (decision is None or decision.state != decisions.OPEN):
+        if waited(notice) and number is not None:
+            decision = decisions.get(orch.store, number)
             state = decision.state if decision is not None else "gone"
+        else:
+            state = decisions.OPEN
+        if state != decisions.OPEN:
             settle(orch, notice, taker, "drop", desktop.DROPPED, f"decision #{number} is {state}")
             continue
         keep.append(notice)
-    older, keep = keep[:-SHOW_AT_MOST], keep[-SHOW_AT_MOST:]
+    backlog = [n for n in keep if waited(n) and n.get("decision_id") is None]
+    older, newer = backlog[:-SHOW_AT_MOST], backlog[-SHOW_AT_MOST:]
+    window = taker in (desktop.WINDOW, desktop.BANNER)
     counted = 0
     for notice in older:
-        if taker in (desktop.WINDOW, desktop.BANNER):
-            why = f"waited for a window; counted in it ({SHOW_AT_MOST} newer shown one by one)"
+        if window:
+            why = (
+                f"waited for a window; counted in its banner (the newest {SHOW_AT_MOST} finished"
+                " notices that waited are shown one by one)"
+            )
             counted += settle(orch, notice, taker, "shown", desktop.PATHS[desktop.BANNER], why)
         else:
-            why = f"waited; only the newest {SHOW_AT_MOST} are shown, not this older one"
-            settle(orch, notice, taker, "drop", desktop.DROPPED, why)
+            why = (
+                f"waited; only the newest {SHOW_AT_MOST} finished notices that waited are shown,"
+                f" this one is counted in the text of #{newer[-1]['id']}"
+            )
+            counted += settle(orch, notice, taker, "drop", desktop.DROPPED, why)
+    cut = {notice["id"] for notice in older}
+    keep = [notice for notice in keep if notice["id"] not in cut]
+    if counted and not window:
+        last = newer[-1]["id"]
+        keep = [
+            {**n, "text": f"({counted} more waited) {n['text']}"} if n["id"] == last else n
+            for n in keep
+        ]
     return keep, counted
 
 
