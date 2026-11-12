@@ -442,11 +442,13 @@
       catch (error) { foot.querySelector('.error').textContent = error.message; }
       finally { save.disabled = false; }
     };
-    // Closing the detail goes back to the board (the route without the id).
+    // Closing the detail goes back to the board (the route without the id), and the focus to
+    // the item's card as it is now (the one it came from may have been redrawn meanwhile).
     node.addEventListener('close', () => {
       const shown = ui.detail;
       ui.detail = null; ui.submit = null;
       if (shown && current() === route(shown.project, shown.id)) select(route(shown.project));
+      if (shown && owns(current())) focusCard(shown.id);
     });
     document.body.append(node);
     ui.dialog = node;
