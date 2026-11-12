@@ -174,10 +174,13 @@ the notice first, so it is shown once. On macOS, in this order:
 5. **Waiting**: none of these can take it now, but a launcher that may post exists, or a
    window runs. The notice stays unclaimed: the next app started to post or the next
    permitted page takes it (within 10 minutes), else the window shows it when it next opens.
-   Whoever takes notices that waited takes them alike (the window, the launcher's app, a
-   page): a decision notice whose decision is no longer open is dropped, and of the others
-   only the newest three are shown one by one; the window counts the older ones in one
-   banner, the launcher's app and a page drop them. Each is traced (`dropped`, with why).
+   Whoever takes notices that waited (their recorded route is `waiting`) takes them alike
+   (the window, the launcher's app, a page): a decision notice is shown while its decision
+   is open, never cut, and dropped once it is not; of the finished ones only the newest
+   three are shown one by one. The older ones are counted, not lost: in one banner of the
+   window, or, by the launcher's app and a page, in the text of the newest one shown
+   (`(<n> more waited) <text>`); the trace says so for each. Notices routed to a taker just
+   now are never cut, however many come at once.
 6. **`osascript`**: only with no launcher that may post, no window and no permitted page. Its
    click opens Script Editor and cannot be changed, so the text ends with
    ` — open Spartito to answer` (a decision) or ` — open Spartito to see it`.
@@ -195,15 +198,16 @@ withdrawn, or the system did not answer within 5 seconds) or a post fails, the n
 (step 5). With the window open, `osascript` is never used.
 
 **Nothing waits for it, nothing is lost silently.** A turn or the decision tool waits at
-most 0.25 seconds for the database to record the notice (about 0.3 seconds in all, measured).
-When the database is busy longer, the notice is written to `run/notices/<id>.json` and the
-helper records it as soon as the database is free: it keeps trying for 10 minutes, opening
-the database again on each try, and its step says how late (`recorded from the spool, <n> s
-after it was spooled`); a poll of the window, of a page or of the posting app records such
-files too. How the helper ends is in `logs/notices.log` either way: recorded, recorded by a
-poll, `gave up after <n> s … left in the spool for the next poll`, or an `error` step with
-the error's text. The notice is then decided as usual, so a busy database
-no longer sends it to `osascript` unrecorded. Every step is traced:
+most 0.25 seconds for the database to record the notice (about 0.3 seconds in all, measured),
+and as long again for each later step it writes (`osascript` started: a step the database
+does not take then is only in the log). When the database is busy longer, the notice is
+written to `run/notices/<id>.json` and the helper records it as soon as the database is
+free: it keeps trying for 10 minutes, opening the database again on each try, and its step
+says how late (`recorded from the spool, <n> s after it was spooled`); a poll of the
+window, of a page or of the posting app records such files too. How the helper ends is in
+`logs/notices.log` either way: recorded, recorded by a poll, `gave up after <n> s … left in
+the spool for the next poll`, or an `error` step with the error's text. The notice is then
+decided as usual, so a busy database no longer sends it to `osascript` unrecorded. Every step is traced:
 see [Reading the trace](#reading-the-trace).
 
 **Allowing the page.** Once per browser and address: the **Enable notifications** button in
@@ -285,8 +289,7 @@ that passes the deep-link check; it then becomes a deep-link request to the wind
 
 **`spartito app --notify`** is internal: the hidden start of step 2 (`open -n -g -j -a <bundle>
 --args --notify`). It claims and posts the pending notices left to it or waiting (younger than
-10 minutes; of those that waited, as in step 5: the newest three, none for a decision no
-longer open), waits up to 5 seconds for the system, and exits; a click that reaches it in that
+10 minutes; of those that waited, as in step 5), waits up to 5 seconds for the system, and exits; a click that reaches it in that
 time opens the window at the target. A notice it cannot post waits.
 
 ### Notices inside the window
@@ -308,10 +311,11 @@ notice it is allowed to post but the system refuses is shown inside the window t
 
 **Notices that waited for a window.** On its first poll the window takes the notices that are
 still unclaimed (step 5: the launcher's app failed, nobody else could post) and shows them
-inside, whether or not it may post: the newest three as banners, the others counted in one
-banner (`<n> earlier notice(s) waited while no window was open: `spartito notices` lists
-them`), with one bounce of the Dock icon. A decision notice whose decision is no longer open
-is not shown (the trace says `dropped`). `logs/app.log` says `<n> notice(s) waited for a
+inside, whether or not it may post (step 5's rule): open decisions and the newest three
+finished notices as banners (decisions last, so they stay in view), the other finished ones
+counted in one banner (`<n> earlier notice(s) waited while no window was open: `spartito
+notices` lists them`), with one bounce of the Dock icon. A decision notice whose decision is
+no longer open is not shown (the trace says `dropped`). `logs/app.log` says `<n> notice(s) waited for a
 window; shown in it`.
 
 While the page does not take the notices (no hook in a page, `evaluate_js` failing), the window
@@ -352,10 +356,10 @@ post, or why not).
 The paths: `window-system` (posted by the window), `window-banner` (shown inside the window),
 `launcher-helper` (posted by the app started to post), `page`, `linux` (`notify-send`),
 `osascript`, `waiting` (nobody took it yet), `dropped` (a decision answered before it was
-shown, an older one of many that waited, or `osascript` could not be started); `… (not
-taken yet)` while it is still left to that way; `not recorded` for a notice a process of
-older code claimed (it records no steps: the line has its `claimed_by`, else `unknown
-(older code)`, and when it was claimed). A notice of older code has no steps.
+shown; an older finished one of many that waited, counted in another's text; or `osascript`
+could not be started); `… (not taken yet)` while it is still left to that way; `not
+recorded` for a notice a process of older code claimed (it records no steps: the line has
+its `claimed_by`, else `unknown (older code)`, and when it was claimed). A notice of older code has no steps.
 
 `spartito notices -v` adds the text and each step: `record` (at once, or `spooled: the store
 was busy for <n> s`, then `recorded from the spool, <n> s after it was spooled`), `route`

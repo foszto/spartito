@@ -111,7 +111,8 @@ spartito notices [--limit|-n 20] [--verbose|-v] [--json]
   its number, when it was recorded, its kind, the way it was shown (`window-system`,
   `window-banner`, `launcher-helper`, `page`, `linux`, `osascript`, `waiting`, `dropped`),
   the process that showed or last moved it (`<role>:<pid>`), when, and the reason of its final
-  outcome. `-v` adds each notice's text and steps, `--json` gives all of it.
+  outcome (for an older finished notice of many that waited: `dropped`, counted in the text
+  of a newer one). `-v` adds each notice's text and steps, `--json` gives all of it.
   How to read it: [desktop.md](desktop.md#reading-the-trace).
 
 Details: [desktop.md](desktop.md).
