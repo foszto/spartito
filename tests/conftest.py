@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -159,7 +160,14 @@ def fake_notify_send(
     one run anyway, no session bus or display to reach: DBUS_SESSION_BUS_ADDRESS names a
     socket that does not exist (desktop.linux_env keeps a set value), XDG_RUNTIME_DIR (its
     fallback) is a temporary directory, DISPLAY and WAYLAND_DISPLAY are unset (tests that
-    need one set it)."""
+    need one set it).
+
+    What protects a child given an environment of its own: the PATH, which every such child
+    keeps (the runner's CLI, keep_awake, the launcher's tests, Codex's MCP servers), so it
+    runs this fake, which reaches no bus. The bus variables only reach it when passed on:
+    without them desktop.linux_env falls back to /run/user/<uid>/bus when that socket exists,
+    as on a desktop. So a test that builds such an environment passes them on too
+    (test_desktop_guard.codex_env), and test_desktop_paths checks what children resolve."""
     bin_dir = tmp_path_factory.mktemp("fake-notify-send")
     path = bin_dir / "notify-send"
     path.write_text(FAKE_NOTIFY_SEND)
@@ -244,6 +252,21 @@ def no_leftover_notifiers(tmp_path_factory: pytest.TempPathFactory):
                 os.kill(pid, signal.SIGKILL)
     listed = "\n".join(f"  {pid}: {argv}" for pid, argv in left.items())
     pytest.fail(f"the tests left notification processes running (now killed):\n{listed}")
+
+
+@pytest.fixture(autouse=True)
+def kept_signals():
+    """The test process's handlers of the stop signals as they were before each test: a test
+    may run desktop.helper here, which sets them to their default (for its own process)."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    names = ("SIGTERM", "SIGINT", "SIGHUP", "SIGPIPE")
+    saved = {sig: signal.getsignal(sig) for name in names if (sig := getattr(signal, name, None))}
+    yield
+    for sig, handler in saved.items():
+        if handler is not None:
+            signal.signal(sig, handler)
 
 
 # Stands in for the service managers, so no test touches the real launchd or systemd. Appends

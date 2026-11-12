@@ -379,6 +379,8 @@ The paths: `window-system` (posted by the window), `window-banner` (shown in a b
 the window), `window-count` (counted in the window's count banner: not shown one by one, or
 pushed out of its banner by newer notices, the step before says it was shown),
 `launcher-helper` (posted by the app started to post), `page`, `linux` (`notify-send`),
+`linux-summary` (held back by the Linux burst limit: counted in one `<n> more notices` popup,
+see [Linux](#linux)),
 `osascript`, `waiting` (nobody took it yet), `dropped` (a decision answered before it was
 shown; an older finished one of many that waited, counted in another's text; or `osascript`
 could not be started), `not-shown` (the environment said so: `ORCH_DESKTOP_NOTIFICATIONS=off`,
@@ -389,7 +391,7 @@ its `claimed_by`, else `unknown (older code)`, and when it was claimed). A notic
 `spartito notices -v` adds the text and each step: `record` (at once, or `spooled: the store
 was busy for <n> s`, then `recorded from the spool, <n> s after it was spooled`), `route`
 (the decision), `escalate` (who did not take it in time, and the new decision), `claim`,
-`shown`, `counted` (in the window's count banner, with why; one cut from what waited for the
+`shown`, `counted` (held back by the Linux burst limit; or in the window's count banner, with why; one cut from what waited for the
 window is claimed with a `claim` step on the path `window-count` first, so older code reads
 that path too), `leave` (out of the window:
 its decision is no longer open, or the page closed it), `fallback` (a post the system refused: shown inside instead; a helper that did not
@@ -447,15 +449,21 @@ package's PNG.
   then ends `notify-send`; a click after that does nothing. At most 3 helpers wait for a
   click at once; a notice beyond them is shown without the click action.
 - **Without**: the text ends with ` — open it: spartito app --decision <n>` (or `--agent <id>`).
-- **Bursts**: at most 4 popups a minute for one home. The notices beyond are not shown one by
-  one: once the minute has passed, one popup says `<n> more notices` and a click (or the
-  text) opens the plain window; when only one was held back it is shown as itself. Each
-  held notice has a `counted` line in `logs/notices.log`.
+- **Bursts**: at most 4 popups a minute for one home. The notices beyond are held back, not
+  shown one by one: once the minute has passed, the first of them shows one popup that says
+  `<n> more notices`, and a click (or the text) opens the plain window; when only one was
+  held back it is shown as itself, late. Each held notice has a `counted` step on the path
+  `linux-summary` (in `spartito notices` and `logs/notices.log`), and the one that showed
+  the summary or itself a `shown` step that says how late. A count whose summing helper
+  was killed before it showed it is discarded (a `drop` line in the log), not added to a
+  later burst.
 - The helper and `notify-send` start with SIGTERM, SIGINT, SIGHUP and SIGPIPE at their
   default, even when the process that showed the notice ignores them (a runner ending its
-  turn does), so a plain `kill` ends them.
+  turn does), so a plain `kill` ends them. When the Python that resets them cannot be
+  started, `notify-send` (and `osascript` on macOS) starts as it is, so the notice still shows.
 - Without `DBUS_SESSION_BUS_ADDRESS` (a service started without it) the helper uses
-  `unix:path=$XDG_RUNTIME_DIR/bus`.
+  `unix:path=$XDG_RUNTIME_DIR/bus` (`/run/user/<uid>/bus` without that variable), when that
+  socket exists.
 
 Without `notify-send`, Linux shows none; a page still can.
 

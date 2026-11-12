@@ -256,10 +256,45 @@ CODEX_MCP_BASE = ("HOME", "PATH", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG")
 RAISE = "from orchestrator import mcp_server; mcp_server.request_decision('Go ahead?')"
 
 
+# Not Codex's, kept for the tests' own safety (conftest.py): the fakes' logs, and the session
+# bus that is not there, so that even a notify-send other than the fake reaches no desktop
+# (without them, desktop.linux_env would find the real bus at /run/user/<uid>/bus).
+TEST_SAFETY = (
+    "FAKE_OSASCRIPT_LOG",
+    "FAKE_NOTIFY_SEND_LOG",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "XDG_RUNTIME_DIR",
+)
+
+
+def codex_env(env: dict[str, str]) -> dict[str, str]:
+    """The environment of an MCP server as Codex starts it, with `env`, and TEST_SAFETY."""
+    keep = (*CODEX_MCP_BASE, *TEST_SAFETY)
+    return {**{k: os.environ[k] for k in keep if k in os.environ}, **env}
+
+
 def raise_decision(env: dict[str, str], fake_osascript: Path) -> None:
-    base = {k: os.environ[k] for k in CODEX_MCP_BASE if k in os.environ}
-    base["FAKE_OSASCRIPT_LOG"] = str(fake_osascript)  # only for the fake to note a call
-    subprocess.run([sys.executable, "-c", RAISE], env={**base, **env}, check=True, timeout=60)
+    assert os.environ["FAKE_OSASCRIPT_LOG"] == str(fake_osascript)
+    subprocess.run([sys.executable, "-c", RAISE], env=codex_env(env), check=True, timeout=60)
+
+
+PROBE = (
+    "import shutil; from orchestrator import desktop; print(shutil.which('notify-send'));"
+    " print(desktop.linux_env().get('DBUS_SESSION_BUS_ADDRESS', ''))"
+)
+
+
+def test_an_mcp_server_given_only_its_own_env_finds_only_the_fakes(
+    orch: Orchestrator, project: str, fake_notify_send
+):
+    agent = orch.store.get_agent(lead(orch, project))
+    env = codex_env(runner.mcp_server(agent).env)
+    done = subprocess.run(
+        [sys.executable, "-c", PROBE], env=env, capture_output=True, text=True, check=True
+    )
+    found, bus = done.stdout.splitlines()
+    assert found == str(fake_notify_send.path)
+    assert bus == os.environ["DBUS_SESSION_BUS_ADDRESS"] and "no-session-bus" in bus
 
 
 def test_the_switch_reaches_an_mcp_server_given_only_its_own_env(
