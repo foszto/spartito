@@ -238,6 +238,23 @@ CREATE TABLE IF NOT EXISTS board_git (
     error TEXT,
     checked_at TEXT NOT NULL
 );
+-- The conversation message a board item was made from (board.py; one per item): the agent,
+-- its event and that event's run. A table of its own, unknown to older code.
+CREATE TABLE IF NOT EXISTS board_sources (
+    item_id INTEGER PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    event_id INTEGER NOT NULL,
+    run_id INTEGER
+);
+-- Decisions linked to the board items they block (board.py). A table of its own, unknown to
+-- older code; no foreign keys (items and decisions are never deleted).
+CREATE TABLE IF NOT EXISTS board_blockers (
+    item_id INTEGER NOT NULL,
+    decision_id INTEGER NOT NULL,
+    linked_at TEXT NOT NULL,
+    PRIMARY KEY (item_id, decision_id)
+);
+CREATE INDEX IF NOT EXISTS board_blockers_decision ON board_blockers(decision_id);
 """
 
 ANYONE = object()  # withdraw_queued/replace_queued: whoever queued the run

@@ -441,17 +441,29 @@ DECISION_NEXT = (
 
 @server.tool()
 def request_decision(
-    question: str, options: list[str] | None = None, recommendation: str | None = None
+    question: str,
+    options: list[str] | None = None,
+    recommendation: str | None = None,
+    item: int = 0,
 ) -> dict[str, Any]:
     """Ask the owner for a decision only they can make; it waits in their decisions list.
     `question` at most 500 chars; `options` up to 6 short choices (they may also answer
-    freely); `recommendation`: what you would choose and why, in a sentence."""
+    freely); `recommendation`: what you would choose and why, in a sentence. `item`: the
+    board item it blocks."""
     orch = _orch()
-    caller = Caller.from_env(orch).agent()
+    access = Caller.from_env(orch)
+    caller = access.agent()
     if caller is None:
         raise OrchestratorError("this session talks to the user directly: ask them here")
+    if item:
+        access.project(orch.board_item(item).project)  # a lead stays within its project
     decision = orch.request_decision(caller.id, question, options, recommendation)
+    if item:
+        orch.link_decision(item, decision.id, actor=_actor(access))
     return {"decision_id": decision.id, "next": DECISION_NEXT}
+
+
+_lean("request_decision", "item")
 
 
 @server.tool()

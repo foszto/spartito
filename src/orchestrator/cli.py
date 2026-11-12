@@ -851,6 +851,10 @@ def board_show(item_id: int) -> None:
     typer.echo(f"  added {item['created_at']} · changed {item['updated_at']}")
     for line in item["description"].splitlines():
         typer.echo(f"  | {line}")
+    if source := detail.get("source"):
+        typer.echo(f"  from {source['agent_id']}, message {source['event_id']}")
+    for blocker in detail.get("blockers", []):
+        typer.echo(f"  blocked by decision #{blocker['id']}: {blocker['question']}")
     typer.secho("history", bold=True)
     for entry in detail["history"]:
         change = board_change(entry["changes"])
@@ -876,6 +880,23 @@ def board_move(item_id: int, direction: Annotated[str, typer.Argument(help="up o
     order = [other.id for other in o.board_items(item.project, item.state)]
     place = f"{order.index(item.id) + 1} of {len(order)}"
     typer.echo(f"#{item.id} is now {place} in {item.project} · {item.state}")
+
+
+@board_app.command("link")
+def board_link(
+    item_id: int,
+    decision_id: int,
+    remove: Annotated[bool, typer.Option("--remove", help="Unlink it.")] = False,
+) -> None:
+    """Link a decision to the item as one that blocks it (--remove: unlink it)."""
+    blockers = board_fail(lambda: orch().link_decision(item_id, decision_id, not remove))
+    if not blockers:
+        typer.echo(f"#{item_id} is not blocked")
+    for blocker in blockers:
+        how = "linked" if blocker["linked"] else "unlinked, of its agent"
+        typer.echo(
+            f"#{item_id} blocked by decision #{blocker['id']} ({how}): {blocker['question']}"
+        )
 
 
 @board_app.command("dispatch")

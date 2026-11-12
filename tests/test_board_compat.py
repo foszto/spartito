@@ -27,6 +27,7 @@ ORCHESTRATOR_TEXT_CHARS = 330
 LEAD_EXTRA_CHARS: dict[str, int] = {}
 LEAD_EXTRA_CHARS["list_board"] = 64  # P3: `live`
 LEAD_EXTRA_BUDGET = 140
+LEAD_EXTRA_CHARS["request_decision"] = 64  # P5: `item`
 
 
 def seed(orch: Orchestrator, project: str) -> None:

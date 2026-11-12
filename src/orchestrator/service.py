@@ -200,7 +200,7 @@ class Orchestrator:
         known = {p.name for p in self.store.list_projects()}
         return [item for item in items if item.project in known]
 
-    board_view = boards.board_view  # every project's board at once (core/boards.py)
+    board_view = boards.linked_view  # every project's board at once (core/boards.py)
 
     def board_item(self, item_id: int) -> board.Item:
         try:
@@ -208,7 +208,7 @@ class Orchestrator:
         except ValueError as exc:
             raise OrchestratorError(str(exc)) from None
 
-    board_detail = boards.board_detail  # an item with its history and runs
+    board_detail = boards.linked_detail  # an item with its history and runs
 
     def add_board_item(
         self,
@@ -248,6 +248,8 @@ class Orchestrator:
             raise OrchestratorError(str(exc)) from None
 
     place_board_item = boards.place_board_item  # into a state, before an item
+    add_item_from_message = boards.add_item_from_message  # linked to its message
+    link_decision = boards.link_decision  # a decision that blocks an item
 
     def dispatch_board(
         self, project: str, ids: Any = None, actor: board.Actor | None = None

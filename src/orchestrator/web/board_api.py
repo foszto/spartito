@@ -88,3 +88,31 @@ def dispatch_items(orch: Orchestrator, request: Request, body: dict) -> dict[str
 def board_detail(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
     """{item, history, runs, unrecorded} of one item."""
     return orch.board_detail(request.path_params["item_id"])
+
+
+# -- where an item came from, what blocks it -------------------------------------------
+
+
+@route("/api/board/from-message", post=True)
+def add_item_from_message(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """`{agent_id, event_id, title?, description?, state?, project?}`: a new item made from
+    that message of the agent's conversation (`project` required for the orchestrator's);
+    the item."""
+    item = orch.add_item_from_message(
+        body.get("agent_id"),
+        body.get("event_id"),
+        body.get("title"),
+        body.get("description"),
+        body.get("state") or "idea",
+        body.get("project"),
+    )
+    return item.to_dict()
+
+
+@route("/api/board/{item_id:int}/blockers", post=True)
+def link_decision(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """`{decision_id, linked}` (linked: default true; false unlinks): {blockers} of the
+    item afterwards."""
+    item_id = request.path_params["item_id"]
+    linked = body.get("linked", True)
+    return {"blockers": orch.link_decision(item_id, body.get("decision_id"), linked)}

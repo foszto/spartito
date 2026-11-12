@@ -112,6 +112,82 @@ def link_run(conn: sqlite3.Connection, item_ids: list[int], stamp: str, run_id: 
     )
 
 
+# -- where an item came from, what blocks it -------------------------------------------
+
+
+def save_source(
+    conn: sqlite3.Connection, item_id: int, agent_id: str, event_id: int, run_id: int
+) -> dict[str, Any]:
+    """Keep the conversation message an item was made from (board_sources), in the item's
+    transaction; what its `add` entry adds."""
+    conn.execute(
+        "INSERT INTO board_sources (item_id, agent_id, event_id, run_id) VALUES (?, ?, ?, ?)",
+        (item_id, agent_id, event_id, run_id),
+    )
+    return {"source": f"{agent_id} message {event_id}"}
+
+
+def sources(store: Store, item_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """The message each of the items was made from, by id: {agent_id, event_id, run_id}."""
+    with store.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM board_sources WHERE item_id IN (SELECT value FROM json_each(?))",
+            (json.dumps(item_ids),),
+        ).fetchall()
+    return {
+        row["item_id"]: {key: row[key] for key in ("agent_id", "event_id", "run_id")}
+        for row in rows
+    }
+
+
+def links(store: Store, decision_ids: list[int]) -> list[tuple[int, int]]:
+    """The (item id, decision id) links of these decisions."""
+    with store.connection() as conn:
+        rows = conn.execute(
+            "SELECT item_id, decision_id FROM board_blockers"
+            " WHERE decision_id IN (SELECT value FROM json_each(?)) ORDER BY item_id",
+            (json.dumps(decision_ids),),
+        ).fetchall()
+    return [(row["item_id"], row["decision_id"]) for row in rows]
+
+
+def link(store: Store, item_id: int, decision_id: int, linked: bool, actor: Actor = OWNER) -> bool:
+    """Link a decision to the item as one that blocks it (`linked` False: unlink it), with
+    its history entry `link` / `unlink` in that transaction; the item's fields and
+    updated_at stay. Already so: nothing is written (False). The caller checks the
+    decision. Raises ValueError for an unknown item."""
+    run_id = _run_of(store, actor)
+    with store.transaction() as conn:
+        item = _get(conn, item_id)
+        if item is None:
+            raise ValueError(f"there is no board item #{item_id}")
+        if linked:
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO board_blockers (item_id, decision_id, linked_at)"
+                " VALUES (?, ?, ?)",
+                (item_id, decision_id, now()),
+            )
+        else:
+            cursor = conn.execute(
+                "DELETE FROM board_blockers WHERE item_id = ? AND decision_id = ?",
+                (item_id, decision_id),
+            )
+        if not cursor.rowcount:
+            return False
+        change = [None, decision_id] if linked else [decision_id, None]
+        record_gap(conn, item_id, item.updated_at)
+        record(
+            conn,
+            item_id,
+            actor,
+            "link" if linked else "unlink",
+            {"decision": change},
+            now(),
+            run_id,
+        )
+    return True
+
+
 def _diff(before: Item | None, after: Item, fields: tuple[str, ...]) -> dict[str, Any]:
     """The fields that differ as {field: [old, new]}; the description only as "changed"."""
     out: dict[str, Any] = {}
@@ -224,10 +300,12 @@ def add(
     agent_id: Any = None,
     branch: Any = None,
     actor: Actor = OWNER,
+    extra: Callable[[sqlite3.Connection, Item], dict[str, Any]] | None = None,
 ) -> Item:
     """A new item at the end of its state, with its links checked first (as in `cleaned`):
     either it is stored whole or not at all. `project` must be registered (the caller
-    checks). Raises ValueError."""
+    checks). `extra(conn, item)`, in the transaction, stores more about it and returns what
+    its history entry adds. Raises ValueError."""
     title = _text(title, "title", TITLE_CHARS, required=True)
     description = _text(description, "description", DESCRIPTION_CHARS)
     state = check_state(state or IDEA)
@@ -254,6 +332,8 @@ def add(
         item = _get(conn, cursor.lastrowid)
         assert item is not None
         changes = _diff(None, item, ("state", "agent_id", "branch"))
+        if extra is not None:
+            changes.update(extra(conn, item))
         record(conn, item.id, actor, "add", changes, stamp, run_id)
     return item
 

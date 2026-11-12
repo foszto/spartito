@@ -9,7 +9,7 @@ import sys
 from collections.abc import Callable
 from typing import Any, Protocol
 
-from .. import board
+from .. import board, decisions
 from ..errors import OrchestratorError
 from ..models import Agent, Project, Run
 from ..store import Store
@@ -27,6 +27,8 @@ class Facade(Protocol):
     ) -> list[board.Item]: ...
 
     def project(self, name: str) -> Project: ...
+
+    def agent(self, agent_id: str) -> Agent: ...
 
     def lead(self, project_name: str, adopt: str | None = None) -> Agent: ...
 
@@ -169,6 +171,136 @@ def dispatch_items(
                 }
             )
     return {"results": results, "skipped": skipped}
+
+
+# -- where items came from, what blocks them -----------------------------------------
+
+
+def _blockers(orch: Facade, items: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    """The open decisions that block each item, by id: one linked to items blocks only
+    those; one without links blocks every item of its agent that is not done. Answered and
+    withdrawn decisions block nothing. [{id, question, agent_id, linked}] oldest first."""
+    found: dict[int, list[dict[str, Any]]] = {item["id"]: [] for item in items}
+    open_ = decisions.listing(orch.store)
+    linked: dict[int, set[int]] = {}
+    for item_id, decision_id in board.links(orch.store, [d.id for d in open_]):
+        linked.setdefault(decision_id, set()).add(item_id)
+    for decision in open_:
+        named = linked.get(decision.id)
+        for item in items:
+            if named is not None:
+                blocks = item["id"] in named
+            else:
+                blocks = item["agent_id"] == decision.agent_id and item["state"] != board.DONE
+            if blocks:
+                found[item["id"]].append(
+                    {
+                        "id": decision.id,
+                        "question": decision.question,
+                        "agent_id": decision.agent_id,
+                        "linked": named is not None,
+                    }
+                )
+    return found
+
+
+def _with_links(orch: Facade, items: list[dict[str, Any]]) -> None:
+    """Add `source` (the message it was made from: {agent_id, event_id, run_id}, or None)
+    and `blockers` (_blockers) to each shown item."""
+    found = board.sources(orch.store, [item["id"] for item in items])
+    blockers = _blockers(orch, items)
+    for item in items:
+        item["source"] = found.get(item["id"])
+        item["blockers"] = blockers[item["id"]]
+
+
+def linked_view(
+    orch: Facade, project: str | None = None, state: str | None = None
+) -> dict[str, Any]:
+    """board_view, each item with its `source` and `blockers` (_with_links)."""
+    view = board_view(orch, project, state)
+    _with_links(orch, view["items"])
+    return view
+
+
+def linked_detail(orch: Facade, item_id: int) -> dict[str, Any]:
+    """board_detail with the item's `source` and `blockers` (_with_links) beside `item`."""
+    detail = board_detail(orch, item_id)
+    shown = dict(detail["item"])
+    _with_links(orch, [shown])
+    return {**detail, "source": shown["source"], "blockers": shown["blockers"]}
+
+
+def _fit(text: Any, limit: int) -> Any:
+    """A string cut to `limit` chars (the last one "…"); anything else as it is (board.add
+    refuses it)."""
+    if not isinstance(text, str):
+        return text
+    text = text.strip()
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def add_item_from_message(
+    orch: Facade,
+    agent_id: Any,
+    event_id: Any,
+    title: Any = None,
+    description: Any = None,
+    state: Any = board.IDEA,
+    project: Any = None,
+    actor: board.Actor | None = None,
+) -> board.Item:
+    """A new item made from a message (event) of an agent's conversation, linked back to
+    it (board_sources; its `add` entry names it). The item is in the agent's project
+    (`project`: required for the orchestrator's conversation, which has none); `title`
+    (default: the message's first line) and `description` (default: the message) are cut to
+    the board's limits."""
+    if not isinstance(agent_id, str) or type(event_id) is not int:
+        raise OrchestratorError("agent_id (a string) and event_id (a number) are required")
+    agent = orch.agent(agent_id)
+    event = orch.store.get_event(event_id) if event_id in board.SQLITE_IDS else None
+    if event is None or event.agent_id != agent.id:
+        raise OrchestratorError(f"{agent.id} has no message #{event_id}")
+    if not (project or agent.project):
+        raise OrchestratorError("name the project: this conversation belongs to none")
+    name = orch.project(project or agent.project).name
+    text = event.text.strip()
+    first = next((line for line in text.splitlines() if line.strip()), "")
+    return _checked(
+        lambda: board.add(
+            orch.store,
+            name,
+            _fit(title or first, board.TITLE_CHARS),
+            _fit(text if description is None else description, board.DESCRIPTION_CHARS),
+            state,
+            actor=actor or board.OWNER,
+            extra=lambda conn, item: board.save_source(
+                conn, item.id, agent.id, event.id, event.run_id
+            ),
+        )
+    )
+
+
+def link_decision(
+    orch: Facade,
+    item_id: Any,
+    decision_id: Any,
+    linked: Any = True,
+    actor: board.Actor | None = None,
+) -> list[dict[str, Any]]:
+    """Link an existing decision to the item as one that blocks it (`linked` False: unlink
+    it); a decision of one project only to that project's items. The item's open blockers
+    afterwards (_blockers)."""
+    if type(item_id) is not int or type(decision_id) is not int or type(linked) is not bool:
+        raise OrchestratorError("item and decision ids must be numbers, linked true or false")
+    item = _checked(lambda: board.get(orch.store, item_id))
+    decision = decisions.get(orch.store, decision_id) if decision_id in board.SQLITE_IDS else None
+    if decision is None:
+        raise OrchestratorError(f"there is no decision #{decision_id}")
+    if linked and decision.project not in (None, item.project):
+        raise OrchestratorError(f"decision #{decision_id} is about project {decision.project}")
+    _checked(lambda: board.link(orch.store, item_id, decision_id, linked, actor or board.OWNER))
+    return _blockers(orch, [item.to_dict()])[item_id]
 
 
 # -- an item's history -----------------------------------------------------------------
