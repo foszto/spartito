@@ -266,8 +266,11 @@ as a tree, and the **Archive** entry when something is archived. A project's row
 to talk to its lead, start a new agent, open its task board, archive every finished agent
 whose work is safe, and remove the project. **+** next to *Projects* adds a project through a
 folder picker that marks git repositories. The header has the **Decisions** button (with the
-number of open decisions), the **Models and effort** settings and the theme switch. The footer
-sums agents, tokens and cost.
+number of open decisions), the **Models and effort** settings and the theme switch. The
+summary at the bottom left counts the listed agents, but its tokens and cost are totals over
+every run ever recorded, archived agents included, and it keeps what agents deleted for good
+(`spartito rm`, or **Delete** in the archive) had spent. An agent deleted by an older version
+of Spartito running on the same database still takes its spend out of the total.
 
 **Links.** `#<agent-id>` selects an agent and `#decision:<id>` opens the **Decisions** window
 on that decision, for example `http://127.0.0.1:8787/#decision:12`.
