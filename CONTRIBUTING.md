@@ -62,7 +62,7 @@ worktrees in temporary directories. It never calls `claude` or `codex` and needs
   Linux without `systemd-analyze`;
 - `tests/test_notifier.py`, one case: skipped on Linux, and on macOS without the `app` extra
   (`could not import 'UserNotifications'`);
-- `tests/test_decisions.py`, two tests: skipped on Linux (`runners decide by the platform`);
+- `tests/test_decisions.py`, three tests: skipped on Linux (`runners decide by the platform`);
 - `tests/test_loadout.py`, one case: skipped as a user who can read every file (root).
 
 Three tests guard the rules below:
@@ -106,9 +106,10 @@ Three tests guard the rules below:
 ## Privacy in a public repository
 
 Code, tests, fixtures, docs and commit messages must not contain real names, company or
-customer names, local user paths, hostnames, credentials, or recorded session data (agent
-conversations, logs, databases). Use the placeholders the docs already use, for example the
-project `my-app` at `~/src/my-app` (`/home/dev/src/my-app`) and the agent `fix-login-3f2a`.
+customer names, email addresses, local user paths, hostnames, credentials, or recorded
+session data (agent conversations, logs, databases). Use the placeholders the docs already
+use, for example the project `my-app` at `~/src/my-app` (`/home/dev/src/my-app`) and the
+agent `fix-login-3f2a`.
 
 ## Git and pull requests
 

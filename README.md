@@ -64,8 +64,9 @@ The extras bring the native window of `spartito app` (`app`) and the macOS menu-
 [docs/desktop.md](docs/desktop.md#optional-dependencies).
 
 Alternatives: `uv tool install --editable .` without the extras (`spartito app` then opens a
-browser window), or no install at all, prefixing every command with `uv run` inside the
-checkout (`uv run spartito …`). Installed before the command was renamed? See
+browser window, and on macOS notifications do not come from Spartito itself), or no install
+at all, prefixing every command with `uv run` inside the checkout (`uv run spartito …`).
+Installed before the command was renamed? See
 [Upgrading from `orch`](docs/usage.md#upgrading-from-orch).
 
 Spartito keeps its state in `~/.orchestrator/`. Set `ORCH_HOME` to use another directory.

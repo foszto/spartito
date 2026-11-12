@@ -17,9 +17,11 @@ rm -rf "$ORCH_HOME"
 
 Then read the result:
 
-1. pytest ends with `N passed, M skipped`. The usual skips are platform-bound: on macOS,
+1. pytest ends with `N passed, M skipped`. The usual skips are platform-bound. On macOS:
    `systemd only on Linux` (2) and, without the `app` extra, `could not import
-   'UserNotifications'` (1); on Linux, `runners decide by the platform`. Any other skip or
+   'UserNotifications'` (1). On Linux: `runners decide by the platform` (3),
+   `could not import 'UserNotifications'` (1), and `no systemd-analyze` (2) where it is
+   missing. As root, also `running as a user who can read anything` (1). Any other skip or
    failure needs a look. Rerun a single failing test with `uv run pytest tests/<file>.py -k <name>`.
 2. `ruff check` must say `All checks passed!`. For `ruff format --check` failures, run
    `uv run ruff format` and review the diff.
