@@ -638,6 +638,43 @@ def test_racing_takers_announce_every_cut_notice_once(orch: Orchestrator, tmp_pa
     assert orch.notices() == []
 
 
+@pytest.mark.parametrize(
+    "order",
+    [
+        "launcher reads, page reads, page claims, launcher claims",  # seen once on macOS CI
+        "launcher reads, page reads, launcher claims, page claims",
+        "launcher reads, launcher claims, page reads, page claims",
+        "page reads, launcher reads, launcher claims, page claims",
+        "page reads, launcher reads, page claims, launcher claims",
+        "page reads, page claims, launcher reads, launcher claims",
+    ],
+)
+def test_two_takers_in_any_order_announce_every_cut_notice_once(orch: Orchestrator, order):
+    """The race of the test above, step by step: whichever taker reads first cuts the three
+    older of six finished notices that waited; whichever shows the newest announces all three,
+    also when it read only after the cut and so cut none itself."""
+    waited = [
+        orch.store.add_notice("finished", f"a-{n}", f"a-{n} finished", route="waiting")
+        for n in range(6)
+    ]
+    kept: dict[str, list[dict]] = {}
+    shown: list[tuple[int, str]] = []
+    for step in order.split(", "):
+        taker, action = step.split()
+        if action == "reads" and taker == "launcher":
+            kept[taker] = orch.worth_showing(notifier.fresh(orch), desktop.HELPER_APP)[0]
+        elif action == "reads":
+            kept[taker] = orch.page_notices(0)
+        else:
+            who = desktop.HELPER_APP if taker == "launcher" else desktop.PAGE
+            for notice in kept[taker]:
+                if orch.claim_notice(notice["id"], who):
+                    shown.append((notice["id"], notice["text"]))
+    assert sorted(n for n, _ in shown) == waited[3:]  # each once
+    assert [text for _, text in shown if "more waited" in text] == ["(3 more waited) a-5 finished"]
+    assert orch.notices() == []
+
+
 def test_racing_escalations_move_a_notice_once(orch: Orchestrator, macos, monkeypatch):
     monkeypatch.setattr(desktop, "ESCALATE_SECONDS", 0.2)
     notice = orch.store.add_notice("finished", "a-1", "a-1 finished", route="page")

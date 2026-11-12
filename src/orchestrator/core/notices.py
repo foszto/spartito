@@ -122,9 +122,9 @@ def worth_showing(
     kept, the older ones are claimed here and counted: in the window's "more" banner when
     `taker` is the window (the second value: the ones it claimed, oldest first), else in the
     text of the newest one kept ("(<n> more waited) …", n: all those counted in it, whichever
-    racing taker claimed them, so the one that shows that notice announces them all). Kept: the
-    ones for `taker` to claim and show, oldest first. Each one claimed here is traced with
-    its reason."""
+    racing taker claimed them, also when this taker cut none itself, so the one that shows
+    that notice announces them all). Kept: the ones for `taker` to claim and show, oldest
+    first. Each one claimed here is traced with its reason."""
     keep = []
     for notice in found:
         number = notice.get("decision_id")
@@ -157,11 +157,11 @@ def worth_showing(
             settle(orch, notice, taker, "drop", desktop.DROPPED, why)
     cut = {notice["id"] for notice in older}
     keep = [notice for notice in keep if notice["id"] not in cut]
-    if older and not window:  # a racing taker may have claimed some before `found` was read
+    if newer and not window:  # a racing taker may have cut some, or all, before `found` was read
         last = newer[-1]["id"]
         many = len(cut | orch.store.counted_in_text(last))
         keep = [
-            {**n, "text": f"({many} more waited) {n['text']}"} if n["id"] == last else n
+            {**n, "text": f"({many} more waited) {n['text']}"} if n["id"] == last and many else n
             for n in keep
         ]
     return keep, counted
