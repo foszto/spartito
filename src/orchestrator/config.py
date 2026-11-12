@@ -9,6 +9,11 @@ from pathlib import Path
 PROJECT_NAME = "Spartito"  # the tool itself (Italian: sheet music, the score everyone plays from)
 ORCHESTRATOR_NAME = "Maestro"  # the top-level orchestrator agent
 PROJECT_URL = "https://github.com/foszto/spartito"  # pyproject's [project.urls] Homepage
+# The project's GitHub App bot. A commit's Co-Authored-By trailer with this address lists the
+# project under a repository's Contributors (roles.attribution; the setting `bot_coauthor`).
+BOT_NAME = "spartito-dev[bot]"
+BOT_USER_ID = 355965793
+BOT_EMAIL = f"{BOT_USER_ID}+{BOT_NAME}@users.noreply.github.com"
 # The command (pyproject's [project.scripts]): every text that tells someone to run one names it
 # through this. Processes and the definitions written to disk never call it: they run
 # `<python> -m orchestrator`. The internal names keep "orch": the MCP server `orch` and its

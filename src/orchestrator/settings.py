@@ -19,7 +19,10 @@ the global one; without either it is ARCHIVE_AFTER_DEFAULT.
 
 And `keep_awake`, global only: whether a turn keeps the machine from sleeping on idle
 (keep_awake.py); on unless set to false. Likewise `desktop_notifications`, global only:
-whether this machine shows desktop notifications (desktop.py).
+whether this machine shows desktop notifications (desktop.py). And `bot_coauthor`, global
+only: whether the attribution section of the agents' system prompts asks for the project
+bot's Co-Authored-By trailer in every commit message (roles.attribution); read when a turn
+starts.
 
 And `compact_at_tokens`: when a turn ends with the agent's context above this many tokens,
 an automatic compaction is queued (Orchestrator.auto_compact; 0: never). A project's value
@@ -44,7 +47,9 @@ KEEP_AWAKE = "keep_awake"
 COMPACT_AT = "compact_at_tokens"
 COMPACT_AT_DEFAULT = 256_000
 DESKTOP_NOTIFICATIONS = "desktop_notifications"
-SWITCHES = (KEEP_AWAKE, DESKTOP_NOTIFICATIONS)  # global on/off keys, on unless set to false
+BOT_COAUTHOR = "bot_coauthor"
+# Global on/off keys, on unless set to false.
+SWITCHES = (KEEP_AWAKE, DESKTOP_NOTIFICATIONS, BOT_COAUTHOR)
 
 
 MODEL_MAX_CHARS = 200
@@ -124,6 +129,11 @@ def keep_awake(store: Store) -> bool:
 def desktop_notifications(store: Store) -> bool:
     """Whether desktop notifications are shown; an unreadable value counts as the default."""
     return switch(store, DESKTOP_NOTIFICATIONS)
+
+
+def bot_coauthor(store: Store) -> bool:
+    """Whether agents add the project bot's commit trailer; unreadable counts as the default."""
+    return switch(store, BOT_COAUTHOR)
 
 
 def switch(store: Store, key: str) -> bool:

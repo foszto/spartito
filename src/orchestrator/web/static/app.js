@@ -1474,6 +1474,9 @@ const SWITCHES = [
     about: 'On this machine: when an agent asks you for a decision, and when an agent you messaged directly has finished. '
       + 'An open dashboard page allowed to show notifications shows them (a click opens the agent or the decision); '
       + 'without one, Spartito shows them itself where it can (macOS with its launcher, Linux with notify-send), else a plain macOS notification.' },
+  { key: 'bot_coauthor', title: 'Bot co-author', label: 'Credit Spartito’s bot in agents’ commits',
+    about: 'Agents add a Co-Authored-By trailer for spartito-dev[bot] to every commit message, so that GitHub lists Spartito under a repository’s Contributors. '
+      + 'From the next turn on. Attribution lines set by an organization’s managed settings take precedence: then agents add no bot trailer.' },
 ];
 function switchBox({ key, title, label: text, about }) {
   const box = el('div', 'tier'), label = el('label', 'switch-row'), check = el('input');

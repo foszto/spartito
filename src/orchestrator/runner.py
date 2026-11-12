@@ -131,7 +131,9 @@ def render_prompt(store: Store, prompt: str) -> str:
     return RESULT_REF.sub(substitute, prompt)
 
 
-def system_prompt(agent: Agent, project: Project | None, role: roles.Role) -> str:
+def system_prompt(
+    agent: Agent, project: Project | None, role: roles.Role, *, bot_coauthor: bool
+) -> str:
     context = [
         f"You are agent `{agent.id}` (role: {agent.role})"
         + (f" in project `{project.name}`." if project else "."),
@@ -142,7 +144,7 @@ def system_prompt(agent: Agent, project: Project | None, role: roles.Role) -> st
             f"You work on branch `{agent.branch}` in your own git worktree, "
             f"based on `{agent.base_ref}`. Never switch branches."
         )
-    credit = roles.attribution(agent.provider)
+    credit = roles.attribution(agent.provider, bot_coauthor=bot_coauthor)
     prompt = f"{role.prompt}\n\n{credit}" if credit else role.prompt
     return f"{prompt}\n\n## Context\n" + "\n".join(context)
 
@@ -193,7 +195,9 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
         # A notification carries child output: data, never {{result:…}} references. A
         # compaction's prompt must reach the CLI exactly as it is (`/compact …`).
         prompt=run.prompt if kind in (NOTIFICATION, COMPACT) else render_prompt(store, run.prompt),
-        system_prompt=system_prompt(agent, project, role),
+        system_prompt=system_prompt(
+            agent, project, role, bot_coauthor=settings.bot_coauthor(store)
+        ),
         scratch=scratch,
         mcp=mcp_server(agent) if role.lead else None,
         lead=role.lead,

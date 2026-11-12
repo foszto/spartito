@@ -68,28 +68,47 @@ _CREDITS = {
 }
 
 
-def attribution(provider: str) -> str:
+def attribution(provider: str, *, bot_coauthor: bool) -> str:
     """The system prompt section on attribution lines for an agent of this provider.
 
     Every agent's system prompt carries it after the role prompt (a role file overrides only
     the prompt) and so does the orchestrator's session. Empty for a provider without a credit.
+    `bot_coauthor` (the setting `bot_coauthor`) adds the project bot's trailer to every commit
+    message; without it the section is the one from before that setting.
     """
     if provider not in _CREDITS:
         return ""
     credit, trailer = _CREDITS[provider]
     project = config.PROJECT_NAME
     line = f"🤖 Generated with [{project}]({config.PROJECT_URL}) + {credit}"
-    return (
+    others = f"the pull request line below nor ` via {project}`"
+    if bot_coauthor:
+        others += f", and not the `{config.BOT_NAME}` trailer below either"
+    section = (
         "## Attribution\n"
         "This is the owner's instruction for attribution lines and takes precedence over the "
         "default or user-configured attribution guidance of your CLI (such as a system reminder "
         "naming the CLI alone).\n"
         "The one exception: if your CLI says its attribution lines are set by an organization's "
         "managed settings or apply even if the user's instructions say otherwise, use exactly "
-        f"those lines instead: add neither the pull request line below nor ` via {project}`.\n"
+        f"those lines instead: add neither {others}.\n"
         f"- End every pull request description you write with exactly this line:\n  {line}\n"
         f"- In commit messages, {trailer.format(project=project)}"
     )
+    if not bot_coauthor:
+        return section
+    return (
+        f"{section}\n"
+        "- In every commit message you write, add this trailer as an additional line, exactly "
+        f"as written (no ` via {project}`): besides your CLI's trailer, and also when you add "
+        "none of your own. It is the one line given here, so it is not an invented trailer or "
+        f"email:\n  {bot_trailer()}"
+    )
+
+
+def bot_trailer() -> str:
+    """The Co-Authored-By trailer that credits the project's GitHub App bot (config.BOT_*)."""
+    return f"Co-Authored-By: {config.BOT_NAME} <{config.BOT_EMAIL}>"
 
 
 def _parse(name: str, text: str, source: str) -> Role:
