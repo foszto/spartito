@@ -280,7 +280,7 @@ def test_only_the_old_script_warns(
     script: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """An editable install from before the rename keeps its `orch` script, which runs this
-    code until the tool is installed again: it works, and warns on every call."""
+    code until that install is replaced: it works, and warns on every call."""
     monkeypatch.setattr(sys, "argv", [f"/tools/bin/{script}", "roles"])
     with pytest.raises(SystemExit) as done:
         cli.main()
@@ -291,7 +291,7 @@ def test_only_the_old_script_warns(
         return
     assert err == (
         f"warning: `{cli.OLD_NAME}` is now `{config.CLI_NAME}`; this script is left from an older"
-        " install and goes away when the tool is installed again"
+        " install and goes away when that install is replaced"
         " (docs/usage.md#upgrading-from-orch)\n"
     )
     assert "## Upgrading from `orch`" in (ROOT / "docs" / "usage.md").read_text().splitlines()

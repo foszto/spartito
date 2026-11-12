@@ -243,7 +243,7 @@ package, a signed macOS launcher), a backup of the state before the schema chang
 mismatch between the page and the server after an update.
 
 **Today.** Spartito is installed from a checkout (version 0.1.0, no changelog). The package
-is prepared for PyPI as `spartito`, published from a version tag by GitHub Actions
+is prepared for PyPI as `spartito`, to be published from a version tag by GitHub Actions
 ([docs/releasing.md](docs/releasing.md)). Schema changes
 are additive and applied when the database opens. After an update, a running dashboard keeps
 its old code while the page is new, so it has to be restarted

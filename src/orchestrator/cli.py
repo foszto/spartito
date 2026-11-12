@@ -1530,11 +1530,11 @@ OLD_NAME = "orch"  # the command's name before CLI_NAME; an older install's scri
 def main() -> None:
     """The command line under CLI_NAME, whatever the script that started it is called. An
     editable install from before the rename still has its `orch` script, running this code
-    until the tool is installed again: it works, and says so on every call."""
+    until that install is replaced (docs/usage.md): it works, and says so on every call."""
     if os.path.basename(sys.argv[0]) == OLD_NAME:
         typer.secho(
             f"warning: `{OLD_NAME}` is now `{config.CLI_NAME}`; this script is left from an"
-            " older install and goes away when the tool is installed again"
+            " older install and goes away when that install is replaced"
             " (docs/usage.md#upgrading-from-orch)",
             fg=typer.colors.YELLOW,
             err=True,

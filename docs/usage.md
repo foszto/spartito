@@ -345,28 +345,16 @@ Everything else keeps its name: the home `~/.orchestrator` with `orch.db`, the `
 variables, the `orch` MCP server and its `mcp__orch__…` tools, the agents' `orch/` branches
 and the Python package `orchestrator`.
 
-A command's script is written when the tool is installed. Until it is installed again, an
-existing installation keeps its `orch`, which runs the new code and warns on every call, and
-has no `spartito`. Once the checkout has the new code, from the checkout:
+An install from before the rename is the tool `orchestrator` (`uv tool list`), whose
+`orch` script runs the new code once the checkout has it, warns on every call, and has no
+`spartito`. Replace it with the steps of
+[Upgrading to the distribution name `spartito`](#upgrading-to-the-distribution-name-spartito):
+`uv tool uninstall orchestrator` removes `orch` with the old tool, the next step installs
+`spartito`, and the service and the launcher are installed again for the new environment.
+Until then the command is `orch`: run `orch ps` in step 1. Do not run only
+`uv tool install --editable` over it: that adds a second tool `spartito` and leaves `orch`,
+the service and the launcher on the old environment.
 
-```sh
-uv tool install --editable '.[app,menubar]'   # the extras you installed before; no --force
-spartito --help
-```
-
-This removes `orch` and adds `spartito`. In a checkout used with `uv run`, `uv sync` does the
-same for `.venv`.
-
-- **Running agents**: nothing to do. A turn running during the reinstall finishes, and agents
-  created before take new messages as before: they reach the tool through its MCP server,
-  started as `<python> -m orchestrator.mcp_server`, never through the command.
-- **Background service and launcher**: they need no reinstall. Both run
-  `<python> -m orchestrator` of the tool's environment, whose path the reinstall keeps, and
-  the launcher's copy of Python stays current. A dashboard that is already running keeps the
-  code it started with while the page comes from the new code, so restart it: for the service,
-  `spartito service install` (with the `--host` and `--port` you used) restarts it and
-  rewrites its unit; `spartito web` or `spartito app` started by hand: stop it and start it
-  again. `spartito app install` only refreshes the comments of the launcher's script.
 - **An open `orch chat` session** was allowed `Bash(orch *)`, and `orch` no longer exists.
   Leave it and continue it with `spartito chat --continue`, which allows `Bash(spartito *)`.
   Its conversation still shows `orch …` commands: if it tries one, tell it the new name.
@@ -375,11 +363,12 @@ same for `.venv`.
 ## Upgrading to the distribution name `spartito`
 
 The checkout used to install itself as the Python distribution `orchestrator`; it is now
-`spartito`, the name it has on PyPI ([releasing.md](releasing.md)). The command, the import
+`spartito`, the name prepared for PyPI ([releasing.md](releasing.md)). The command, the import
 package `orchestrator`, `-m orchestrator`, the home and every internal name stay. uv names a
 tool after its distribution, so `uv tool install --editable` now installs into a new tool
 directory, `<tool dir>/spartito` (`uv tool dir` shows the tool directory), next to the old
-`<tool dir>/orchestrator`, which still provides `spartito`. The background service and the
+`<tool dir>/orchestrator`, which still provides `spartito` (or the command's old name:
+[Upgrading from `orch`](#upgrading-from-orch)). The background service and the
 launcher name the old environment's Python, so they need a reinstall too.
 
 Once the checkout has the new code, the old install keeps working; only `/api/ping` reports
