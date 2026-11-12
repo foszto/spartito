@@ -543,6 +543,72 @@
     if (ui.detail && ui.dialog.open && !owns(current())) { ui.detail = null; ui.dialog.close(); }
   });
 
+  // -- an item's history and runs, in its detail -------------------------------------------
+  // Who changed it (the owner, an agent and its run, an automatic rule), what changed, and
+  // the runs the history names; a change made by an older orch process shows as not recorded.
+
+  const ACTIONS = { add: 'added', edit: 'edited', state: 'moved', place: 'moved', move: 'reordered', dispatch: 'dispatched',
+    restore: 'put back: the dispatch could not be sent', unrecorded: 'changed by an older orch process' };
+  const FIELDS = { title: 'title', agent_id: 'agent', branch: 'branch' };
+  const clip = text => (text.length > 60 ? `${text.slice(0, 59)}…` : text);
+
+  function actor(entry) {
+    if (entry.actor_kind === 'owner') return 'owner';
+    if (entry.actor_kind === 'auto') return `auto: ${entry.actor || 'rule'}`;
+    if (entry.actor_kind === 'agent') {
+      if (!entry.actor) return 'orch chat session';
+      return `agent ${entry.actor}${entry.run_id && entry.action !== 'dispatch' ? ` (run ${entry.run_id})` : ''}`;
+    }
+    return 'not recorded';
+  }
+
+  function change(entry) {
+    const parts = [], changes = entry.changes || {};
+    const value = (field, v) => (v === null || v === undefined || v === '' ? '—'
+      : field === 'state' ? LABEL[v] || v : field === 'title' ? `“${clip(String(v))}”` : String(v));
+    for (const [field, pair] of Object.entries(changes)) {
+      if (field === 'description') parts.push('description changed');
+      else if (field === 'state') parts.push(entry.action === 'add' ? `in ${value('state', pair[1])}` : `${value('state', pair[0])} → ${value('state', pair[1])}`);
+      else if (field === 'position' && !changes.state) parts.push(pair[1] < pair[0] ? 'up' : 'down');
+      else if (FIELDS[field]) parts.push(`${FIELDS[field]} ${value(field, pair[0])} → ${value(field, pair[1])}`);
+    }
+    if (entry.action === 'dispatch' && entry.run_id) parts.push(`run ${entry.run_id}`);
+    return [ACTIONS[entry.action] || entry.action, parts.join(', ')].filter(Boolean).join(' · ');
+  }
+
+  hooks.detail.push(async (box, item) => {
+    const history = el('section', 'bv-history'), runs = el('section', 'bv-runs');
+    history.append(el('h4', '', 'History'), el('p', 'bv-note', 'Loading…'));
+    box.append(history, runs);
+    let detail;
+    try { detail = await call(`/api/board/${item.id}/detail`); }
+    catch (error) { history.querySelector('.bv-note').textContent = `Not available: ${error.message}`; return; }
+    if (!box.isConnected) return;
+    const list = el('ol', 'bv-entries');
+    for (const entry of [...detail.history].reverse()) {
+      const row = el('li', entry.actor_kind ? '' : 'bv-gap'), when = el('time', 'bv-when', ago(entry.ts));
+      when.dateTime = entry.ts; when.title = new Date(entry.ts).toLocaleString();
+      row.append(when, el('span', 'bv-actor', actor(entry)), el('span', 'bv-what', change(entry)));
+      list.append(row);
+    }
+    const notes = [];
+    if (detail.unrecorded) notes.push(el('p', 'bv-note bv-gap', 'Its latest change was not recorded: an older orch process made it.'));
+    if (!detail.history.length) notes.push(el('p', 'bv-note', 'Nothing recorded yet.'));
+    history.replaceChildren(el('h4', '', 'History'), ...notes, list);
+    if (!detail.runs.length) return;
+    const buttons = el('div', 'bv-run-list');
+    for (const run of detail.runs) {
+      const entry = el('button', 'bv-run');
+      entry.type = 'button';
+      entry.title = `Open the conversation of ${run.agent_id}`;
+      entry.append(el('span', 'mono', `#${run.id}`), el('span', 'bv-run-agent', run.agent_id),
+        el('span', `pill ${run.status}`, run.status), el('span', 'bv-when', ago(run.ended_at || run.created_at)));
+      entry.onclick = () => { select(run.agent_id); if (ui.dialog.open) ui.dialog.close(); };
+      buttons.append(entry);
+    }
+    runs.append(el('h4', '', 'Runs'), buttons);
+  });
+
   function extra(item) {
     const box = ui.dialog.querySelector('.bv-extra');
     box.replaceChildren();

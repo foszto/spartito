@@ -61,6 +61,26 @@ button.chip { border: 0; font: inherit; font-size: 12px; cursor: pointer; }
 /* the item dialog */
 .bv-dialog { width: min(680px, calc(100vw - 32px)); }
 .bv-stamp { margin: -4px 0 10px; color: var(--muted); font-size: 12.5px; }
+/* the detail's history and runs */
+.bv-history h4, .bv-runs h4 { margin: 6px 0 6px; font-size: 13px; }
+.bv-note { margin: 0 0 6px; color: var(--muted); font-size: 12.5px; }
+.bv-entries { list-style: none; margin: 0 0 12px; padding: 0; border-left: 2px solid var(--line); }
+.bv-entries li { display: grid; grid-template-columns: 92px minmax(0, max-content) minmax(0, 1fr); gap: 2px 10px; padding: 3px 0 3px 12px;
+  font-size: 12.5px; align-items: baseline; }
+.bv-when { color: var(--faint); font-size: 12px; white-space: nowrap; }
+.bv-actor { font-weight: 600; white-space: nowrap; }
+.bv-what { color: var(--muted); overflow-wrap: anywhere; }
+.bv-gap .bv-actor, .bv-note.bv-gap { color: var(--waiting); }
+.bv-run-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+.bv-run { display: flex; align-items: center; gap: 10px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px;
+  background: none; text-align: left; font-size: 12.5px; }
+.bv-run:hover { background: var(--sunken); }
+.bv-run-agent { flex: 1; min-width: 0; color: var(--accent); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 560px) {
+  .bv-entries li { grid-template-columns: minmax(0, max-content) minmax(0, 1fr); }
+  .bv-entries .bv-what { grid-column: 1 / -1; }
+}
+
 .bv-extra:empty { display: none; }
 
 /* the selection and its dispatch */
