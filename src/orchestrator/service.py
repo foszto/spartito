@@ -266,6 +266,9 @@ class Orchestrator:
 
     dispatch_items = boards.dispatch_items  # named items, any projects
 
+    board_sync = boards.board_sync  # the throttled git pass; a merged item moves to done
+    board_live = boards.board_live  # the items' agent and branch state, from the database
+
     # -- settings (core/setup.py) ----------------------------------------
 
     settings = agent_setup.stored_settings

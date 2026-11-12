@@ -25,6 +25,7 @@ ORCHESTRATOR_TEXT_CHARS = 330
 # What every agent, a lead too, pays beyond master's listing: per tool, the new optional
 # parameters (without title and default) and their words in the description.
 LEAD_EXTRA_CHARS: dict[str, int] = {}
+LEAD_EXTRA_CHARS["list_board"] = 64  # P3: `live`
 LEAD_EXTRA_BUDGET = 140
 
 

@@ -4,6 +4,8 @@ methods stay in service.py."""
 
 from __future__ import annotations
 
+import sqlite3
+import sys
 from collections.abc import Callable
 from typing import Any, Protocol
 
@@ -11,6 +13,8 @@ from .. import board
 from ..errors import OrchestratorError
 from ..models import Agent, Project, Run
 from ..store import Store
+from ..timeline import AgentRuns
+from . import board_git
 
 
 class Facade(Protocol):
@@ -69,14 +73,21 @@ def board_view(
 ) -> dict[str, Any]:
     """The board of every registered project (`project`: of that one; `state`: that state
     only) as {projects: every registered project's name, synced_at: when the live state was
-    last refreshed (None: not yet), items: the items in board_items' order}. Later parts may
-    add keys to an item (live state, blockers, source); readers treat each as optional."""
+    last refreshed (None: not yet), items: the items in board_items' order, each with its
+    `live` state (board_live)}, after the throttled board_sync. Later parts may add keys to
+    an item (blockers, source); readers treat each as optional."""
+    board_sync(orch)
     items = orch.board_items(project, state)
-    return {
+    view = {
         "projects": [p.name for p in orch.store.list_projects()],
-        "synced_at": None,
+        "synced_at": board_git.last_sync(),
         "items": [item.to_dict() for item in items],
     }
+    lives = board_live(orch, items)
+    for shown in view["items"]:
+        shown["live"] = lives[shown["id"]]
+
+    return view
 
 
 # -- placing an item -------------------------------------------------------------------
@@ -172,7 +183,9 @@ def _runs(orch: Facade, entries: list[dict[str, Any]]) -> list[Run]:
 def board_detail(orch: Facade, item_id: int) -> dict[str, Any]:
     """One item with what happened to it: {item, history: [{ts, actor_kind, actor, action,
     changes, run_id}] oldest first, runs: [{id, agent_id, status, created_at, ended_at}] that
-    the history names, unrecorded: it changed after its last recorded change (or has none)}."""
+    the history names, unrecorded: it changed after its last recorded change (or has none),
+    live: as in board_live}, after the throttled board_sync. Later parts may add keys."""
+    board_sync(orch)
     item = _checked(lambda: board.get(orch.store, item_id))
     entries = board.history(orch.store, item_id)
     runs = [
@@ -185,9 +198,63 @@ def board_detail(orch: Facade, item_id: int) -> dict[str, Any]:
         }
         for run in _runs(orch, entries)
     ]
-    return {
+    detail = {
         "item": item.to_dict(),
         "history": entries,
         "runs": runs,
         "unrecorded": board.unrecorded(item, entries),
+    }
+    detail["live"] = board_live(orch, [item])[item.id]
+
+    return detail
+
+
+# -- live state ------------------------------------------------------------------------
+
+MERGED = board.Actor(board.AUTO_KIND, board_git.AUTO_RULE)  # who moves a merged item to done
+
+
+def _record_merged(conn: sqlite3.Connection, before: board.Item, tip: str | None) -> None:
+    """board_git's recorder: the move to done, by `auto`/merged, with the merged commit."""
+    board.record_moved(conn, before, MERGED, {"commit": tip[:7]} if tip else {})
+
+
+def board_sync(orch: Facade) -> dict[str, Any]:
+    """The throttled pass over the items' branches (board_git.sync: at most one every
+    SYNC_EVERY seconds across processes, within SYNC_BUDGET), a merged item moved to done
+    with its history entry. Never raises: {"checked": [ids], "done": [ids]}."""
+    try:
+        return board_git.sync(orch.store, _record_merged)
+    except Exception as exc:
+        print(f"board sync failed: {exc!r}", file=sys.stderr)
+        return {"checked": [], "done": []}
+
+
+def _agent_status(orch: Facade, agent_id: str, archived: set[str]) -> str:
+    """As the listings show it (running, waiting, new, or the last run's status), archived,
+    or unknown (no such agent)."""
+    if orch.store.get_agent(agent_id) is None:
+        return "unknown"
+    if agent_id in archived:
+        return "archived"
+    return AgentRuns.read(orch.store, agent_id).state()[0]
+
+
+def board_live(orch: Facade, items: list[board.Item]) -> dict[int, dict[str, Any]]:
+    """The live state of the items by id, from the database and the git cache (nothing is
+    computed here): {agent: {id, status} | None, git: board_git.states' entry | None (not
+    checked yet, or no branch), pr: None (reserved)}."""
+    linked = {item.agent_id for item in items if item.agent_id}
+    archived = set(orch.store.archived()) if linked else set()
+    agents = {agent_id: _agent_status(orch, agent_id, archived) for agent_id in sorted(linked)}
+    gits = board_git.states(orch.store, items)
+    return {
+        item.id: {
+            "agent": {"id": item.agent_id, "status": agents[item.agent_id]}
+            if item.agent_id
+            else None,
+            "git": gits.get(item.id),
+            "pr": None,
+        }
+        for item in items
     }

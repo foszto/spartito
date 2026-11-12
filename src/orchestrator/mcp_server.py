@@ -484,21 +484,37 @@ def _board_line(item: Any) -> dict[str, Any]:
     return line
 
 
+def _live_line(live: dict[str, Any]) -> dict[str, Any]:
+    """What `live` adds to an item's line: `run` (its agent's status) and `git`, if known."""
+    line: dict[str, Any] = {}
+    if live["agent"]:
+        line["run"] = live["agent"]["status"]
+    if live["git"]:
+        line["git"] = board.git_text(live["git"])
+    return line
+
+
 @server.tool()
-def list_board(project: str, state: str | None = None) -> dict[str, Any]:
+def list_board(project: str, state: str | None = None, live: bool = False) -> dict[str, Any]:
     """The project's task board (ideas and tasks kept across sessions): in_progress, ready,
     idea, then done, each in its order; `state` lists one state only. Short: titles and
     descriptions are cut, and what does not fit in about 6000 chars is only counted
-    (`counts` has every state's total). Leads: their own project only."""
+    (`counts` has every state's total). Leads: their own project only. `live` adds agent
+    and git status."""
     orch = _orch()
     name = Caller.from_env(orch).project(project)
+    if live:
+        orch.board_sync()
     items = orch.board_items(name, state)
+    lives = orch.board_live(items) if live else {}
     items.sort(key=lambda item: BOARD_ORDER.index(item.state))  # stable: keeps the order
     counts = {key: n for key in BOARD_ORDER if (n := sum(i.state == key for i in items))}
     reply: dict[str, Any] = {"project": name, "counts": counts, "items": []}
     left = LOG_CHARS - len(json.dumps(reply)) - 200  # room for the note
     for item in items:
         line = _board_line(item)
+        if live:
+            line.update(_live_line(lives[item.id]))
         left -= len(json.dumps(line)) + 2
         if left < 0:
             break
@@ -509,6 +525,9 @@ def list_board(project: str, state: str | None = None) -> dict[str, Any]:
         where = ", ".join(f"{key} {n}" for key, n in by_state.items() if n)
         reply["note"] = f"{len(hidden)} not shown ({where}); state= lists one state"
     return reply
+
+
+_lean("list_board", "live")
 
 
 @server.tool()

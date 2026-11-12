@@ -731,15 +731,24 @@ def board_line(item) -> str:
 
 @board_app.callback(invoke_without_command=True)
 def board_list(
-    ctx: typer.Context, project: ProjectOption = None, state: StateOption = None
+    ctx: typer.Context,
+    project: ProjectOption = None,
+    state: StateOption = None,
+    live: Annotated[
+        bool, typer.Option("--live", help="Each item's agent status and branch state.")
+    ] = False,
 ) -> None:
     """List the board by project and state (add, edit, move and dispatch below)."""
     if ctx.invoked_subcommand:
         return
+    o = orch()
+    if live:
+        o.board_sync()
     try:
-        items = orch().board_items(project, state)
+        items = o.board_items(project, state)
     except OrchestratorError as exc:
         raise fail(exc) from None
+    lives = o.board_live(items) if live else {}
     if not items:
         typer.echo("the board is empty")
     heading = None
@@ -747,9 +756,21 @@ def board_list(
         if (item.project, item.state) != heading:
             heading = (item.project, item.state)
             typer.secho(f"{item.project} · {item.state}", bold=True)
-        typer.echo(board_line(item))
+        typer.echo(board_line(item) + (board_live_text(lives[item.id]) if live else ""))
         if item.description:
             typer.echo(f"      {item.description.splitlines()[0][:100]}")
+
+
+def board_live_text(live: dict) -> str:
+    """ "  · agent running · branch +3 dirty", what is known of it."""
+    from .board import git_text
+
+    parts = []
+    if live["agent"]:
+        parts.append(f"agent {live['agent']['status']}")
+    if live["git"]:
+        parts.append(f"branch {git_text(live['git'])}")
+    return "".join(f"  · {part}" for part in parts)
 
 
 def board_fail(action):

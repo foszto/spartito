@@ -485,3 +485,36 @@ def dispatch(
     with store.transaction() as conn:
         link_run(conn, [item.id for item in before], stamp, run_id)
     return [get(store, item.id) for item in before], run_id
+
+
+# -- live state ------------------------------------------------------------------------
+
+
+def record_moved(
+    conn: sqlite3.Connection, before: Item, actor: Actor, extra: dict[str, Any]
+) -> None:
+    """Record a change of `before` that other code made in `conn` (core/board_git.py's
+    move to done), as `state` with what changed and `extra` ({"commit": …}), in that
+    transaction."""
+    after = _get(conn, before.id)
+    assert after is not None
+    record_gap(conn, before.id, before.updated_at)
+    record(
+        conn, before.id, actor, "state", {**_diff(before, after, FIELDS), **extra}, after.updated_at
+    )
+
+
+def git_text(git: dict[str, Any]) -> str:
+    """A branch's cached state in a few chars: "merged", "+3 -1 dirty" (ahead, behind),
+    "even", "no branch" or "error"."""
+    if git["error"]:
+        return "error"
+    if git["merged"]:
+        return "merged"
+    if git["ahead"] is None:
+        return "no branch"
+    parts = [
+        f"+{git['ahead']}" if git["ahead"] else "",
+        f"-{git['behind']}" if git["behind"] else "",
+    ]
+    return " ".join(part for part in [*parts, "dirty" if git["dirty"] else ""] if part) or "even"
