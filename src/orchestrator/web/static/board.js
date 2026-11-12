@@ -585,6 +585,7 @@
     project.value = ui.project || ui.data.projects[0];
     node.querySelector('.bv-project').hidden = false;
     node.querySelector('.bv-stamp').textContent = '';
+    fills++;  // a refill of a detail shown before is not wanted here
     node.querySelector('.bv-extra').replaceChildren();
     ui.submit = async data => {
       const item = await call('/api/board/add', { project: data.get('project'), ...fields(data) });
@@ -746,7 +747,9 @@
     }
     const next = el('div', 'bv-extra');
     await Promise.allSettled(hooks.detail.map(fillIn => fillIn(next, item)));
-    if (turn !== fills || !ui.dialog.open) return;  // a later refill, or closed meanwhile
+    // Only into the detail it was built for: not after a later fill, nor once the dialog was
+    // closed, shows another item or a new one.
+    if (turn !== fills || !ui.dialog.open || !ui.detail || ui.detail.id !== item.id) return;
     const kept = heldState(box);
     box.replaceChildren(...next.childNodes);
     putBack(box, kept);
