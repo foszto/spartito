@@ -889,7 +889,7 @@
       if (!event.submitter || event.submitter.value !== 'ok') return;
       event.preventDefault();
       save.disabled = true;
-      try { await node.submit(new FormData(form)); node.close(); }
+      try { const link = await node.submit(new FormData(form)); node.close(); link.focus(); }
       catch (error) { foot.querySelector('.error').textContent = error.message; }
       finally { save.disabled = false; }
     };
@@ -898,7 +898,22 @@
     return node;
   }
 
+  // The message's button becomes a link to its item; the link, to focus.
+  function onBoard(button, item) {
+    const link = el('a', 'bv-msg-add bv-msg-added', `On the board: #${item.id}`);
+    link.href = `#${encodeURIComponent(route(item.project, item.id))}`;
+    link.title = 'Open the item on the board';
+    button.replaceWith(link);
+    return link;
+  }
+
+  // A message already made into an item (its conversation was redrawn since) gets the link to
+  // that item instead of a second one.
   async function fromMessage(button, event, agentId) {
+    const board = await call('/api/board/view').catch(() => ({ projects: [], items: [] }));
+    const made = board.items.find(item => item.source && item.source.agent_id === agentId
+      && String(item.source.event_id) === String(event.id));
+    if (made) { toast(`Already on the board: #${made.id} in ${made.project}`); onBoard(button, made).focus(); return; }
     const node = fromForm(), form = node.querySelector('form'), needsProject = agentId === ORCHESTRATOR;
     const firstLine = event.text.split('\n').map(line => line.replace(/^[#>*\-\s]+/, '').trim()).find(Boolean) || '';
     form.elements.title.value = cut(firstLine, 200);
@@ -907,20 +922,14 @@
     node.querySelector('.error').textContent = '';
     node.querySelector('.bv-from-note').textContent = `From a message of ${agentId}; the item keeps a link to it.`;
     node.querySelector('.bv-from-project').hidden = !needsProject;
-    if (needsProject) {
-      const names = await call('/api/board/view?state=done').then(data => data.projects, () => []);
-      form.elements.project.replaceChildren(...names.map(name => new Option(name, name)));
-    }
+    if (needsProject) form.elements.project.replaceChildren(...board.projects.map(name => new Option(name, name)));
     node.submit = async data => {
       const body = { agent_id: agentId, event_id: event.id, title: data.get('title'),
         description: data.get('description'), state: data.get('state') };
       if (needsProject) body.project = data.get('project');
       const item = await call('/api/board/from-message', body);
       toast(`#${item.id} added to the board of ${item.project}`);
-      const link = el('a', 'bv-msg-add bv-msg-added', `On the board: #${item.id}`);
-      link.href = `#${encodeURIComponent(route(item.project, item.id))}`;
-      link.title = 'Open the item on the board';
-      button.replaceWith(link);
+      return onBoard(button, item);
     };
     node.showModal();
     form.elements.title.focus();
