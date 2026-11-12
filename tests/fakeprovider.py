@@ -20,8 +20,8 @@ compaction (48450 -> 901 tokens) and an empty result, like Claude Code; with `NO
 it answers like Claude with `--disable-slash-commands` instead (with `CODEX` as well: like a
 Codex model, `compacted`). FAKE_NEEDS_SIZE=1 makes the provider ask for the context size
 before a compaction, like Codex; FAKE_COMPACT_NOOP=1 adds `NOOP` to every compaction. `invocation` writes what the
-runner passed it (prompt, slash_commands, output_schema, compact_below) to `ctx.json` in
-the run's scratch directory.
+runner passed it (prompt, system_prompt, slash_commands, output_schema, compact_below) to
+`ctx.json` in the run's scratch directory.
 
 `ENVCHILD` has a child process (like a command the agent runs) write its environment to
 `.fake-env.json` in the working directory.
@@ -199,6 +199,7 @@ class FakeProvider:
         stdin = stream_json_prompt(ctx.prompt) if canary else ctx.prompt
         seen = {
             "prompt": ctx.prompt,
+            "system_prompt": ctx.system_prompt,
             "slash_commands": ctx.loadout.slash_commands,
             "output_schema": ctx.output_schema,
             "compact_below": ctx.compact_below,

@@ -3,13 +3,15 @@ and the setting `bot_coauthor` that adds the project bot's trailer."""
 
 from __future__ import annotations
 
+import json
 import tomllib
 from pathlib import Path
 
 import pytest
+from fakeprovider import FakeProvider
 from typer.testing import CliRunner
 
-from orchestrator import cli, config, roles, settings
+from orchestrator import cli, config, providers, roles, settings
 from orchestrator.models import Agent
 from orchestrator.runner import system_prompt
 from orchestrator.service import Orchestrator, OrchestratorError
@@ -228,3 +230,37 @@ def test_the_setting_is_global_on_by_default_and_kept(orch: Orchestrator) -> Non
 def test_the_setting_cannot_be_set_per_project(orch: Orchestrator, project: str) -> None:
     with pytest.raises(OrchestratorError, match="can only be set globally"):
         orch.update_settings({settings.BOT_COAUTHOR: False}, project)
+
+
+def turn_system_prompt(orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch) -> str:
+    """The system prompt a real turn's provider receives, for a `codex` agent: the fake
+    provider stands in for Codex (in the runner too), the attribution rule stays Codex's."""
+    monkeypatch.setenv(
+        "ORCH_PROVIDERS", "fake=fakeprovider:FakeProvider,codex=fakeprovider:FakeProvider"
+    )
+    monkeypatch.setitem(providers.PROVIDERS, "codex", FakeProvider())
+    agent, run = orch.spawn(project, "hello", worktree=False, provider="codex")
+    done, _ = orch.wait([agent.id], timeout=30)
+    assert done, "agent did not finish in time"
+    return json.loads((config.run_dir(run.id) / "ctx.json").read_text())["system_prompt"]
+
+
+def test_a_turn_gets_the_bot_trailer_by_default(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prompt = turn_system_prompt(orch, project, monkeypatch)
+
+    assert f"\n\n{roles.attribution('codex', bot_coauthor=True)}\n\n## Context\n" in prompt
+    assert f"\n  {BOT_TRAILER}\n" in prompt and MANAGED_WITH_BOT in lines(prompt)
+
+
+def test_a_turn_follows_the_setting_switched_off(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = CliRunner().invoke(cli.app, ["config", "bot-coauthor", "off"])
+    assert result.exit_code == 0
+    prompt = turn_system_prompt(orch, project, monkeypatch)
+
+    section = old_section(CODEX_LINE, CODEX_TRAILER)
+    assert f"\n\n{section}\n\n## Context\n" in prompt
+    assert config.BOT_NAME not in prompt and "noreply.github.com" not in prompt
