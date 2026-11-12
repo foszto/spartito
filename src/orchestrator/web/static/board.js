@@ -596,6 +596,14 @@
     form.elements.title.focus();
   }
 
+  // What an open detail shows of an item besides its form: refilled when this changes (an
+  // edit, the agent's status, the branch's state, a decision answered or withdrawn). Not when
+  // only the time of the git check moves on.
+  function shownKey(item) {
+    const live = item.live && item.live.git ? { ...item.live, git: { ...item.live.git, checked_at: null } } : item.live;
+    return JSON.stringify([item.updated_at, live, item.blockers]);
+  }
+
   // The detail named by the route: opened once, kept while it stays named, closed when not.
   async function syncDetail(id) {
     const node = ui.dialog;
@@ -605,7 +613,7 @@
     }
     if (ui.detail && ui.detail.id === id && node.open) {
       const now = find(id);
-      if (now && now.updated_at !== ui.detail.updated_at) { ui.detail.updated_at = now.updated_at; extra(now); }
+      if (now && shownKey(now) !== ui.detail.key) { ui.detail.key = shownKey(now); extra(now); }
       return;
     }
     // Only an item the route's board shows: #board:alpha/9 with an item of beta is refused.
@@ -621,7 +629,7 @@
 
   function showDetail(item) {
     const node = dialog(), form = fill(node, `#${item.id} · ${item.project}`, item);
-    ui.detail = { id: item.id, project: ui.project, updated_at: item.updated_at };
+    ui.detail = { id: item.id, project: ui.project, key: shownKey(item) };
     node.querySelector('.bv-project').hidden = true;
     const stamp = node.querySelector('.bv-stamp');
     stamp.textContent = `Added ${ago(item.created_at)} · changed ${ago(item.updated_at)}`;
