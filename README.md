@@ -67,7 +67,9 @@ Alternatives: `uv tool install --editable .` without the extras (`spartito app` 
 browser window, and on macOS notifications do not come from Spartito itself), or no install
 at all, prefixing every command with `uv run` inside the checkout (`uv run spartito …`).
 Installed before the command was renamed? See
-[Upgrading from `orch`](https://github.com/foszto/spartito/blob/master/docs/usage.md#upgrading-from-orch).
+[Upgrading from `orch`](https://github.com/foszto/spartito/blob/master/docs/usage.md#upgrading-from-orch). Installed from a checkout before the distribution was renamed
+to `spartito`? See
+[Upgrading to the distribution name `spartito`](https://github.com/foszto/spartito/blob/master/docs/usage.md#upgrading-to-the-distribution-name-spartito).
 
 Spartito keeps its state in `~/.orchestrator/`. Set `ORCH_HOME` to use another directory.
 
@@ -153,6 +155,7 @@ MCP tools are views on the same database. More: [docs/concepts.md](https://githu
 - [docs/desktop.md](https://github.com/foszto/spartito/blob/master/docs/desktop.md): background service, installable page, notifications, `spartito app`, menu bar.
 - [docs/desktop-checklist.md](https://github.com/foszto/spartito/blob/master/docs/desktop-checklist.md): manual checks of the desktop app.
 - [docs/architecture.md](https://github.com/foszto/spartito/blob/master/docs/architecture.md): how it works at run time, limitations, code layout.
+- [docs/releasing.md](https://github.com/foszto/spartito/blob/master/docs/releasing.md): the version, publishing to PyPI, the release workflow.
 - [CONTRIBUTING.md](https://github.com/foszto/spartito/blob/master/CONTRIBUTING.md): setup, checks, conventions, pull requests, bug reports.
 - [ROADMAP.md](https://github.com/foszto/spartito/blob/master/ROADMAP.md): where Spartito is heading, in phases, with the open questions.
 

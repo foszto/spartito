@@ -27,7 +27,9 @@ uv sync --extra app --extra menubar            # in a checkout, for `uv run spar
 ```
 
 Over an existing install, the same `uv tool install` line adds the extras; no `--force` is
-needed. On macOS, run `spartito app install` afterwards (see
+needed. An install from before the distribution was renamed to `spartito` (the tool
+`orchestrator` in `uv tool list`) is replaced instead:
+[upgrading](usage.md#upgrading-to-the-distribution-name-spartito). On macOS, run `spartito app install` afterwards (see
 [Launcher](#launcher-name-and-icon)).
 
 Without the extra, `spartito app` falls back to a browser (see [Own window](#own-window)). On

@@ -4,6 +4,7 @@
 - [Command reference](#command-reference)
 - [Dashboard](#dashboard)
 - [Upgrading from `orch`](#upgrading-from-orch)
+- [Upgrading to the distribution name `spartito`](#upgrading-to-the-distribution-name-spartito)
 
 Terms used here (see [concepts.md](concepts.md)): a *turn* is one prompt and
 the agent's answer; its *run id* is the number commands print as `run 12` and `spartito status`
@@ -370,3 +371,52 @@ same for `.venv`.
   Leave it and continue it with `spartito chat --continue`, which allows `Bash(spartito *)`.
   Its conversation still shows `orch …` commands: if it tries one, tell it the new name.
 - **Your own scripts, aliases and notes** that call `orch` need the new name.
+
+## Upgrading to the distribution name `spartito`
+
+The checkout used to install itself as the Python distribution `orchestrator`; it is now
+`spartito`, the name it has on PyPI ([releasing.md](releasing.md)). The command, the import
+package `orchestrator`, `-m orchestrator`, the home and every internal name stay. uv names a
+tool after its distribution, so `uv tool install --editable` now installs into a new tool
+directory, `<tool dir>/spartito` (`uv tool dir` shows the tool directory), next to the old
+`<tool dir>/orchestrator`, which still provides `spartito`. The background service and the
+launcher name the old environment's Python, so they need a reinstall too.
+
+Once the checkout has the new code, the old install keeps working; only `/api/ping` reports
+the version `0+unknown`. Then, from the checkout:
+
+1. Wait until no agent works: `spartito ps` shows no agent `running` or `waiting`. Leave open
+   `spartito chat` sessions, and quit `spartito app` and `spartito menubar`.
+2. `uv tool uninstall orchestrator`
+3. `uv tool install --editable '.[app,menubar]'`, with the extras you installed before.
+4. `spartito service install`, with the `--host` and `--port` you used: it rewrites the unit
+   with the new environment's Python and restarts the dashboard.
+5. `spartito app install`: a new copy of Python for the launcher, and its record.
+6. Check: `uv tool list` shows `spartito` with the executable `spartito`;
+   `spartito service status` shows that the web UI answers. Start `spartito menubar` again
+   if you use it, and continue a chat with `spartito chat --continue`.
+
+Keep steps 2 and 3 in this order. While the old tool provides `spartito`,
+`uv tool install` stops with `Executable already exists: spartito` and changes nothing. With
+`--force` it installs, but a later `uv tool uninstall orchestrator` then deletes the
+`spartito` command that the new tool now owns, while `uv tool list` still lists it. If that
+happened, run step 3 again with `--force`.
+
+Between step 2 and steps 4 and 5, the processes started from the old environment cannot
+start anything new, because its Python is gone:
+
+- **A running turn** finishes normally. A turn its runner starts next (a queued message)
+  fails at once with `FileNotFoundError` naming `…/tools/orchestrator/bin/python`: send the
+  message again.
+- **The dashboard service** still serves the page, but starting a turn fails with an error
+  and leaves the agent `waiting` with no runner, and later messages queue behind that turn.
+  Run `spartito stop <agent>`, then send again. If the service stops, launchd or systemd
+  cannot restart it before step 4.
+- **The launcher** names the removed environment: it reports that Python changed since
+  `spartito app install`, does not open, and posts no notifications until step 5.
+- **A Claude Code agent in a running turn** has an MCP server from the old environment: its
+  `spawn` and `send` calls fail and leave the new turn `waiting` (`spartito stop`, then again),
+  and writes to its memory directory are refused until the turn ends. Its next turn uses the
+  new environment. The same holds for the MCP server of an open `spartito chat`.
+
+In a checkout used with `uv run`, `uv sync` does the same for `.venv`: nothing else to do.

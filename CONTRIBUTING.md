@@ -52,6 +52,10 @@ uv run ruff format --check
 for f in src/orchestrator/web/static/*.js; do node --check "$f"; done
 ```
 
+GitHub Actions runs them on every push to `master` and every pull request
+(`.github/workflows/ci.yml`): the suite on Linux and on macOS (there with the extras), and the
+linters, the scripts and the link and command-name tests once on Linux.
+
 The suite runs on a fake provider (`tests/fakeprovider.py`) with real git repositories and
 worktrees in temporary directories. It never calls `claude` or `codex` and needs no network.
 `tests/conftest.py` sets a temporary `ORCH_HOME` for every test. In parallel
@@ -120,6 +124,11 @@ agent `fix-login-3f2a`.
   spent`. The body, if any, explains the change in prose.
 - Maintainers squash or merge as they see fit. Review happens when time allows; there is no
   promised response time.
+
+## Releases
+
+Maintainers publish to PyPI from a version tag, through GitHub Actions:
+[docs/releasing.md](docs/releasing.md).
 
 ## Licence
 
