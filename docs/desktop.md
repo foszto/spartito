@@ -341,7 +341,11 @@ the window too, with exit code 128 + the signal (143, 129). If `--port` is taken
   `libxkbcommon-x11-0`, `libfontconfig1`, `libfreetype6`, `libx11-6`, `libx11-xcb1`,
   `libxext6`, `libxrender1`, `libsm6`, `libice6`, `libglib2.0-0`. Qt WebEngine usually also
   needs `libgl1`, `libegl1`, `libnss3`, `libxcomposite1`, `libxdamage1`, `libxrandr2`,
-  `libxtst6`, `libdbus-1-3` and `libasound2` (`libasound2t64` on newer Ubuntu).
+  `libxtst6`, `libdbus-1-3` and `libasound2` (`libasound2t64` on newer Ubuntu). A run on
+  Debian trixie (aarch64) showed `libQt6WebEngineCore.so.6` also needs `libsnappy1v5`,
+  `libopus0`, `libxfixes3`, `libwebpdemux2`, `libwebpmux3`, `libminizip1t64` and
+  `liblcms2-2`. To list what is missing:
+  `ldd <venv>/lib/python3.*/site-packages/PyQt6/Qt6/lib/libQt6WebEngineCore.so.6 | grep 'not found'`.
 - **Sandbox.** Qt WebEngine's sandbox needs seccomp-bpf and unprivileged user namespaces,
   which Ubuntu's AppArmor rules may restrict. It can be turned off with
   `QTWEBENGINE_DISABLE_SANDBOX=1` or `QTWEBENGINE_CHROMIUM_FLAGS=--no-sandbox`; `orch app`
@@ -409,8 +413,11 @@ names. The script tries the copy first (a trial start); one that cannot start ma
 the window the earlier way (`CFProcessPath`), so the window still opens, and that window says
 on stderr
 `the launcher's copy of Python is stale (<why>): run `orch app install` again; until then Spartito posts no notifications itself`.
-A stale copy is not used for posting notifications (`osascript` shows them). Running
-`orch app install` again replaces it and says
+The script decides only by whether the copy starts: a copy that is stale by
+`interpreter.json` but still starts is used, and that window posts Spartito's notifications
+itself. A stale copy is refused by the hidden posting process (so with no window open the
+notifications come from `osascript`) and by a terminal `orch app`, which then uses
+`CFProcessPath`. Running `orch app install` again replaces it and says
 `replaced the stale copy of the Python interpreter (<why>)`.
 
 **From a terminal.** With this home's launcher installed and pywebview present, `orch app`
@@ -531,8 +538,13 @@ other platforms it installs nothing.
 - In the Chromium fallback window Spartito posts no notifications itself; the page in it can.
 - A click on an `osascript` notification opens Script Editor and cannot be redirected; its text
   says where to look instead.
-- After a Python upgrade, Spartito posts no notifications itself until `orch app install` runs
-  again.
+- After a Python upgrade, until `orch app install` runs again, Spartito posts notifications
+  itself only from a window whose stale copy still starts; otherwise `osascript` shows them.
+- After a busy database, an "agent finished" notice shown by `osascript` can be posted a second
+  time by Spartito within ten minutes.
+- On Linux with `xdg-open` but no browser installed, `orch app` prints `xdg-open`'s errors
+  instead of the "no browser could be opened" line.
+- `orch app uninstall` on Linux leaves the empty directories that install created.
 - A Spartito started by a click while an `orch app` that is not the launcher's app holds the
   window lock does not pass the click's target on.
 - With the launcher, the native window's WebKit data is under
