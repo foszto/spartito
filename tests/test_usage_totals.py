@@ -201,13 +201,32 @@ def test_the_stores_sums_give_what_walking_every_run_gives(store: Store) -> None
 
     sums, old_code_runs, _ = store.usage_sums()
 
-    assert len(sums) == 3 and {run.agent_id for run in old_code_runs} == {"a-1"}
+    assert len(sums) == 4 and {run.agent_id for run in old_code_runs} == {"a-1"}  # + deleted
     assert Orchestrator(store).total_spent() == {
         "cost_usd": walked.cost,
         "tokens": walked.tokens(),
     }
     assert walked.cost == 2.27  # a-1: 0.75 + 0.1 raised to 1.3; b-1: 0.37; c-1: 0.2; d-1: 0.4
     assert walked.tokens() == {"in": 55, "out": 10, "cache_read": 403, "cache_write": 43}
+
+
+def test_a_database_from_before_spent_removed_gets_it_on_opening(store: Store) -> None:
+    """The layout master's code leaves (no spent_removed, no runs_spend), with a-1's
+    old-code runs from the first schema: the next opening adds both, no step needed."""
+    new_code_run(store, Usage(10, 1, 0, 0, cost_usd=0.5))
+    with store.connection() as conn:
+        conn.execute("DROP TABLE spent_removed")
+        conn.execute("DROP INDEX runs_spend")
+    reopened = Store(store.path)
+    before = Orchestrator(reopened).total_spent()
+
+    reopened.delete_agent("a-1")
+
+    assert before == {
+        "cost_usd": 1.25,
+        "tokens": {"in": 10, "out": 1, "cache_read": 0, "cache_write": 0},
+    }
+    assert Orchestrator(reopened).total_spent() == before
 
 
 def test_nothing_spent_yet_is_zero_without_tokens(tmp_path: Path) -> None:
