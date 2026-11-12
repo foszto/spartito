@@ -100,6 +100,8 @@ tag; the same rule applies to PyPI.
    above, without the TestPyPI options:
    `uv tool install --python 3.14 'spartito[app,menubar]'`. With a temporary
    `ORCH_HOME`, `spartito web --port 18926` serves `/api/ping` with the new version.
+5. At the first release: the project's website shows the install lines too. Change them to
+   the PyPI install in the website's own repository, `foszto/spartito.dev`.
 
 A failed upload can be retried by re-running the failed job. Files already on PyPI that are
 identical are skipped. A wrong version cannot be uploaded again: release the next one.
