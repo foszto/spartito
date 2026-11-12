@@ -1032,6 +1032,44 @@ def test_the_native_window_page_leaves_notifications_to_spartito():
     assert script.count("PageNotification.requestPermission()") == 2  # header and settings only
 
 
+@pytest.mark.parametrize(
+    ("search", "native"),
+    [
+        ("?app=7&native=1", True),  # pywebview's window
+        ("", False),  # a browser tab
+        ("?app=7", False),  # Chromium in app mode
+        ("?app=7&native=0", False),
+        ("?app=7&native=true", False),
+        ("?native=1", False),  # no window of `spartito app`
+    ],
+)
+def test_the_page_tells_the_native_window_from_its_query(search, native):
+    """The page's own lines, run under node with a fake location and Notification API: only
+    the native window's query hides the Notification API."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    script = (PACKAGE / "web" / "static" / "app.js").read_text()
+    names = ("appParam", "nativeWindow", "PageNotification")
+    lines = [
+        line for line in script.splitlines() for name in names if line.startswith(f"const {name} =")
+    ]
+    assert len(lines) == len(names)
+    code = "\n".join(
+        [
+            f"const location = {{ search: {json.dumps(search)} }};",
+            "function FakeNotification() {}",
+            "const window = { Notification: FakeNotification };",
+            *lines,
+            "process.stdout.write(JSON.stringify({ nativeWindow,"
+            " fake: PageNotification === FakeNotification,"
+            " absent: PageNotification === undefined }));",
+        ]
+    )
+    done = subprocess.run([node, "-e", code], capture_output=True, text=True, check=True)
+    assert json.loads(done.stdout) == {"nativeWindow": native, "fake": not native, "absent": native}
+
+
 # -- signals, the lock while serving --------------------------------------------------------
 
 
