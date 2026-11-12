@@ -44,3 +44,13 @@ def test_board_js_exports_only_the_board_view() -> None:
 
     assert top_level == []
     assert "window.BoardView = { ROUTE, owns, render, navEntry, messageAction };" in source
+
+
+def test_every_hook_in_app_js_works_without_board_js() -> None:
+    """A page whose board.js failed to load keeps every other route: app.js names
+    BoardView only behind a check that it exists."""
+    source = (STATIC / "app.js").read_text()
+    hooks = [line for line in source.splitlines() if "BoardView." in line]
+
+    assert len(hooks) >= 2
+    assert all("window.BoardView &&" in line or "if (window.BoardView)" in line for line in hooks)
