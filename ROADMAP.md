@@ -290,12 +290,16 @@ reports no cost.
 **What it means.** Back up the state, export it, and move it to another machine. This is a
 step towards shared team state.
 
-**Today.** All state is in one directory (`~/.orchestrator/`, or `ORCH_HOME`): the database,
-the worktrees, the logs ([state](docs/architecture.md#state)). Projects are stored with their
-local paths. There is no export or import command.
+**Today.** `spartito state backup` copies the database with SQLite's online backup API, safe
+while agents run, with the home's roles and `loadout.toml` and optionally the logs;
+`spartito state list` lists the backups; `spartito state restore` restores one in place,
+refusing while turns run and keeping the replaced state as a new backup
+([state.md](docs/state.md)). Moving a home is a documented procedure that keeps every absolute
+path ([moving a home](docs/state.md#moving-a-home)).
 
-**Open questions.** What moves (the database only, or the worktrees too), how paths are
-rewritten, and how to copy a database that is in use.
+**Open questions.** Rewriting the stored paths (the home, the projects, the worktrees) for a
+move to other paths; exporting one project and importing it into another home; carrying
+uncommitted worktree files and provider sessions along; scheduled backups and pruning old ones.
 
 #### The rest of the internal refactoring
 

@@ -32,7 +32,8 @@ State lives under `~/.orchestrator/` (or `$ORCH_HOME`):
 - `worktrees/<project>/<agent-id>/`: the agents' worktrees;
 - `workspace/`: the orchestrator's working directory;
 - `run/`: files about live processes: the running dashboard server's `web.json`, locks and
-  markers, the browser profile of `spartito app`.
+  markers, the browser profile of `spartito app`;
+- `backups/`: backups of the state ([state.md](state.md)).
 
 The full list of files: [configuration.md](configuration.md#files).
 
@@ -118,6 +119,7 @@ src/orchestrator/
                      named items, an item's history
     board_git.py     the cached git state of the board items' branches
     code_view.py     an agent's worktree, read-only: changed files, patches, files, contents
+    state.py         backups of the state: making, listing and restoring them
   runner.py        one turn in its own detached process
   store.py         SQLite (WAL): the only shared state
   providers/       base.py (protocol), claude.py, codex.py

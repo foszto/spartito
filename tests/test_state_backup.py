@@ -429,10 +429,11 @@ AUDITED = {
     "os.listdir", "os.scandir", "os.symlink", "os.utime", "shutil.copyfile", "shutil.copytree",
 }  # fmt: skip
 recorded: list[tuple[str, str]] | None = None
+recording_thread: int | None = None  # threads other tests left running are not this test's
 
 
 def audit(event: str, args: tuple) -> None:
-    if recorded is None or event not in AUDITED:
+    if recorded is None or event not in AUDITED or threading.get_ident() != recording_thread:
         return
     for arg in args[:2] if event.startswith("shutil") else args[:1]:
         if isinstance(arg, str | bytes | os.PathLike) and os.fspath(arg) != ":memory:":
@@ -443,14 +444,14 @@ sys.addaudithook(audit)  # inert unless a test records
 
 
 def test_backup_list_and_restore_touch_nothing_outside_the_home(o: Orchestrator) -> None:
-    global recorded
+    global recorded, recording_thread
     home = config.home().resolve()
     (home / "roles").mkdir()
     (home / "roles" / "docs-writer.md").write_text("role")
     (home / "loadout.toml").write_text("[default]\n")
     config.run_dir(1).mkdir(parents=True)
     finished_run(o, "fix-login-3f2a", "one")
-    recorded = []
+    recorded, recording_thread = [], threading.get_ident()
     try:
         name = o.backup_state(logs=True)["name"]
         o.list_backups()
@@ -464,7 +465,7 @@ def test_backup_list_and_restore_touch_nothing_outside_the_home(o: Orchestrator)
         if not Path(path).resolve().is_relative_to(home)
         and not any(Path(path).resolve().is_relative_to(p) for p in python | {ROOT / "src"})
     ]
-    assert seen and outside == []
+    assert seen and outside == [], "\n".join(f"{event} {path}" for event, path in outside)
     assert {"sqlite3.connect", "shutil.copytree", "os.chmod"} <= {event for event, _ in seen}
 
 

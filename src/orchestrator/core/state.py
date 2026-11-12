@@ -258,8 +258,8 @@ def newer_note(unknown: list[str]) -> str | None:
     shown = ", ".join(unknown[:6]) + (", …" if len(unknown) > 6 else "")
     return (
         f"the backup has tables or columns this version does not know ({shown}): a newer"
-        " version made it. This version works with it and leaves them alone; a newer version"
-        " finds them again."
+        " version made it. This version works with it without reading them (rows it writes get"
+        " their defaults); a newer version uses them again."
     )
 
 

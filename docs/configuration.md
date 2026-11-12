@@ -409,6 +409,7 @@ The main files under `~/.orchestrator/` (or `$ORCH_HOME`):
 | `worktrees/<project>/<agent-id>/` | agents' worktrees |
 | `workspace/` | the orchestrator's working directory |
 | `roles/`, `loadout.toml` | your roles and loadout overrides |
+| `backups/` | backups made by `spartito state backup` and `restore` ([state.md](state.md)) |
 | `logs/run-<id>/` | per turn: the CLI's output, stderr, `result.md`, `result.json` |
 | `logs/web.log` | output of the background service (macOS; emptied at install above 5 MB) |
 | `hooks-off/` | agents whose memory hook did not run (see [Loadout](#notes)) |
