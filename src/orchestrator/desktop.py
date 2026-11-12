@@ -28,7 +28,7 @@ at the agent or decision or, where that cannot be had, no misleading click targe
    which claims and posts the pending notices and exits; when `open` fails, or the notice is
    still unclaimed after CLAIM_WAIT_SECONDS, the helper shows it with osascript (4.);
 4. Linux with `notify-send`: a detached helper shows it, with a default action that opens
-   `orch app` at the target where this notify-send has actions (libnotify 0.7.10 or later);
+   `spartito app` at the target where this notify-send has actions (libnotify 0.7.10 or later);
    without them, the text names the command that opens it;
 5. macOS otherwise: `osascript`, whose click opens Script Editor and cannot be changed, so
    its text ends with where to look instead (CLAUSE_DECISION, CLAUSE_FINISHED).
@@ -41,7 +41,7 @@ started falls through to the next way in the same call. Without an agent nothing
 (they come from agents). Children are started and left alone: a reaper thread kills
 osascript after TIMEOUT_SECONDS, a helper ends itself (LINUX_WAIT_SECONDS at most); a missing
 binary or any error is ignored. Off with the global setting `desktop_notifications`
-(`orch config desktop-notifications off`): then nothing is recorded either.
+(`spartito config desktop-notifications off`): then nothing is recorded either.
 """
 
 from __future__ import annotations
@@ -319,7 +319,7 @@ def interpreter_record(bundle: Path) -> dict | None:
 def interpreter_problem(bundle: Path) -> str | None:
     """Why the launcher's own copy of the Python interpreter cannot run (None: it can): none
     was made, or the interpreter it was copied from changed (a Python upgrade) since
-    `orch app install`."""
+    `spartito app install`."""
     data = interpreter_record(bundle)
     if data is None or not (bundle / "Contents" / "MacOS" / str(data.get("copy", ""))).is_file():
         return "the launcher has no copy of the Python interpreter"
@@ -331,7 +331,7 @@ def interpreter_problem(bundle: Path) -> str | None:
     except OSError:
         same = resolved = False
     if not (same and resolved):
-        return f"Python changed since `orch app install` (it copied {data.get('version', '?')})"
+        return f"Python changed since `{config.CLI_NAME} app install` (it copied {data.get('version', '?')})"
     return None
 
 
@@ -413,7 +413,7 @@ def has_actions(send: str) -> bool:
 
 
 def open_command(target: str) -> list[str]:
-    """`orch app` at `target` (a checked target; anything else: the plain window)."""
+    """`spartito app` at `target` (a checked target; anything else: the plain window)."""
     try:
         target = app_open.check_target(target)
     except ValueError:
@@ -444,7 +444,7 @@ def linux_argv(send: str, body: str, target: str, actions: bool) -> list[str]:
         argv += ["--wait", "--action=default=Open"]
         text = one_line(body, TEXT_CHARS)
     else:
-        command = " ".join(["orch", "app", *open_command(target)])
+        command = " ".join([config.CLI_NAME, "app", *open_command(target)])
         clause = f" — open it: {command}"
         text = one_line(body, TEXT_CHARS - len(clause)) + clause
     return [*argv, "--", config.PROJECT_NAME, text]
@@ -456,7 +456,7 @@ def display() -> bool:
 
 def linux_helper(send: str, body: str, target: str) -> None:
     """Show the notification; with actions (and a display to open a window on), wait up to
-    LINUX_WAIT_SECONDS for its click and then start `orch app` at the target."""
+    LINUX_WAIT_SECONDS for its click and then start `spartito app` at the target."""
     actions = display() and has_actions(send)
     argv = linux_argv(send, body, target, actions)
     try:

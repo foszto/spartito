@@ -1,15 +1,15 @@
-"""Requests to the open dashboard window of this home (`orch app`), through two files in
+"""Requests to the open dashboard window of this home (`spartito app`), through two files in
 `$ORCH_HOME/run/`:
 
 - `app-open.json` `{"id": <increasing number>, "target": "decision:5" | "<agent id>" | ""}`:
-  a second `orch app` asks the open window to come to the front and, with a target, to show
+  a second `spartito app` asks the open window to come to the front and, with a target, to show
   it. The window's page (opened with `?app=<last id>`) gets the request with /api/state
-  while it is younger than FRESH_SECONDS and applies each one once; the `orch app` holding
+  while it is younger than FRESH_SECONDS and applies each one once; the `spartito app` holding
   the window watches the file and raises the window.
-- `app-open.done` `{"id": ..., "raised": true | false, "detail": "..."}`: that `orch app`
+- `app-open.done` `{"id": ..., "raised": true | false, "detail": "..."}`: that `spartito app`
   says whether it could, so the second one can tell its caller.
 
-A target is checked here (TARGET) wherever it is written or read: an agent id as `orch`
+A target is checked here (TARGET) wherever it is written or read: an agent id as the tool
 makes them, or `decision:<number>`.
 """
 
@@ -93,7 +93,7 @@ def latest(fresh: float = FRESH_SECONDS) -> dict | None:
 
 
 def answer(number: int, raised: bool, detail: str = "") -> None:
-    """The window's `orch app` handled request `number`: whether its window came forward."""
+    """The window's `spartito app` handled request `number`: whether its window came forward."""
     _write(_path(DONE), {"id": number, "raised": raised, "detail": detail})
 
 

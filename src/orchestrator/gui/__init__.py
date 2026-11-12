@@ -1,1 +1,1 @@
-"""`orch app`: the dashboard in its own window."""
+"""`spartito app`: the dashboard in its own window."""

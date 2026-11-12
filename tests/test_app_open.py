@@ -1,4 +1,4 @@
-"""Requests to the open window of `orch app` (app_open.py) and /api/state carrying them."""
+"""Requests to the open window of `spartito app` (app_open.py) and /api/state carrying them."""
 
 from __future__ import annotations
 

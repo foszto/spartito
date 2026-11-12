@@ -2,7 +2,7 @@
 
 The calling agent's id arrives in ORCH_AGENT_ID. An agent with a project (a lead and the
 agents below it) is confined to that project: its agents, board items and runs. The top-level
-orchestrator (no project) and the interactive `orch chat` session (no id) may act everywhere.
+orchestrator (no project) and the interactive `spartito chat` session (no id) may act everywhere.
 """
 
 from __future__ import annotations

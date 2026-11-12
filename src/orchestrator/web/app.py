@@ -93,6 +93,7 @@ def index(request: Request) -> HTMLResponse:
     page = resources.files("orchestrator.web") / "index.html"
     html = page.read_text(encoding="utf-8")
     html = html.replace("{{project_name}}", escape(config.PROJECT_NAME))
+    html = html.replace("{{cli_name}}", escape(config.CLI_NAME))
     return HTMLResponse(html.replace("{{orchestrator_name}}", escape(config.ORCHESTRATOR_NAME)))
 
 
@@ -128,7 +129,7 @@ def manifest(request: Request) -> JSONResponse:
 
 
 def ping(request: Request) -> JSONResponse:
-    """Who serves here, for `orch app` and `orch service status`: this tool, its version and
+    """Who serves here, for `spartito app` and `spartito service status`: this tool, its version and
     a digest of the home it serves (never the path itself). No store access."""
     home = hashlib.sha256(str(config.home().resolve()).encode()).hexdigest()[:16]
     return JSONResponse({"tool": "orchestrator", "version": __version__, "home": home})
@@ -170,7 +171,7 @@ def state(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
         ],
         # The open ones, oldest first: the header count and the decisions dialog.
         "decisions": orch.list_decisions(),
-        # A second `orch app` asks the window's page (`?app=`) to show a target (app_open.py):
+        # A second `spartito app` asks the window's page (`?app=`) to show a target (app_open.py):
         # {id, target} while the request is fresh, else null.
         "app_open": orch.app_open_request(),
     }

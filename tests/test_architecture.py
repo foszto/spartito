@@ -22,7 +22,7 @@ LAYERS = {
     "__main__": "interfaces",  # `python -m orchestrator`, which the background service runs
     "mcp_server": "interfaces",
     "web": "interfaces",
-    "gui": "interfaces",  # `orch app`: the dashboard in its own window
+    "gui": "interfaces",  # `spartito app`: the dashboard in its own window
     "service": "core",
     "core": "core",  # every core/ module: dispatch, launcher, ..., delivery, access, reads
     "runner": "runner",
@@ -43,8 +43,8 @@ LAYERS = {
     "keep_awake": "infra",
     "desktop": "infra",
     "config": "infra",  # paths and environment
-    "app_open": "infra",  # requests to the open window of `orch app`
-    "autostart": "infra",  # launchd agent and systemd user unit for `orch web`
+    "app_open": "infra",  # requests to the open window of `spartito app`
+    "autostart": "infra",  # launchd agent and systemd user unit for `spartito web`
     "memory_guard": "infra",  # hook script used by the Claude provider
 }
 # The runner is a process entry point that uses the core (core/lifecycle); the core starts it

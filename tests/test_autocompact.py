@@ -171,7 +171,7 @@ def paused_notes(orch: Orchestrator, agent_id: str) -> list[tuple[int, str]]:
 def paused_text(agent_id: str, left: str, threshold: str) -> str:
     return (
         f"automatic compaction paused: the last compaction left the context at {left}, above"
-        f" the threshold of {threshold}; a compaction that gets it below (orch compact"
+        f" the threshold of {threshold}; a compaction that gets it below (spartito compact"
         f" {agent_id}) or a higher threshold resumes it"
     )
 

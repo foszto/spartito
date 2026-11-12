@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Protocol
 
-from .. import providers, roles, settings
+from .. import config, providers, roles, settings
 from ..errors import OrchestratorError
 from ..models import COMPACT, Agent, Run
 from ..store import Store
@@ -36,7 +36,7 @@ Launch = Callable[[Run], None]
 
 
 # What the summary of a lead role's compaction (the orchestrator, project leads) keeps when
-# no instructions are given: by an automatic compaction or `orch compact` without any.
+# no instructions are given: by an automatic compaction or `spartito compact` without any.
 LEAD_KEEP = (
     "Keep: the owner's standing rules and preferences; the current state; open decisions and"
     " open items; work in flight with its agent ids, branches and run ids."
@@ -170,7 +170,7 @@ def _note_paused(store: Store, run_id: int, agent: Agent, left: int, threshold: 
         "info",
         f"automatic compaction paused: the last compaction left the context at"
         f" {kilo(left)}, above the threshold of {kilo(threshold)}; a compaction that gets"
-        f" it below (orch compact {agent.id}) or a higher threshold resumes it",
+        f" it below ({config.CLI_NAME} compact {agent.id}) or a higher threshold resumes it",
     )
 
 

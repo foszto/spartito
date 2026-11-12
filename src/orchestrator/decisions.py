@@ -2,7 +2,7 @@
 conversations.
 
 The orchestrator and the leads record one with the MCP tool `request_decision` (table
-`decisions`); it stays `open` until the owner answers it (dashboard, `orch decide`), or the
+`decisions`); it stays `open` until the owner answers it (dashboard, `spartito decide`), or the
 agent withdraws it (`withdraw_decision`), or the agent is removed. The answer reaches the
 agent as an ordinary user message (Orchestrator.send, sender None):
 

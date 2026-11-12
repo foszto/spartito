@@ -218,7 +218,7 @@ def test_the_interpreter_record(tmp_path: Path):
     environment.symlink_to(tmp_path / "python3.14")
     bundle = fake_bundle(tmp_path, environment)
     assert desktop.interpreter_problem(bundle) is None
-    stale = "Python changed since `orch app install` (it copied 3.14.6)"
+    stale = "Python changed since `spartito app install` (it copied 3.14.6)"
     environment.unlink()
     environment.symlink_to(tmp_path / "python3.15")  # the environment moved to another one
     (tmp_path / "python3.15").write_bytes(b"newer")
@@ -400,11 +400,11 @@ def test_linux_without_actions_the_text_names_the_command(notify_send, started, 
     desktop.linux_helper(str(notify_send), "Decision needed", "decision:5")
     args = sent(notify_send)
     assert "--wait" not in args and not any(a.startswith("--action") for a in args)
-    assert args[-1] == "Decision needed — open it: orch app --decision 5"
+    assert args[-1] == "Decision needed — open it: spartito app --decision 5"
     desktop.linux_helper(str(notify_send), BODY, "a-1")
-    assert sent(notify_send)[-1] == f"{BODY} — open it: orch app --agent a-1"
+    assert sent(notify_send)[-1] == f"{BODY} — open it: spartito app --agent a-1"
     desktop.linux_helper(str(notify_send), BODY, "")
-    assert sent(notify_send)[-1] == f"{BODY} — open it: orch app"
+    assert sent(notify_send)[-1] == f"{BODY} — open it: spartito app"
     assert started == []
 
 

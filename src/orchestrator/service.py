@@ -316,9 +316,9 @@ class Orchestrator:
     hand_over_notice = page_notices.hand_over_notice
     page_present = page_notices.page_present
 
-    # -- the dashboard window of `orch app` (app_open.py) ----------------
+    # -- the dashboard window of `spartito app` (app_open.py) ----------------
 
-    # A second `orch app` asks the open window to come forward (and show a target); its page
+    # A second `spartito app` asks the open window to come forward (and show a target); its page
     # gets the request with /api/state. No store: callable on the class.
     request_app_open = staticmethod(app_open.request)
     app_open_request = staticmethod(app_open.latest)

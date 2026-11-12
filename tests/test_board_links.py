@@ -1,6 +1,6 @@
 """Where a board item came from and what blocks it (P5): items made from a conversation
 message, decisions linked to items, the blocker rule, request_decision(item=) and
-`orch board link`."""
+`spartito board link`."""
 
 from __future__ import annotations
 

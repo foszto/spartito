@@ -12,7 +12,7 @@ The inhibitor itself waits for the runner's pid, so a runner that crashes or is 
 
 It runs in a session of its own and without the turn's mark (runner.TURN_ENV), outside the
 CLI's process tree; runner.turn_processes also leaves out every pid in `held` explicitly.
-Off with the global setting `keep_awake` (`orch config keep-awake off`).
+Off with the global setting `keep_awake` (`spartito config keep-awake off`).
 """
 
 from __future__ import annotations

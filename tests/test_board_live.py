@@ -1,5 +1,5 @@
 """The live state of board items wired through (P3): `live` in the view and the detail,
-the throttled sync with its recorded move to done, list_board(live=True), `orch board
+the throttled sync with its recorded move to done, list_board(live=True), `spartito board
 --live`, and that a failing sync breaks nothing."""
 
 from __future__ import annotations

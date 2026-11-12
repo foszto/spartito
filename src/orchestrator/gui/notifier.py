@@ -4,7 +4,7 @@ process that is the launcher's app (launcher.py: its interpreter copy, signed wi
 identifier; the notification centre accepts no other), and the notices the native window shows
 inside itself when it may not post them:
 
-- the window process (`orch app`, window.py): sets the centre's delegate before the GUI loop
+- the window process (`spartito app`, window.py): sets the centre's delegate before the GUI loop
   runs and from then on, every POLL_SECONDS, keeps its marker fresh (desktop.app_present, so
   osascript and the posting process leave new notices to it) and claims the new notices
   (through the facade, once each, as a page does). It asks for permission once the window is
@@ -19,13 +19,13 @@ inside itself when it may not post them:
   the window closes (`closing`, then `close`) it claims nothing more and hands what it took but
   did not get shown, and what is still unclaimed, to the way that applies without a window
   (desktop.without_window: the posting process, else osascript; claims keep it to once);
-- the posting process (`orch app --notify`, started hidden by desktop.bundle_helper when no
+- the posting process (`spartito app --notify`, started hidden by desktop.bundle_helper when no
   window runs): claims and posts the pending notices younger than MAX_AGE_SECONDS, then exits;
   when it is not allowed (any more), it forgets the grant and shows them with osascript.
 
 Each notification carries a userInfo {"home": <digest of this home>, "target": "decision:<n>"
 or the agent id}. A click on it (the default action) reaches the delegate of the running app,
-or of the app the system starts for it (`orch app` without arguments, the same window code).
+or of the app the system starts for it (`spartito app` without arguments, the same window code).
 A target for this home, checked like a deep link (app_open.check_target), becomes an app-open
 request: the window applies it and comes to the front (window.watching_requests). A click
 that reaches the posting process is handed to its caller, which opens the window there.
@@ -666,7 +666,7 @@ def post_pending(
 def notify(
     orch: Facade, bundle: Path | None, say: Callable[[str], None] = lambda line: None
 ) -> str | None:
-    """`orch app --notify`: post the pending notices as this app (see post_pending); the
+    """`spartito app --notify`: post the pending notices as this app (see post_pending); the
     target of a click that reached this process, or None. Without the framework: osascript."""
     clicked: list[str] = []
     try:

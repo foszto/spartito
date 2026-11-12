@@ -1,8 +1,8 @@
-"""`orch menubar`: a status item in the macOS menu bar.
+"""`spartito menubar`: a status item in the macOS menu bar.
 
 Its title shows the running agents and the open decisions of this home ("♪ 2 · 1"; "♪" alone
 when both are zero). Its menu: those two counts, the open decisions (a click starts
-`orch app --decision <id>`), "Open Spartito" (`orch app`) and "Quit". `orch app` is started
+`spartito app --decision <id>`), "Open Spartito" (`spartito app`) and "Quit". `spartito app` is started
 detached; with its window open already, it brings that forward (at the decision).
 
 The counts are read through the facade in this process every READ_EVERY seconds, in a
@@ -39,7 +39,7 @@ OPEN, DECISION, QUIT = "open", "decision", "quit"
 
 
 class MenubarError(Exception):
-    """A clear one-line reason `orch menubar` cannot run."""
+    """A clear one-line reason `spartito menubar` cannot run."""
 
 
 def say(line: str) -> None:
@@ -123,7 +123,7 @@ def lines(counts: Counts) -> list[str]:
 
 
 def open_app(decision: int | None = None) -> subprocess.Popen | None:
-    """Start `orch app` for this home (at `decision`) as a detached process of its own; a
+    """Start `spartito app` for this home (at `decision`) as a detached process of its own; a
     thread waits for its end, so it does not stay a zombie child."""
     argv = [*APP_ARGV, "--decision", str(decision)] if decision is not None else [*APP_ARGV]
     try:
@@ -135,7 +135,7 @@ def open_app(decision: int | None = None) -> subprocess.Popen | None:
             start_new_session=True,
         )
     except OSError as exc:
-        say(f"orch app did not start: {exc.strerror or exc}")
+        say(f"{config.CLI_NAME} app did not start: {exc.strerror or exc}")
         return None
     threading.Thread(target=proc.wait, name="orch-menubar-reap", daemon=True).start()
     return proc
@@ -143,7 +143,7 @@ def open_app(decision: int | None = None) -> subprocess.Popen | None:
 
 @dataclass
 class Bar:
-    """The state of one `orch menubar`, without Cocoa: the counts read, the counts shown and
+    """The state of one `spartito menubar`, without Cocoa: the counts read, the counts shown and
     when it ends. `read` runs only in the reading thread (`start_reading`); the rest on the
     main thread."""
 
@@ -292,10 +292,10 @@ def show_item(bar: Bar, cocoa: dict[str, Any]) -> None:
 
 
 def run(close_after: float | None = None, echo: Callable[[str], None] | None = None) -> int:
-    """`orch menubar`: show the item until "Quit", a stop signal or `close_after`; the exit
+    """`spartito menubar`: show the item until "Quit", a stop signal or `close_after`; the exit
     code (128 + the signal when one ended it). MenubarError when it cannot run here."""
     if this_platform() != "darwin":
-        raise MenubarError("orch menubar runs on macOS only")
+        raise MenubarError(f"{config.CLI_NAME} menubar runs on macOS only")
     try:
         cocoa = load_cocoa()
     except ImportError:

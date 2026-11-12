@@ -103,7 +103,7 @@ def test_an_archived_agent_is_hidden_from_the_default_views_and_listed_in_the_ar
     detail = client.get(f"/api/agents/{gone.id}/events").json()["agent"]
     assert detail["archived"]["how"] == "manual"
     status = click.unstyle(CliRunner().invoke(cli.app, ["status", gone.id]).output)
-    assert "archived" in status and f"orch restore {gone.id}" in status
+    assert "archived" in status and f"spartito restore {gone.id}" in status
 
     with pytest.raises(OrchestratorError, match="archived already"):
         orch.archive(gone.id)

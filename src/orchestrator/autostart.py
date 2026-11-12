@@ -1,4 +1,4 @@
-"""`orch web` as a background service that starts at login and restarts when it dies.
+"""`spartito web` as a background service that starts at login and restarts when it dies.
 
 - macOS: a launchd agent, `~/Library/LaunchAgents/<label>.plist`, in the `gui/<uid>` domain;
   stdout and stderr go to `$ORCH_HOME/logs/web.log` (cut when above LOG_LIMIT at install).
@@ -189,7 +189,7 @@ def render_unit(svc: Service) -> str:
     )
     return (
         "[Unit]\n"
-        f"Description={config.PROJECT_NAME} dashboard (orch web)\n"
+        f"Description={config.PROJECT_NAME} dashboard ({config.CLI_NAME} web)\n"
         "\n"
         "[Service]\n"
         "Type=exec\n"

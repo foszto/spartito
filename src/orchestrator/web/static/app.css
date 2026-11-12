@@ -96,7 +96,7 @@ code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, m
 .side-foot { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line);
   color: var(--muted); font-size: 12px; }
 .side-foot span { flex: 1; }
-/* The window of `orch app`: how its notifications stand, and the notices it shows itself. */
+/* The window of `spartito app`: how its notifications stand, and the notices it shows itself. */
 .app-notify { margin: 0; padding: 0 14px 10px; color: var(--faint); font-size: 11.5px; line-height: 1.35; }
 .app-notices { position: fixed; top: 12px; right: 12px; z-index: 50; display: flex; flex-direction: column;
   gap: 8px; width: min(360px, calc(100vw - 24px)); pointer-events: none; }

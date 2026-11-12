@@ -1,4 +1,4 @@
-"""`orch app` and the server it shares with `orch web`. Everything that would show something is
+"""`spartito app` and the server it shares with `spartito web`. Everything that would show something is
 faked: a fake `webview` module, a fake Chromium-family browser, a fake `webbrowser.open`. No
 test uses port 8787 or opens a real window or browser."""
 
@@ -33,15 +33,15 @@ from orchestrator.web.app import app as web_app
 PACKAGE = Path(cli.__file__).parent
 NATIVE_MISSING = (
     "no native window: pywebview is not installed (install the extra orchestrator[app],"
-    " then run `orch app install`; see docs/desktop.md); trying a Chromium-family browser in"
+    " then run `spartito app install`; see docs/desktop.md); trying a Chromium-family browser in"
     " app mode"
 )
 DOCK_HINT = (
-    "the Dock shows this window as Python: `orch app install` gives it Spartito's name and icon"
+    "the Dock shows this window as Python: `spartito app install` gives it Spartito's name and icon"
 )
 NO_CHROMIUM = "no Chromium-family browser found (Chrome, Chromium, Edge or Brave); "
 NO_LAUNCHER = (
-    "notifications from Spartito: not available (no launcher: run `orch app install`); notices"
+    "notifications from Spartito: not available (no launcher: run `spartito app install`); notices"
     " are shown in this window\n"
 )
 
@@ -141,7 +141,7 @@ def test_server_that_cannot_listen_exits_as_uvicorn_did_and_keeps_the_record():
     assert serve.record_path().read_text() == '{"port": 1}'
 
 
-# -- orch web ------------------------------------------------------------------------------
+# -- spartito web ------------------------------------------------------------------------------
 
 
 def test_orch_web_goes_through_serve(monkeypatch: pytest.MonkeyPatch):
@@ -173,7 +173,7 @@ def test_orch_web_on_another_interface_still_warns(monkeypatch: pytest.MonkeyPat
 
 @pytest.mark.parametrize(
     ("sig", "code"), [(signal.SIGINT, 0), (signal.SIGTERM, -signal.SIGTERM)]
-)  # uvicorn raises SIGTERM again once it has shut down, as `orch service` stops it
+)  # uvicorn raises SIGTERM again once it has shut down, as `spartito service` stops it
 def test_orch_web_process_records_and_forgets_itself(sig, code):
     port = free_port()
     proc = subprocess.Popen(
@@ -412,7 +412,7 @@ def webview(monkeypatch: pytest.MonkeyPatch) -> FakeWebview:
 
 
 # A Chromium-family browser. FAKE_CHROMIUM_MODE: "window" (the default) shows the page until
-# FAKE_CHROMIUM_OPEN_FOR seconds after its DevTools endpoint first listed it (so orch app has
+# FAKE_CHROMIUM_OPEN_FOR seconds after its DevTools endpoint first listed it (so spartito app has
 # seen it, however slow the machine) and stays without it, as macOS browsers do, until SIGTERM;
 # "quit" leaves as its window closes, as on Linux, before ever listing no page; "silent" has no
 # DevTools endpoint and stays; "exit<N>" leaves at once with code N. The endpoint (with
@@ -520,7 +520,7 @@ def launched(monkeypatch: pytest.MonkeyPatch) -> list[subprocess.Popen]:
 
 
 def opened_then_hangup(urls: list[str]):
-    """A default browser that notes the URL, then SIGHUP: it ends orch app once it serves."""
+    """A default browser that notes the URL, then SIGHUP: it ends spartito app once it serves."""
 
     def opened(url: str) -> bool:
         urls.append(url)
@@ -633,7 +633,7 @@ def test_chromium_app_mode_ends_when_its_window_is_closed(chromium: Path):
         "--remote-debugging-port=0",
         "--no-first-run",
         "--no-default-browser-check",
-        "TERM",  # it stayed without its window, as on macOS: ended by orch app
+        "TERM",  # it stayed without its window, as on macOS: ended by spartito app
     ]
     assert json.loads(Path(f"{chromium}.ping").read_text())["home"] == this_home()
     assert_own_server_gone(url)
@@ -682,7 +682,7 @@ def test_chromium_without_devtools_is_ended_after_the_given_time(
     result = run_app("--close-after", "1")
     assert result.exit_code == 0, result.output
     (browser,) = launched
-    # Ended by orch app: by its SIGTERM handler, or before the fake had one
+    # Ended by spartito app: by its SIGTERM handler, or before the fake had one
     assert browser.returncode in (0, -signal.SIGTERM)
     assert_own_server_gone(result.stdout.removeprefix("web UI: ").strip())
 
@@ -912,7 +912,7 @@ def test_serving_only_gives_up_the_lock_for_a_second_app(monkeypatch: pytest.Mon
     assert result.exit_code == 128 + signal.SIGHUP, result.output
     ((free, found, url),) = seen
     assert free
-    assert found == url  # a second `orch app` reuses this server
+    assert found == url  # a second `spartito app` reuses this server
     assert_own_server_gone(url)
 
 
@@ -946,11 +946,11 @@ def test_pywebview_is_imported_only_to_open_the_native_window():
     assert found == {"gui/window.py": ["native_window"]}
 
 
-# -- a second `orch app`, deep links ---------------------------------------------------------
+# -- a second `spartito app`, deep links ---------------------------------------------------------
 
 
 def second_app(target: str = "") -> dict:
-    """What a second `orch app` does, from a thread: write the request and wait for the
+    """What a second `spartito app` does, from a thread: write the request and wait for the
     window's answer."""
     number = Orchestrator.request_app_open(target)
     deadline = time.monotonic() + 10
@@ -1046,7 +1046,7 @@ def test_targets_are_checked(webview: FakeWebview, args, error):
 
 
 def answering(raised: bool, detail: str = ""):
-    """The open window's `orch app`, from a thread: answers the next request."""
+    """The open window's `spartito app`, from a thread: answers the next request."""
 
     def answer() -> None:
         before = app_open.last_id()
@@ -1341,10 +1341,10 @@ def test_a_stale_copy_is_not_run(webview: FakeWebview, execed, working_copy):
 
 NO_COPY = (
     "notifications from Spartito: not available (started without the launcher's copy of"
-    " Python: run `orch app install` again); notices are shown in this window\n"
+    " Python: run `spartito app install` again); notices are shown in this window\n"
 )
 STALE = (
-    "the launcher's copy of Python is stale ({}): run `orch app install` again; until then"
+    "the launcher's copy of Python is stale ({}): run `spartito app install` again; until then"
     " Spartito posts no notifications itself\n"
 )
 
@@ -1368,7 +1368,7 @@ def test_running_the_earlier_way_says_why(
     assert execed == [] and launcher.COPY_FAILED_VAR not in os.environ
     expected = {
         "stale": STALE.format(
-            f"Python changed since `orch app install` (it copied {platform.python_version()})"
+            f"Python changed since `spartito app install` (it copied {platform.python_version()})"
         ),
         "does not start": STALE.format("it does not start"),
     }
@@ -1759,9 +1759,9 @@ def test_the_app_log_is_emptied_at_start_when_too_big(monkeypatch):
     [
         (True, True, True, True, None),
         (True, True, True, False, "UserNotifications is not installed (install the extra orchestrator[app])"),
-        (True, False, True, True, "started without the launcher's copy of Python: run `orch app install` again"),
+        (True, False, True, True, "started without the launcher's copy of Python: run `spartito app install` again"),
         (False, False, True, True, "not started as the launcher's app"),
-        (False, False, False, True, "no launcher: run `orch app install`"),
+        (False, False, False, True, "no launcher: run `spartito app install`"),
     ],
 )  # fmt: skip
 def test_why_a_window_cannot_post(monkeypatch, bundled, own, installed, available, why):

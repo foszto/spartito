@@ -1,7 +1,7 @@
-"""Run the dashboard server: what `orch web` and `orch app` share.
+"""Run the dashboard server: what `spartito web` and `spartito app` share.
 
 Once it listens, the server records itself in `$ORCH_HOME/run/web.json` (pid, host, port,
-start time) so `orch app` can find it, and removes the record at shutdown if it is still its
+start time) so `spartito app` can find it, and removes the record at shutdown if it is still its
 own (a later server of the same home may have replaced it).
 """
 

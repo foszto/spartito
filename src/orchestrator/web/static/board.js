@@ -9,6 +9,7 @@
   const STATES = [['idea', 'Idea'], ['ready', 'Ready'], ['in_progress', 'In progress'], ['done', 'Done']];
   const LABEL = Object.fromEntries(STATES);
   const ORDER = STATES.map(([value]) => value);
+  const CLI = document.body.dataset.cliName;  // the command (config.CLI_NAME)
   const SHOW_DONE = 'orch-board-done';  // localStorage: the Done column's cards are shown
 
   // Each later part plugs in here, so it can be taken out on its own:
@@ -235,7 +236,7 @@
   }
   // The branch's state as {text, cls, title}: commits ahead/behind its base, uncommitted work
   // (`dirty`: the number of changed files), merged, no such branch (`ahead` null, as
-  // `orch board --live` says), or the error of the last check (`error` keeps the values seen
+  // `spartito board --live` says), or the error of the last check (`error` keeps the values seen
   // before it).
   function gitState(git) {
     const checked = `checked ${ago(git.checked_at)}`;
@@ -666,10 +667,10 @@
 
   // -- an item's history and runs, in its detail -------------------------------------------
   // Who changed it (the owner, an agent and its run, an automatic rule), what changed, and
-  // the runs the history names; a change made by an older orch process shows as not recorded.
+  // the runs the history names; a change made by an older version shows as not recorded.
 
   const ACTIONS = { add: 'added', edit: 'edited', state: 'moved', place: 'moved', move: 'reordered', dispatch: 'dispatched',
-    restore: 'put back: the dispatch could not be sent', unrecorded: 'changed by an older orch process',
+    restore: 'put back: the dispatch could not be sent', unrecorded: 'changed by an older version',
     link: 'linked', unlink: 'unlinked' };
   // Fields shown by name; any other is shown as it comes: [old, new] as a change, a text as it is
   // (the merge's `commit`, an item's `source`).
@@ -680,7 +681,7 @@
     if (entry.actor_kind === 'owner') return 'owner';
     if (entry.actor_kind === 'auto') return `auto: ${entry.actor || 'rule'}`;
     if (entry.actor_kind === 'agent') {
-      if (!entry.actor) return 'orch chat session';
+      if (!entry.actor) return `${CLI} chat session`;
       return `agent ${entry.actor}${entry.run_id && entry.action !== 'dispatch' ? ` (run ${entry.run_id})` : ''}`;
     }
     return 'not recorded';
@@ -717,7 +718,7 @@
       list.append(row);
     }
     const notes = [];
-    if (detail.unrecorded) notes.push(el('p', 'bv-note bv-gap', 'Its latest change was not recorded: an older orch process made it.'));
+    if (detail.unrecorded) notes.push(el('p', 'bv-note bv-gap', 'Its latest change was not recorded: an older version made it.'));
     if (!detail.history.length) notes.push(el('p', 'bv-note', 'Nothing recorded yet.'));
     history.replaceChildren(el('h4', '', 'History'), ...notes, list);
     if (!detail.runs.length) return;

@@ -5,8 +5,8 @@ Table `board_items`. Every item belongs to a registered project and is in one st
 one project (a new item, and one that changes state, goes to the end). An item may name an
 agent and a branch that work on it. The orchestrator and the leads use the MCP tools
 `list_board`, `add_board_item` and `update_board_item`; the owner the dashboard and
-`orch board`. Nothing is dispatched automatically: `dispatch` (the owner's button or
-`orch board dispatch`) sends a project's `ready` items to its lead as one user message,
+`spartito board`. Nothing is dispatched automatically: `dispatch` (the owner's button or
+`spartito board dispatch`) sends a project's `ready` items to its lead as one user message,
 marks them `in_progress` and links them to the lead.
 """
 
@@ -32,7 +32,7 @@ OWNER_KIND, AGENT_KIND, AUTO_KIND = "owner", "agent", "auto"
 @dataclass(frozen=True)
 class Actor:
     """Who changes the board: the owner (dashboard, CLI), an agent through the MCP server
-    (`name`: its id; None for the interactive `orch chat` session) or an automatic rule
+    (`name`: its id; None for the interactive `spartito chat` session) or an automatic rule
     (`name`: the rule)."""
 
     kind: str = OWNER_KIND

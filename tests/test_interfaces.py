@@ -163,7 +163,7 @@ def test_chat_without_settings_leaves_model_and_effort_to_claude(
     assert "--model" not in argv and "--effort" not in argv
 
 
-def test_chat_loads_the_orchestrator_loadout_and_keeps_bash_for_orch(
+def test_chat_loads_the_orchestrator_loadout_and_keeps_bash_for_the_command(
     orch: Orchestrator, exec_argv: list[list[str]]
 ) -> None:
     runner = CliRunner()
@@ -182,7 +182,7 @@ def test_chat_loads_the_orchestrator_loadout_and_keeps_bash_for_orch(
     # No memory: nothing can hold an interactive session until its hooks are proven to run.
     assert "--settings" not in argv and "--settings" not in custom
     assert option(argv, "--setting-sources") == "project,local"
-    assert "--strict-mcp-config" in argv and "Bash(orch *)" in argv and "--mcp-config" in argv
+    assert "--strict-mcp-config" in argv and "Bash(spartito *)" in argv and "--mcp-config" in argv
     assert option(custom, "--tools") == "Read,Bash" and "--strict-mcp-config" not in custom
     # The orchestrator role turns slash commands off; the interactive session keeps them.
     assert "--disable-slash-commands" not in argv and "--disable-slash-commands" not in custom
@@ -213,7 +213,7 @@ def until(predicate: Callable[[], Any], timeout: float = 30) -> Any:
 
 
 def ps_lines(*agent_ids: str) -> list[str]:
-    """The `orch ps` rows of these agents, from one listing."""
+    """The `spartito ps` rows of these agents, from one listing."""
     result = CliRunner().invoke(cli.app, ["ps"])
     assert result.exit_code == 0, result.output
     rows = click.unstyle(result.output).splitlines()

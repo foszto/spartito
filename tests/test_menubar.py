@@ -1,4 +1,4 @@
-"""`orch menubar`. Cocoa is never loaded: `show_item` is faked wherever `run` gets that far,
+"""`spartito menubar`. Cocoa is never loaded: `show_item` is faked wherever `run` gets that far,
 and `subprocess.Popen` is faked for clicks."""
 
 from __future__ import annotations
@@ -214,7 +214,7 @@ def test_open_starts_a_detached_orch_app(launched: list) -> None:
 
 
 def test_a_decision_starts_orch_app_at_that_decision(launched: list) -> None:
-    """Always through `orch app`: it opens its window there, or brings the open one forward
+    """Always through `spartito app`: it opens its window there, or brings the open one forward
     there; the default browser is never used."""
     Bar().click(Entry("#4  Ship it?", DECISION, 4))
     ((argv,), kwargs) = launched[0]
@@ -231,7 +231,7 @@ def test_open_says_so_when_orch_app_cannot_start(
 
     monkeypatch.setattr(menubar.subprocess, "Popen", refuse)
     Bar().click(Entry("Open Spartito", OPEN))
-    assert capsys.readouterr().err == "orch app did not start: Permission denied\n"
+    assert capsys.readouterr().err == "spartito app did not start: Permission denied\n"
 
 
 def test_quit_ends_only_the_item(launched: list) -> None:
@@ -372,4 +372,4 @@ def test_off_macos_one_line_and_no_gui_import(tmp_path: Path) -> None:
     )
 
     assert json.loads(done.stdout) == [1, []]
-    assert done.stderr == "error: orch menubar runs on macOS only\n"
+    assert done.stderr == "error: spartito menubar runs on macOS only\n"

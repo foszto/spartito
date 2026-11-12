@@ -1,15 +1,15 @@
-"""`orch app install` / `orch app uninstall`: a launcher that starts `orch app` like an
+"""`spartito app install` / `spartito app uninstall`: a launcher that starts `spartito app` like an
 application, with the tool's name and icon.
 
 - macOS: a minimal bundle `~/Applications/Spartito.app`: `Contents/Info.plist`,
   `Contents/Resources/Spartito.icns` and `Contents/MacOS/Spartito`, a shell script that sets
-  the environment and starts `orch app`. With it, a copy of the Python interpreter,
+  the environment and starts `spartito app`. With it, a copy of the Python interpreter,
   `Contents/MacOS/spartito-python`, signed ad hoc with the bundle's identifier: the script
   runs that copy with `__PYVENV_LAUNCHER__` naming the environment's interpreter (so
   `sys.prefix` and the packages are the environment's), and the process is this bundle's
   executable: main bundle, name, icon, and an identity the notification centre accepts
   (gui/notifier.py). `Contents/Resources/interpreter.json` records what was copied; the copy
-  is stale after a Python upgrade (desktop.interpreter_problem), and `orch app install` again
+  is stale after a Python upgrade (desktop.interpreter_problem), and `spartito app install` again
   replaces it. When no working copy can be made, the script exports `CFProcessPath` instead
   (CoreFoundation takes it for the process's executable): name, icon and identifier, but no
   notifications of its own. The bundle is an agent app (LSUIElement), so a process that only
@@ -19,9 +19,9 @@ application, with the tool's name and icon.
   own), and the icon in the hicolor theme of the same data home.
 
 The bundle identifier, `local.spartito.app` for the default home and `local.spartito-<8 hex>.app`
-for another ORCH_HOME (the label rule of `orch service`), is written into the launcher, so a
+for another ORCH_HOME (the label rule of `spartito service`), is written into the launcher, so a
 launcher is known as this home's, another home's or none of this tool's. The environment is
-the one `orch service` captures (autostart.captured_env).
+the one `spartito service` captures (autostart.captured_env).
 """
 
 from __future__ import annotations
@@ -191,7 +191,8 @@ def render_script(item: Launcher, own_python: bool = False) -> str:
     plain = f'exec {" ".join(shlex.quote(arg) for arg in item.argv)} "$@"\n'
     head = (
         "#!/bin/sh\n"
-        f"# {item.name}: written by `orch app install`, removed by `orch app uninstall`.\n"
+        f"# {item.name}: written by `{config.CLI_NAME} app install`, removed by"
+        f" `{config.CLI_NAME} app uninstall`.\n"
     )
     if not own_python:
         return (
@@ -212,7 +213,7 @@ def render_script(item: Launcher, own_python: bool = False) -> str:
         f'    exec {copy} {command} "$@"\n'
         "fi\n"
         "# The copy does not start (a Python upgrade removed what it loads): the earlier way,\n"
-        "# without notifications of its own until `orch app install` runs again.\n"
+        f"# without notifications of its own until `{config.CLI_NAME} app install` runs again.\n"
         f"export {COPY_FAILED_VAR}=1\n"
         f"{identity}{plain}"
     )
@@ -309,7 +310,8 @@ def install(item: Launcher, notes: list[str] | None = None) -> Path:
     with the interpreter copy when one works; `notes` gets a line on how that went."""
     if installed_id(item) == "":
         raise LauncherError(
-            f"{item.path} exists and was not written by `orch app install`; it is left alone"
+            f"{item.path} exists and was not written by `{config.CLI_NAME} app install`;"
+            " it is left alone"
         )
     own_python = False
     if item.kind == "mac":
@@ -417,7 +419,7 @@ def make_interpreter(item: Launcher) -> tuple[bool, list[str]]:
     lines.append(
         f"{COPY_NAME}: a copy of {source} (Python {record['version']}), signed as"
         f" {item.identifier}, so {item.name} can post notifications itself;"
-        " run `orch app install` again after upgrading Python"
+        f" run `{config.CLI_NAME} app install` again after upgrading Python"
     )
     return True, lines
 

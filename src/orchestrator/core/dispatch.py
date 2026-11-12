@@ -231,7 +231,7 @@ def orchestrator(orch: Facade) -> Agent:
     """The headless top-level orchestrator agent (the one the dashboard talks to).
 
     It belongs to no project, works in the orchestrator workspace and reaches every
-    project through the MCP tools. `orch chat` is a separate, interactive session.
+    project through the MCP tools. `spartito chat` is a separate, interactive session.
     """
     return orch.store.get_agent(ORCHESTRATOR_ID) or orch.store.add_agent(
         replace(orch._orchestrator_draft(), cwd=str(config.workspace_dir()))

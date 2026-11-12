@@ -1,4 +1,4 @@
-"""`orch service`: the dashboard as a launchd agent or systemd user unit.
+"""`spartito service`: the dashboard as a launchd agent or systemd user unit.
 
 Every system command is a fake (conftest.fake_system) and HOME is temporary; the platform
 is passed in or patched, so both paths run on any host.
@@ -73,7 +73,7 @@ GOLDEN_PLIST = """\
 
 GOLDEN_UNIT = """\
 [Unit]
-Description=Spartito dashboard (orch web)
+Description=Spartito dashboard (spartito web)
 
 [Service]
 Type=exec

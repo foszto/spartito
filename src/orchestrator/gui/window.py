@@ -1,4 +1,4 @@
-"""`orch app`: the dashboard in its own window, with the server it needs.
+"""`spartito app`: the dashboard in its own window, with the server it needs.
 
 The server: this home's running one when `locate` finds it (never stopped here), otherwise
 one of its own on 127.0.0.1 in a thread, stopped when the window is gone.
@@ -14,12 +14,12 @@ The window, by the first way that works; each step that fails says so in one lin
   c. the default browser; the own server then runs in the foreground until Ctrl-C.
 On Linux without a display none of them is tried: the URL is printed and served until Ctrl-C.
 
-One `orch app` per home: a second one asks the open window to come to the front, and to show
+One `spartito app` per home: a second one asks the open window to come to the front, and to show
 its target (`--agent`, `--decision`), through app_open.py, and leaves; one that only serves
 (c, or no display) gives that up, so the next one reuses its server. SIGTERM and SIGHUP end
 it as closing the window does.
 
-Identity: on macOS with the launcher of this home installed (launcher.py), an `orch app`
+Identity: on macOS with the launcher of this home installed (launcher.py), an `spartito app`
 started from a terminal runs on as that app (exec of the launcher's interpreter copy, or with
 CFProcessPath without a current one; same pid, terminal and exit code), so the Dock shows its
 name and icon; without the launcher the Dock icon is set at run time. Run through the copy,
@@ -69,10 +69,10 @@ STARTUP_TIMEOUT = 15.0  # seconds for the own server to listen
 STOP_TIMEOUT = 10.0  # seconds for the own server, or the browser, to finish
 WINDOW_SIZE = (1280, 860)
 INSTALL_HINT = "install the extra orchestrator[app]"
-LAUNCHER_HINT = "then run `orch app install`"
+LAUNCHER_HINT = f"then run `{config.CLI_NAME} app install`"
 DOCS_HINT = "see docs/desktop.md"
 ALREADY_OPEN = "the dashboard window of this home is already open"
-ANSWER_TIMEOUT = 5.0  # seconds a second `orch app` waits for the open window's answer
+ANSWER_TIMEOUT = 5.0  # seconds a second `spartito app` waits for the open window's answer
 WATCH_EVERY = 0.3  # seconds between two looks at the request file
 ACTIVE_WAIT = 1.0  # seconds for the native window to become the active one (macOS)
 PORT_FILE = "app-port"  # in config.runtime_dir(): the port of the last own server
@@ -101,7 +101,7 @@ LINUX_BROWSERS = (
 
 
 class AppError(Exception):
-    """A clear one-line reason `orch app` cannot run."""
+    """A clear one-line reason `spartito app` cannot run."""
 
 
 def say(line: str) -> None:
@@ -156,7 +156,7 @@ def no_display() -> bool:
 
 
 class OwnServer:
-    """The dashboard server of this `orch app`: 127.0.0.1 only, in a thread."""
+    """The dashboard server of this `spartito app`: 127.0.0.1 only, in a thread."""
 
     def __init__(self, port: int = 0) -> None:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -192,7 +192,7 @@ class OwnServer:
 
 @dataclass
 class Session:
-    """One `orch app`: its lock, its server and how it ends."""
+    """One `spartito app`: its lock, its server and how it ends."""
 
     lock: IO[str]
     close_after: float | None = None
@@ -217,7 +217,7 @@ class Session:
 
     def hold(self) -> None:
         """Serve in the foreground until Ctrl-C, a stop signal or `close_after`. Only serving,
-        it gives up the lock: another `orch app` reuses this server."""
+        it gives up the lock: another `spartito app` reuses this server."""
         self.lock.close()
         since = time.monotonic()
         with contextlib.suppress(KeyboardInterrupt):
@@ -232,7 +232,7 @@ def fragment(target: str) -> str:
 
 @contextlib.contextmanager
 def watching_requests(session: Session, bring_forward: Callable[[], tuple[bool, str]]):
-    """While the window is open (this block), answer each new request of a second `orch app`
+    """While the window is open (this block), answer each new request of a second `spartito app`
     (app_open.py) by bringing the window forward; `bring_forward` returns whether that worked
     and what was done, or why not."""
     stop = threading.Event()
@@ -375,7 +375,7 @@ def native_window(session: Session) -> bool:
         def close_later() -> None:  # runs in pywebview's own thread, once the GUI runs
             if this_platform() == "darwin" and not session.bundled:
                 say(
-                    "the Dock shows this window as Python: `orch app install` gives it"
+                    f"the Dock shows this window as Python: `{config.CLI_NAME} app install` gives it"
                     f" {config.PROJECT_NAME}'s name and icon"
                 )
             if session.echo_location:
@@ -443,10 +443,13 @@ def not_posting(session: Session) -> str | None:
             return None
         return f"UserNotifications is not installed ({INSTALL_HINT})"
     if session.bundled:
-        return "started without the launcher's copy of Python: run `orch app install` again"
+        return (
+            "started without the launcher's copy of Python:"
+            f" run `{config.CLI_NAME} app install` again"
+        )
     if session.launcher_installed:
         return "not started as the launcher's app"
-    return "no launcher: run `orch app install`"
+    return f"no launcher: run `{config.CLI_NAME} app install`"
 
 
 def start_notifier(session: Session, window=None) -> notifier.WindowNotifier | None:
@@ -591,7 +594,7 @@ class WindowView:
 
 
 def notify_only() -> str | None:
-    """`orch app --notify`: post the pending notices as the launcher's app and leave; the
+    """`spartito app --notify`: post the pending notices as the launcher's app and leave; the
     target of a click that came meanwhile (the caller then opens the window there)."""
     if this_platform() != "darwin":
         return None
@@ -699,7 +702,7 @@ def devtools_port(profile: Path) -> int:
 
 
 def bring_chromium_forward(profile: Path) -> tuple[bool, str]:
-    """Ask the browser of `orch app` (its DevTools endpoint) to activate its page, which
+    """Ask the browser of `spartito app` (its DevTools endpoint) to activate its page, which
     brings its window forward as far as the browser does (not checked)."""
     try:
         port = devtools_port(profile)
@@ -749,7 +752,7 @@ def app_mode(session: Session) -> bool:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            start_new_session=True,  # Ctrl-C reaches orch app, which ends the browser
+            start_new_session=True,  # Ctrl-C reaches spartito app, which ends the browser
         )
     except OSError as exc:
         say(f"{browser.name} did not start ({exc.strerror or exc}); {then}")
@@ -813,7 +816,7 @@ def show(session: Session) -> None:
 
 
 def single_instance(name: str = "app.lock") -> IO[str] | None:
-    """The lock `name` of this home (`orch app`'s by default), held while the file stays open;
+    """The lock `name` of this home (`spartito app`'s by default), held while the file stays open;
     None when another process holds it."""
     handle = (config.runtime_dir() / name).open("a")
     try:
@@ -877,7 +880,7 @@ def stale_copy(item: launcher.Launcher, failed: bool) -> None:
     problem = desktop.interpreter_problem(item.path) or ("it does not start" if failed else None)
     if problem:
         say(
-            f"the launcher's copy of Python is stale ({problem}): run `orch app install`"
+            f"the launcher's copy of Python is stale ({problem}): run `{config.CLI_NAME} app install`"
             f" again; until then {config.PROJECT_NAME} posts no notifications itself"
         )
 
@@ -960,7 +963,7 @@ def run(
     item: launcher.Launcher | None = None,
     echo_location: bool = False,
 ) -> int:
-    """`orch app`: open the dashboard window (at `target`) and return once it is gone, with
+    """`spartito app`: open the dashboard window (at `target`) and return once it is gone, with
     the exit code (128 + the signal when SIGTERM or SIGHUP ended it); with a window of this
     home open already, bring that forward instead. `item`: the launcher to look for (default:
     this home's). AppError when no server can be had."""

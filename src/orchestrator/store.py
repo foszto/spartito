@@ -106,7 +106,7 @@ CREATE TABLE IF NOT EXISTS run_usage (
     created_at TEXT NOT NULL,
     session_id TEXT
 );
--- Which run results wait_for_agents already returned to which caller ('' is `orch chat`),
+-- Which run results wait_for_agents already returned to which caller ('' is `spartito chat`),
 -- so a later wait does not repeat them. Its own table for the same reasons as run_usage.
 CREATE TABLE IF NOT EXISTS deliveries (
     caller TEXT NOT NULL,

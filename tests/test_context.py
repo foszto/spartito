@@ -390,7 +390,7 @@ def test_the_cli_shows_the_context_and_compacts(orch: Orchestrator, project: str
     shown = runner.invoke(cli.app, ["status", agent.id])
 
     assert "850/1k 85%" in listed.output
-    assert "850/1k 85%" in shown.output and f"orch compact {agent.id}" in shown.output
+    assert "850/1k 85%" in shown.output and f"spartito compact {agent.id}" in shown.output
 
     compacted = runner.invoke(cli.app, ["compact", agent.id, "keep the plan"])
     assert compacted.exit_code == 0 and compacted.output.startswith("run ")

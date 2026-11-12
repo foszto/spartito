@@ -210,7 +210,7 @@ def loadout_flags(loadout: Loadout, canary: Path | None = None) -> list[str]:
     """CLI flags for a loadout. Needed on every turn: `--resume` does not remember them.
 
     `memory` takes effect only with a `canary` (see memory_settings) and a caller that
-    waits for it before the prompt; `orch chat` passes none, so it gets no Write/Edit.
+    waits for it before the prompt; `spartito chat` passes none, so it gets no Write/Edit.
     """
     flags = []
     tools = loadout.tools

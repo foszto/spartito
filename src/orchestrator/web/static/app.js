@@ -42,13 +42,15 @@ const SUGGESTIONS = [
 ];
 
 // The names come with the page too, so no label waits for the first /api/state reply.
+// The command named in the texts that tell someone to run it (config.CLI_NAME).
+const CLI = document.body.dataset.cliName;
 let state = { orchestrator_name: document.body.dataset.orchestratorName, orchestrator: null, projects: [], providers: [], roles: [], tiers: [], archived: [], settings: { global: {}, projects: {} } };
 const hashTarget = () => decodeURIComponent(location.hash.slice(1));
 // The agent shown; a decision named by the hash is shown once the state is loaded (refresh).
 let selected = hashTarget().startsWith(DECISION) ? ORCH : hashTarget() || ORCH;
 let wantedDecision = hashTarget().startsWith(DECISION) ? hashTarget().slice(DECISION.length) : null;
-// The window of `orch app` opens the page as `?app=<id>`: it applies each later request of a
-// second `orch app` (state.app_open: {id, target}) once, by going to its target. Other pages: null.
+// The window of `spartito app` opens the page as `?app=<id>`: it applies each later request of a
+// second `spartito app` (state.app_open: {id, target}) once, by going to its target. Other pages: null.
 const appParam = new URLSearchParams(location.search).get('app');
 let appRequest = appParam !== null && /^\d+$/.test(appParam) ? Number(appParam) : null;
 let shown = null, lastEvent = 0, refreshing = false, again = false, toolGroup = null;
@@ -534,7 +536,7 @@ function renderHeader(agent, setupFreshness = true) {
   fact('Session', agent.session_id); fact('Turns', `${agent.runs} (${agent.queued_runs} active)`);
   fact('Agents working', agent.children_running && `${agent.children_running} below this agent`);
   fact('Last run model', agent.last_run && agent.last_run.usage && agent.last_run.usage.model);
-  fact('Take over in a terminal', agent.session_id ? `orch attach ${agent.id}` : '');
+  fact('Take over in a terminal', agent.session_id ? `${CLI} attach ${agent.id}` : '');
   const runs = $('runs'); runs.replaceChildren();
   const row = (cells, tag) => { const tr = el('tr'); for (const c of cells) tr.append(el(tag, '', c)); runs.append(tr); };
   if ((agent.recent_runs || []).length) row(['Run', 'Status', 'Ended', 'Tokens', 'Cost', 'Model'], 'th');
@@ -1604,7 +1606,7 @@ function pagePermission() {
   return line;
 }
 
-// -- notices inside the window of `orch app` (macOS) ---------------------------
+// -- notices inside the window of `spartito app` (macOS) ---------------------------
 // Its window process (gui/notifier.py) takes the notices while it is open; those macOS does
 // not let Spartito post (not asked yet, not allowed, refused, not available) it hands to this
 // page, together with a line on how its notifications stand: spartitoApp.sync(view), view =

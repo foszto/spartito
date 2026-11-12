@@ -197,7 +197,7 @@ def project(orch: Orchestrator, repo: Path) -> str:
 
 @pytest.fixture(autouse=True)
 def no_real_launcher(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch):
-    """`orch app` and its launcher look in a temporary directory, never ~/Applications or
+    """`spartito app` and its launcher look in a temporary directory, never ~/Applications or
     the real XDG data home, and never call lsregister."""
     from orchestrator.gui import launcher
 

@@ -41,7 +41,7 @@ class Facade(Protocol):
     def stop(self, agent_id: str) -> int: ...
 
 
-# The automatic archive check runs from the listings (dashboard poll, `orch ps`,
+# The automatic archive check runs from the listings (dashboard poll, `spartito ps`,
 # list_agents), at most once per AUTO_ARCHIVE_EVERY seconds across all processes, and stops
 # checking further agents once it has spent AUTO_ARCHIVE_BUDGET seconds (the rest: next time).
 AUTO_ARCHIVE_EVERY = 300.0

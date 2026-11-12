@@ -1,4 +1,4 @@
-"""`orch app install` / `orch app uninstall`: the launcher's files, written into temporary
+"""`spartito app install` / `spartito app uninstall`: the launcher's files, written into temporary
 directories only (conftest points the default directory there and fakes lsregister)."""
 
 from __future__ import annotations
@@ -120,7 +120,7 @@ def test_script_golden():
     script = launcher.render_script(item("mac", root, "Spartito Test"))
     assert script == (
         "#!/bin/sh\n"
-        "# Spartito Test: written by `orch app install`, removed by `orch app uninstall`.\n"
+        "# Spartito Test: written by `spartito app install`, removed by `spartito app uninstall`.\n"
         "# CFProcessPath makes the Python process count as this app (name, icon, identifier).\n"
         "export CFProcessPath='/Users/some one/it'\"'\"'s \"apps\"/Spartito Test.app/Contents"
         "/MacOS/Spartito Test'\n"
@@ -133,7 +133,7 @@ def test_script_golden():
 
 def test_script_runs_with_its_environment_and_arguments(tmp_path: Path):
     """The script, run by sh: the environment it sets and the arguments it passes on reach
-    the command (a Python that prints them instead of `orch app`)."""
+    the command (a Python that prints them instead of `spartito app`)."""
     show = "import os, sys; print(os.environ['ORCH_HOME']); print(os.environ['CFProcessPath']); print(sys.argv[1:])"
     root = tmp_path / 'it\'s "apps"'
     written = item("mac", root, argv=(sys.executable, "-c", show))
@@ -327,7 +327,7 @@ def test_something_else_at_the_place_is_left_alone(tmp_path: Path, kind: str):
         written.path.parent.mkdir(parents=True)
         written.path.write_text("[Desktop Entry]\nName=Spartito\n")
     before = tree(tmp_path)
-    with pytest.raises(launcher.LauncherError, match="was not written by `orch app install`"):
+    with pytest.raises(launcher.LauncherError, match="was not written by `spartito app install`"):
         launcher.install(written)
     assert launcher.uninstall(written) is None
     assert tree(tmp_path) == before
@@ -481,13 +481,13 @@ def test_mac_install_makes_a_signed_copy_and_runs_it_as_the_bundle(
     assert notes == [
         f"spartito-python: a copy of {working_copy['source']} (Python {record['version']}),"
         f" signed as {written.identifier}, so Spartito Test can post notifications itself;"
-        " run `orch app install` again after upgrading Python"
+        " run `spartito app install` again after upgrading Python"
     ]
     script = files["Spartito Test.app/Contents/MacOS/Spartito Test"][0].decode()
     copy, env = shlex.quote(str(written.interpreter)), shlex.quote(str(working_copy["env"]))
     assert script == (
         "#!/bin/sh\n"
-        "# Spartito Test: written by `orch app install`, removed by `orch app uninstall`.\n"
+        "# Spartito Test: written by `spartito app install`, removed by `spartito app uninstall`.\n"
         "# The interpreter copy in this bundle makes the process this app (name, icon,\n"
         "# identifier, notifications); __PYVENV_LAUNCHER__ gives it the environment.\n"
         "export ORCH_HOME='/tmp/it'\"'\"'s a \"home\"'\n"
@@ -499,7 +499,7 @@ def test_mac_install_makes_a_signed_copy_and_runs_it_as_the_bundle(
         f'    exec {copy} -m orchestrator app "$@"\n'
         "fi\n"
         "# The copy does not start (a Python upgrade removed what it loads): the earlier way,\n"
-        "# without notifications of its own until `orch app install` runs again.\n"
+        "# without notifications of its own until `spartito app install` runs again.\n"
         "export ORCH_APP_COPY_FAILED=1\n"
         f"export CFProcessPath={shlex.quote(str(written.executable))}\n"
         f'exec {env} -m orchestrator app "$@"\n'
@@ -590,7 +590,7 @@ def test_a_python_upgrade_makes_the_copy_stale_and_install_repairs_it(
     lines = result.stdout.splitlines()
     assert lines[1] == (
         "replaced the stale copy of the Python interpreter (Python changed since"
-        f" `orch app install` (it copied {platform.python_version()}))"
+        f" `spartito app install` (it copied {platform.python_version()}))"
     )
     assert lines[2].startswith("spartito-python: a copy of ")
     assert launcher.interpreter(written) == written.interpreter

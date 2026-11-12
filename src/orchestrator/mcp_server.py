@@ -3,7 +3,7 @@
 The top-level orchestrator session and every `lead` agent get this server. An agent's own
 identity arrives in ORCH_AGENT_ID: agents it spawns become its children, and it is confined
 to its own project. The top-level orchestrator has no project (or no ORCH_AGENT_ID at all,
-for the interactive `orch chat` session) and may act everywhere.
+for the interactive `spartito chat` session) and may act everywhere.
 """
 
 from __future__ import annotations
@@ -484,7 +484,7 @@ def _short(text: str, limit: int) -> str:
 
 
 def _actor(access: Caller) -> board.Actor:
-    """The calling agent as the one who changes the board (no id: the `orch chat` session)."""
+    """The calling agent as the one who changes the board (no id: the `spartito chat` session)."""
     return board.Actor(board.AGENT_KIND, access.id or None)
 
 

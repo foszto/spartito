@@ -249,14 +249,14 @@ def test_unavailable_says_why_once_shown_never_asks_and_shows_the_notices_inside
     orch: Orchestrator, center: FakeCenter, lines, inside, tmp_path
 ):
     made = notifier.WindowNotifier(
-        orch, center, "", None, lines.append, inside, "no launcher: run `orch app install`"
+        orch, center, "", None, lines.append, inside, "no launcher: run `spartito app install`"
     )
     assert lines == []  # said once the window is shown
     made.ask()
     made.ask()
     assert center.asked == []
     assert lines == [
-        f"notifications from Spartito: not available (no launcher: run `orch app install`); {INSIDE}"
+        f"notifications from Spartito: not available (no launcher: run `spartito app install`); {INSIDE}"
     ]
     orch.store.add_notice("finished", "a-1", "a-1 finished")
     made.tick()
@@ -608,7 +608,7 @@ def test_the_delegate_hands_a_click_on_and_always_completes():
     assert isinstance(got[3], int) and got[3] > 0  # banner, list, sound
 
 
-# -- the posting process (`orch app --notify`) -----------------------------------------------
+# -- the posting process (`spartito app --notify`) -----------------------------------------------
 
 
 def age(orch: Orchestrator, notice: int, seconds: float) -> None:

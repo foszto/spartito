@@ -321,7 +321,7 @@ def test_claude_memory_adds_write_and_edit_behind_the_guard_on_every_turn(
 def test_claude_memory_needs_a_canary(tmp_path: Path) -> None:
     keeper = replace(LEAD_LOADOUT, memory=True)
 
-    assert loadout_flags(keeper) == loadout_flags(LEAD_LOADOUT)  # orch chat: no Write/Edit
+    assert loadout_flags(keeper) == loadout_flags(LEAD_LOADOUT)  # spartito chat: no Write/Edit
     assert "--settings" in loadout_flags(keeper, tmp_path / "canary")
 
 

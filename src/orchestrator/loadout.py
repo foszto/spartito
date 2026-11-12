@@ -18,7 +18,7 @@ every request. Keys, in a role's frontmatter or a loadout.toml table:
                      other target (memory_guard.py). Only for headless turns whose hooks
                      are proven to run (runner.py); otherwise the turn runs without it.
                      No effect when `tools` already grants a file-writing tool (`default`
-                     does), in `orch chat`, or for Codex. Bash is not confined.
+                     does), in `spartito chat`, or for Codex. Bash is not confined.
 
 Resolved per key, first hit wins:
   <project>/.orch/loadout.toml [<role>] -> [default] -> $ORCH_HOME/loadout.toml [<role>]

@@ -1,4 +1,4 @@
-"""`orch` command line."""
+"""The command line (config.CLI_NAME)."""
 
 from __future__ import annotations
 
@@ -37,14 +37,18 @@ from .textfmt import fit_line as one_line
 # Help texts are wrapped in the source: Markdown reflows them (Rich markup would keep every
 # line break and swallow `[...]`).
 MARKUP = "markdown"
+# The command's name in every text that tells someone to run it. Docstrings shown by --help
+# cannot be f-strings: they write `{cli}`, and name_the_command puts this in once all commands
+# are registered.
+CLI = config.CLI_NAME
 
 app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
     rich_markup_mode=MARKUP,
     help=f"{config.PROJECT_NAME}: run Claude Code and Codex agents in parallel in git worktrees,"
-    " steered through one orchestrator agent. Start with `orch project add`, then `orch chat`"
-    " or `orch web`.",
+    f" steered through one orchestrator agent. Start with `{CLI} project add`, then `{CLI} chat`"
+    f" or `{CLI} web`.",
 )
 project_app = typer.Typer(
     no_args_is_help=True, rich_markup_mode=MARKUP, help="Manage projects (git repositories)."
@@ -133,7 +137,7 @@ def context_styled(context: dict | None, width: int = 0) -> str:
 
 
 def compact_at_text(context: dict | None) -> str:
-    """How automatic compaction stands for the agent, for `orch status`."""
+    """How automatic compaction stands for the agent, for `{cli} status`."""
     if not context or "compact_at" not in context:
         return ""
     if not context["compact_at"]:
@@ -261,7 +265,7 @@ def chat(
     except loadout.LoadoutError as exc:
         raise fail(str(exc)) from None
     if chosen.tools is not None and "Bash" not in chosen.tools:
-        chosen = replace(chosen, tools=(*chosen.tools, "Bash"))  # for `orch wait` and co.
+        chosen = replace(chosen, tools=(*chosen.tools, "Bash"))  # for `spartito wait` and co.
     # A person works in this session: --disable-slash-commands would also take away the
     # built-in /compact, /clear, /model and /context. Headless agents keep the setting.
     chosen = replace(chosen, slash_commands=True)
@@ -269,7 +273,7 @@ def chat(
         "claude",
         "--mcp-config", mcp_config(),
         "--append-system-prompt", role.prompt,
-        "--allowedTools", "mcp__orch", "Bash(orch *)",
+        "--allowedTools", "mcp__orch", f"Bash({CLI} *)",
         *loadout_flags(chosen),
     ]  # fmt: skip
     if resume:
@@ -287,7 +291,7 @@ def chat(
 
 @app.command()
 def mcp() -> None:
-    """Run the orchestrator MCP server on stdio (what `orch chat` and lead agents connect to)."""
+    """Run the orchestrator MCP server on stdio (what `{cli} chat` and lead agents connect to)."""
     from .mcp_server import main
 
     main()
@@ -315,9 +319,9 @@ app_app = typer.Typer(
     rich_markup_mode=MARKUP,
     help="Open the dashboard in its own window: a native one with the extra `orchestrator[app]`,"
     " else a Chromium-family browser in app mode, else the default browser. Uses the running"
-    " `orch web` of this home, or serves the dashboard on 127.0.0.1 until the window is closed."
+    f" `{CLI} web` of this home, or serves the dashboard on 127.0.0.1 until the window is closed."
     " With the window open already, brings it to the front (at `--agent` or `--decision`)."
-    " `orch app install` adds a launcher that starts it like an application.",
+    f" `{CLI} app install` adds a launcher that starts it like an application.",
 )
 app.add_typer(app_app, name="app")
 LauncherName = Annotated[
@@ -365,7 +369,7 @@ def app_window(
 ) -> None:
     """Open the dashboard in its own window: a native one with the extra `orchestrator[app]`,
     else a Chromium-family browser in app mode, else the default browser. Uses the running
-    `orch web` of this home, or serves the dashboard on 127.0.0.1 until the window is closed.
+    `{cli} web` of this home, or serves the dashboard on 127.0.0.1 until the window is closed.
     With the window open already, brings it to the front (at `--agent` or `--decision`)."""
     if ctx.invoked_subcommand:
         return
@@ -396,7 +400,7 @@ def app_window(
 
 @app_app.command("install")
 def app_install(name: LauncherName = None, directory: LauncherDir = None) -> None:
-    """Install a launcher that opens `orch app` like an application (macOS:
+    """Install a launcher that opens `{cli} app` like an application (macOS:
     ~/Applications/Spartito.app; Linux: a desktop entry). Running it again rewrites it."""
     from .gui import launcher
 
@@ -413,7 +417,7 @@ def app_install(name: LauncherName = None, directory: LauncherDir = None) -> Non
 
 @app_app.command("uninstall")
 def app_uninstall(name: LauncherName = None, directory: LauncherDir = None) -> None:
-    """Remove the launcher `orch app install` wrote for this home."""
+    """Remove the launcher `{cli} app install` wrote for this home."""
     from .gui import launcher
 
     item = app_launcher(name, directory)
@@ -451,7 +455,7 @@ def menubar(
 service_app = typer.Typer(
     no_args_is_help=True,
     rich_markup_mode=MARKUP,
-    help="Run `orch web` in the background: started at login and restarted when it dies"
+    help=f"Run `{CLI} web` in the background: started at login and restarted when it dies"
     " (macOS: a launchd agent; Linux: a systemd user unit).",
 )
 app.add_typer(service_app, name="service")
@@ -476,8 +480,8 @@ def service_label(label: str | None) -> str:
 
 @service_app.command("install")
 def service_install(
-    host: Annotated[str, typer.Option(help="As for `orch web`.")] = autostart.DEFAULT_HOST,
-    port: Annotated[int, typer.Option(help="As for `orch web`.")] = autostart.DEFAULT_PORT,
+    host: Annotated[str, typer.Option(help=f"As for `{CLI} web`.")] = autostart.DEFAULT_HOST,
+    port: Annotated[int, typer.Option(help=f"As for `{CLI} web`.")] = autostart.DEFAULT_PORT,
     label: LabelOption = None,
 ) -> None:
     """Install the dashboard service and (re)start it. Running it again replaces it."""
@@ -720,7 +724,7 @@ def config_compact_at(
 
     The compaction runs before the agent's next turn (ahead of a queued message). Not again
     while the agent's last compaction left the context above the threshold: that is shown
-    in its log and `orch status`. Leads keep their rules, state and open work.
+    in its log and `{cli} status`. Leads keep their rules, state and open work.
     """
     o = orch()
     try:
@@ -766,7 +770,7 @@ def age(timestamp: str) -> str:
 def decisions(
     all_: Annotated[bool, typer.Option("--all", "-a", help="Include closed ones.")] = False,
 ) -> None:
-    """List the decisions agents wait for (answer with `orch decide`)."""
+    """List the decisions agents wait for (answer with `{cli} decide`)."""
     listed = orch().list_decisions(closed=all_)
     if not listed:
         typer.echo("no decisions" if all_ else "no open decisions")
@@ -1166,7 +1170,7 @@ def show_archived(o: Orchestrator, project: str | None) -> None:
                 f"  {view['id']:<34} {typer.style(f'{text:<8}', fg=color)} {view['role']:<9}"
                 f" {when:<24} {view['branch'] or ''}"
             )
-    typer.echo("orch restore <id> brings one back; orch rm <id> deletes it for good")
+    typer.echo(f"{CLI} restore <id> brings one back; {CLI} rm <id> deletes it for good")
 
 
 @app.command()
@@ -1187,7 +1191,7 @@ def status(agent_id: str) -> None:
     if view["id"] == ORCHESTRATOR_ID:
         view["name"] = config.ORCHESTRATOR_NAME  # the id line keeps `orchestrator`
     if mark := view.pop("archived", None):
-        view["archived"] = f"{mark['archived_at']} ({mark['how']}; orch restore {agent_id})"
+        view["archived"] = f"{mark['archived_at']} ({mark['how']}; {CLI} restore {agent_id})"
     for key in ("model", "effort"):
         override = view.pop(f"{key}_override")
         view[key] = f"{view[key] or 'default'}" + (" (set on the agent)" if override else "")
@@ -1199,7 +1203,7 @@ def status(agent_id: str) -> None:
     plural = "agent" if working == 1 else "agents"
     typer.echo(f"{'children':<12} {f'{working} {plural} working' if working else 'none working'}")
     typer.echo(f"{'usage':<12} {usage_line(counts, cost)}")
-    hint = f"orch compact {agent_id}" if refusal is None else f"no compact: {refusal}"
+    hint = f"{CLI} compact {agent_id}" if refusal is None else f"no compact: {refusal}"
     if context and context["compacted"]:
         typer.echo(f"{'context':<12} compacted; its size is known after the next turn")
     elif context:
@@ -1298,7 +1302,7 @@ def model_command(
     """Show, set or clear an agent's own model and effort.
 
     Without options it shows them. A cleared value falls back to the tier default
-    (`orch config`). A change applies from the agent's next turn; a running one keeps its
+    (`{cli} config`). A change applies from the agent's next turn; a running one keeps its
     model. In an existing session a model switch starts a fresh prompt cache (the next
     turn re-reads the whole conversation at full price); an effort switch keeps the cache
     with Codex and may start a fresh one with Claude.
@@ -1358,7 +1362,7 @@ def compact(
 
 @app.command()
 def withdraw(run_id: int) -> None:
-    """Withdraw a queued message or compaction (a `#<run id>` of `orch status`) before it
+    """Withdraw a queued message or compaction (a `#<run id>` of `{cli} status`) before it
     starts."""
     try:
         run = orch().withdraw(run_id)
@@ -1369,7 +1373,7 @@ def withdraw(run_id: int) -> None:
 
 @app.command()
 def edit(run_id: int, message: str) -> None:
-    """Replace the text of a queued message (a `#<run id>` of `orch status`) before it starts."""
+    """Replace the text of a queued message (a `#<run id>` of `{cli} status`) before it starts."""
     try:
         run = orch().replace_message(run_id, message)
     except OrchestratorError as exc:
@@ -1391,8 +1395,8 @@ def archive(
         bool, typer.Option("--yes", "-y", help="Archive unmerged work without asking.")
     ] = False,
 ) -> None:
-    """Archive an agent: hidden from `orch ps`, the dashboard and list_agents; its record,
-    runs, logs, branch and worktree are kept. `orch restore` or a message brings it back.
+    """Archive an agent: hidden from `{cli} ps`, the dashboard and list_agents; its record,
+    runs, logs, branch and worktree are kept. `{cli} restore` or a message brings it back.
 
     An agent with commits not merged into the base branch or uncommitted changes is archived
     only after a confirmation; one that (or whose agents) has a queued or running turn not
@@ -1420,7 +1424,7 @@ def archive(
             o.archive(agent_id, confirm=True)
     except OrchestratorError as exc:
         raise fail(exc) from None
-    typer.echo(f"archived {agent_id} (orch restore {agent_id} brings it back)")
+    typer.echo(f"archived {agent_id} ({CLI} restore {agent_id} brings it back)")
 
 
 @app.command()
@@ -1440,7 +1444,7 @@ def rm(
 ) -> None:
     """Delete an archived agent for good, with its worktree (uncommitted work is lost).
 
-    Only archived agents (`orch ps --archived`) can be deleted; `orch archive` first.
+    Only archived agents (`{cli} ps --archived`) can be deleted; `{cli} archive` first.
     """
     try:
         orch().remove(agent_id, delete_branch)
@@ -1459,7 +1463,7 @@ def attach(agent_id: str) -> None:
     if not agent.session_id:
         raise fail("the agent has no session yet")
     if o.active_runs(agent.id):
-        raise fail("the agent is busy; `orch stop` it first or wait")
+        raise fail(f"the agent is busy; `{CLI} stop` it first or wait")
     argv = providers.get(agent.provider).attach_command(agent)
     os.chdir(agent.cwd)
     os.execvp(argv[0], argv)
@@ -1472,6 +1476,19 @@ def list_roles() -> None:
         flags = ("lead " if role.lead else "") + ("worktree" if role.worktree else "checkout")
         typer.echo(f"{role.name:<13} {flags:<14} {role.description}")
 
+
+def name_the_command(group: typer.Typer) -> None:
+    """Put CLI where the docstrings of `group`'s commands and callbacks say `{cli}`."""
+    for info in [*group.registered_commands, group.registered_callback]:
+        callback = info and info.callback
+        if callback and callback.__doc__:
+            callback.__doc__ = callback.__doc__.replace("{cli}", CLI)
+    for sub in group.registered_groups:
+        if sub.typer_instance:
+            name_the_command(sub.typer_instance)
+
+
+name_the_command(app)
 
 OLD_NAME = "orch"  # the command's name before CLI_NAME; an older install's script keeps it
 
