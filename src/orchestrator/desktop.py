@@ -83,7 +83,8 @@ ignored. Every child starts with SIGTERM, SIGINT, SIGHUP and SIGPIPE at their de
 (DEFAULT_SIGNALS): a runner ignores SIGTERM and SIGINT while it ends its turn, which is when
 it shows the notice, and an ignored signal is inherited across fork and exec. The helper sets
 them first thing (`helper`); osascript and the helper's own children start through
-EXEC_DEFAULT while this process ignores one (`with_default_signals`). Off with the global setting `desktop_notifications` (`spartito config
+EXEC_DEFAULT while this process ignores one (`with_default_signals`), or as they are when
+that interpreter cannot be started (`start_defaulted`), so the notice is still shown. Off with the global setting `desktop_notifications` (`spartito config
 desktop-notifications off`): then nothing is recorded either.
 """
 
@@ -1021,8 +1022,9 @@ def plain(body: str, decision_id: int | None) -> threading.Thread | None:
         argv = command(config.PROJECT_NAME, one_line(body, TEXT_CHARS - len(clause)) + clause)
         if argv is None:
             return None
-        proc = subprocess.Popen(
-            with_default_signals(argv),
+        proc = start_defaulted(
+            subprocess.Popen,
+            argv,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -1050,6 +1052,17 @@ def with_default_signals(argv: list[str]) -> list[str]:
         return argv
     program = shutil.which(argv[0]) or argv[0]
     return [sys.executable, "-c", EXEC_DEFAULT, program, *argv[1:]]
+
+
+def start_defaulted(start: Callable[..., Any], argv: list[str], **options: Any) -> Any:
+    """`start(argv, **options)` (Popen or run) through `with_default_signals`; when the shim's
+    interpreter cannot be started (OSError: say the tool environment was replaced during a
+    long turn), `argv` as it is, as before the shim, so the notice is still shown."""
+    wrapped = with_default_signals(argv)
+    if wrapped != argv:
+        with contextlib.suppress(OSError):
+            return start(wrapped, **options)
+    return start(argv, **options)
 
 
 def default_signals() -> None:
@@ -1282,8 +1295,9 @@ def linux_helper(
     time.sleep(due)
     held = burst_summarised(token)
     waited = time.monotonic() - began
-    if held <= 1:  # only this one was held back: shown as itself
-        trace("shown", PATHS[LINUX], f"after {waited:.1f} s, the only one held back: as itself")
+    if held <= 1:  # only this one was held back, or the count is gone: shown as itself
+        alone = "the only one held back, or the others' count was discarded"
+        trace("shown", PATHS[LINUX], f"after {waited:.1f} s, as itself: {alone}")
         linux_show(send, body, target)
         return
     text = f"{held} more notices"
@@ -1315,8 +1329,9 @@ def linux_show(send: str, body: str, target: str) -> None:
     with waiting_slot(display() and has_actions(send)) as actions:
         argv = linux_argv(send, body, target, actions)
         try:
-            done = subprocess.run(
-                with_default_signals(argv),
+            done = start_defaulted(
+                subprocess.run,
+                argv,
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,

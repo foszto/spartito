@@ -459,7 +459,8 @@ package's PNG.
   later burst.
 - The helper and `notify-send` start with SIGTERM, SIGINT, SIGHUP and SIGPIPE at their
   default, even when the process that showed the notice ignores them (a runner ending its
-  turn does), so a plain `kill` ends them.
+  turn does), so a plain `kill` ends them. When the Python that resets them cannot be
+  started, `notify-send` (and `osascript` on macOS) starts as it is, so the notice still shows.
 - Without `DBUS_SESSION_BUS_ADDRESS` (a service started without it) the helper uses
   `unix:path=$XDG_RUNTIME_DIR/bus` (`/run/user/<uid>/bus` without that variable), when that
   socket exists.
