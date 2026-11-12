@@ -73,13 +73,14 @@ starting with `-`.
 
 | key | command | scope | default |
 |---|---|---|---|
-| tier values | `orch config set <tier>` | global, project | none |
+| tier values (model and effort) | `orch config set <tier>` | global, project | none: the CLI's default |
 | `compact_at_tokens` | `orch config compact-at <tokens>` | global, project | `256000` |
 | `archive_after_hours` | `orch config archive-after <hours>` | global, project | `24` |
 | `keep_awake` | `orch config keep-awake on\|off` | global | `on` |
 | `desktop_notifications` | `orch config desktop-notifications on\|off` | global | `on` |
 
-A project value overrides the global one. An empty value (`""`) clears a setting.
+A project value overrides the global one. An empty value (`""`) clears a setting, so that the
+global value or the default applies; `0` or `off` turns compaction and archiving off.
 
 ### Automatic compaction: `compact_at_tokens`
 
@@ -129,8 +130,10 @@ Each notification is recorded as a notice in the database (kept for one day). Wh
   **Models and effort** › **Notifications** › **Allow in this browser**. It shows them as
   Web Notifications, and a click opens the agent or the decision. While such a page has
   polled within the last 15 seconds, notices are left to it;
-- otherwise Spartito itself: on macOS its window or, with no window open, its launcher's app
-  (once *Spartito* is allowed); on Linux `notify-send`. A click opens the agent or decision;
+- otherwise Spartito itself: on macOS its open window, which takes every notice and posts it
+  when *Spartito* is allowed, else shows it inside the window (a banner, the Dock's badge);
+  with no window open, the launcher's app, once *Spartito* is allowed; on Linux
+  `notify-send`. A click opens the agent or decision;
 - otherwise, on macOS, `osascript` shows a plain notification, whose text ends with where to
   look (`— open Spartito to answer`, `— open Spartito to see it`), as its click cannot open
   Spartito.
@@ -149,7 +152,12 @@ this, override the `lead` role (see [Roles](#roles)).
 
 Without restrictions every agent would inherit your whole Claude Code or Codex configuration
 (claude.ai connectors, plugins, skills, MCP servers), which multiplies the size of every
-request. Each role therefore declares what its CLI loads besides the role prompt.
+request. Each role therefore declares what its CLI loads besides the role prompt. By default,
+agents load only the `orch` MCP server (leads), the project's own `CLAUDE.md` and `.claude/`
+settings, and a fixed set of built-in tools; skills and slash commands are off and Codex
+ignores `~/.codex/config.toml`. If you rely on `~/.claude/settings.json` or on Codex's
+`model_provider` or profiles, see
+[Authentication and model settings](#overrides-loadouttoml) below.
 
 ### Keys
 

@@ -15,7 +15,8 @@ a role with `lead: true`: the orchestrator and the project leads.
 
 ## MCP tools
 
-Lead roles get the `orch` MCP server. An agent's own id reaches the server in
+Lead roles get the `orch` MCP server (`orch mcp`, started by the CLI of each lead agent and by
+`orch chat`; there is no need to run it by hand). An agent's own id reaches the server in
 `ORCH_AGENT_ID`: agents it starts become its children, and a project lead is confined to its
 own project. The orchestrator (and the interactive `orch chat` session, which has no agent id)
 can act on every project.
@@ -35,11 +36,12 @@ can act on every project.
 | `agent_log(agent_id, tail, event_chars, max_chars, event_id)` | recent events, one line each |
 | `stop_agent(agent_id)` | stop running and queued turns |
 | `archive_agent(agent_id, confirm, restore)` | archive (unmerged work only with `confirm`), or restore |
-| `request_decision(question, options, recommendation)` | ask the owner (headless lead roles only) |
+| `request_decision(question, options, recommendation, item)` | ask the owner (headless lead roles only); `item`: the board item it blocks |
 | `withdraw_decision(decision_id)` | close one of your own open decisions |
-| `list_board(project, state)` | the project's task board, shortened to fit |
+| `list_board(project, state, live)` | the project's task board, shortened to fit; `live` adds agent and git status |
 | `add_board_item(project, title, description, state)` | add an item |
 | `update_board_item(item_id, state, title, description, agent, branch)` | change an item |
+| `dispatch_board(project, items)` | send board items to the project's lead (default: all `ready`; orchestrator only) |
 
 Replies are kept short: results and logs are cut to a budget, and say how to read the rest
 (`result_offset`, `event_id`, the `result_file` path in `get_agent`).
@@ -114,7 +116,17 @@ within their state; a new item, and an item that changes state, goes to the end.
   then `ready`, `idea` and `done`, and counts what does not fit in its reply.
 - In the dashboard, the board button in a project's row opens it: one list per state, add,
   edit, move up or down, change state.
+- **Board** in the dashboard's left column shows every project's board in one view: items
+  move by drag or keyboard, a selection is dispatched to the leads, each card shows its
+  agent's status and its branch's git state, and an item whose branch is merged moves to
+  `done` by itself. See [board.md](board.md).
 - On the command line: `orch board`, `orch board add`, `orch board edit`, `orch board move`.
+
+```sh
+orch board add -p my-app "Password reset" -d "Email link, expires in 1 hour" --state ready
+orch board -p my-app
+orch board dispatch -p my-app
+```
 
 **Dispatch** (`orch board dispatch -p <project>`, or the dashboard after a confirmation) sends
 all of the project's `ready` items to its lead in one message, as if you had written it: each

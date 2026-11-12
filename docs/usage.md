@@ -1,11 +1,39 @@
 # Command line and dashboard
 
+- [Commands at a glance](#commands-at-a-glance)
 - [Command reference](#command-reference)
 - [Dashboard](#dashboard)
 
-Terms used here (see the [README](../README.md#core-concepts)): a *turn* is one prompt and
+Terms used here (see [concepts.md](concepts.md)): a *turn* is one prompt and
 the agent's answer; its *run id* is the number commands print as `run 12` and `orch status`
 lists as `#12`. *Project lead* or *lead* is the agent with role `lead` of a project.
+
+## Commands at a glance
+
+| command | purpose |
+|---|---|
+| `orch project add/list/rm` | register, list and unregister projects |
+| `orch chat` | interactive orchestrator session (Claude Code) |
+| `orch web` | dashboard |
+| `orch app` | dashboard in its own window |
+| `orch menubar` | running agents and open decisions in the macOS menu bar |
+| `orch service install/uninstall/status/logs` | dashboard as a background service |
+| `orch ask <project> "…"` | message the project lead (creates it) |
+| `orch spawn -p <project> "…"` | start an agent (`-r` role, `-n` name, `--provider`, `--after`, `--share`, `--base`) |
+| `orch send <agent> "…"` | follow-up message, queued if the agent is busy |
+| `orch ps` | tree of projects and agents: state, model/effort, context, tokens, cost |
+| `orch status <agent>` | one agent: last result, queue, context, commits and changes |
+| `orch logs <agent> -f` | activity: messages, tool calls, errors |
+| `orch wait <agent>…` | block until idle; exit code 0 done, 1 failed, 2 timeout |
+| `orch withdraw <run>`, `orch edit <run> "…"` | withdraw or rewrite a queued message |
+| `orch stop <agent>` | stop its running and queued turns |
+| `orch attach <agent>` | continue its session interactively in `claude` / `codex` |
+| `orch model <agent>` | show or set its own model and effort |
+| `orch compact <agent>` | compact its conversation |
+| `orch archive`, `orch restore`, `orch rm` | archive, bring back, delete for good |
+| `orch board …`, `orch decisions`, `orch decide` | task board and decisions |
+| `orch config …` | settings |
+| `orch roles` | available roles |
 
 ## Command reference
 
@@ -193,11 +221,14 @@ Safe work and automatic archiving: [agents.md](agents.md#archiving).
 ### Task board and decisions
 
 ```sh
-orch board [-p PROJECT] [--state|-s STATE]
+orch board [-p PROJECT] [--state|-s STATE] [--live]
 orch board add TITLE -p PROJECT [--description|-d TEXT] [--state|-s idea]
 orch board edit ITEM_ID [--title T] [-d TEXT] [-s STATE] [--agent AGENT] [--branch BRANCH]
 orch board move ITEM_ID up|down
 orch board dispatch -p PROJECT
+orch board dispatch ITEM_ID...
+orch board show ITEM_ID
+orch board link ITEM_ID DECISION_ID [--remove]
 
 orch decisions [--all|-a]
 orch decide DECISION_ID ANSWER
@@ -205,7 +236,8 @@ orch decide DECISION_ID ANSWER
 
 States: `idea`, `ready`, `in_progress`, `done`. `orch board` without `-p` lists every
 project's board. In `board edit`, `""` clears `--agent` or `--branch`. `decide` takes an
-option number or free text. See [agents.md](agents.md#task-board) and
+option number or free text. `--live`, `show`, `link` and dispatching named items:
+[board.md](board.md#command-line-mcp-and-api). See [agents.md](agents.md#task-board) and
 [agents.md](agents.md#decisions).
 
 ### Settings and roles
@@ -273,8 +305,9 @@ options, recommendation and age; answer with an option or free text.
 
 **Security.** There is no login. Bound to a loopback address (the default), the dashboard
 answers only requests addressed to `127.0.0.1`, `localhost` or `::1`, and every write must come
-from the page itself (same origin, JSON body). Anyone who can reach a dashboard bound to
-another address can start agents that run code.
+from the page itself (same origin, JSON body), so other websites cannot write to it. Binding
+it to another address (for example `--host 0.0.0.0`) gives anyone who can reach it control
+over agents that run code.
 
 **Installing.** The page has a web app manifest: Chrome offers Install in the address bar,
 Safari **File › Add to Dock** ([desktop.md](desktop.md#installable-page)).
