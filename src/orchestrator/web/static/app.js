@@ -53,6 +53,10 @@ let wantedDecision = hashTarget().startsWith(DECISION) ? hashTarget().slice(DECI
 // The window of `spartito app` opens the page as `?app=<id>`: it applies each later request of a
 // second `spartito app` (state.app_open: {id, target}) once, by going to its target. Other pages: null.
 const appParam = new URLSearchParams(location.search).get('app');
+// The native window of `spartito app` (pywebview) adds `&native=1`: see PageNotification.
+const nativeWindow = appParam !== null && new URLSearchParams(location.search).get('native') === '1';
+// The window's query after it applied request `id`: every rewrite keeps the native mark.
+const appSearch = id => `?app=${id}${nativeWindow ? '&native=1' : ''}`;
 let appRequest = appParam !== null && /^\d+$/.test(appParam) ? Number(appParam) : null;
 let shown = null, lastEvent = 0, refreshing = false, again = false, toolGroup = null;
 let shownAgent = null, archiveList = [], archiveKey = '';
@@ -1477,6 +1481,7 @@ function switchBox({ key, title, label: text, about }) {
   label.append(check, text);
   box.append(el('h4', '', title), el('p', 'about', about), label);
   if (key === 'desktop_notifications' && PageNotification) box.append(pagePermission());
+  else if (key === 'desktop_notifications' && nativeWindow) box.append(nativeWindowNotify());
   return box;
 }
 
@@ -1505,8 +1510,11 @@ function openSettings() {
 // page present and leaves to it what Spartito's window or the launcher's app does not take. Each
 // notice is claimed first, so two pages, or a page and another way, never show the same one;
 // the server lists what this page may take, also older notices escalated to a page later, so
-// the cursor never moves back. Without the Notification API (an embedded WebKit window) none of
-// this runs.
+// the cursor never moves back. Without the Notification API none of this runs: no header button,
+// no permission asked, no polls. The native window of `spartito app` counts as without it: its
+// macOS WebKit has none (the window process takes the notices, gui/notifier.py), and Qt
+// WebEngine on Linux has no dependable way to show them, so there Spartito shows them itself
+// with notify-send (desktop.py), a click opening the agent or decision in this window.
 // Hidden pages: browsers throttle the page's own timers (Chrome: once a minute after five
 // minutes hidden), which would let the marker go stale, so the poll is ticked by a dedicated
 // worker (static/tick.js), whose timers are not throttled with the page.
@@ -1515,7 +1523,7 @@ function openSettings() {
 // still fresh) and is shown after the reload; one older than NOTICE_MAX_AGE_MS is no news and
 // skipped. The cursor moves past a notice only once its claim got an answer; a claim that failed
 // is tried again on the next tick.
-const PageNotification = window.Notification;
+const PageNotification = nativeWindow ? undefined : window.Notification;
 const NOTICE_POLL_MS = 4000, NOTICE_CHARS = 180, NOTICE_MAX_AGE_MS = 10 * 60 * 1000;
 const NOTICE_CURSOR = 'orch-notice-cursor';  // sessionStorage key
 let noticeCursor = savedNoticeCursor(), noticePolling = false;  // null: none yet (replay nothing)
@@ -1609,6 +1617,13 @@ function pagePermission() {
       }));
   }
   return line;
+}
+
+// The settings line in the native window: Spartito shows the notifications, not this page.
+function nativeWindowNotify() {
+  return el('p', 'about page-notify', 'This window does not ask to show notifications: Spartito shows them itself, '
+    + 'on Linux with notify-send (from libnotify: install it if notifications are missing), on macOS through this '
+    + 'window or its launcher. Where a click on one is possible, it opens the agent or the decision in this window.');
 }
 
 // -- notices inside the window of `spartito app` (macOS) ---------------------------
@@ -1752,7 +1767,7 @@ window.addEventListener('pagehide', () => flushSetup(true));
 function applyAppRequest(request) {
   if (appRequest === null || !request || !(request.id > appRequest)) return;
   appRequest = request.id;
-  history.replaceState(null, '', `?app=${request.id}${location.hash}`);  // a reload applies it no more
+  history.replaceState(null, '', `${appSearch(request.id)}${location.hash}`);  // a reload applies it no more
   goToTarget(request.target);
 }
 function followHash() {

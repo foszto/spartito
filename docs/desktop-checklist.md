@@ -219,6 +219,15 @@ On Linux (with `notify-send`), close every page: a notification titled *Spartito
 icon; with libnotify 0.7.10 or later a click opens `spartito app` at the agent or decision,
 otherwise the text ends with `— open it: spartito app --decision <n>`.
 
+On Linux, the native window of `spartito app` (Qt):
+
+| do | expect |
+|---|---|
+| Look at the header | no **Enable notifications** button |
+| **Models and effort** › **Notifications** | a line saying that this window does not ask to show notifications and Spartito shows them itself (on Linux with notify-send); no **Allow in this browser** |
+| Switch to another app, trigger a notification | one notification from `notify-send`, titled *Spartito*; a click brings the window to the front at the agent or decision; no error in the terminal or in `$ORCH_HOME/logs/app.log` |
+| `grep 'Qt permissions' "$ORCH_HOME/logs/app.log"` | `Qt permissions: pywebview's handler replaced (media granted, the rest denied)` |
+
 Leave one decision open for step 4. Stop `spartito web` in **shell A** with Ctrl-C.
 
 ## 4. Menu-bar item
