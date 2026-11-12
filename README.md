@@ -152,6 +152,7 @@ MCP tools are views on the same database. More: [docs/concepts.md](docs/concepts
 - [docs/desktop.md](docs/desktop.md): background service, installable page, notifications, `spartito app`, menu bar.
 - [docs/desktop-checklist.md](docs/desktop-checklist.md): manual checks of the desktop app.
 - [docs/architecture.md](docs/architecture.md): how it works at run time, limitations, code layout.
+- [CONTRIBUTING.md](CONTRIBUTING.md): setup, checks, conventions, pull requests, bug reports.
 
 ## Platform support
 
@@ -170,6 +171,9 @@ uv run pytest -n auto          # the same in parallel (pytest-xdist): about 6x f
 uv run ruff check . && uv run ruff format --check .
 node --check src/orchestrator/web/static/app.js
 ```
+
+How to contribute, the checks a change must pass and how to report a bug:
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
