@@ -110,8 +110,8 @@ spartito notices [--limit|-n 20] [--verbose|-v] [--json]
 - `notices` lists the recent desktop notifications of this home, newest first, one line each:
   its number, when it was recorded, its kind, the way it was shown (`window-system`,
   `window-banner`, `launcher-helper`, `page`, `linux`, `osascript`, `waiting`, `dropped`),
-  the process that showed or last moved it (`<role>:<pid>`), when, and the reason of the last
-  fallback or escalation. `-v` adds each notice's text and steps, `--json` gives all of it.
+  the process that showed or last moved it (`<role>:<pid>`), when, and the reason of its final
+  outcome. `-v` adds each notice's text and steps, `--json` gives all of it.
   How to read it: [desktop.md](desktop.md#reading-the-trace).
 
 Details: [desktop.md](desktop.md).
