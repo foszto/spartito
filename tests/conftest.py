@@ -4,6 +4,7 @@ import contextlib
 import os
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -103,8 +104,9 @@ def fake_osascript(
 # detached helper) shows a real desktop notification or leaves a helper waiting for a click.
 # Appends one line per call to $FAKE_NOTIFY_SEND_LOG: its path, its session bus and its
 # arguments, each followed by \x1f; `--help` is not noted. It exits at once unless told:
-# FAKE_ACTIONS=1: its help lists --action and --wait; FAKE_SLEEP=<s>: sleeps first;
-# FAKE_INVOKED=<name>: prints it, as an invoked action.
+# FAKE_ACTIONS=1: its help lists --action and --wait; FAKE_INVOKED=<name>: prints it, as an
+# invoked action; FAKE_SLEEP=<s>: becomes (exec) `notify-send-sleep <s>` instead, a sleep that
+# ends when its pid is killed, as the real notify-send would, and prints nothing.
 FAKE_NOTIFY_SEND = r"""#!/bin/sh
 if [ "$1" = "--help" ]; then
     echo "Usage: notify-send [OPTION...] <SUMMARY> [BODY]"
@@ -116,7 +118,7 @@ if [ -n "$FAKE_NOTIFY_SEND_LOG" ]; then
     { printf '%s\037%s\037' "$0" "$DBUS_SESSION_BUS_ADDRESS"
       for arg in "$@"; do printf '%s\037' "$arg"; done; printf '\n'; } >> "$FAKE_NOTIFY_SEND_LOG"
 fi
-[ -n "$FAKE_SLEEP" ] && sleep "$FAKE_SLEEP"
+[ -n "$FAKE_SLEEP" ] && exec "$(dirname "$0")/notify-send-sleep" "$FAKE_SLEEP"
 [ -n "$FAKE_INVOKED" ] && echo "$FAKE_INVOKED"
 exit 0
 """
@@ -162,6 +164,10 @@ def fake_notify_send(
     path = bin_dir / "notify-send"
     path.write_text(FAKE_NOTIFY_SEND)
     path.chmod(0o755)
+    sleeper = bin_dir / "notify-send-sleep"  # not a link to sleep: uutils checks its name
+    python = sys.executable if " " not in sys.executable else "/usr/bin/env python3"
+    sleeper.write_text(f"#!{python}\nimport sys, time\ntime.sleep(float(sys.argv[1]))\n")
+    sleeper.chmod(0o755)
     log = bin_dir / "notify-send.log"
     runtime = bin_dir / "runtime"
     runtime.mkdir(mode=0o700)

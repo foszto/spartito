@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -391,7 +392,7 @@ def test_a_window_that_does_not_take_its_notice_is_escalated_to_the_launcher(
 
     threading.Thread(target=posting_process, daemon=True).start()
     desktop.deliver(orch.store, notice, str(fake_open))
-    assert claimed.is_set() and calls(fake_osascript) == []
+    assert claimed.wait(5) and calls(fake_osascript) == []  # set just after the claim
     assert steps_of(orch, notice)[0][0] == "escalate"
     assert "window-system did not take it within" in orch.notice_trace(1)[0]["steps"][0]["detail"]
 
@@ -516,7 +517,6 @@ def test_linux_targets_are_checked_before_use(notify_send, started, monkeypatch)
 def test_linux_helper_has_a_time_limit(notify_send, started, monkeypatch):
     monkeypatch.setenv("FAKE_ACTIONS", "1")
     monkeypatch.setenv("FAKE_SLEEP", "10")
-    monkeypatch.setenv("FAKE_INVOKED", "default")
     monkeypatch.setattr(desktop, "LINUX_WAIT_SECONDS", 0.5)
     begin = time.monotonic()
     desktop.linux_helper(str(notify_send.path), BODY, "a-1")
@@ -606,6 +606,122 @@ def test_a_runner_on_linux_notifies_through_the_fake(
     assert fake_notify_send.programs() == [str(fake_notify_send.path)]
     assert fake_notify_send.calls()[0][-1].startswith(f"{agent.id} finished")
     assert fake_notify_send.buses() == [os.environ["DBUS_SESSION_BUS_ADDRESS"]]
+
+
+# -- signals: a helper started while a runner ignores SIGTERM still ends ----------------------
+
+STOP_SIGNALS = {"SIGTERM": 15, "SIGINT": 2, "SIGHUP": 1, "SIGPIPE": 13}
+on_proc = pytest.mark.skipif(not Path("/proc").is_dir(), reason="reads /proc/<pid>/status")
+
+
+def status(pid: int) -> dict[str, str]:
+    """/proc/<pid>/status as fields; {} when the process is gone."""
+    try:
+        lines = Path(f"/proc/{pid}/status").read_text().splitlines()
+    except OSError:
+        return {}
+    return dict(line.split(":\t", 1) for line in lines if ":\t" in line)
+
+
+def ignored(pid: int) -> set[str]:
+    """Which of STOP_SIGNALS the process ignores (SigIgn)."""
+    mask = int(status(pid)["SigIgn"], 16)
+    return {name for name, number in STOP_SIGNALS.items() if mask & (1 << (number - 1))}
+
+
+def alive(pid: int) -> bool:
+    return status(pid).get("State", "Z")[:1] not in ("Z", "X")
+
+
+def children(pid: int) -> list[int]:
+    return [
+        int(entry.name)
+        for entry in Path("/proc").iterdir()
+        if entry.name.isdigit() and status(int(entry.name)).get("PPid") == str(pid)
+    ]
+
+
+# As runner.main ends a turn: SIGTERM and SIGINT ignored while run_ended shows the notice.
+IGNORING_RUNNER = """
+import signal, sys
+from orchestrator import desktop
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+signal.signal(signal.SIGINT, signal.SIG_IGN)
+sys.exit(0 if desktop.spawn(["linux", sys.argv[1], sys.argv[2], "a-1"]) else 1)
+"""
+
+
+@on_proc
+def test_a_helper_spawned_by_an_ignoring_runner_ends_on_sigterm(
+    orch: Orchestrator, fake_notify_send: FakeNotifySend, monkeypatch
+):
+    monkeypatch.setenv("FAKE_SLEEP", "600")  # notify-send waits, as for a click
+    text = f"signals-{os.getpid()}-{time.monotonic_ns()} finished"
+    subprocess.run(
+        [sys.executable, "-c", IGNORING_RUNNER, str(fake_notify_send.path), text],
+        check=True,
+        timeout=60,
+    )
+    is_helper = lambda pid: b"desktop.helper" in Path(f"/proc/{pid}/cmdline").read_bytes()  # noqa: E731
+    (helper,) = until(lambda: [p for p in helper_pids(text) if is_helper(p)], what="the helper")
+    (sender,) = until(lambda: children(helper), what="its notify-send")
+    until(lambda: "notify-send-sleep" in Path(f"/proc/{sender}/cmdline").read_text())
+    # The fake's sleeper is Python, which ignores SIGPIPE by itself; nothing is inherited.
+    assert ignored(helper) == set() and ignored(sender) - {"SIGPIPE"} == set()
+    os.kill(helper, signal.SIGTERM)
+    until(lambda: not alive(helper), timeout=10, what="the helper's end on SIGTERM")
+    os.kill(sender, signal.SIGTERM)
+    until(lambda: not alive(sender), timeout=10, what="notify-send's end on SIGTERM")
+
+
+@on_proc
+def test_children_of_an_ignoring_process_start_with_default_signals(monkeypatch):
+    """What plain() (osascript) and the helper's own children start through, while this
+    process ignores the stop signals as a runner ending its turn does."""
+    if threading.current_thread() is not threading.main_thread():
+        pytest.skip("signal handlers are set in the main thread only")
+    probe = ["grep", "SigIgn", "/proc/self/status"]
+    assert desktop.with_default_signals(probe) == probe  # nothing ignored: as it is
+    names = ("SIGTERM", "SIGINT", "SIGHUP")
+    before = {name: signal.getsignal(getattr(signal, name)) for name in names}
+    try:
+        for name in names:
+            signal.signal(getattr(signal, name), signal.SIG_IGN)
+        assert desktop.signals_ignored() == list(names)
+        mask = lambda argv: int(  # noqa: E731
+            subprocess.run(argv, capture_output=True, text=True, check=True).stdout.split()[-1],
+            16,
+        )
+        assert mask(probe) & (1 << 14)  # the cause: an ignored SIGTERM is inherited
+        assert mask(desktop.with_default_signals(probe)) & 0b1000000000011 == 0
+        assert mask(desktop.with_default_signals(probe)) & (1 << 14) == 0
+    finally:
+        for name, handler in before.items():
+            signal.signal(getattr(signal, name), handler)
+
+
+@on_proc
+def test_a_detached_helper_ends_by_itself_when_notify_send_never_does(
+    orch: Orchestrator, fake_notify_send: FakeNotifySend, monkeypatch
+):
+    """notify-send waiting for ever (no click, never closed): the helper kills it once its
+    wait is up, and ends."""
+    monkeypatch.setenv("FAKE_ACTIONS", "1")
+    monkeypatch.setenv("DISPLAY", ":0")
+    forever = f"{100000 + os.getpid() % 1000}.{time.monotonic_ns() % 1000}"
+    monkeypatch.setenv("FAKE_SLEEP", forever)
+    short = (
+        "import sys; from orchestrator import desktop; desktop.LINUX_WAIT_SECONDS = 1.0;"
+        " sys.exit(desktop.helper(sys.argv[1:]))"
+    )
+    began = time.monotonic()
+    done = subprocess.run(
+        [sys.executable, "-c", short, "linux", str(fake_notify_send.path), BODY, "a-1"],
+        timeout=60,
+    )
+    assert done.returncode == 0 and time.monotonic() - began < 20
+    assert "--wait" in fake_notify_send.calls()[-1]
+    assert helper_pids(forever) == []  # notify-send (its sleep) was killed with the wait
 
 
 # -- Linux: bounded helpers -------------------------------------------------------------------

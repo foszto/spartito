@@ -451,6 +451,9 @@ package's PNG.
   one: once the minute has passed, one popup says `<n> more notices` and a click (or the
   text) opens the plain window; when only one was held back it is shown as itself. Each
   held notice has a `counted` line in `logs/notices.log`.
+- The helper and `notify-send` start with SIGTERM, SIGINT, SIGHUP and SIGPIPE at their
+  default, even when the process that showed the notice ignores them (a runner ending its
+  turn does), so a plain `kill` ends them.
 - Without `DBUS_SESSION_BUS_ADDRESS` (a service started without it) the helper uses
   `unix:path=$XDG_RUNTIME_DIR/bus`.
 

@@ -76,7 +76,11 @@ not take). `spartito notices` lists them.
 `osascript` gets the texts as arguments of its run handler, never inside the script source
 (they come from agents). Children are started and left alone: a reaper thread kills
 osascript after TIMEOUT_SECONDS, a helper ends itself; a missing binary or any error is
-ignored. Off with the global setting `desktop_notifications` (`spartito config
+ignored. Every child starts with SIGTERM, SIGINT, SIGHUP and SIGPIPE at their default
+(DEFAULT_SIGNALS): a runner ignores SIGTERM and SIGINT while it ends its turn, which is when
+it shows the notice, and an ignored signal is inherited across fork and exec. The helper sets
+them first thing (`helper`); osascript and the helper's own children start through
+EXEC_DEFAULT while this process ignores one (`with_default_signals`). Off with the global setting `desktop_notifications` (`spartito config
 desktop-notifications off`): then nothing is recorded either.
 """
 
@@ -86,6 +90,7 @@ import contextlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -142,6 +147,17 @@ CLAUSE_FINISHED = " — open Spartito to see it"
 LINUX_ICON = Path(__file__).parent / "web" / "static" / "icon-192.png"
 DESKTOP_ENTRY = "spartito"  # the launcher's desktop file name (gui/launcher.py)
 HELPER = "import sys; from orchestrator import desktop; sys.exit(desktop.helper(sys.argv[1:]))"
+# Signals a child of this module starts with at their default, whatever this process does
+# with them: a runner ignores SIGTERM and SIGINT while it ends its turn (runner.main), when
+# the notices are shown, and an ignored signal stays ignored across fork and exec.
+DEFAULT_SIGNALS = ("SIGTERM", "SIGINT", "SIGHUP", "SIGPIPE")
+# Runs a command with those at their default (argv: the program's path, then its arguments).
+EXEC_DEFAULT = (
+    "import os, signal, sys\n"
+    f"for name in {DEFAULT_SIGNALS!r}:\n"
+    "    signal.signal(getattr(signal, name), signal.SIG_DFL)\n"
+    "os.execv(sys.argv[1], sys.argv[1:])"
+)
 
 # Whom a notice is left to (the `route` column), in the order of the module doc; a taker may
 # claim a notice left to it or to a later one (RANK), or recorded by older code (no route).
@@ -1002,7 +1018,7 @@ def plain(body: str, decision_id: int | None) -> threading.Thread | None:
         if argv is None:
             return None
         proc = subprocess.Popen(
-            argv,
+            with_default_signals(argv),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -1015,9 +1031,37 @@ def plain(body: str, decision_id: int | None) -> threading.Thread | None:
         return None
 
 
+def signals_ignored() -> list[str]:
+    """Which of DEFAULT_SIGNALS but SIGPIPE (Python's own, and Popen's restore_signals sets
+    it back in a child) this process ignores, so that its children would too."""
+    names = [name for name in DEFAULT_SIGNALS if name != "SIGPIPE" and hasattr(signal, name)]
+    return [name for name in names if signal.getsignal(getattr(signal, name)) == signal.SIG_IGN]
+
+
+def with_default_signals(argv: list[str]) -> list[str]:
+    """`argv`, started through EXEC_DEFAULT when this process ignores a signal it would pass
+    on: the program then starts with every one of DEFAULT_SIGNALS at its default, so a
+    SIGTERM ends it (no preexec_fn, which is unsafe with threads)."""
+    if not signals_ignored():
+        return argv
+    program = shutil.which(argv[0]) or argv[0]
+    return [sys.executable, "-c", EXEC_DEFAULT, program, *argv[1:]]
+
+
+def default_signals() -> None:
+    """Set DEFAULT_SIGNALS to their default in this process (the helper, before anything
+    else), so it and what it starts end on SIGTERM or SIGINT."""
+    if threading.current_thread() is not threading.main_thread():
+        return
+    for name in DEFAULT_SIGNALS:
+        if hasattr(signal, name):
+            with contextlib.suppress(OSError, ValueError):
+                signal.signal(getattr(signal, name), signal.SIG_DFL)
+
+
 def spawn(args: list[str]) -> bool:
-    """Start the detached helper (`helper(args)` in a process of its own); False when it
-    could not be started."""
+    """Start the detached helper (`helper(args)` in a process of its own, which sets its
+    signals to their default first: `helper`); False when it could not be started."""
     try:
         subprocess.Popen(
             [sys.executable, "-c", HELPER, *args],
@@ -1110,7 +1154,9 @@ def bundle_ready() -> Path | None:
 
 def helper(args: list[str]) -> int:
     """`spawn`'s process: ["deliver", notice, open], ["spool", file, open] or ["linux",
-    notify-send, body, target]. Never raises."""
+    notify-send, body, target]. Its signals are set to their default first: it may have been
+    started by a runner that ignores SIGTERM and SIGINT (`default_signals`). Never raises."""
+    default_signals()
     global ROLE
     was, ROLE = ROLE, "helper"
     try:
@@ -1236,7 +1282,7 @@ def linux_show(send: str, body: str, target: str) -> None:
         argv = linux_argv(send, body, target, actions)
         try:
             done = subprocess.run(
-                argv,
+                with_default_signals(argv),
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
@@ -1348,7 +1394,7 @@ def burst_why() -> str:
 
 def start_app(options: list[str]) -> None:
     subprocess.Popen(
-        [sys.executable, "-m", "orchestrator", "app", *options],
+        with_default_signals([sys.executable, "-m", "orchestrator", "app", *options]),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
