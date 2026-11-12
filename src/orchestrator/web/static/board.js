@@ -986,7 +986,7 @@
       list.append(row);
     }
     if (blockers.length) section.append(list);
-    // Link one of the project's open decisions not linked yet (from the page's state).
+    // Link an open decision not linked yet (from the page's state).
     const pick = el('select', 'input bv-link-select'), add = button('', '', 'Link', () => pick.value && linkDecision(item, Number(pick.value), true));
     pick.setAttribute('aria-label', 'An open decision of the project to link');
     const row = el('div', 'bv-link-row');
@@ -994,7 +994,8 @@
     section.append(row);
     call('/api/state').then(state => {
       const linked = new Set(blockers.filter(b => b.linked).map(b => b.id));
-      const open = (state.decisions || []).filter(d => d.project === item.project && !linked.has(d.id));
+      // The project's and the orchestrator's (no project), as the server accepts both.
+      const open = (state.decisions || []).filter(d => (d.project == null || d.project === item.project) && !linked.has(d.id));
       pick.replaceChildren(...open.map(d => new Option(`#${d.id} ${cut(d.question, 70)} (${d.agent_name})`, d.id)));
       if (!open.length) { pick.append(new Option(`No other open decision in ${item.project}`, '')); pick.disabled = true; add.disabled = true; }
     }, () => { row.hidden = true; });
