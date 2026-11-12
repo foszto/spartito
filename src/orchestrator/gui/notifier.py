@@ -338,9 +338,13 @@ def post_pending(
     meanwhile (`clicked`, filled by the delegate), else None."""
     answer = wait_for(center, center.status)
     allowed = answer is not None and answer[0] in AUTHORIZED
-    if not allowed:
-        status = "no answer" if answer is None else f"authorization status {answer[0]}"
-        say(f"notifications from {config.PROJECT_NAME}: not allowed ({status}); osascript")
+    if answer is None:  # no answer in time: osascript this once, the grant stays
+        say(f"notifications from {config.PROJECT_NAME}: the system did not answer; osascript")
+    elif not allowed:
+        say(
+            f"notifications from {config.PROJECT_NAME}: not allowed (authorization status"
+            f" {answer[0]}); osascript"
+        )
         desktop.forget_grant(bundle)
     pending: list[int] = []
     finished: list[str | None] = []

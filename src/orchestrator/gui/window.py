@@ -675,6 +675,19 @@ def read_main_bundle() -> None:
         Foundation.NSBundle.mainBundle()
 
 
+def stale_copy(item: launcher.Launcher, failed: bool) -> None:
+    """Running as the launcher's app the earlier way (CFProcessPath) although it has, or had,
+    an interpreter copy: say why, once, on stderr."""
+    if not item.record.exists():
+        return
+    problem = desktop.interpreter_problem(item.path) or ("it does not start" if failed else None)
+    if problem:
+        say(
+            f"the launcher's copy of Python is stale ({problem}): run `orch app install`"
+            f" again; until then {config.PROJECT_NAME} posts no notifications itself"
+        )
+
+
 def execute(executable: str, argv: list[str], env: dict[str, str]) -> None:
     os.execve(executable, argv, env)
 
@@ -781,13 +794,11 @@ def run(
                 "__PYVENV_LAUNCHER__": sys.executable,
             }
             execute(str(copy), [str(copy), *argv[1:]], env)
-        if item.record.exists() and (problem := desktop.interpreter_problem(item.path)):
-            say(
-                f"the launcher's copy of Python is stale ({problem}): run `orch app install`"
-                f" again; until then {config.PROJECT_NAME} posts no notifications itself"
-            )
         env = {**os.environ, "CFProcessPath": str(item.executable)}
-        execute(sys.executable, argv, env)
+        execute(sys.executable, argv, env)  # says why there is no copy (stale_copy)
+    failed = os.environ.pop(launcher.COPY_FAILED_VAR, None) is not None
+    if darwin and installed and bundled and own_bundle is None:
+        stale_copy(item, failed)
     session = Session(lock, close_after, target=target, echo_location=echo_location)
     session.launcher_installed, session.bundled = installed, bundled
     session.own_bundle = own_bundle

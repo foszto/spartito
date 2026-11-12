@@ -1314,7 +1314,7 @@ def test_from_a_terminal_it_runs_on_as_the_interpreter_copy(
     assert "CFProcessPath" not in env
 
 
-def test_a_stale_copy_is_not_run_and_says_so(webview: FakeWebview, execed, working_copy):
+def test_a_stale_copy_is_not_run(webview: FakeWebview, execed, working_copy):
     item = launcher.launcher()
     launcher.install(item)
     launcher.interpreter_source().write_bytes(b"an upgraded interpreter")  # Python changed
@@ -1322,11 +1322,39 @@ def test_a_stale_copy_is_not_run_and_says_so(webview: FakeWebview, execed, worki
     assert result.exit_code == 0, result.output
     ((executable, argv, env),) = execed
     assert executable == sys.executable and env["CFProcessPath"] == str(item.executable)
-    assert result.stderr == (
-        "the launcher's copy of Python is stale (Python changed since `orch app install`"
-        f" (it copied {platform.python_version()})): run `orch app install` again; until then"
-        " Spartito posts no notifications itself\n"
-    )
+    assert result.stderr == ""  # the process it becomes says why
+
+
+STALE = (
+    "the launcher's copy of Python is stale ({}): run `orch app install` again; until then"
+    " Spartito posts no notifications itself\n"
+)
+
+
+@pytest.mark.parametrize("why", ["stale", "does not start", "current", "no copy"])
+def test_running_the_earlier_way_says_why(
+    webview: FakeWebview, execed, working_copy, monkeypatch, why
+):
+    """The bundle's script fell back to CFProcessPath (or the terminal relaunch did)."""
+    item = launcher.launcher()
+    if why == "no copy":
+        monkeypatch.setattr(launcher, "check_copy", lambda copy, env: "not checked")
+    launcher.install(item)
+    if why == "stale":
+        launcher.interpreter_source().write_bytes(b"an upgraded interpreter")
+    if why == "does not start":
+        monkeypatch.setenv(launcher.COPY_FAILED_VAR, "1")
+    monkeypatch.setenv("CFProcessPath", str(item.executable))
+    result = run_app()
+    assert result.exit_code == 0, result.output
+    assert execed == [] and launcher.COPY_FAILED_VAR not in os.environ
+    expected = {
+        "stale": STALE.format(
+            f"Python changed since `orch app install` (it copied {platform.python_version()})"
+        ),
+        "does not start": STALE.format("it does not start"),
+    }
+    assert result.stderr == expected.get(why, "")
 
 
 class FakeCenter:

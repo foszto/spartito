@@ -484,11 +484,25 @@ def test_mac_install_makes_a_signed_copy_and_runs_it_as_the_bundle(
         " run `orch app install` again after upgrading Python"
     ]
     script = files["Spartito Test.app/Contents/MacOS/Spartito Test"][0].decode()
-    assert "CFProcessPath" not in script
-    assert f"export {launcher.BUNDLE_VAR}={shlex.quote(str(written.path))}\n" in script
-    assert f"export __PYVENV_LAUNCHER__={shlex.quote(str(working_copy['env']))}\n" in script
-    assert script.endswith(
-        f'exec {shlex.quote(str(written.interpreter))} -m orchestrator app "$@"\n'
+    copy, env = shlex.quote(str(written.interpreter)), shlex.quote(str(working_copy["env"]))
+    assert script == (
+        "#!/bin/sh\n"
+        "# Spartito Test: written by `orch app install`, removed by `orch app uninstall`.\n"
+        "# The interpreter copy in this bundle makes the process this app (name, icon,\n"
+        "# identifier, notifications); __PYVENV_LAUNCHER__ gives it the environment.\n"
+        "export ORCH_HOME='/tmp/it'\"'\"'s a \"home\"'\n"
+        "export PATH=/usr/bin:/bin\n"
+        "export LANG=en_US.UTF-8\n"
+        f"if __PYVENV_LAUNCHER__={env} {copy} -I -c '' >/dev/null 2>&1; then\n"
+        f"    export ORCH_APP_BUNDLE={shlex.quote(str(written.path))}\n"
+        f"    export __PYVENV_LAUNCHER__={env}\n"
+        f'    exec {copy} -m orchestrator app "$@"\n'
+        "fi\n"
+        "# The copy does not start (a Python upgrade removed what it loads): the earlier way,\n"
+        "# without notifications of its own until `orch app install` runs again.\n"
+        "export ORCH_APP_COPY_FAILED=1\n"
+        f"export CFProcessPath={shlex.quote(str(written.executable))}\n"
+        f'exec {env} -m orchestrator app "$@"\n'
     )
     assert launcher.interpreter(written) == written.interpreter
     assert launcher.uninstall(written) == written.path
@@ -511,6 +525,34 @@ def test_the_bundle_script_runs_the_copy_with_the_environment(tmp_path: Path, wo
     assert done.stdout == (
         f"{working_copy['env']}|{written.path}|{HOME}|-m orchestrator app --notify\n"
     )
+
+
+def test_a_copy_that_no_longer_starts_falls_back_to_the_environments_python(
+    tmp_path: Path, working_copy
+):
+    """After a Python upgrade the copy cannot load its library: the script notices it by a
+    trial start and runs the environment's interpreter with CFProcessPath instead, so the
+    window still opens (without notifications of its own)."""
+    env = working_copy["env"]
+    env.unlink()
+    env.write_text(
+        '#!/bin/sh\necho "python|$CFProcessPath|${ORCH_APP_BUNDLE-unset}|'
+        '${__PYVENV_LAUNCHER__-unset}|$ORCH_APP_COPY_FAILED|$*"\n'
+    )
+    env.chmod(0o755)
+    working_copy["source"].write_text("#!/bin/sh\necho copy\n")
+    working_copy["source"].chmod(0o755)
+    written = item("mac", tmp_path / "apps", "Spartito Test",
+                   argv=(str(env), "-m", "orchestrator", "app"))  # fmt: skip
+    launcher.install(written)
+    run = ["sh", str(written.executable), "--decision", "3"]
+    assert subprocess.run(run, capture_output=True, text=True, timeout=30).stdout == "copy\n"
+    written.interpreter.write_text("#!/bin/sh\necho 'dyld: Library not loaded' >&2\nexit 134\n")
+    done = subprocess.run(run, capture_output=True, text=True, timeout=30)
+    assert done.stdout == (
+        f"python|{written.executable}|unset|unset|1|-m orchestrator app --decision 3\n"
+    )
+    assert done.stderr == ""
 
 
 def test_a_copy_that_does_not_work_is_removed_and_the_script_uses_cfprocesspath(

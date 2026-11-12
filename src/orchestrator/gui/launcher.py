@@ -57,6 +57,7 @@ LSREGISTER = Path(
 CODESIGN = "/usr/bin/codesign"
 COPY_NAME = "spartito-python"  # the interpreter copy in Contents/MacOS
 BUNDLE_VAR = "ORCH_APP_BUNDLE"  # set by the bundle's script: this process is the bundle's
+COPY_FAILED_VAR = "ORCH_APP_COPY_FAILED"  # set by the script when its copy did not start
 CHECK_TIMEOUT = 60.0  # seconds for the first run of the interpreter copy
 # Characters that make an Exec= argument need quotes (Desktop Entry spec, "The Exec key").
 EXEC_RESERVED = frozenset(" \t\n\"'\\><~|&;$*?#()`")
@@ -183,31 +184,37 @@ def written_env(item: Launcher) -> dict[str, str]:
 
 def render_script(item: Launcher, own_python: bool = False) -> str:
     """The bundle's executable: runs the interpreter copy as the environment's interpreter
-    (`own_python`), else the environment's interpreter with CFProcessPath."""
-    if own_python:
-        identity = {BUNDLE_VAR: str(item.path), "__PYVENV_LAUNCHER__": item.argv[0]}
-        argv = (str(item.interpreter), *item.argv[1:])
-        why = "# The interpreter copy in this bundle makes the process this app (name, icon,\n"
-        why += "# identifier, notifications); __PYVENV_LAUNCHER__ gives it the environment.\n"
-    else:
-        identity = {"CFProcessPath": str(item.executable)}
-        argv = item.argv
-        why = (
-            "# CFProcessPath makes the Python process count as this app (name, icon, identifier).\n"
-        )
-    exports = "".join(
-        f"export {name}={shlex.quote(value)}\n"
-        for name, value in (
-            {**written_env(item), **identity} if own_python else {**identity, **written_env(item)}
-        ).items()
-    )
-    command = " ".join(shlex.quote(arg) for arg in argv)
-    return (
+    (`own_python`) when a trial start of it works, else (no copy, or one a Python upgrade
+    broke) the environment's interpreter with CFProcessPath, so the window always opens."""
+    env = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in written_env(item).items())
+    identity = f"export CFProcessPath={shlex.quote(str(item.executable))}\n"
+    plain = f'exec {" ".join(shlex.quote(arg) for arg in item.argv)} "$@"\n'
+    head = (
         "#!/bin/sh\n"
         f"# {item.name}: written by `orch app install`, removed by `orch app uninstall`.\n"
-        f"{why}"
-        f"{exports}"
-        f'exec {command} "$@"\n'
+    )
+    if not own_python:
+        return (
+            f"{head}"
+            "# CFProcessPath makes the Python process count as this app (name, icon, identifier).\n"
+            f"{identity}{env}{plain}"
+        )
+    copy, python = shlex.quote(str(item.interpreter)), shlex.quote(item.argv[0])
+    command = " ".join(shlex.quote(arg) for arg in item.argv[1:])
+    return (
+        f"{head}"
+        "# The interpreter copy in this bundle makes the process this app (name, icon,\n"
+        "# identifier, notifications); __PYVENV_LAUNCHER__ gives it the environment.\n"
+        f"{env}"
+        f"if __PYVENV_LAUNCHER__={python} {copy} -I -c '' >/dev/null 2>&1; then\n"
+        f"    export {BUNDLE_VAR}={shlex.quote(str(item.path))}\n"
+        f"    export __PYVENV_LAUNCHER__={python}\n"
+        f'    exec {copy} {command} "$@"\n'
+        "fi\n"
+        "# The copy does not start (a Python upgrade removed what it loads): the earlier way,\n"
+        "# without notifications of its own until `orch app install` runs again.\n"
+        f"export {COPY_FAILED_VAR}=1\n"
+        f"{identity}{plain}"
     )
 
 

@@ -335,3 +335,21 @@ def test_the_framework_is_imported_only_where_it_is_used():
     )
     done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
     assert done.stdout.strip() == "False", done.stderr
+
+
+def test_no_answer_in_time_falls_back_once_and_keeps_the_grant(
+    orch: Orchestrator, fake_osascript, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(desktop, "PLATFORM", "darwin")
+    monkeypatch.setattr(notifier, "WAIT_SECONDS", 0.2)
+    desktop.record_grant("local.x.app", tmp_path / "X.app")
+    orch.store.add_notice("finished", "a-1", "a-1 finished")
+    center = FakeCenter()
+    center.status = lambda done: None  # type: ignore[method-assign]  # never answers
+    lines: list[str] = []
+    assert notifier.post_pending(orch, center, tmp_path / "X.app", [], lines.append) is None
+    assert lines == ["notifications from Spartito: the system did not answer; osascript"]
+    assert desktop.granted_bundle() == tmp_path / "X.app" and center.posted == []
+    until(lambda: calls(fake_osascript), what="the notification")
+    assert texts(fake_osascript) == ["a-1 finished — open Spartito to see it"]
+    assert orch.notices() == []

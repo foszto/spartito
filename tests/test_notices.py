@@ -230,6 +230,26 @@ def test_a_failed_claim_still_lets_osascript_show_it(
     assert bodies(fake_osascript) == ["a-1 finished"]
 
 
+def test_a_claim_the_busy_store_refused_is_made_after_showing(
+    orch: Orchestrator, fake_osascript: Path, macos: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """So the launcher's posting process (or a page) does not show it a second time."""
+    real = orch.store.claim_notice
+    tries: list[float] = []
+
+    def busy_once(notice_id: int, wait: float = 30) -> bool:
+        tries.append(wait)
+        if len(tries) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real(notice_id, wait)
+
+    monkeypatch.setattr(orch.store, "claim_notice", busy_once)
+    desktop.show(orch.store, "a-1 finished", "a-1")
+    until(lambda: calls(fake_osascript), what="the notification")
+    until(lambda: orch.notices() == [], what="the late claim")
+    assert tries == [desktop.STORE_WAIT_SECONDS, desktop.LATE_CLAIM_WAIT_SECONDS]
+
+
 def test_a_marker_from_the_future_is_not_a_fresh_page(
     orch: Orchestrator, fake_osascript: Path, macos: None
 ) -> None:

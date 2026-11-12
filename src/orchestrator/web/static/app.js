@@ -1462,7 +1462,7 @@ const SWITCHES = [
   { key: 'desktop_notifications', title: 'Notifications', label: 'Show desktop notifications',
     about: 'On this machine: when an agent asks you for a decision, and when an agent you messaged directly has finished. '
       + 'An open dashboard page allowed to show notifications shows them (a click opens the agent or the decision); '
-      + 'without one, macOS shows them.' },
+      + 'without one, Spartito shows them itself where it can (macOS with its launcher, Linux with notify-send), else a plain macOS notification.' },
 ];
 function switchBox({ key, title, label: text, about }) {
   const box = el('div', 'tier'), label = el('label', 'switch-row'), check = el('input');

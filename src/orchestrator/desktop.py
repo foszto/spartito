@@ -78,6 +78,7 @@ INTERPRETER_RECORD = ("Contents", "Resources", "interpreter.json")  # in the bun
 OPEN = "/usr/bin/open"  # tests set a fake
 NOTIFY_SEND = "notify-send"  # looked up on PATH; tests set a fake
 CLAIM_WAIT_SECONDS = 15.0  # for the launcher's app to claim the notice (3.)
+LATE_CLAIM_WAIT_SECONDS = 10.0  # a claim the busy store refused, tried once after showing
 OPEN_TIMEOUT = 10.0
 LINUX_WAIT_SECONDS = 1800.0  # a Linux helper waiting for a click ends after this
 CLAUSE_DECISION = " — open Spartito to answer"
@@ -125,12 +126,26 @@ def app_marker() -> Path:
 
 
 def app_present() -> None:
-    """The Spartito window process, allowed to notify, is there: refresh its marker."""
-    app_marker().touch()
+    """The Spartito window process, allowed to notify, is there: refresh its marker, which
+    names its pid."""
+    app_marker().write_text(f"{os.getpid()}\n")
 
 
 def app_fresh() -> bool:
-    return _fresh(app_marker())
+    """Whether the window process refreshed its marker within PAGE_FRESH_SECONDS and is still
+    running (a force-quit window leaves a fresh marker behind)."""
+    if not _fresh(app_marker()):
+        return False
+    try:
+        pid = int(app_marker().read_text().strip())
+        if pid <= 0:
+            return False
+        os.kill(pid, 0)
+    except PermissionError:
+        return True  # there, but another user's
+    except OSError, ValueError:
+        return False
+    return True
 
 
 def _fresh(marker: Path) -> bool:
@@ -165,7 +180,7 @@ def show(
             if spawn(argv):
                 return
         if PLATFORM.startswith("linux") and (send := shutil.which(NOTIFY_SEND)):
-            if notice is not None and not _claim(store, notice):
+            if notice is not None and _claim(store, notice) is False:
                 return  # a page showed it meanwhile
             spawn(["linux", send, body, target_of(agent_id, decision_id)])
             return  # no other way on Linux
@@ -178,16 +193,23 @@ def _number(value: int | None) -> str:
     return "" if value is None else str(value)
 
 
-def plain(store: Store | None, notice: int | None, body: str, decision_id: int | None) -> None:
+def plain(
+    store: Store | None, notice: int | None, body: str, decision_id: int | None
+) -> threading.Thread | None:
     """5. Claim the notice (when there is one and a store) and show it with osascript, its
-    text ending with where to look. Never raises."""
+    text ending with where to look; a claim the busy store refused is tried once more after
+    osascript ended, so no other way shows the notice again. Returns the thread that waits
+    for osascript. Never raises."""
     try:
         clause = CLAUSE_FINISHED if decision_id is None else CLAUSE_DECISION
         argv = command(config.PROJECT_NAME, one_line(body, TEXT_CHARS - len(clause)) + clause)
         if argv is None:
-            return
-        if store is not None and notice is not None and not _claim(store, notice):
-            return  # someone showed it meanwhile
+            return None
+        claimed = True
+        if store is not None and notice is not None:
+            claimed = _claim(store, notice)
+            if claimed is False:
+                return None  # someone showed it meanwhile
         proc = subprocess.Popen(
             argv,
             stdin=subprocess.DEVNULL,
@@ -195,9 +217,12 @@ def plain(store: Store | None, notice: int | None, body: str, decision_id: int |
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        threading.Thread(target=_reap, args=(proc,), daemon=True).start()
+        later = (store, notice) if claimed is None else None
+        thread = threading.Thread(target=_reap, args=(proc, later), daemon=True)
+        thread.start()
+        return thread
     except Exception:
-        pass
+        return None
 
 
 def spawn(args: list[str]) -> bool:
@@ -227,13 +252,13 @@ def _record(store: Store, body: str, agent_id: str | None, decision_id: int | No
         return None
 
 
-def _claim(store: Store, notice: int) -> bool:
-    """Claim the notice to show it; one that cannot be claimed (the store is busy) is shown
-    anyway, as before notices existed."""
+def _claim(store: Store, notice: int, wait: float = STORE_WAIT_SECONDS) -> bool | None:
+    """Claim the notice to show it: True, or False when someone else did; None when the
+    store was busy (it is shown anyway, as before notices existed)."""
     try:
-        return store.claim_notice(notice, STORE_WAIT_SECONDS)
+        return store.claim_notice(notice, wait)
     except Exception:
-        return True
+        return None
 
 
 # -- 3. the launcher's app (macOS) -----------------------------------------------------------
@@ -342,7 +367,9 @@ def bundle_helper(opener: str, bundle: Path, notice: int, body: str, decision: s
             if not unclaimed(store, notice):
                 return
             time.sleep(0.25)
-    plain(store, notice, body, int(decision) if decision else None)
+    shown = plain(store, notice, body, int(decision) if decision else None)
+    if shown is not None:
+        shown.join(TIMEOUT_SECONDS + LATE_CLAIM_WAIT_SECONDS + 1)  # this process ends next
 
 
 # -- 4. Linux --------------------------------------------------------------------------------
@@ -440,7 +467,7 @@ def start_app(options: list[str]) -> None:
     )
 
 
-def _reap(proc: subprocess.Popen[bytes]) -> None:
+def _reap(proc: subprocess.Popen[bytes], later: tuple[Store, int] | None = None) -> None:
     try:
         proc.wait(timeout=TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
@@ -448,6 +475,8 @@ def _reap(proc: subprocess.Popen[bytes]) -> None:
         proc.wait()
     except Exception:
         pass
+    if later is not None:
+        _claim(*later, wait=LATE_CLAIM_WAIT_SECONDS)
 
 
 def display_name(store: Store, agent_id: str) -> str:

@@ -182,6 +182,7 @@ def test_show_does_not_wait_for_the_helper(orch: Orchestrator, macos, tmp_path, 
 
 def test_the_osascript_text_says_where_to_look(orch: Orchestrator, fake_osascript, macos):
     desktop.show(orch.store, "Decision needed: which?", "a-1", 3)
+    until(lambda: len(calls(fake_osascript)) == 1, what="the first")  # one writer at a time
     desktop.show(orch.store, "x" * 400, "a-2")
     until(lambda: len(calls(fake_osascript)) == 2, what="both notifications")
     decision, long = sorted(texts(fake_osascript), key=len)
@@ -453,3 +454,23 @@ def parse(target: str) -> tuple[str | None, int | None]:
     if target.startswith("decision:"):
         return "a-1", int(target.removeprefix("decision:"))
     return (target or None), None
+
+
+@pytest.mark.parametrize("marker", ["dead", "junk", "zero"])
+def test_a_window_that_is_gone_counts_as_none_even_with_a_fresh_marker(
+    orch: Orchestrator, fake_osascript, macos, spawned, marker
+):
+    """A force-quit window leaves its marker fresh for a while: its pid tells."""
+    dead = subprocess.Popen([sys.executable, "-c", ""])
+    dead.wait()
+    content = {"dead": str(dead.pid), "junk": "not a pid", "zero": "0"}[marker]
+    desktop.app_marker().write_text(content)
+    assert not desktop.app_fresh()
+    desktop.show(orch.store, BODY, "a-1")
+    until(lambda: calls(fake_osascript), what="the notification")
+    assert orch.notices() == []
+
+
+def test_the_window_marker_names_a_live_process():
+    desktop.app_present()
+    assert desktop.app_marker().read_text() == f"{os.getpid()}\n" and desktop.app_fresh()
