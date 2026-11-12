@@ -361,7 +361,7 @@ def test_off_macos_one_line_and_no_gui_import(tmp_path: Path) -> None:
         "from orchestrator.gui import menubar\n"
         "menubar.this_platform = lambda: 'linux'\n"
         "try:\n"
-        "    cli.app(['menubar'], prog_name='orch')\n"
+        "    cli.app(['menubar'], prog_name=cli.config.CLI_NAME)\n"
         "except SystemExit as exc:\n"
         "    code = exc.code\n"
         f"loaded = [m for m in {GUI_MODULES!r} if m in sys.modules]\n"

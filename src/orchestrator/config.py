@@ -5,9 +5,15 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-# Display names only: ids, the role, the `orch` command and the package keep "orchestrator".
+# Display names only: ids, the role and the package keep "orchestrator".
 PROJECT_NAME = "Spartito"  # the tool itself (Italian: sheet music, the score everyone plays from)
 ORCHESTRATOR_NAME = "Maestro"  # the top-level orchestrator agent
+# The command (pyproject's [project.scripts]): every text that tells someone to run one names it
+# through this. Processes and the definitions written to disk never call it: they run
+# `<python> -m orchestrator`. The internal names keep "orch": the MCP server `orch` and its
+# `mcp__orch__` tools, the `[orch notification]` marker, ORCH_* variables, ~/.orchestrator and
+# orch.db, a project's .orch/ folder and the agents' `orch/` branches.
+CLI_NAME = "spartito"
 
 
 def home() -> Path:

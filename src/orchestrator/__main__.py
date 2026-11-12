@@ -1,6 +1,6 @@
-"""`python -m orchestrator`: the `orch` command line (what the background service runs)."""
+"""`python -m orchestrator`: the command line (what the background service runs)."""
 
-from .cli import app
+from .cli import main
 
 if __name__ == "__main__":
-    app(prog_name="orch")
+    main()
