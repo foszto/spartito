@@ -222,18 +222,28 @@ addressed to that host and rejects writes from other websites. Binding it to ano
 
 ### Desktop app
 
-The dashboard can also be used like a desktop application:
+The dashboard can also be used like a desktop application. The window and the menu-bar item
+need the extras: `uv tool install --editable '.[app,menubar]'` (also over an existing install).
 
 - **Background service.** `orch service install [--host] [--port]` runs `orch web` at login
   and restarts it when it stops; `orch service status`, `logs` and `uninstall` manage it.
 - **Installable page.** Chrome offers Install in the address bar; Safari has **File › Add to
   Dock**.
-- **Notifications with click-through.** Allowed once under **Models and effort** ›
-  **Notifications** › **Allow in this browser**, an open dashboard page shows the
-  notifications itself; a click opens the agent or decision.
-- **Own window.** `orch app [--port]` opens the dashboard in a native window (extra `app`),
-  else in a Chromium-family browser in app mode, else in the default browser. It uses the
-  running server of this home or serves the dashboard until the window is closed.
+- **Own window.** `orch app [--port] [--agent ID | --decision N]` opens the dashboard in a
+  native window (extra `app`), else in a Chromium-family browser in app mode, else in the
+  default browser. It uses the running server of this home or serves the dashboard until the
+  window is closed, on the port it used last time. With the window open, a second `orch app`
+  brings it to the front at the given agent or decision.
+- **Launcher.** `orch app install` (and `uninstall`) adds `~/Applications/Spartito.app` on
+  macOS, a desktop entry on Linux: Spartito starts like an application, with its name and
+  icon. On macOS the bundle carries a signed copy of the Python interpreter, which lets
+  Spartito post notifications itself; run `orch app install` again after a Python upgrade.
+- **Notifications with click-through.** A click opens Spartito at the agent or decision. They
+  come from an open dashboard page allowed to show them (the **Enable notifications** button
+  in its header), else on macOS from Spartito itself (launcher installed, *Spartito* allowed
+  once), else from `notify-send` on Linux. The plain macOS notification that remains
+  (`osascript`) cannot be clicked through; its text ends with `— open Spartito to answer` or
+  `— open Spartito to see it`.
 - **Menu-bar item** (macOS only). `orch menubar` (extra `menubar`) shows the running agents and
   open decisions in the menu bar; its menu opens a decision or the dashboard window.
 
@@ -241,12 +251,14 @@ The dashboard can also be used like a desktop application:
 |---|---|---|
 | background service | launchd agent | systemd user unit |
 | installable page | Chrome, Safari | Chromium-family browsers |
-| notification click-through | in an open page; else `osascript`, no click | in an open page; else none |
+| notification click-through | an open page; else Spartito itself (launcher); else `osascript`, no click | an open page; else `notify-send` (click from libnotify 0.7.10) |
+| launcher | `~/Applications/Spartito.app` | desktop entry |
 | `orch app` native window | Cocoa (WebKit), extra `app` | Qt WebEngine, extra `app` (PyQt6: GPL-3.0-only) |
 | `orch app` browser fallback | yes | yes |
 | menu-bar item | extra `menubar` | no |
 
-Details, security notes, Linux requirements and limitations:
+Details, security notes, Linux requirements and limitations (posting and clicking Spartito's
+own notifications have not been verified by a real run yet):
 [docs/desktop.md](docs/desktop.md).
 
 ### MCP tools
@@ -313,9 +325,9 @@ dashboard's **Models and effort** window.
   idle sleep only, not a closed lid or a forced sleep.
 - **Desktop notifications.** When a decision waits for you, and when an agent you messaged
   directly has finished together with all its agents. An open dashboard page allowed to show
-  notifications shows them, and a click opens the agent or decision; without one, macOS shows
-  them through `osascript` (no click action) and Linux shows none. See
-  [Desktop app](#desktop-app).
+  notifications shows them, else Spartito itself (macOS, with the launcher) or `notify-send`
+  (Linux); a click opens the agent or decision. Otherwise macOS shows a plain `osascript`
+  notification without click-through. See [Desktop app](#desktop-app).
 
 The limit on review rounds is not a setting: the packaged `lead` role prompt allows at most
 two review rounds per branch (the review and one re-review of the fixes), after which the lead
@@ -403,8 +415,10 @@ src/orchestrator/
   mcp_server.py    the MCP tools of the orchestrator and the leads
   web/             dashboard: one page and a JSON API
     serve.py         running the dashboard server, shared by `orch web` and `orch app`
-  gui/             `orch app`: the window (window.py) and finding a running server (locate.py);
-                   `orch menubar` (menubar.py)
+  gui/             `orch app`: the window (window.py), finding a running server (locate.py),
+                   the launcher (launcher.py), notifications posted by Spartito itself
+                   (notifier.py); `orch menubar` (menubar.py)
+  app_open.py      deep-link requests to the open window of `orch app`
   autostart.py     `orch service`: the launchd agent or systemd user unit
   service.py       the facade `Orchestrator`, used by the CLI, the MCP server and the dashboard
   core/            the operations behind the facade, one module per area:
@@ -418,7 +432,7 @@ src/orchestrator/
     delivery.py      waiting for agents and delivering each result once per caller
     access.py        who calls through the MCP server and in which project it may act
     reads.py         plain store reads the interfaces show
-    notices.py       notices for a dashboard page that shows desktop notifications
+    notices.py       notices for whoever shows desktop notifications (page, Spartito)
   runner.py        one turn in its own detached process
   store.py         SQLite (WAL): the only shared state
   providers/       base.py (protocol), claude.py, codex.py
@@ -435,7 +449,8 @@ src/orchestrator/
   board.py         task board
   decisions.py     decisions
   keep_awake.py    sleep inhibitor
-  desktop.py       desktop notifications: notices for a page, else `osascript` (macOS)
+  desktop.py       desktop notifications: who shows a notice (page, Spartito, notify-send,
+                   `osascript`)
   git.py           worktree handling
   config.py        paths under `~/.orchestrator/` (or `$ORCH_HOME`)
 ```
@@ -449,7 +464,7 @@ enforces both from the source, with a pinned list of today's exceptions that may
 
 - **Platforms.** Developed and used on macOS. On Linux, the sleep inhibitor
   (`systemd-inhibit`) and the cleanup of a stopped turn's processes have not been tested on a
-  real machine, and desktop notifications appear only through an open dashboard page. Windows is not supported: process
+  real machine, nor have the launcher and `notify-send` notifications. Windows is not supported: process
   handling relies on POSIX process groups and sessions.
 - **Codex.** Codex reports no cost. The context size is known only from the session's rollout
   file under `$CODEX_HOME/sessions/`. `/compact` does not work in `codex exec resume`, so a

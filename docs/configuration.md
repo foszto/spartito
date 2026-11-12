@@ -125,14 +125,18 @@ agent started by a lead does not notify you.
 Each notification is recorded as a notice in the database (kept for one day). Who shows it:
 
 - an open dashboard page (a tab, the installed app, or the browser window of `orch app`) that
-  is allowed to show notifications: **Models and effort** › **Notifications** › **Allow in
-  this browser**. It shows them as Web Notifications, and a click opens the agent or the
-  decision. While such a page has polled within the last 15 seconds, notices are left to it;
-- otherwise, on macOS, `osascript` shows a plain notification without a click action; on
-  Linux none is shown.
+  is allowed to show notifications: the **Enable notifications** button in its header, or
+  **Models and effort** › **Notifications** › **Allow in this browser**. It shows them as
+  Web Notifications, and a click opens the agent or the decision. While such a page has
+  polled within the last 15 seconds, notices are left to it;
+- otherwise Spartito itself: on macOS its window or, with no window open, its launcher's app
+  (once *Spartito* is allowed); on Linux `notify-send`. A click opens the agent or decision;
+- otherwise, on macOS, `osascript` shows a plain notification, whose text ends with where to
+  look (`— open Spartito to answer`, `— open Spartito to see it`), as its click cannot open
+  Spartito.
 
-Off, nothing is recorded and nothing is shown. Details, including hidden tabs and the native
-window of `orch app`: [desktop.md](desktop.md#notifications-with-click-through).
+Off, nothing is recorded and nothing is shown. Details, including hidden tabs, the launcher and
+Linux: [desktop.md](desktop.md#notifications-with-click-through).
 
 ### Review rounds
 

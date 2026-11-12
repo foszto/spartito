@@ -51,7 +51,8 @@ orch mcp
 ### Dashboard window, menu bar and background service
 
 ```sh
-orch app [--port PORT]
+orch app [--port PORT] [--agent ID | --decision N]
+orch app install | uninstall
 orch menubar
 orch service install [--host 127.0.0.1] [--port 8787]
 orch service status
@@ -62,7 +63,11 @@ orch service uninstall
 - `app` shows the dashboard in its own window: a native one with the extra `app`, else a
   Chromium-family browser in app mode, else the default browser. It uses the running
   `orch web` (or service) of this home, or serves the dashboard on `127.0.0.1` (a free port,
-  or `--port`) until the window is closed. One window per home.
+  or `--port`) until the window is closed. One window per home: a second `orch app` brings it
+  to the front, at `--agent` or `--decision` when given.
+- `app install` adds a launcher with Spartito's name and icon (macOS:
+  `~/Applications/Spartito.app`, which also posts notifications itself; Linux: a desktop
+  entry); `app uninstall` removes it.
 - `menubar` (macOS, extra `menubar`) shows the running agents and open decisions of this home
   in the menu bar; its menu opens a decision or `orch app`. One item per home.
 - `service install` runs `orch web --host … --port …` in the background, started at login and
