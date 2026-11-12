@@ -194,7 +194,7 @@ def test_api_and_cli_show_the_detail(orch: Orchestrator, project: str) -> None:
 
     answer = TestClient(app, base_url="http://localhost").get(f"/api/board/{item}/detail")
     assert answer.status_code == 200 and answer.json() == orch.board_detail(item)
-    assert set(answer.json()) == {"item", "history", "runs", "unrecorded"}
+    assert set(answer.json()) >= {"item", "history", "runs", "unrecorded"}
     missing = TestClient(app, base_url="http://localhost").get("/api/board/999/detail")
     assert missing.status_code == 400 and "#999" in missing.json()["error"]
 

@@ -69,6 +69,16 @@ NEXT = {
 NEXT_UNNOTIFIED = "nothing will wake you: call wait_for_agents"
 
 
+def _lean(name: str, *fields: str) -> None:
+    """Drop the title and the default of new optional parameters from a tool's listed input
+    schema, so that adding one costs every agent only `"field": {"type": …}`: not listed in
+    "required", it stays optional. Validation uses the function's model, not this."""
+    properties = server._tool_manager.get_tool(name).parameters["properties"]
+    for field in fields:
+        properties[field].pop("title", None)
+        properties[field].pop("default", None)
+
+
 @server.tool()
 def list_projects() -> list[dict[str, Any]]:
     """List registered projects with the number of agents in each (archived ones not)."""

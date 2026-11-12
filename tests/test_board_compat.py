@@ -22,6 +22,10 @@ MASTER_LISTING_CHARS = 15342
 # 355 chars as listed, of which 292 are its description and input schema.
 ORCHESTRATOR_EXTRA_CHARS = 355
 ORCHESTRATOR_TEXT_CHARS = 330
+# What every agent, a lead too, pays beyond master's listing: per tool, the new optional
+# parameters (without title and default) and their words in the description.
+LEAD_EXTRA_CHARS: dict[str, int] = {}
+LEAD_EXTRA_BUDGET = 140
 
 
 def seed(orch: Orchestrator, project: str) -> None:
@@ -92,14 +96,16 @@ def chars(tools: list[dict[str, Any]]) -> int:
     ("caller", "extra"),
     [("lead-1234", 0), ("w-5678", 0), ("orchestrator", ORCHESTRATOR_EXTRA_CHARS)],
 )
-def test_the_tool_listing_costs_a_lead_nothing_more(
+def test_the_tool_listing_costs_a_lead_only_its_budget(
     caller: str, extra: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     removed = removed_for(caller, monkeypatch)
     seen = [tool for tool in listing() if tool["name"] not in removed]
-    assert chars(seen) <= MASTER_LISTING_CHARS + extra
+    lead_extra = sum(LEAD_EXTRA_CHARS.values())
+    assert lead_extra <= LEAD_EXTRA_BUDGET
+    assert chars(seen) <= MASTER_LISTING_CHARS + lead_extra + extra
     if not extra:
-        assert chars(seen) == MASTER_LISTING_CHARS
+        assert chars(seen) == MASTER_LISTING_CHARS + lead_extra
         assert removed == list(mcp_server.ORCHESTRATOR_TOOLS)
     else:
         assert removed == []
