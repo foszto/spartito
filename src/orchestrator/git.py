@@ -25,12 +25,14 @@ def _run(
     args: tuple[str, ...],
     timeout: float | None,
     env: dict[str, str] | None = None,
+    lenient: bool = False,
 ) -> tuple[int, str, str]:
     """Run git; returns (exit code, stdout, stderr). With `timeout` it really returns within
     about timeout + KILL_GRACE: git runs in a process group of its own, which is killed on
     timeout (hooks and helpers too), and a process that still holds the pipes (stuck in
     the kernel, or moved to another session) is left behind. Raises GitError on timeout.
-    `env`: git's environment (None: this process's)."""
+    `env`: git's environment (None: this process's). `lenient`: the output read as UTF-8
+    with invalid bytes replaced (else in the locale's encoding, strictly)."""
     if timeout is not None and timeout <= 0:
         raise GitError(f"git {' '.join(args)}: no time left")
     proc = subprocess.Popen(
@@ -39,6 +41,8 @@ def _run(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8" if lenient else None,
+        errors="replace" if lenient else None,
         start_new_session=timeout is not None,
         env=env,
     )
@@ -352,3 +356,135 @@ def summary(
     if dirty:
         parts.append(f"uncommitted:\n{dirty}")
     return "\n".join(parts) or "no changes"
+
+
+# -- reading a worktree for the dashboard's code view -----------------------------------
+#
+# An agent can write its repository's configuration and attributes, so these calls must not
+# run anything that configuration names: no external diff or textconv driver, no fsmonitor
+# hook, no clean filter (every configured filter driver is blanked, see `view_env`), no lazy
+# fetch of a partial clone; no pager, no optional locks (nothing written to the index), paths
+# taken literally, a timeout on every call, and none of REPOSITORY_ENV.
+
+VIEW_FLAGS = (
+    "--no-pager",
+    "--no-optional-locks",
+    "--literal-pathspecs",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.quotePath=false",
+)
+DIFF_FLAGS = ("--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", "--no-relative")
+
+
+def _view(worktree: str | Path, env: dict[str, str], *args: str) -> str:
+    """git with VIEW_FLAGS in `worktree`, its output as text (invalid UTF-8 replaced)."""
+    code, out, err = _run(worktree, (*VIEW_FLAGS, *args), CHECK_TIMEOUT, env, lenient=True)
+    if code != 0:
+        raise GitError(f"git {args[0]}: {err.strip() or out.strip()}")
+    return out
+
+
+def view_env(worktree: str | Path) -> dict[str, str]:
+    """The environment of the code view's git calls: this process's without REPOSITORY_ENV,
+    no lazy fetch, and every filter driver the configuration names blanked (no clean
+    command or process, not required), so that reading a worktree file runs nothing."""
+    env = _own_env()
+    env["GIT_NO_LAZY_FETCH"] = "1"
+    code, out, _ = _run(
+        worktree,
+        ("--no-pager", "config", "--null", "--name-only", "--get-regexp", r"^filter\."),
+        CHECK_TIMEOUT,
+        env,
+        lenient=True,
+    )
+    if code not in (0, 1):  # 1: none configured
+        raise GitError("git config: the filter drivers could not be read")
+    drivers = {name[len("filter.") :].rpartition(".")[0] for name in out.split("\0") if name}
+    blank = [
+        (f"filter.{driver}.{key}", value)
+        for driver in sorted(drivers)
+        for key, value in (("clean", ""), ("process", ""), ("required", "false"))
+    ]
+    env["GIT_CONFIG_COUNT"] = str(len(blank))
+    for index, (key, value) in enumerate(blank):
+        env[f"GIT_CONFIG_KEY_{index}"] = key
+        env[f"GIT_CONFIG_VALUE_{index}"] = value
+    return env
+
+
+def verified_worktree(repo: str | Path, worktree: str | Path) -> Path:
+    """The resolved top level of `worktree` once it is verified to be a worktree of the
+    repository at `repo`: its top level is `worktree` itself and its common git directory
+    the repository's. Raises GitError (also when it does not exist)."""
+    if not Path(worktree).is_dir():
+        raise GitError(f"{worktree} does not exist")
+    env = _own_env()
+    args = ("rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir")
+    found = git(worktree, *args, timeout=CHECK_TIMEOUT, env=env).splitlines()
+    common = git(repo, *args[:2], args[3], timeout=CHECK_TIMEOUT, env=env)
+    top = Path(worktree).resolve()
+    if len(found) != 2 or [Path(p).resolve() for p in found] != [top, Path(common).resolve()]:
+        raise GitError(f"{worktree} is not a worktree of {repo}")
+    return top
+
+
+def merge_base(worktree: str | Path, base: str, env: dict[str, str]) -> str:
+    """The commit the worktree's HEAD shares with the local branch `base`."""
+    if not valid_branch(base):
+        raise GitError(f"not a usable branch name: {base!r}")
+    return _view(worktree, env, "merge-base", f"refs/heads/{base}", "HEAD").strip()
+
+
+def _paths(text: str) -> list[str]:
+    """The paths of a -z listing; a nested repository's `dir/` is left out."""
+    return [path for path in text.split("\0") if path and not path.endswith("/")]
+
+
+def listed_files(
+    worktree: str | Path, env: dict[str, str], path: str | None = None, untracked: bool = False
+) -> list[str]:
+    """The files git knows or would track (`untracked`: only the untracked, not ignored
+    ones), sorted, each once; with `path` only that one (or those below it)."""
+    kinds = ("-o",) if untracked else ("-c", "-o")
+    args = ("ls-files", *kinds, "--exclude-standard", "-z", "--", *([path] if path else []))
+    return sorted(set(_paths(_view(worktree, env, *args))))
+
+
+def diff_stat(
+    worktree: str | Path, commit: str, env: dict[str, str], path: str | None = None
+) -> list[tuple[str, str, int | None, int | None]]:
+    """The tracked files that differ between `commit` and the worktree (committed, staged
+    and unstaged changes together): (path, status letter, added, removed); added and
+    removed are None for a binary file. With `path` only that one."""
+    if not _COMMIT.fullmatch(commit):
+        raise GitError(f"not a commit id: {commit!r}")
+    spec = ("--", *([path] if path else []))
+    names = _view(worktree, env, "diff", *DIFF_FLAGS, "--name-status", "-z", commit, *spec)
+    fields = names.split("\0")
+    status = {fields[i + 1]: fields[i] for i in range(0, len(fields) - 1, 2)}
+    counts = _view(worktree, env, "diff", *DIFF_FLAGS, "--numstat", "-z", commit, *spec)
+    found = []
+    for entry in counts.split("\0"):
+        added, _, rest = entry.partition("\t")
+        removed, _, name = rest.partition("\t")
+        if not name:
+            continue
+        binary = added == "-"
+        found.append(
+            (
+                name,
+                status.get(name, "M")[:1],
+                None if binary else int(added),
+                None if binary else int(removed),
+            )
+        )
+    return found
+
+
+def diff_patch(worktree: str | Path, commit: str, path: str, env: dict[str, str]) -> str:
+    """The patch of one tracked file between `commit` and the worktree."""
+    if not _COMMIT.fullmatch(commit):
+        raise GitError(f"not a commit id: {commit!r}")
+    return _view(worktree, env, "diff", *DIFF_FLAGS, "--patch", commit, "--", path)
