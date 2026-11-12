@@ -272,7 +272,7 @@ def chat(
     argv = [
         "claude",
         "--mcp-config", mcp_config(),
-        "--append-system-prompt", role.prompt,
+        "--append-system-prompt", f"{role.prompt}\n\n{roles.attribution('claude')}",
         "--allowedTools", "mcp__orch", f"Bash({CLI} *)",
         *loadout_flags(chosen),
     ]  # fmt: skip

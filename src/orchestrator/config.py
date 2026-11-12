@@ -8,6 +8,7 @@ from pathlib import Path
 # Display names only: ids, the role and the package keep "orchestrator".
 PROJECT_NAME = "Spartito"  # the tool itself (Italian: sheet music, the score everyone plays from)
 ORCHESTRATOR_NAME = "Maestro"  # the top-level orchestrator agent
+PROJECT_URL = "https://github.com/foszto/spartito"  # pyproject's [project.urls] Homepage
 # The command (pyproject's [project.scripts]): every text that tells someone to run one names it
 # through this. Processes and the definitions written to disk never call it: they run
 # `<python> -m orchestrator`. The internal names keep "orch": the MCP server `orch` and its
