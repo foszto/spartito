@@ -233,16 +233,19 @@
     node.dataset.status = status;
     return node;
   }
-  // The branch's state as {text, cls, title}: commits ahead/behind its base, uncommitted work,
-  // merged, or the error of the last check (`error` keeps the values seen before it).
+  // The branch's state as {text, cls, title}: commits ahead/behind its base, uncommitted work
+  // (`dirty`: the number of changed files), merged, no such branch (`ahead` null, as
+  // `orch board --live` says), or the error of the last check (`error` keeps the values seen
+  // before it).
   function gitState(git) {
     const checked = `checked ${ago(git.checked_at)}`;
     if (git.error) return { text: 'git error', cls: 'error', title: `${git.branch}: ${git.error} · ${checked}` };
     if (git.merged) return { text: 'merged ✓', cls: 'merged', title: `${git.branch} is merged into its base · ${checked}` };
+    if (git.ahead == null) return { text: 'no branch', cls: '', title: `There is no branch ${git.branch} in the project · ${checked}` };
     const short = [], long = [];
     if (git.ahead) { short.push(`↑${git.ahead}`); long.push(`${plural(git.ahead, 'commit')} ahead of its base`); }
     if (git.behind) { short.push(`↓${git.behind}`); long.push(`${git.behind} behind`); }
-    if (git.dirty) { short.push('dirty'); long.push('uncommitted work in its worktree'); }
+    if (git.dirty) { short.push('dirty'); long.push(`${plural(+git.dirty, 'uncommitted change')} in its worktree`); }
     if (!short.length) { short.push('no new commits'); long.push('nothing ahead of its base'); }
     return { text: short.join(' · '), cls: git.dirty ? 'dirty' : '', title: `${git.branch}: ${long.join(', ')} · ${checked}` };
   }
