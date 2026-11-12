@@ -37,6 +37,7 @@ from .models import (
     RunStatus,
     Usage,
     from_row,
+    running_total,
 )
 
 SCHEMA = """
@@ -197,6 +198,24 @@ CREATE TABLE IF NOT EXISTS notices (
     claimed_at TEXT
 );
 CREATE INDEX IF NOT EXISTS runs_agent ON runs(agent_id, id);
+-- Covers what Store.usage_sums reads of every run (agent_id, cost_usd and the id), so the
+-- dashboard's total never reads the runs' text.
+CREATE INDEX IF NOT EXISTS runs_spend ON runs(agent_id, cost_usd);
+-- What the agents deleted for good (Store.delete_agent) had spent: their sums as the total
+-- counted them (models.running_total), written in the deletion's transaction, so the total
+-- (Store.usage_sums) keeps them. Older code neither writes nor reads it. project, agent_id
+-- and removed_at are kept for a later per-project view; nothing reads them yet.
+CREATE TABLE IF NOT EXISTS spent_removed (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL,
+    project TEXT,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_creation_tokens INTEGER,
+    cost_usd REAL,
+    removed_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS events_agent ON events(agent_id, id);
 -- What happened to each board item (board.py), written in the same transaction as the
 -- change; a table of its own, unknown to older code (a change it makes is a gap, shown as
@@ -588,7 +607,10 @@ class Store:
             )
 
     def delete_agent(self, agent_id: str) -> None:
-        with self._conn() as conn:
+        """Delete the agent with its runs; what they spent stays in spent_removed (one
+        transaction: all of it or nothing)."""
+        with self.transaction() as conn:
+            self._keep_spent(conn, agent_id)
             conn.execute("DELETE FROM events WHERE agent_id = ?", (agent_id,))
             for table in ("run_usage", "run_meta"):
                 conn.execute(
@@ -604,6 +626,31 @@ class Store:
             conn.execute("DELETE FROM archived_agents WHERE agent_id = ?", (agent_id,))
             conn.execute("UPDATE agents SET parent_id = NULL WHERE parent_id = ?", (agent_id,))
             conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
+
+    @staticmethod
+    def _keep_spent(conn: sqlite3.Connection, agent_id: str) -> None:
+        """Record what the agent's runs spent (models.running_total, as the total counts
+        it) in spent_removed, unless they spent nothing."""
+        runs = conn.execute(
+            "SELECT id, agent_id, cost_usd FROM runs WHERE agent_id = ?", (agent_id,)
+        ).fetchall()
+        records = conn.execute(
+            "SELECT u.* FROM run_usage u JOIN runs r ON r.id = u.run_id WHERE r.agent_id = ?",
+            (agent_id,),
+        ).fetchall()
+        spent = running_total(
+            [Run(row["id"], row["agent_id"], "", cost_usd=row["cost_usd"]) for row in runs],
+            {row["run_id"]: from_row(Usage, row) for row in records},
+        )
+        sums = [getattr(spent, key) for key in (*TOKEN_FIELDS, "cost_usd")]
+        if all(value is None for value in sums):
+            return
+        row = conn.execute("SELECT project FROM agents WHERE id = ?", (agent_id,)).fetchone()
+        conn.execute(
+            f"INSERT INTO spent_removed (agent_id, project, {', '.join(TOKEN_FIELDS)},"
+            " cost_usd, removed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (agent_id, row["project"] if row else None, *sums, now()),
+        )
 
     # -- archive ----------------------------------------------------------
 
@@ -1130,6 +1177,43 @@ class Store:
             (agent_id,),
         ).fetchall()
         return {row["run_id"]: from_row(Usage, row) for row in rows}
+
+    def usage_sums(self) -> tuple[list[Usage], list[Run], dict[int, Usage]]:
+        """What models.spent needs of every agent's runs (archived agents too), read
+        together and cheaply enough for every dashboard refresh: the sums of the usage
+        records per agent, for the agents without a run by old code; and, for those with
+        one (no record but a cost: a session total, see models.running_total), their runs
+        (only id, agent_id and cost_usd; the rest left at its default) and records, to be
+        walked in order. Reads the runs through the runs_spend index, never their text.
+        The sums also hold what the agents deleted for good had spent (spent_removed),
+        read in the same transaction, so a deletion meanwhile is counted once."""
+        keys = (*TOKEN_FIELDS, "cost_usd")
+        sums = ", ".join(f"SUM(u.{key}) AS {key}" for key in keys)
+        with self._read() as conn:
+            rows = conn.execute(
+                f"SELECT r.agent_id, {sums},"
+                " SUM(u.run_id IS NULL AND COALESCE(r.cost_usd, 0) <> 0) AS old_code"
+                " FROM runs r LEFT JOIN run_usage u ON u.run_id = r.id GROUP BY r.agent_id"
+            ).fetchall()
+            walked = [row["agent_id"] for row in rows if row["old_code"]]
+            marks = ", ".join("?" * len(walked))
+            runs = conn.execute(
+                f"SELECT id, agent_id, cost_usd FROM runs WHERE agent_id IN ({marks})", walked
+            ).fetchall()
+            records = conn.execute(
+                "SELECT u.* FROM run_usage u JOIN runs r ON r.id = u.run_id"
+                f" WHERE r.agent_id IN ({marks})",
+                walked,
+            ).fetchall()
+            removed = conn.execute(
+                f"SELECT 0 AS old_code, {', '.join(f'SUM({key}) AS {key}' for key in keys)}"
+                " FROM spent_removed"
+            ).fetchone()
+        return (
+            [from_row(Usage, row) for row in (*rows, removed) if not row["old_code"]],
+            [Run(row["id"], row["agent_id"], "", cost_usd=row["cost_usd"]) for row in runs],
+            {row["run_id"]: from_row(Usage, row) for row in records},
+        )
 
     def get_usage(self, run_id: int) -> Usage | None:
         with self._conn() as conn:

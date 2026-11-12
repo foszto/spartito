@@ -20,7 +20,7 @@ from typer.testing import CliRunner
 
 from orchestrator import cli, config, git, mcp_server, notify
 from orchestrator.core import archive as archiving
-from orchestrator.models import Agent, RunStatus
+from orchestrator.models import COMPACT, Agent, RunStatus, Usage
 from orchestrator.service import NeedsConfirmation, Orchestrator, OrchestratorError
 from orchestrator.store import SCHEMA, Store
 from orchestrator.web.app import app
@@ -177,6 +177,37 @@ def test_an_agent_that_works_cannot_be_archived(orch: Orchestrator, project: str
         orch.archive(orch.orchestrator().id)
 
 
+def spent_turn(orch: Orchestrator, agent_id: str, usage: Usage | None, cost: float, **kind) -> None:
+    """A done turn with its usage record (None: written by old code, `cost` a session total)."""
+    run = orch.store.add_run(agent_id, "work", **kind)
+    if usage is not None:
+        orch.store.set_usage(run.id, agent_id, usage)
+    orch.store.finish_run(run.id, RunStatus.DONE, result="done", cost_usd=cost)
+
+
+def test_the_spent_total_counts_every_run_whatever_the_archive_did(
+    orch: Orchestrator, project: str, client: TestClient
+) -> None:
+    kept = orch.create_agent(project, name="kept", worktree=False)
+    gone = orch.create_agent(project, name="gone", worktree=False)
+    spent_turn(orch, kept.id, Usage(100, 10, 1000, 50, cost_usd=0.25), 0.25)
+    spent_turn(orch, gone.id, Usage(200, 20, 2000, 100, cost_usd=0.5), 0.5)
+    spent_turn(orch, gone.id, Usage(10, 1, 0, 0, cost_usd=0.125), 0.125, kind=COMPACT)
+    spent_turn(orch, gone.id, None, 1.0)  # old code: the session's 0.625 plus 0.375 of its own
+    expected = {
+        "cost_usd": 1.25,
+        "tokens": {"in": 310, "out": 31, "cache_read": 3000, "cache_write": 150},
+    }
+
+    totals = []
+    for step in (lambda: None, lambda: orch.archive(gone.id), lambda: orch.restore(gone.id)):
+        step()
+        state = client.get("/api/state").json()
+        totals.append((orch.total_spent(), state["spent"], len(state["projects"][0]["agents"])))
+
+    assert totals == [(expected, expected, 2), (expected, expected, 1), (expected, expected, 2)]
+
+
 # -- deleting -------------------------------------------------------------------
 
 
@@ -204,6 +235,88 @@ def test_only_an_archived_agent_can_be_deleted(
     assert removed.json() == {"removed": by_web.id}
     assert orch.store.list_agents(project) == [] and orch.store.archived() == {}
     assert not Path(by_service.cwd).exists() and not git.branch_exists(repo, by_service.branch)
+
+
+def mixed_history(orch: Orchestrator, agent_id: str) -> None:
+    """Usage records, an old-code session total without one, a compaction, a failed run."""
+    spent_turn(orch, agent_id, Usage(200, 20, 2000, 100, cost_usd=0.5), 0.5)
+    spent_turn(orch, agent_id, None, 0.75)  # old code: the session's 0.5 plus 0.25
+    spent_turn(orch, agent_id, Usage(10, 1, 0, 0, cost_usd=0.125), 0.125, kind=COMPACT)
+    failed = orch.store.add_run(agent_id, "work")
+    orch.store.finish_run(failed.id, RunStatus.FAILED, error="crashed")
+
+
+def spent_rows(orch: Orchestrator) -> list[tuple]:
+    with orch.store.connection() as conn:
+        rows = conn.execute("SELECT agent_id, project, cost_usd FROM spent_removed ORDER BY id")
+        return [tuple(row) for row in rows]
+
+
+@pytest.mark.parametrize("path", ["cli", "api"])
+def test_an_agent_deleted_for_good_keeps_its_spend_in_the_total(
+    orch: Orchestrator, project: str, client: TestClient, path: str
+) -> None:
+    kept = orch.create_agent(project, name="kept", worktree=False)
+    gone = orch.create_agent(project, name="gone", worktree=False)
+    spent_turn(orch, kept.id, Usage(100, 10, 1000, 50, cost_usd=0.25), 0.25)
+    mixed_history(orch, gone.id)
+    expected = {
+        "cost_usd": 1.125,
+        "tokens": {"in": 310, "out": 31, "cache_read": 3000, "cache_write": 150},
+    }
+    assert orch.total_spent() == expected
+
+    orch.archive(gone.id)
+    if path == "cli":
+        assert CliRunner().invoke(cli.app, ["rm", gone.id]).exit_code == 0
+    else:
+        removed = client.post(f"/api/agents/{gone.id}/remove", json={}, headers=ORIGIN)
+        assert removed.json() == {"removed": gone.id}
+
+    assert orch.store.get_agent(gone.id) is None and orch.store.runs_of(gone.id) == []
+    assert orch.total_spent() == expected
+    assert client.get("/api/state").json()["spent"] == expected
+    assert spent_rows(orch) == [(gone.id, project, 0.875)]
+
+
+def test_deleting_agents_and_their_project_leaves_the_total_as_it_was(
+    orch: Orchestrator, project: str, client: TestClient
+) -> None:
+    first = orch.create_agent(project, name="first", worktree=False)
+    second = orch.create_agent(project, name="second", worktree=False)
+    idle = orch.create_agent(project, name="idle", worktree=False)  # spent nothing
+    mixed_history(orch, first.id)
+    spent_turn(orch, second.id, Usage(1, 2, 3, 4, cost_usd=0.0625), 0.0625)
+    before = orch.total_spent()
+
+    for agent in (first, second, idle):
+        orch.archive(agent.id)
+        orch.remove(agent.id)
+    removed = client.post(f"/api/projects/{project}/remove", json={}, headers=ORIGIN)
+
+    assert removed.status_code == 200 and orch.store.get_project(project) is None
+    assert before["cost_usd"] == 0.9375
+    assert orch.total_spent() == before == client.get("/api/state").json()["spent"]
+    assert spent_rows(orch) == [(first.id, project, 0.875), (second.id, project, 0.0625)]
+
+
+def test_a_deletion_that_fails_halfway_keeps_the_agent_and_records_nothing(
+    orch: Orchestrator, project: str
+) -> None:
+    gone = orch.create_agent(project, name="gone", worktree=False)
+    mixed_history(orch, gone.id)
+    orch.archive(gone.id)
+    before = orch.total_spent()
+    with orch.store.connection() as conn:  # the last statement of the deletion fails
+        conn.execute(
+            "CREATE TRIGGER refuse BEFORE DELETE ON agents BEGIN SELECT RAISE(ABORT, 'no'); END"
+        )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        orch.store.delete_agent(gone.id)
+
+    assert len(orch.store.runs_of(gone.id)) == 4 and orch.store.get_agent(gone.id)
+    assert spent_rows(orch) == [] and orch.total_spent() == before
 
 
 def test_mcp_has_archive_agent_instead_of_remove_agent() -> None:

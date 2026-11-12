@@ -156,6 +156,8 @@ def state(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
         "tiers": list(TIERS),
         # Ids only: the archive view loads the agents themselves (/api/archive).
         "archived": orch.archived_ids(),
+        # Tokens and cost of every run ever recorded, archived agents' too: the summary.
+        "spent": orch.total_spent(),
         "archive_after_default": ARCHIVE_AFTER_DEFAULT,
         "archive_after_key": ARCHIVE_AFTER,
         "compact_at_default": COMPACT_AT_DEFAULT,

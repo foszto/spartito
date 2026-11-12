@@ -305,6 +305,7 @@ class Orchestrator:
     get_run = reads.get_run
     run_kind = reads.run_kind
     get_usage = reads.get_usage
+    total_spent = reads.total_spent
     get_event = reads.get_event
     events = reads.events
 

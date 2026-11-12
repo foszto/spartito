@@ -3,9 +3,9 @@ go through the facade instead of the store."""
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
 
-from ..models import Agent, Event, Project, Run, RunStatus, Usage
+from ..models import Agent, Event, Project, Run, RunStatus, Usage, spent
 from ..store import Store, pid_alive
 
 
@@ -71,6 +71,17 @@ def run_kind(orch: Facade, run_id: int) -> str:
 
 def get_usage(orch: Facade, run_id: int) -> Usage | None:
     return orch.store.get_usage(run_id)
+
+
+def total_spent(orch: Facade) -> dict[str, Any]:
+    """Tokens and cost of every run recorded so far (models.spent: the agents with a run by
+    old code walked in order, the others summed by the store): archiving or restoring an
+    agent leaves them as they are. `tokens` as in the agent view (null: none reported)."""
+    sums, runs, usage = orch.store.usage_sums()
+    total = spent(runs, usage)
+    for agent_sum in sums:
+        total = total + agent_sum
+    return {"cost_usd": total.cost or 0, "tokens": total.tokens()}
 
 
 def get_event(orch: Facade, event_id: int) -> Event | None:
