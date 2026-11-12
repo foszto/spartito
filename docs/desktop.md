@@ -158,16 +158,20 @@ first, so it is shown once:
    browser window of `orch app`): a Web Notification titled *Spartito*. A click brings the
    page to the front and opens the agent, or the **Decisions** window on that decision with
    its answer box focused; a decision that is no longer open selects the agent that asked it.
-2. **The Spartito window** (macOS, `orch app` started through the launcher, allowed to
-   notify): it posts the notification itself. A click brings the window to the front at the
-   agent or decision.
+2. **The Spartito window** (macOS, the native window of `orch app`, while it is open): it
+   takes every notice, whether or not it may post notifications. Allowed (started through the
+   launcher, permission given), it posts the notification itself; a click brings the window
+   to the front at the agent or decision. Otherwise (not asked yet, not allowed, refused by
+   macOS, not available) it shows the notice inside the window: see
+   [Notices inside the window](#notices-inside-the-window).
 3. **The Spartito app, started to post** (macOS, no window open, launcher installed and
    allowed): the background process starts the app hidden, without a window or Dock icon; it
    posts the pending notices and exits. A click starts Spartito and opens the window at the
    agent or decision.
 4. **`notify-send`** (Linux): see [Linux](#linux).
-5. **`osascript`** (macOS, otherwise). Its click opens Script Editor and cannot be changed, so
-   the text ends with ` — open Spartito to answer` (a decision) or ` — open Spartito to see it`.
+5. **`osascript`** (macOS, otherwise: no permitted page, no Spartito window open, and no
+   launcher allowed to notify). Its click opens Script Editor and cannot be changed, so the
+   text ends with ` — open Spartito to answer` (a decision) or ` — open Spartito to see it`.
 
 A path that cannot be started falls through to the next one in the same call: when the app
 of step 3 cannot be started, or has not taken the notice within 15 seconds, `osascript` shows
@@ -184,20 +188,45 @@ button, the only control sat inside the settings dialog, so a fresh browser prof
 asked and the page never showed a notification. The permission belongs to the address, port
 included; `orch app` therefore reuses the port of its last own server (`run/app-port`).
 
-**Allowing Spartito** (macOS). The first `orch app` started through the launcher asks once
-for permission for *Spartito*; allow it in the prompt or later under **System Settings ›
-Notifications › Spartito**. The window process asks at each start (the system prompts only
-once) and, when allowed, writes `run/app-notify.json` (the bundle's identifier and path):
-from then on step 3 is used when no window is open. A posting app that finds the permission
-withdrawn removes the file and leaves the notices to `osascript`; one that gets no answer from
-the system in time leaves them to `osascript` this once and keeps the file. Spartito posts
-notifications itself only through the interpreter copy of the launcher (see
+**Allowing Spartito** (macOS). The window of `orch app` started through the launcher asks
+for permission for *Spartito* once it is shown, the first time it runs; allow it in the
+prompt or later under **System Settings › Notifications › Spartito**. It asks again at each
+start (the system prompts only once) and reads the authorization status every 2 seconds, so
+a permission given or withdrawn later in System Settings, or an answer to the request that
+never arrives (see [Why the window asks only once it is shown](#why-the-window-asks-only-once-it-is-shown)),
+is seen within seconds. When allowed it writes `run/app-notify.json` (the bundle's identifier
+and path): from then on step 3 is used when no window is open. A posting app that finds the
+permission withdrawn removes the file and leaves the notices to `osascript`; one that gets no
+answer from the system in time leaves them to `osascript` this once and keeps the file.
+Spartito posts notifications itself only through the interpreter copy of the launcher (see
 [Launcher](#launcher-name-and-icon)): the notification centre refuses a process that only
 names the bundle through `CFProcessPath`.
 
+**Where the window's notification state shows.** One line, each time it changes, in three
+places: under the agent list of the window (a quiet line), on the stderr of `orch app` when
+it runs in a terminal, and in `$ORCH_HOME/logs/app.log` (every line the window process says,
+with time and pid; emptied at the start of a window when above 1 MB), which is where to look
+when Spartito was started from the Dock or Finder. The lines (`<app>` is the launcher's name):
+
+```
+notifications from <app>: asked macOS for permission; until allowed, notices are shown in this window
+notifications from <app>: asked macOS for permission — no answer yet (look for its prompt in Notification Centre); until allowed, notices are shown in this window
+notifications from <app>: no answer to the request; the system's authorization status is <n>
+notifications: <app> shows them; a click opens it there
+notifications from <app>: not allowed (System Settings › Notifications › <app>); notices are shown in this window
+notifications from <app>: macOS refused the request (<the system's error>); notices are shown in this window
+notifications from <app>: not available (<why>); notices are shown in this window
+```
+
+`<why>` is `no launcher: run `orch app install``, `not started as the launcher's app`,
+`started without the launcher's copy of Python: run `orch app install` again`,
+`UserNotifications is not installed (install the extra orchestrator[app])`, or the error of
+the notification centre. The second line comes once, 30 seconds after asking without an
+answer; the third when the status read, not the request's answer, told the decision.
+
 **How the page and the window are found.** A permitted page polls the server every 4 seconds
-and touches `run/page-notifier`; the allowed window process touches `run/app-notifier` every
-2 seconds and writes its pid into it. Each counts as present for 15 seconds after its last
+and touches `run/page-notifier`; the native window's process (macOS) touches
+`run/app-notifier` every 2 seconds, allowed to post or not, and writes its pid into it. Each counts as present for 15 seconds after its last
 touch, the window only while its process runs. Some cases in detail:
 
 - **Hidden tabs.** The poll runs from a small worker, so the throttling of hidden tabs does
@@ -206,8 +235,8 @@ touch, the window only while its process runs. Some cases in detail:
 - **Reloads.** A reloaded page carries on from the last notice it handled, so a notice
   recorded during the reload is still shown. A notice older than 10 minutes when a page first
   sees it is skipped; so does the posting app of step 3.
-- **The native window** shows no Web Notifications (its WebKit has none); with the launcher it
-  posts them itself (step 2).
+- **The native window** shows no Web Notifications (its WebKit has none); it takes the notices
+  itself (step 2) and touches `run/app-notifier` whether or not it may post them.
 - **Off.** With `orch config desktop-notifications off`, nothing is recorded and nothing is
   shown.
 
@@ -220,6 +249,48 @@ that passes the deep-link check; it then becomes a deep-link request to the wind
 **`orch app --notify`** is internal: the hidden start of step 3 (`open -n -g -j -a <bundle>
 --args --notify`). It claims and posts the pending notices, waits up to 5 seconds for the
 system, and exits; a click that reaches it in that time opens the window at the target.
+
+### Notices inside the window
+
+While the native window of `orch app` is open on macOS and may not post notifications, it
+shows each new notice itself, so `osascript` (whose click opens Script Editor) stays quiet:
+
+- a **banner** at the top right of the page: *Spartito* and the text. A click on it goes to the
+  decision (the **Decisions** window on it) or the agent and closes the banner; **×** closes
+  it. The newest three are kept; an older one drops out. A closed banner stays closed after a
+  reload of the page;
+- the **Dock**: when Spartito is not the active application, its icon bounces once and gets a
+  badge with the number of notices shown since; the badge goes when the window becomes
+  active (clicking it, the Dock icon, or a banner).
+
+The window process takes each notice once, as a page does, so nothing else shows it again. A
+notice it is allowed to post but the system refuses is shown inside the window too.
+
+### Why the window asks only once it is shown
+
+Up to this change the window asked for permission at start, before its GUI loop ran, and took
+notices only once the answer to that request said "allowed". On an installed launcher this
+was seen to fail without a word: no prompt was noticed, no grant was recorded, and every
+notice went to `osascript`, whose click opens Script Editor. Measured with test launchers in
+`~/Applications` (the unsigned bundle with its ad hoc signed interpreter copy, started by
+`open` as the Dock does):
+
+- **The identity is accepted.** In that process the notification centre is there, the
+  authorization status reads 0 (not determined), and a provisional request, which never
+  prompts, was granted at once (status 0 → 3). With a decided status the old window code
+  recorded the grant at once. So neither the unsigned bundle (`codesign -dv` on it: "not
+  signed at all"), nor the interpreter's signature that does not bind `Info.plist`, nor
+  `LSUIElement` keeps the system from accepting the app; `orch app install` therefore still
+  signs only the interpreter copy.
+- **The answer to a request made during the launch got lost.** The old window code asked
+  during the launch; the system's status turned to allowed within 8 seconds, but the
+  request's answer never reached the process in the 35 seconds it ran: it said nothing and
+  wrote no grant. On the installation where the defect was seen, the bundle's status was still
+  0 more than ten minutes after the window had opened (in front), and no prompt was noticed.
+
+The window now takes the notices from its start whatever the answer, asks only once it is
+shown (after the launch, in front), reads the status on each poll instead of relying on the
+request's answer, and says each state where it can be read.
 
 ### Linux
 

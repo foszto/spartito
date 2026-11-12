@@ -1,13 +1,19 @@
 """Notifications posted by Spartito itself on macOS, through the UserNotifications framework
 (pyobjc-framework-UserNotifications, in the extra `app`; imported here and nowhere else), by a
 process that is the launcher's app (launcher.py: its interpreter copy, signed with the bundle's
-identifier; the notification centre accepts no other):
+identifier; the notification centre accepts no other), and the notices the native window shows
+inside itself when it may not post them:
 
-- the window process (`orch app`, window.py): asks for permission once at start and sets the
-  centre's delegate before the GUI loop runs. Once allowed, it records the grant
-  (desktop.record_grant), keeps its marker fresh (desktop.app_present, so osascript and the
-  posting process leave new notices to it) and every POLL_SECONDS claims the new notices
-  (through the facade, once each, as a page does) and posts them;
+- the window process (`orch app`, window.py): sets the centre's delegate before the GUI loop
+  runs and from then on, every POLL_SECONDS, keeps its marker fresh (desktop.app_present, so
+  osascript and the posting process leave new notices to it) and claims the new notices
+  (through the facade, once each, as a page does). It asks for permission once the window is
+  shown (`ask`; asked earlier, during the launch, the answer was seen to get lost) and reads
+  the authorization status on each poll, so a lost answer, or a change in System Settings, is
+  seen within a poll. Allowed, it records the grant (desktop.record_grant) and posts the
+  notices; otherwise (not asked yet, not allowed, refused by the system, not available) it
+  shows them inside the window (`InWindow`: a banner in the page and the Dock's attention).
+  Each change of that state is said (window.say: stderr and the app log) and shown in the page;
 - the posting process (`orch app --notify`, started hidden by desktop.bundle_helper when no
   window runs): claims and posts the pending notices younger than MAX_AGE_SECONDS, then exits;
   when it is not allowed (any more), it forgets the grant and shows them with osascript.
@@ -25,6 +31,7 @@ from __future__ import annotations
 import contextlib
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,6 +46,18 @@ LINGER_SECONDS = 1.0  # the posting process stays this long after posting, for a
 AUTHORIZED = frozenset({2, 3, 4})  # UNAuthorizationStatus: authorized, provisional, ephemeral
 DEFAULT_ACTION = "com.apple.UNNotificationDefaultActionIdentifier"
 TEXT_CHARS = 240
+IN_WINDOW = 3  # the newest notices the window shows inside itself; older ones drop out
+NO_ANSWER_SECONDS = 30.0  # asked this long ago without an answer: said once
+SETTINGS = "System Settings › Notifications"
+# The states of the window process's notifications (WindowNotifier.state).
+WAITING, ASKING, ALLOWED, DENIED, REFUSED, UNAVAILABLE = (
+    "waiting",  # not asked yet: the window is not shown yet
+    "asking",  # asked, no answer yet
+    "allowed",
+    "denied",  # not allowed (the prompt's Don't Allow, or switched off)
+    "refused",  # the system answered the request with an error
+    "unavailable",  # this process cannot post notifications (detail: why)
+)
 
 
 def available() -> bool:
@@ -211,12 +230,17 @@ def text_of(notice: dict[str, Any]) -> str:
     return desktop.one_line(str(notice["text"]), TEXT_CHARS)
 
 
-def post(center: Center, notice: dict[str, Any], done: Callable[[str | None], None]) -> None:
-    """Post a claimed notice; a refused one is shown with osascript instead."""
+def post(
+    center: Center,
+    notice: dict[str, Any],
+    done: Callable[[str | None], None],
+    fallback: Callable[[dict[str, Any]], None] | None = None,
+) -> None:
+    """Post a claimed notice; a refused one is shown by `fallback` (default: osascript)."""
 
     def posted(error: str | None) -> None:
         if error:
-            desktop.plain(None, None, str(notice["text"]), notice.get("decision_id"))
+            (fallback or osascript)(notice)
         done(error)
 
     try:
@@ -231,6 +255,10 @@ def post(center: Center, notice: dict[str, Any], done: Callable[[str | None], No
         posted(str(exc) or type(exc).__name__)
 
 
+def osascript(notice: dict[str, Any]) -> None:
+    desktop.plain(None, None, str(notice["text"]), notice.get("decision_id"))
+
+
 def wait_for(center: Center, ask: Callable[[Callable], None], seconds: float = WAIT_SECONDS):
     """Ask the centre (`ask(callback)`) and wait for its answer: the callback's arguments, or
     None when none came in time."""
@@ -242,42 +270,185 @@ def wait_for(center: Center, ask: Callable[[Callable], None], seconds: float = W
     return answer[0] if answer else None
 
 
+class InWindow(Protocol):
+    """Where the window process shows what it does not post (window.WindowView, or a fake)."""
+
+    def show(self, view: dict[str, Any]) -> bool: ...  # True: the page has this view now
+    def attention(self) -> None: ...  # a new notice inside the window: draw the eye to it
+
+
+class Nowhere:
+    """No window to show anything in."""
+
+    def show(self, view: dict[str, Any]) -> bool:
+        return True
+
+    def attention(self) -> None:
+        pass
+
+
+def in_window_item(notice: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": notice["id"],
+        "kind": notice.get("kind"),
+        "text": text_of(notice),
+        "target": desktop.target_of(notice["agent_id"], notice.get("decision_id")),
+    }
+
+
 class WindowNotifier:
-    """The window process's part: permission, marker, polling, clicks."""
+    """The window process's part: marker, polling, permission and its state, clicks, and the
+    notices shown inside the window. `why_not`: this process cannot post at all (the state is
+    then UNAVAILABLE with that reason; `center` is not used)."""
 
     def __init__(
         self,
         orch: Facade,
         center: Center,
         identifier: str,
-        bundle: Path,
+        bundle: Path | None,
         say: Callable[[str], None],
+        inside: InWindow | None = None,
+        why_not: str | None = None,
     ) -> None:
         self.orch, self.center, self.say = orch, center, say
         self.identifier, self.bundle = identifier, bundle
+        self.inside: InWindow = inside or Nowhere()
+        self.app_name = bundle.stem if bundle is not None else config.PROJECT_NAME
         self.cursor = orch.notice_cursor()  # a window opened now replays nothing older
         self.stop = threading.Event()
         self.thread: threading.Thread | None = None
+        self.lock = threading.RLock()
+        self.state, self.detail = (UNAVAILABLE, why_not) if why_not else (WAITING, "")
+        self.asked_at: float | None = None
+        self.no_answer_said = False
+        self.checking = False  # a status request is out
+        self.shown: deque[dict[str, Any]] = deque(maxlen=IN_WINDOW)
+        self.version = 0  # of what the page should show (state line and notices)
+        self.dirty = True  # the page does not show the current version (yet)
+
+    # -- state -------------------------------------------------------------------------
+
+    def line(self) -> str:
+        """The state in one line, as said and as the page shows it."""
+        name = self.app_name
+        inside = "notices are shown in this window"
+        if self.state == ALLOWED:
+            return f"notifications: {name} shows them; a click opens it there"
+        if self.state == WAITING:
+            return f"notifications from {name}: not asked yet; {inside}"
+        if self.state == ASKING:
+            waited = " — no answer yet (look for its prompt in Notification Centre)"
+            return (
+                f"notifications from {name}: asked macOS for permission"
+                f"{waited if self.no_answer_said else ''}; until allowed, {inside}"
+            )
+        if self.state == DENIED:
+            return f"notifications from {name}: not allowed ({SETTINGS} › {name}); {inside}"
+        if self.state == REFUSED:
+            return f"notifications from {name}: macOS refused the request ({self.detail}); {inside}"
+        return f"notifications from {name}: not available ({self.detail}); {inside}"
+
+    def view(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "state": self.state,
+            "line": self.line(),
+            "notices": list(self.shown),
+        }
+
+    def become(self, state: str, detail: str = "") -> None:
+        """Move to `state`; a change is said, recorded (grant file) and shown in the page."""
+        with self.lock:
+            if self.state == UNAVAILABLE or (state, detail) == (self.state, self.detail):
+                return
+            was = self.state
+            self.state, self.detail = state, detail
+            self.changed()
+        if state == ALLOWED and self.bundle is not None:
+            desktop.record_grant(self.identifier, self.bundle)
+        elif was == ALLOWED or state in (DENIED, REFUSED):
+            desktop.forget_grant(self.bundle)
+        self.say(self.line())
+
+    def changed(self) -> None:
+        with self.lock:
+            self.version += 1
+            self.dirty = True
+
+    @property
+    def allowed(self) -> bool:
+        return self.state == ALLOWED
+
+    # -- the window's life -------------------------------------------------------------
 
     def start(self) -> None:
-        """Ask for permission (the system prompts once); polling starts once allowed."""
-        self.center.authorize(self.authorized)
+        """Take the notices from now on (posted once allowed, else shown in the window)."""
+        if self.thread is None:
+            self.thread = threading.Thread(target=self.loop, name="orch-app-notices", daemon=True)
+            self.thread.start()
+
+    def ask(self) -> None:
+        """Ask for permission (the system prompts once per app); called once the window is
+        shown. Unavailable, it says why instead."""
+        with self.lock:
+            if self.state == UNAVAILABLE and self.asked_at is None:
+                self.asked_at = time.monotonic()
+                self.say(self.line())
+            if self.state != WAITING or self.stop.is_set():
+                return
+            self.asked_at = time.monotonic()
+        self.become(ASKING)
+        try:
+            self.center.authorize(self.authorized)
+        except Exception as exc:
+            self.authorized(False, str(exc) or type(exc).__name__)
 
     def authorized(self, granted: bool, error: str | None) -> None:
+        """The answer to `ask`."""
         if self.stop.is_set():
             return
-        if not granted:
-            desktop.forget_grant(self.bundle)
-            why = f"the system refused: {error}" if error else "not allowed"
-            self.say(
-                f"notifications from {config.PROJECT_NAME}: {why} (System Settings ›"
-                " Notifications); without a dashboard page osascript shows them"
-            )
+        if granted:
+            self.become(ALLOWED)
+        elif error:
+            self.become(REFUSED, error)
+        else:
+            self.become(DENIED)
+
+    def status(self, code: int) -> None:
+        """An authorization status read on a poll: allowed or not, whatever the request's
+        answer was (or whether one came)."""
+        self.checking = False
+        if self.stop.is_set() or self.state in (WAITING, UNAVAILABLE):
             return
-        desktop.record_grant(self.identifier, self.bundle)
-        self.say(f"notifications: {config.PROJECT_NAME} shows them; a click opens it there")
-        self.thread = threading.Thread(target=self.loop, name="orch-app-notices", daemon=True)
-        self.thread.start()
+        if self.state == ASKING and code in (1, *AUTHORIZED):
+            self.say(
+                f"notifications from {self.app_name}: no answer to the request; the system's"
+                f" authorization status is {code}"
+            )
+        if code in AUTHORIZED:
+            self.become(ALLOWED)
+        elif code == 1 and self.state != REFUSED:
+            self.become(DENIED)
+        # 0 (not determined): no answer yet, or a status read that crossed the answer
+
+    def check(self) -> None:
+        if self.state in (WAITING, UNAVAILABLE) or self.checking:
+            return
+        if (
+            self.state == ASKING
+            and not self.no_answer_said
+            and self.asked_at is not None
+            and time.monotonic() - self.asked_at > NO_ANSWER_SECONDS
+        ):
+            self.no_answer_said = True
+            self.changed()
+            self.say(self.line())
+        self.checking = True
+        try:
+            self.center.status(self.status)
+        except Exception:
+            self.checking = False
 
     def loop(self) -> None:
         while not self.stop.is_set():
@@ -287,10 +458,47 @@ class WindowNotifier:
 
     def tick(self) -> None:
         desktop.app_present()
+        self.check()
         for notice in self.orch.notices(self.cursor):
             if self.orch.claim_notice(notice["id"]):
-                post(self.center, notice, lambda error: None)
+                self.deliver(notice)
             self.cursor = notice["id"]
+        self.push()
+
+    def deliver(self, notice: dict[str, Any]) -> None:
+        """A claimed notice: posted when allowed, else (or when the post fails) shown in the
+        window."""
+        if self.allowed:
+            post(self.center, notice, lambda error: None, self.show_inside)
+        else:
+            self.show_inside(notice)
+
+    def show_inside(self, notice: dict[str, Any]) -> None:
+        with self.lock:
+            self.shown.append(in_window_item(notice))
+            self.changed()
+        with contextlib.suppress(Exception):
+            self.inside.attention()
+        self.push()
+
+    def push(self) -> None:
+        """Hand the page the current view when it does not have it (a reload: `repush`)."""
+        with self.lock:
+            if not self.dirty:
+                return
+            view = self.view()
+        try:
+            taken = self.inside.show(view)
+        except Exception:
+            taken = False
+        with self.lock:
+            if taken and view["version"] == self.version:
+                self.dirty = False
+
+    def repush(self) -> None:
+        """The page was (re)loaded: it shows nothing of this yet."""
+        with self.lock:
+            self.dirty = True
 
     def close(self) -> None:
         self.stop.set()
@@ -355,7 +563,7 @@ def post_pending(
             pending.append(notice["id"])
             post(center, notice, finished.append)
         else:
-            desktop.plain(None, None, str(notice["text"]), notice.get("decision_id"))
+            osascript(notice)
     deadline = time.monotonic() + WAIT_SECONDS
     while len(finished) < len(pending) and time.monotonic() < deadline:
         center.spin(0.05)

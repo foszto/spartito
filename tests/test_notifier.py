@@ -45,6 +45,28 @@ class FakeCenter:
         time.sleep(min(seconds, 0.01))
 
 
+class FakeInside:
+    """The window's inside (notifier.InWindow): notes what the page was handed and each call
+    for attention; `takes` False stands for a page that is not loaded yet."""
+
+    def __init__(self) -> None:
+        self.views: list[dict] = []
+        self.attention_calls = 0
+        self.takes = True
+
+    def show(self, view: dict) -> bool:
+        if self.takes:
+            self.views.append(view)
+        return self.takes
+
+    def attention(self) -> None:
+        self.attention_calls += 1
+
+    @property
+    def last(self) -> dict:
+        return self.views[-1]
+
+
 @pytest.fixture
 def lines() -> list[str]:
     return []
@@ -52,12 +74,21 @@ def lines() -> list[str]:
 
 @pytest.fixture
 def center() -> FakeCenter:
-    return FakeCenter()
+    return FakeCenter(status=0)
 
 
 @pytest.fixture
-def window_notifier(orch: Orchestrator, center: FakeCenter, lines: list[str], tmp_path: Path):
-    made = notifier.WindowNotifier(orch, center, "local.x.app", tmp_path / "X.app", lines.append)
+def inside() -> FakeInside:
+    return FakeInside()
+
+
+@pytest.fixture
+def window_notifier(
+    orch: Orchestrator, center: FakeCenter, lines: list[str], inside: FakeInside, tmp_path: Path
+):
+    made = notifier.WindowNotifier(
+        orch, center, "local.x.app", tmp_path / "X.app", lines.append, inside
+    )
     yield made
     made.close()
 
@@ -66,31 +97,59 @@ def texts(log: Path) -> list[str]:
     return [call[-1] for call in calls(log)]
 
 
+INSIDE = "notices are shown in this window"
+ALLOWED = "notifications: X shows them; a click opens it there"
+
+
 # -- the window process ----------------------------------------------------------------------
 
 
-def test_the_window_asks_once_and_does_nothing_before_the_answer(
-    orch: Orchestrator, center: FakeCenter, window_notifier, tmp_path
+def test_before_it_may_post_the_window_takes_the_notices_and_shows_them_inside(
+    orch: Orchestrator, center: FakeCenter, window_notifier, inside: FakeInside, lines
 ):
+    # not started: ticked by hand
+    notice = orch.store.add_notice("decision", "a-1", "Decision needed", 4)
+    window_notifier.tick()
+    assert desktop.app_fresh()  # whatever the permission
+    window_notifier.tick()
+    assert center.asked == [] and center.posted == [] and lines == []  # not asked yet
+    assert orch.notices() == []  # claimed
+    assert inside.last["state"] == "waiting"
+    assert inside.last["line"] == f"notifications from X: not asked yet; {INSIDE}"
+    assert inside.last["notices"] == [
+        {"id": notice, "kind": "decision", "text": "Decision needed", "target": "decision:4"}
+    ]
+    assert inside.attention_calls == 1
+
+
+def test_the_marker_is_fresh_while_the_window_runs_whatever_the_permission(
+    window_notifier, monkeypatch
+):
+    monkeypatch.setattr(notifier, "POLL_SECONDS", 0.05)
     window_notifier.start()
-    assert len(center.asked) == 1
-    orch.store.add_notice("finished", "a-1", "a-1 finished")
-    time.sleep(0.1)
-    assert not desktop.app_fresh() and desktop.granted_bundle() is None
-    assert center.posted == [] and len(orch.notices()) == 1
+    until(desktop.app_fresh, what="the marker")
+    assert desktop.granted_bundle() is None
+    window_notifier.close()
+    assert not desktop.app_marker().exists()
 
 
-def test_once_allowed_it_records_the_grant_marks_itself_and_posts_each_notice_once(
-    orch: Orchestrator, center: FakeCenter, window_notifier, lines, tmp_path, monkeypatch
+def test_asked_once_the_window_is_shown_then_allowed_it_records_the_grant_and_posts_once(
+    orch: Orchestrator, center: FakeCenter, window_notifier, inside, lines, tmp_path, monkeypatch
 ):
     monkeypatch.setattr(notifier, "POLL_SECONDS", 0.05)
     old = orch.store.add_notice("finished", "a-0", "before the window")
     window_notifier.cursor = orch.notice_cursor()  # as if the window opened just now
     window_notifier.start()
+    window_notifier.ask()
+    window_notifier.ask()
+    assert len(center.asked) == 1  # asked once
+    assert lines == [
+        "notifications from X: asked macOS for permission; until allowed, notices are shown"
+        " in this window"
+    ]
     center.grant()
-    assert lines == ["notifications: Spartito shows them; a click opens it there"]
+    assert lines[-1] == ALLOWED
     assert desktop.granted_bundle() == tmp_path / "X.app"
-    until(desktop.app_fresh, what="the marker")
     decision = orch.store.add_notice("decision", "a-1", "Decision needed", 5)
     finished = orch.store.add_notice("finished", "a-2", "a-2 finished")
     until(lambda: len(center.posted) == 2, what="the posts")
@@ -103,59 +162,168 @@ def test_once_allowed_it_records_the_grant_marks_itself_and_posts_each_notice_on
          {"home": digest, "target": "a-2"}),
     ]  # fmt: skip
     assert [n["id"] for n in orch.notices()] == [old]  # older than the window: not replayed
+    until(lambda: inside.views and inside.last["state"] == "allowed", what="the page's line")
+    assert inside.last["notices"] == [] and inside.attention_calls == 0
     window_notifier.close()
     assert not desktop.app_marker().exists()
 
 
-def test_a_refusal_forgets_the_grant_and_says_so(
+def test_a_lost_answer_is_made_up_for_by_the_status_read_on_each_poll(
     orch: Orchestrator, center: FakeCenter, window_notifier, lines, tmp_path
 ):
-    desktop.record_grant("local.x.app", tmp_path / "X.app")
-    window_notifier.start()
-    center.grant(False, "UNErrorDomain 1: Notifications are not allowed for this application")
-    assert desktop.granted_bundle() is None and window_notifier.thread is None
-    assert lines == [
-        "notifications from Spartito: the system refused: UNErrorDomain 1: Notifications are"
-        " not allowed for this application (System Settings › Notifications); without a"
-        " dashboard page osascript shows them"
+    """Seen in a real run: asked during the launch, the system recorded the permission but the
+    request's answer never came. The status read on the next poll sees it."""
+    window_notifier.ask()  # never answered
+    window_notifier.tick()
+    assert window_notifier.state == "asking" and desktop.granted_bundle() is None
+    center.status_value = 2  # allowed in the prompt, or later in System Settings
+    window_notifier.tick()
+    assert window_notifier.state == "allowed" and lines[-2:] == [
+        "notifications from X: no answer to the request; the system's authorization status is 2",
+        ALLOWED,
     ]
-    center.asked.clear()
-    window_notifier.start()
-    center.grant(False)
-    assert lines[-1].startswith("notifications from Spartito: not allowed (System Settings")
-
-
-def test_the_window_and_osascript_never_show_the_same_notice(
-    orch: Orchestrator, center: FakeCenter, window_notifier, fake_osascript, monkeypatch
-):
-    monkeypatch.setattr(desktop, "PLATFORM", "darwin")
-    window_notifier.start()
-    center.grant()
-    window_notifier.close()  # tick by hand from here
-    window_notifier.tick()
-    desktop.show(orch.store, "a-1 finished", "a-1")  # the marker is fresh: left to the window
-    claimed = orch.store.add_notice("finished", "a-2", "a page took it")
-    orch.claim_notice(claimed)
-    window_notifier.tick()
+    assert desktop.granted_bundle() == tmp_path / "X.app"
+    orch.store.add_notice("finished", "a-1", "a-1 finished")
     window_notifier.tick()
     assert [post[2] for post in center.posted] == ["a-1 finished"]
+    center.status_value = 1  # switched off in System Settings
+    window_notifier.tick()
+    assert window_notifier.state == "denied" and desktop.granted_bundle() is None
+    assert lines[-1] == (
+        f"notifications from X: not allowed (System Settings › Notifications › X); {INSIDE}"
+    )
+
+
+def test_no_answer_for_long_is_said_once(
+    center: FakeCenter, window_notifier, lines, inside, monkeypatch
+):
+    window_notifier.ask()
+    monkeypatch.setattr(notifier, "NO_ANSWER_SECONDS", 0.0)
+    window_notifier.tick()
+    window_notifier.tick()
+    waited = [line for line in lines if "no answer yet" in line]
+    assert waited == [
+        "notifications from X: asked macOS for permission — no answer yet (look for its prompt"
+        f" in Notification Centre); until allowed, {INSIDE}"
+    ]
+    assert inside.last["line"] == waited[0]
+
+
+def test_a_refusal_forgets_the_grant_says_so_and_shows_the_notices_inside(
+    orch: Orchestrator, center: FakeCenter, window_notifier, lines, inside, tmp_path,
+    fake_osascript, monkeypatch,
+):  # fmt: skip
+    monkeypatch.setattr(desktop, "PLATFORM", "darwin")
+    desktop.record_grant("local.x.app", tmp_path / "X.app")
+    window_notifier.ask()
+    center.grant(False, "UNErrorDomain 1: Notifications are not allowed for this application")
+    assert desktop.granted_bundle() is None
+    assert lines[-1] == (
+        "notifications from X: macOS refused the request (UNErrorDomain 1: Notifications are"
+        f" not allowed for this application); {INSIDE}"
+    )
+    window_notifier.tick()  # a status of 1 does not hide the system's error
+    assert window_notifier.state == "refused"
+    desktop.show(orch.store, "Decision needed", "a-1", 3)
+    window_notifier.tick()
+    assert [n["text"] for n in inside.last["notices"]] == ["Decision needed"]
+    assert center.posted == []
     time.sleep(0.2)
     assert calls(fake_osascript) == []
 
 
-def test_a_post_the_centre_refuses_is_shown_by_osascript(
-    orch: Orchestrator, window_notifier, center: FakeCenter, fake_osascript, monkeypatch
+def test_not_allowed_in_the_prompt(window_notifier, center: FakeCenter, lines, inside):
+    window_notifier.ask()
+    center.grant(False)
+    assert window_notifier.state == "denied"
+    assert lines[-1].startswith("notifications from X: not allowed (System Settings")
+    window_notifier.tick()
+    assert inside.last["state"] == "denied" and inside.last["line"] == lines[-1]
+
+
+def test_unavailable_says_why_once_shown_never_asks_and_shows_the_notices_inside(
+    orch: Orchestrator, center: FakeCenter, lines, inside, tmp_path
+):
+    made = notifier.WindowNotifier(
+        orch, center, "", None, lines.append, inside, "no launcher: run `orch app install`"
+    )
+    assert lines == []  # said once the window is shown
+    made.ask()
+    made.ask()
+    assert center.asked == []
+    assert lines == [
+        f"notifications from Spartito: not available (no launcher: run `orch app install`); {INSIDE}"
+    ]
+    orch.store.add_notice("finished", "a-1", "a-1 finished")
+    made.tick()
+    assert inside.last["state"] == "unavailable"
+    assert [n["target"] for n in inside.last["notices"]] == ["a-1"]
+    assert desktop.granted_bundle() is None
+
+
+def test_while_the_window_runs_osascript_never_shows_a_notice(
+    orch: Orchestrator, center: FakeCenter, window_notifier, inside, fake_osascript, monkeypatch
+):
+    """desktop.show leaves the notice to the window process whether it may post or not."""
+    monkeypatch.setattr(desktop, "PLATFORM", "darwin")
+    # not started: ticked by hand
+    window_notifier.tick()
+    desktop.show(orch.store, "a-1 finished", "a-1")  # not allowed: shown inside
+    window_notifier.tick()
+    window_notifier.ask()
+    center.grant()
+    desktop.show(orch.store, "Decision needed", "a-2", 7)  # allowed: posted
+    claimed = orch.store.add_notice("finished", "a-3", "a page took it")
+    orch.claim_notice(claimed)
+    window_notifier.tick()
+    window_notifier.tick()
+    assert [n["text"] for n in inside.last["notices"]] == ["a-1 finished"]
+    assert [post[2] for post in center.posted] == ["Decision needed"]
+    time.sleep(0.2)
+    assert calls(fake_osascript) == []
+
+
+def test_a_post_the_centre_refuses_is_shown_inside_not_by_osascript(
+    orch: Orchestrator, window_notifier, center: FakeCenter, inside, fake_osascript, monkeypatch
 ):
     monkeypatch.setattr(desktop, "PLATFORM", "darwin")
     center.post_error = "UNErrorDomain 1: not allowed"
-    window_notifier.start()
+    window_notifier.ask()
     center.grant()
-    window_notifier.close()
     orch.store.add_notice("decision", "a-1", "Decision needed", 2)
     window_notifier.tick()
-    until(lambda: calls(fake_osascript), what="the notification")
-    assert texts(fake_osascript) == ["Decision needed — open Spartito to answer"]
+    assert [n["target"] for n in inside.last["notices"]] == ["decision:2"]
     assert orch.notices() == []
+    time.sleep(0.2)
+    assert calls(fake_osascript) == []
+
+
+def test_only_the_newest_notices_are_kept_inside_each_drawing_the_eye(
+    orch: Orchestrator, window_notifier, inside
+):
+    for n in range(notifier.IN_WINDOW + 2):
+        orch.store.add_notice("finished", f"a-{n}", f"a-{n} finished")
+    window_notifier.tick()
+    assert [n["target"] for n in inside.last["notices"]] == [
+        f"a-{n}" for n in range(2, notifier.IN_WINDOW + 2)
+    ]
+    assert inside.attention_calls == notifier.IN_WINDOW + 2
+
+
+def test_the_page_gets_the_view_until_it_has_it_and_again_after_a_reload(
+    orch: Orchestrator, window_notifier, inside
+):
+    inside.takes = False  # the page is not loaded yet
+    orch.store.add_notice("finished", "a-1", "a-1 finished")
+    window_notifier.tick()
+    assert inside.views == []
+    inside.takes = True
+    window_notifier.tick()
+    window_notifier.tick()
+    assert len(inside.views) == 1  # handed over once
+    window_notifier.repush()  # the page was reloaded
+    window_notifier.tick()
+    assert len(inside.views) == 2 and inside.views[0] == inside.views[1]
 
 
 # -- a click ---------------------------------------------------------------------------------
@@ -165,9 +333,8 @@ def test_a_post_the_centre_refuses_is_shown_by_osascript(
 def test_a_click_opens_the_window_at_the_target_through_a_deep_link(
     orch: Orchestrator, center: FakeCenter, window_notifier, target
 ):
-    window_notifier.start()
+    window_notifier.ask()
     center.grant()
-    window_notifier.close()
     agent, decision = ("a-0", 5) if target.startswith("decision:") else (target, None)
     orch.store.add_notice("decision" if decision else "finished", agent, "text", decision)
     window_notifier.tick()
@@ -270,6 +437,7 @@ def test_allowed_it_posts_the_fresh_pending_notices_once(
     orch.claim_notice(taken)
     fresh = orch.store.add_notice("decision", "a-2", "Decision needed", 3)
     desktop.record_grant("local.x.app", tmp_path / "X.app")
+    center.status_value = 2
     assert notifier.post_pending(orch, center, tmp_path / "X.app", []) is None
     assert [(post[2], post[3]["target"]) for post in center.posted] == [
         ("Decision needed", "decision:3")

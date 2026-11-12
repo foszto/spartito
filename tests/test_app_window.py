@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from test_decisions import calls
 from typer.testing import CliRunner
 
 from orchestrator import app_open, autostart, cli, config
@@ -39,6 +40,10 @@ DOCK_HINT = (
     "the Dock shows this window as Python: `orch app install` gives it Spartito's name and icon"
 )
 NO_CHROMIUM = "no Chromium-family browser found (Chrome, Chromium, Edge or Brave); "
+NO_LAUNCHER = (
+    "notifications from Spartito: not available (no launcher: run `orch app install`); notices"
+    " are shown in this window\n"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -342,6 +347,7 @@ class FakeWindow:
         self.destroyed = threading.Event()
         self.raised: list[str] = []  # restore and show, as called
         self.location = url  # what evaluate_js("location.href") answers
+        self.synced: list[dict] = []  # the views handed to the page (window.SYNC_JS)
 
     def destroy(self) -> None:
         self.destroyed.set()
@@ -353,6 +359,11 @@ class FakeWindow:
         self.raised.append("show")
 
     def evaluate_js(self, script: str):
+        head, tail = window.SYNC_JS.split("{}")
+        if script.startswith(head) and script.endswith(tail):
+            view = json.loads(script[len(head) : -len(tail)])
+            self.synced.append(view)
+            return view["version"]  # the page shows it now
         assert script == window.WHERE_JS
         return self.location
 
@@ -541,7 +552,7 @@ def assert_own_server_gone(url: str) -> None:
 def test_native_window_on_an_own_server(webview: FakeWebview):
     result = run_app()
     assert result.exit_code == 0, result.output
-    assert result.stderr == DOCK_HINT + "\n"  # macOS without the launcher
+    assert result.stderr == DOCK_HINT + "\n" + NO_LAUNCHER  # macOS without the launcher
     (win,) = webview.windows
     assert result.stdout == f"web UI: {win.base}\n"
     assert win.url == f"{win.base}?app=0"  # the window's page, before any request
@@ -1260,7 +1271,7 @@ def test_started_as_the_launchers_app(webview: FakeWebview, execed, monkeypatch)
     result = run_app()
     assert result.exit_code == 0, result.output
     assert execed == []
-    assert result.stderr == ""
+    assert result.stderr == NO_COPY  # no Dock hint
     assert "icon" not in webview.options
     assert "CFProcessPath" not in os.environ
 
@@ -1325,6 +1336,10 @@ def test_a_stale_copy_is_not_run(webview: FakeWebview, execed, working_copy):
     assert result.stderr == ""  # the process it becomes says why
 
 
+NO_COPY = (
+    "notifications from Spartito: not available (started without the launcher's copy of"
+    " Python: run `orch app install` again); notices are shown in this window\n"
+)
 STALE = (
     "the launcher's copy of Python is stale ({}): run `orch app install` again; until then"
     " Spartito posts no notifications itself\n"
@@ -1354,7 +1369,7 @@ def test_running_the_earlier_way_says_why(
         ),
         "does not start": STALE.format("it does not start"),
     }
-    assert result.stderr == expected.get(why, "")
+    assert result.stderr == expected.get(why, "") + NO_COPY
 
 
 class FakeCenter:
@@ -1443,7 +1458,8 @@ def test_a_centre_that_fails_is_said_and_the_window_still_opens(webview: FakeWeb
     result = run_app()
     assert result.exit_code == 0 and len(webview.windows) == 1
     assert result.stderr == (
-        "notifications from Spartito: not available (no notification centre in tests)\n"
+        "notifications from X: not available (no notification centre in tests); notices are"
+        " shown in this window\n"
     )
 
 
@@ -1477,3 +1493,155 @@ def test_notify_only_posts_as_the_bundle(monkeypatch, tmp_path):
     assert window.notify_only() is None
     monkeypatch.setattr(window, "this_platform", lambda: "linux")
     assert window.notify_only() is None
+
+
+# -- notices inside the window, its state, its log (macOS) ------------------------------------
+
+
+def test_with_the_window_open_a_decision_notice_reaches_its_page_and_never_osascript(
+    webview: FakeWebview, fake_osascript, monkeypatch
+):
+    """Not allowed to post (no launcher): the window process takes the notice and hands it to
+    the page; the Dock is asked for attention."""
+    from orchestrator import desktop
+    from orchestrator.gui import notifier
+
+    monkeypatch.setattr(desktop, "PLATFORM", "darwin")
+    monkeypatch.setattr(notifier, "POLL_SECONDS", 0.05)
+    bounced: list[str] = []
+
+    class Dock:
+        def attention(self) -> None:
+            bounced.append("bounce")
+
+    monkeypatch.setattr(window.MacDock, "make", classmethod(lambda cls: Dock()))
+    webview.open_for = None
+    orch = Orchestrator()
+
+    def meanwhile() -> None:
+        win = webview.windows[-1]
+        until_true(desktop.app_fresh)
+        desktop.show(orch.store, "Decision needed (p): which?", "a-1", 9)
+        until_true(lambda: any(view["notices"] for view in win.synced))
+        win.destroy()
+
+    webview.on_start = lambda: threading.Thread(target=meanwhile, daemon=True).start()
+    result = run_app()
+    assert result.exit_code == 0, result.output
+    (win,) = webview.windows
+    view = [view for view in win.synced if view["notices"]][-1]
+    assert view["state"] == "unavailable"
+    assert view["line"] == NO_LAUNCHER.strip()
+    assert view["notices"] == [
+        {
+            "id": view["notices"][0]["id"],
+            "kind": "decision",
+            "text": "Decision needed (p): which?",
+            "target": "decision:9",
+        }
+    ]
+    assert bounced == ["bounce"]
+    assert orch.notices() == []  # claimed by the window
+    time.sleep(0.2)
+    assert calls(fake_osascript) == []
+
+
+def until_true(predicate, timeout: float = 20.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.02)
+
+
+class Ready:
+    def __init__(self, ready: bool) -> None:
+        self.ready = ready
+
+    def is_set(self) -> bool:
+        return self.ready
+
+    def wait(self, timeout=None) -> bool:
+        return self.ready
+
+
+def test_the_view_goes_to_the_page_only_once_it_is_ready():
+    class Win:
+        def __init__(self) -> None:
+            self.events = types.SimpleNamespace(loaded=Ready(False), _pywebviewready=Ready(True))
+            self.scripts: list[str] = []
+            self.answer = 3
+
+        def evaluate_js(self, script: str):
+            self.scripts.append(script)
+            return self.answer
+
+    win = Win()
+    view = {"version": 3, "state": "denied", "line": "l", "notices": [{"id": 1, "text": "</x>"}]}
+    shown = window.WindowView(win, None)
+    assert shown.show(view) is False and win.scripts == []  # evaluate_js would wait
+    win.events.loaded.ready = True
+    assert shown.show(view) is True
+    assert win.scripts == [window.SYNC_JS.format(json.dumps(view))]
+    win.answer = -1  # the page has no hook (yet)
+    assert shown.show(view) is False
+
+
+def test_permission_is_asked_once_the_window_is_shown():
+    asked: list[str] = []
+    shown = Ready(False)
+    win = types.SimpleNamespace(events=types.SimpleNamespace(shown=shown))
+    notices = types.SimpleNamespace(ask=lambda: asked.append("asked"))
+    waits: list = []
+    shown.wait = lambda timeout=None: waits.append(timeout) or False  # type: ignore[method-assign]
+    window.ask_when_shown(win, notices)
+    assert waits == [window.ASK_WAIT] and asked == ["asked"]
+
+
+def test_the_window_process_says_its_lines_in_the_app_log_too(capsys):
+    window.say("notifications from X: not allowed")
+    window.say("second")
+    assert capsys.readouterr().err == "notifications from X: not allowed\nsecond\n"
+    lines = window.app_log().read_text().splitlines()
+    assert [line.split("] ", 1)[1] for line in lines] == [
+        "notifications from X: not allowed",
+        "second",
+    ]
+    assert all(f"[{os.getpid()}]" in line for line in lines)
+
+
+def test_the_app_log_is_emptied_at_start_when_too_big(monkeypatch):
+    monkeypatch.setattr(window, "APP_LOG_LIMIT", 10)
+    window.app_log().write_text("x" * 11)
+    window.cut_app_log()
+    assert window.app_log().read_text() == ""
+    window.app_log().write_text("small")
+    window.cut_app_log()
+    assert window.app_log().read_text() == "small"
+
+
+@pytest.mark.parametrize(
+    "bundled, own, installed, available, why",
+    [
+        (True, True, True, True, None),
+        (True, True, True, False, "UserNotifications is not installed (install the extra orchestrator[app])"),
+        (True, False, True, True, "started without the launcher's copy of Python: run `orch app install` again"),
+        (False, False, True, True, "not started as the launcher's app"),
+        (False, False, False, True, "no launcher: run `orch app install`"),
+    ],
+)  # fmt: skip
+def test_why_a_window_cannot_post(monkeypatch, bundled, own, installed, available, why):
+    from orchestrator.gui import notifier
+
+    monkeypatch.setattr(notifier, "available", lambda: available)
+    session = window.Session(lock=None)  # type: ignore[arg-type]
+    session.bundled, session.launcher_installed = bundled, installed
+    session.own_bundle = Path("/Applications/X.app") if own else None
+    assert window.not_posting(session) == why
+
+
+def test_the_page_has_the_hook_and_the_places_for_the_banners():
+    static = PACKAGE / "web" / "static"
+    script = (static / "app.js").read_text()
+    page = (PACKAGE / "web" / "index.html").read_text()
+    assert "window.spartitoApp = {" in script and "sync(view)" in script
+    assert 'id="appNotices"' in page and 'id="appNotify"' in page

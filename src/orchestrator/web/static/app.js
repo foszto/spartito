@@ -1604,6 +1604,66 @@ function pagePermission() {
   return line;
 }
 
+// -- notices inside the window of `orch app` (macOS) ---------------------------
+// Its window process (gui/notifier.py) takes the notices while it is open; those macOS does
+// not let Spartito post (not asked yet, not allowed, refused, not available) it hands to this
+// page, together with a line on how its notifications stand: spartitoApp.sync(view), view =
+// {version, state, line, notices: [{id, kind, text, target}]}, the newest few. Each notice is
+// a banner at the top right: a click goes to the decision or agent, × closes it; closed ones
+// stay closed across a reload (sessionStorage). sync returns the version it shows, so the
+// window process knows the page has it.
+const APP_CLOSED = 'orch-app-closed';  // sessionStorage key: ids of the banners closed here
+let appView = { version: -1, notices: [] };
+
+function closedBanners() {
+  try {
+    const ids = JSON.parse(sessionStorage.getItem(APP_CLOSED) || '[]');
+    return new Set(Array.isArray(ids) ? ids : []);
+  } catch (error) {
+    return new Set();
+  }
+}
+function closeBanner(id) {
+  const ids = closedBanners();
+  ids.add(id);
+  const kept = [...ids].filter(one => appView.notices.some(notice => notice.id === one));
+  try { sessionStorage.setItem(APP_CLOSED, JSON.stringify(kept)); } catch (error) { /* in memory only */ }
+  renderBanners();
+}
+function goToTarget(target) {
+  if (!target) return;
+  const fragment = target.startsWith(DECISION) ? target : encodeURIComponent(target);
+  if (location.hash === `#${fragment}`) followHash(); else location.hash = fragment;
+}
+function renderBanners() {
+  const closed = closedBanners();
+  $('appNotices').replaceChildren(...appView.notices.filter(notice => !closed.has(notice.id)).map(notice => {
+    const banner = el('div', `app-notice ${notice.kind === 'decision' ? 'decision' : ''}`);
+    const open = el('button', 'app-notice-open');
+    open.type = 'button';
+    open.title = notice.kind === 'decision' ? 'Open this decision' : 'Open this agent';
+    open.append(el('strong', '', state.project_name || 'Spartito'), el('span', '', notice.text));
+    open.onclick = () => { closeBanner(notice.id); goToTarget(notice.target); };
+    const close = button('ghost icon', 'x', '', () => closeBanner(notice.id), 'Close');
+    banner.append(open, close);
+    return banner;
+  }));
+}
+window.spartitoApp = {
+  sync(view) {
+    if (!view || typeof view.version !== 'number') return -1;
+    if (view.version !== appView.version) {
+      appView = { version: view.version, notices: Array.isArray(view.notices) ? view.notices : [] };
+      const line = $('appNotify');
+      line.textContent = view.line || '';
+      line.dataset.state = view.state || '';
+      line.hidden = !view.line;
+      renderBanners();
+    }
+    return appView.version;
+  },
+};
+
 // -- theme -------------------------------------------------------------------
 
 function applyTheme(theme) {
@@ -1668,9 +1728,7 @@ function applyAppRequest(request) {
   if (appRequest === null || !request || !(request.id > appRequest)) return;
   appRequest = request.id;
   history.replaceState(null, '', `?app=${request.id}${location.hash}`);  // a reload applies it no more
-  if (!request.target) return;
-  const fragment = request.target.startsWith(DECISION) ? request.target : encodeURIComponent(request.target);
-  if (location.hash === `#${fragment}`) followHash(); else location.hash = fragment;
+  goToTarget(request.target);
 }
 function followHash() {
   const target = hashTarget();

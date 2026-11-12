@@ -27,6 +27,13 @@ the native window also posts the notifications itself (notifier.py), and `--noti
 posts the pending ones. On Linux the Qt window carries the icon, application name and desktop
 file name.
 
+Notices (macOS): the native window takes the notices while it is open, whether or not it may
+post them; those it may not post it shows inside itself (WindowView: a banner in the page,
+the Dock's bounce and badge), so osascript, whose click opens Script Editor, stays quiet while
+a window is open. What the window process says (`say`) goes to stderr and to the home's
+`logs/app.log` (APP_LOG, emptied at start when above APP_LOG_LIMIT), where it can be read
+when the window was started from the Dock or Finder.
+
 Own server: on the port of the last one (`run/app-port`) when it is free, so the page keeps
 its origin (preferences, notification permission); otherwise on a free one, then remembered.
 """
@@ -49,6 +56,7 @@ import urllib.parse
 import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import IO, Protocol
 
@@ -79,6 +87,9 @@ ERROR_LINE = re.compile(r"[\w.]*(Error|Exception): ")
 POLL = 1.0  # seconds between two looks at the browser's open pages
 EARLY_EXIT = 3.0  # seconds: a browser that ends this soon without a window did not start
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+APP_LOG = "app.log"  # in config.logs_dir(): what the window process says
+APP_LOG_LIMIT = 1024 * 1024  # bytes; emptied at the next start when above
+ASK_WAIT = 20.0  # seconds for the native window to be shown before permission is asked anyway
 LINUX_BROWSERS = (
     "google-chrome",
     "google-chrome-stable",
@@ -94,7 +105,20 @@ class AppError(Exception):
 
 
 def say(line: str) -> None:
+    """One line about this window: on stderr and in the app log."""
     print(line, file=sys.stderr, flush=True)
+    with contextlib.suppress(OSError), app_log().open("a", encoding="utf-8") as out:
+        stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        out.write(f"{stamp} [{os.getpid()}] {line}\n")
+
+
+def app_log() -> Path:
+    return config.logs_dir() / APP_LOG
+
+
+def cut_app_log() -> None:
+    with contextlib.suppress(OSError):
+        autostart.cut_log(app_log(), APP_LOG_LIMIT)
 
 
 def this_platform() -> str:
@@ -335,6 +359,10 @@ def native_window(session: Session) -> bool:
             session.done.set()
 
         window.events.closed += on_closed
+        # The centre's delegate is set before the GUI loop runs: a click that started this
+        # app reaches it. The notices are taken from now on; permission is asked once the
+        # window is shown (`ask_when_shown`).
+        notices = start_notifier(session, window)
 
         def close_later() -> None:  # runs in pywebview's own thread, once the GUI runs
             if this_platform() == "darwin" and not session.bundled:
@@ -344,14 +372,15 @@ def native_window(session: Session) -> bool:
                 )
             if session.echo_location:
                 echo_locations(session, window)
+            if notices is not None:
+                threading.Thread(
+                    target=ask_when_shown, args=(window, notices), name="orch-app-ask", daemon=True
+                ).start()
             with watching_requests(session, lambda: bring_native_forward(window)):
                 session.done.wait(session.close_after)  # closed, a stop signal or time is up
             if not closed.is_set():
                 window.destroy()
 
-        # The centre's delegate is set before the GUI loop runs: a click that started this
-        # app reaches it.
-        notices = start_notifier(session)
         try:
             # The GUI loop runs on this (the main) thread until the window is gone. Not
             # private, so the page keeps its preferences (theme) per origin: in storage_path
@@ -375,27 +404,141 @@ def native_window(session: Session) -> bool:
     return True
 
 
-def start_notifier(session: Session) -> notifier.WindowNotifier | None:
-    """macOS, run as the launcher's app through its interpreter copy, with the framework:
-    the window process posts the notifications itself (notifier.py); None otherwise."""
-    if this_platform() != "darwin" or session.own_bundle is None or not notifier.available():
+def ask_when_shown(window, notices: notifier.WindowNotifier) -> None:
+    """Ask for permission once the window is shown (the app launched and in front), not during
+    the launch: a request made then was seen to get no answer."""
+    shown = getattr(getattr(window, "events", None), "shown", None)
+    if shown is not None:
+        shown.wait(ASK_WAIT)
+    notices.ask()
+
+
+def not_posting(session: Session) -> str | None:
+    """Why this window process cannot post notifications as the launcher's app (macOS);
+    None when it can try."""
+    if session.own_bundle is not None:
+        if notifier.available():
+            return None
+        return f"UserNotifications is not installed ({INSTALL_HINT})"
+    if session.bundled:
+        return "started without the launcher's copy of Python: run `orch app install` again"
+    if session.launcher_installed:
+        return "not started as the launcher's app"
+    return "no launcher: run `orch app install`"
+
+
+def start_notifier(session: Session, window=None) -> notifier.WindowNotifier | None:
+    """macOS: the window process takes the notices (notifier.py): posted as the launcher's app
+    when it may (run through the bundle's interpreter copy, with the framework, allowed), else
+    shown inside `window`. None elsewhere."""
+    if this_platform() != "darwin":
         return None
     from ..service import Orchestrator
 
+    why = not_posting(session)
+    center: notifier.Center = notifier.Unavailable()
+    if why is None:
+        try:
+            center = notifier.MacCenter(notifier.opener(Orchestrator.request_app_open))
+        except Exception as exc:
+            why = first_line(exc)
+    bundle = session.own_bundle
     try:
-        center = notifier.MacCenter(notifier.opener(Orchestrator.request_app_open))
         notices = notifier.WindowNotifier(
             Orchestrator(),
             center,
-            launcher.bundle_identifier(session.own_bundle),
-            session.own_bundle,
+            launcher.bundle_identifier(bundle) if bundle is not None else "",
+            bundle,
             say,
+            WindowView(window, MacDock.make()) if window is not None else None,
+            why,
         )
+        if window is not None:
+            with contextlib.suppress(Exception):
+                window.events.loaded += notices.repush  # a (re)loaded page shows nothing yet
         notices.start()
     except Exception as exc:
         say(f"notifications from {config.PROJECT_NAME}: not available ({first_line(exc)})")
         return None
     return notices
+
+
+class Dock(Protocol):
+    def attention(self) -> None: ...
+
+
+class MacDock:
+    """The Dock's part for notices shown inside the window (AppKit, on the main thread): one
+    bounce and a badge counting them while the app is not the active one; the badge goes when
+    it becomes active (the window focused, a banner used)."""
+
+    def __init__(self) -> None:
+        import AppKit  # pyobjc, which pywebview's Cocoa backend brings
+        import Foundation
+
+        self.AppKit, self.Foundation = AppKit, Foundation
+        self.unseen = 0
+        self.observer = Foundation.NSNotificationCenter.defaultCenter().addObserverForName_object_queue_usingBlock_(
+            AppKit.NSApplicationDidBecomeActiveNotification,
+            None,
+            Foundation.NSOperationQueue.mainQueue(),
+            lambda note: self.clear(),
+        )
+
+    @classmethod
+    def make(cls) -> Dock | None:
+        try:
+            return cls()
+        except Exception:
+            return None
+
+    def on_main(self, work: Callable[[], None]) -> None:
+        self.Foundation.NSOperationQueue.mainQueue().addOperationWithBlock_(work)
+
+    def attention(self) -> None:
+        def draw() -> None:
+            app = self.AppKit.NSApplication.sharedApplication()
+            if app.isActive():
+                return
+            self.unseen += 1
+            app.dockTile().setBadgeLabel_(str(self.unseen))
+            app.requestUserAttention_(self.AppKit.NSInformationalRequest)
+
+        self.on_main(draw)
+
+    def clear(self) -> None:
+        self.unseen = 0
+        self.AppKit.NSApplication.sharedApplication().dockTile().setBadgeLabel_(None)
+
+
+# The page's hook for the window process (static/app.js: spartitoApp.sync): the view's version
+# it shows now, -1 before the page has the hook.
+SYNC_JS = "window.spartitoApp ? window.spartitoApp.sync({}) : -1"
+
+
+class WindowView:
+    """notifier.InWindow for the native window: the notices and the notification state in the
+    page (handed over with evaluate_js once the page is ready), the Dock's attention."""
+
+    def __init__(self, window, dock: Dock | None) -> None:
+        self.window, self.dock = window, dock
+
+    def ready(self) -> bool:
+        events = self.window.events
+        for name in ("loaded", "_pywebviewready"):
+            event = getattr(events, name, None)
+            if event is not None and not event.is_set():
+                return False
+        return True
+
+    def show(self, view: dict) -> bool:
+        if not self.ready():
+            return False  # evaluate_js would wait for the page; the next poll tries again
+        return self.window.evaluate_js(SYNC_JS.format(json.dumps(view))) == view["version"]
+
+    def attention(self) -> None:
+        if self.dock is not None:
+            self.dock.attention()
 
 
 def notify_only() -> str | None:
@@ -456,10 +599,12 @@ def native_active() -> bool | None:
     return bool(AppKit.NSApplication.sharedApplication().isActive())
 
 
-# `--echo-location`: the page's address, and the decision its decisions window shows.
+# `--echo-location`: the page's address, the decision its decisions window shows, and how many
+# notice banners it shows (the notices the window shows itself).
 WHERE_JS = (
     "location.href + ' decision: ' +"
     " (document.querySelector('#decisionsDialog[open] [data-key].marked')?.dataset.key || '-')"
+    " + ' banners: ' + document.querySelectorAll('#appNotices .app-notice').length"
 )
 
 
@@ -797,6 +942,7 @@ def run(
         env = {**os.environ, "CFProcessPath": str(item.executable)}
         execute(sys.executable, argv, env)  # says why there is no copy (stale_copy)
     failed = os.environ.pop(launcher.COPY_FAILED_VAR, None) is not None
+    cut_app_log()  # this process holds the window lock: the log is its own now
     if darwin and installed and bundled and own_bundle is None:
         stale_copy(item, failed)
     session = Session(lock, close_after, target=target, echo_location=echo_location)
