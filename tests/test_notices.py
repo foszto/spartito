@@ -64,6 +64,7 @@ def test_notices_are_listed_after_an_id_until_claimed(tmp_path: Path) -> None:
         "decision_id": 7,
         "text": "Decision needed (p): Go?",
         "created_at": listed[1]["created_at"],
+        "route": None,
     }
     assert listed[0]["decision_id"] is None
     assert [n["id"] for n in store.notices(after=first)] == [second]
@@ -173,16 +174,7 @@ def test_a_stale_page_counts_as_none(orch: Orchestrator, fake_osascript: Path, m
     assert orch.notices() == []
 
 
-def test_a_notice_a_page_claimed_first_is_not_shown_again(
-    orch: Orchestrator, fake_osascript: Path, macos: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(orch.store, "claim_notice", lambda notice_id, wait: False)
-    desktop.show(orch.store, "a-1 finished", "a-1")
-    time.sleep(0.5)
-    assert calls(fake_osascript) == [] and len(rows(orch.store)) == 1
-
-
-def test_elsewhere_than_macos_the_notice_stays_unclaimed(
+def test_elsewhere_than_macos_the_notice_waits_for_a_page(
     orch: Orchestrator, fake_osascript: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(desktop, "PLATFORM", "linux")
@@ -203,51 +195,42 @@ def test_a_missing_or_broken_osascript_still_records_the_notice(
     desktop.show(orch.store, "broken", "a-1")  # no exception
 
     assert [row["text"] for row in rows(orch.store)] == ["missing", "broken"]
-    assert [n["text"] for n in orch.notices()] == ["missing"]  # the broken one was claimed
+    assert orch.notices() == []  # claimed with the choice: osascript shows it, or nothing
+    summaries = [n["summary"] for n in orch.notice_trace()]
+    assert [line["path"] for line in summaries] == ["osascript", "osascript"]
+    assert summaries[1]["reason"] == "osascript could not be started"
 
 
-def test_a_store_that_fails_still_lets_osascript_show_it(
+def test_a_store_that_fails_spools_the_notice_and_the_helper_shows_it(
     orch: Orchestrator, fake_osascript: Path, macos: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def fail(*args: object) -> int:
+    real = orch.store.add_notice
+
+    def fail(*args: object, **options: object) -> int:
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(orch.store, "add_notice", fail)
-    fresh_page()
     desktop.show(orch.store, "a-1 finished", "a-1")
+    (spooled,) = desktop.spool_dir().glob("*.json")
+    assert calls(fake_osascript) == []  # nothing unrecorded
+    monkeypatch.setattr(orch.store, "add_notice", real)
+    desktop.spool_helper(orch.store, spooled)
     until(lambda: calls(fake_osascript), what="the notification")
+    assert bodies(fake_osascript) == ["a-1 finished"]
+    assert [row["text"] for row in rows(orch.store)] == ["a-1 finished"]
+    assert list(desktop.spool_dir().iterdir()) == []
 
 
 def test_a_failed_claim_still_lets_osascript_show_it(
     orch: Orchestrator, fake_osascript: Path, macos: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def fail(*args: object) -> bool:
+    def fail(*args: object, **options: object) -> bool:
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(orch.store, "claim_notice", fail)
-    desktop.show(orch.store, "a-1 finished", "a-1")
+    desktop.show(orch.store, "a-1 finished", "a-1")  # claimed with the choice: no claim call
     until(lambda: calls(fake_osascript), what="the notification")
     assert bodies(fake_osascript) == ["a-1 finished"]
-
-
-def test_a_claim_the_busy_store_refused_is_made_after_showing(
-    orch: Orchestrator, fake_osascript: Path, macos: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """So the launcher's posting process (or a page) does not show it a second time."""
-    real = orch.store.claim_notice
-    tries: list[float] = []
-
-    def busy_once(notice_id: int, wait: float = 30) -> bool:
-        tries.append(wait)
-        if len(tries) == 1:
-            raise sqlite3.OperationalError("database is locked")
-        return real(notice_id, wait)
-
-    monkeypatch.setattr(orch.store, "claim_notice", busy_once)
-    desktop.show(orch.store, "a-1 finished", "a-1")
-    until(lambda: calls(fake_osascript), what="the notification")
-    until(lambda: orch.notices() == [], what="the late claim")
-    assert tries == [desktop.STORE_WAIT_SECONDS, desktop.LATE_CLAIM_WAIT_SECONDS]
 
 
 def test_a_marker_from_the_future_is_not_a_fresh_page(
@@ -262,8 +245,8 @@ def test_a_marker_from_the_future_is_not_a_fresh_page(
     until(lambda: calls(fake_osascript), what="the notification")
 
 
-def test_a_busy_store_delays_a_notification_only_briefly(
-    orch: Orchestrator, fake_osascript: Path, macos: None
+def test_a_busy_store_delays_the_caller_only_briefly_and_nothing_goes_out_unrecorded(
+    orch: Orchestrator, fake_osascript: Path, macos: None, no_detached_helpers: list
 ) -> None:
     holder = sqlite3.connect(orch.store.path, isolation_level=None)
     holder.execute("BEGIN IMMEDIATE")  # another process holds the write lock
@@ -276,8 +259,11 @@ def test_a_busy_store_delays_a_notification_only_briefly(
         holder.close()
 
     assert desktop.STORE_WAIT_SECONDS <= took < desktop.STORE_WAIT_SECONDS + 3
-    until(lambda: calls(fake_osascript), what="the notification")
-    assert rows(orch.store) == []  # not recorded, shown anyway
+    (spooled,) = desktop.spool_dir().glob("*.json")
+    assert no_detached_helpers == [["spool", str(spooled), desktop.OPEN]]
+    time.sleep(0.3)
+    assert rows(orch.store) == [] and calls(fake_osascript) == []
+    assert "spooled: the store was busy for" in desktop.notice_log().read_text()
 
 
 def test_a_decision_notice_carries_the_decision_and_the_requesting_agent(

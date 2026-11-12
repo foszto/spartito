@@ -13,7 +13,7 @@ import os
 import re
 import sqlite3
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -197,6 +197,21 @@ CREATE TABLE IF NOT EXISTS notices (
     text TEXT NOT NULL,
     claimed_at TEXT
 );
+-- How each notice went (desktop.py: the trace), one row per step, written by whichever process
+-- took the step; a table of its own, unknown to older code (its notices have no steps). step:
+-- 'record' | 'route' | 'escalate' | 'claim' | 'shown' | 'release' | 'fallback' | 'drop';
+-- path: the way it concerns ('window-system', 'launcher-helper', 'osascript', 'waiting', ...);
+-- actor: the process, '<role>:<pid>'; detail: the reason, in words. Pruned with the notices.
+CREATE TABLE IF NOT EXISTS notice_steps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    notice_id INTEGER NOT NULL,
+    at TEXT NOT NULL,
+    step TEXT NOT NULL,
+    path TEXT,
+    actor TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS notice_steps_notice ON notice_steps(notice_id, id);
 CREATE INDEX IF NOT EXISTS runs_agent ON runs(agent_id, id);
 -- Covers what Store.usage_sums reads of every run (agent_id, cost_usd and the id), so the
 -- dashboard's total never reads the runs' text.
@@ -286,6 +301,11 @@ RUN_META_ADDED = (
     ("checked", "INTEGER NOT NULL DEFAULT 0"),
     ("auto", "INTEGER NOT NULL DEFAULT 0"),
 )
+# notices columns added after its first version (desktop.py). route: whom the notice is left
+# to ('window', 'helper', 'page', 'banner', 'waiting'; 'osascript' or 'linux' when shown at
+# once; NULL: recorded by older code, anyone may take it); claimed_by: '<role>:<pid>' of the
+# claimer (NULL: older code). Older code inserts and claims with named columns, unaffected.
+NOTICES_ADDED = (("route", "TEXT"), ("claimed_by", "TEXT"))
 # run_usage columns added after its first version.
 RUN_USAGE_ADDED = (
     ("session_id", "TEXT"),
@@ -337,6 +357,17 @@ def pid_alive(pid: int | None) -> bool:
     return True
 
 
+@dataclass(frozen=True)
+class NoticeStep:
+    """One step of a notice's way (table notice_steps; desktop.py writes them)."""
+
+    step: str
+    path: str | None
+    actor: str
+    detail: str = ""
+    at: str | None = None  # None: when it is written
+
+
 @dataclass
 class RunMeta:
     """A run's row in run_meta; runs without one get `RunMeta.legacy()`."""
@@ -379,15 +410,16 @@ class Store:
             columns = conn.execute("PRAGMA table_info(agents)").fetchall()
             if not any(column["name"] == "effort" for column in columns):
                 conn.execute("ALTER TABLE agents ADD COLUMN effort TEXT")
-            present = {row["name"] for row in conn.execute("PRAGMA table_info(run_usage)")}
-            for name, ddl in RUN_USAGE_ADDED:
-                if name in present:
-                    continue
-                try:  # run_usage tables from before the column was recorded
-                    conn.execute(f"ALTER TABLE run_usage ADD COLUMN {name} {ddl}")
-                except sqlite3.OperationalError as exc:  # another process was quicker
-                    if "duplicate column" not in str(exc):
-                        raise
+            for table, added in (("run_usage", RUN_USAGE_ADDED), ("notices", NOTICES_ADDED)):
+                present = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+                for name, ddl in added:
+                    if name in present:
+                        continue
+                    try:  # tables from before the column was recorded
+                        conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+                    except sqlite3.OperationalError as exc:  # another process was quicker
+                        if "duplicate column" not in str(exc):
+                            raise
         self._complete_run_meta()
         with self._conn() as conn:
             conn.execute("CREATE INDEX IF NOT EXISTS run_meta_unchecked ON run_meta(checked)")
@@ -1257,50 +1289,168 @@ class Store:
         text: str,
         decision_id: int | None = None,
         wait: float = 30,
+        route: str | None = None,
+        claimed_by: str | None = None,
+        created_at: str | None = None,
+        steps: Sequence[NoticeStep] = (),
     ) -> int:
-        """Record an unclaimed notice and prune those older than NOTICE_KEEP; its id.
-        `wait`: seconds to wait for the write lock (then sqlite3.OperationalError)."""
+        """Record a notice and prune those (and their steps) older than NOTICE_KEEP; its id.
+        `route`: whom it is left to; with `claimed_by` it is claimed at once (shown by the
+        caller). `steps` are written in the same transaction. `wait`: seconds to wait for the
+        write lock (then sqlite3.OperationalError)."""
         cutoff = (datetime.now(UTC) - NOTICE_KEEP).isoformat(timespec="seconds")
+        stamp = now()
         with self._conn(wait) as conn:
             conn.execute("DELETE FROM notices WHERE created_at < ?", (cutoff,))
-            cursor = conn.execute(
-                "INSERT INTO notices (created_at, kind, agent_id, decision_id, text)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (now(), kind, agent_id, decision_id, text),
+            conn.execute(
+                "DELETE FROM notice_steps WHERE notice_id < (SELECT COALESCE(MIN(id), 0)"
+                " FROM notices)"
             )
-        assert cursor.lastrowid is not None
+            cursor = conn.execute(
+                "INSERT INTO notices (created_at, kind, agent_id, decision_id, text, route,"
+                " claimed_at, claimed_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    created_at or stamp,
+                    kind,
+                    agent_id,
+                    decision_id,
+                    text,
+                    route,
+                    stamp if claimed_by else None,
+                    claimed_by,
+                ),
+            )
+            assert cursor.lastrowid is not None
+            self._add_steps(conn, cursor.lastrowid, steps)
         return cursor.lastrowid
+
+    @staticmethod
+    def _add_steps(conn: sqlite3.Connection, notice_id: int, steps: Sequence[NoticeStep]) -> None:
+        conn.executemany(
+            "INSERT INTO notice_steps (notice_id, at, step, path, actor, detail)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            [(notice_id, s.at or now(), s.step, s.path, s.actor, s.detail) for s in steps],
+        )
+
+    def add_notice_step(self, notice_id: int, step: NoticeStep, wait: float = 30) -> None:
+        with self._conn(wait) as conn:
+            self._add_steps(conn, notice_id, [step])
 
     def notices(self, after: int = 0) -> list[dict[str, Any]]:
         """The unclaimed notices with an id above `after`, oldest first."""
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT id, kind, agent_id, decision_id, text, created_at FROM notices"
+                "SELECT id, kind, agent_id, decision_id, text, created_at, route FROM notices"
                 " WHERE id > ? AND claimed_at IS NULL ORDER BY id",
                 (after,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def notice(self, notice_id: int) -> dict[str, Any] | None:
+        """One notice, claimed or not (every column), or None."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM notices WHERE id = ?", (notice_id,)).fetchone()
+        return dict(row) if row else None
 
     def notice_cursor(self) -> int:
         """The highest notice id (0: none): a reader starting here skips what came before."""
         with self._conn() as conn:
             return conn.execute("SELECT COALESCE(MAX(id), 0) FROM notices").fetchone()[0]
 
-    def claim_notice(self, notice_id: int, wait: float = 30) -> bool:
-        """Mark an unclaimed notice as shown; True only for the one caller that did.
-        `wait` as in add_notice."""
+    def claim_notice(
+        self,
+        notice_id: int,
+        wait: float = 30,
+        routes: Sequence[str] | None = None,
+        by: str | None = None,
+        step: NoticeStep | None = None,
+    ) -> bool:
+        """Mark an unclaimed notice as shown; True only for the one caller that did. With
+        `routes`, only a notice left to one of them (or recorded by older code: no route);
+        `step` is written with the claim. `wait` as in add_notice."""
+        where, args = self._routes(routes)
         with self._conn(wait) as conn:
             cursor = conn.execute(
-                "UPDATE notices SET claimed_at = ? WHERE id = ? AND claimed_at IS NULL",
-                (now(), notice_id),
+                "UPDATE notices SET claimed_at = ?, claimed_by = ?"
+                f" WHERE id = ? AND claimed_at IS NULL{where}",
+                (now(), by, notice_id, *args),
             )
+            if cursor.rowcount == 1 and step is not None:
+                self._add_steps(conn, notice_id, [step])
         return cursor.rowcount == 1
 
-    def release_notice(self, notice_id: int, wait: float = 30) -> None:
-        """Make a claimed notice unclaimed again: its taker could not show it (the Spartito
-        window closing before its page took it), so another way may claim it."""
+    @staticmethod
+    def _routes(routes: Sequence[str] | None) -> tuple[str, tuple[str, ...]]:
+        if routes is None:
+            return "", ()
+        marks = ", ".join("?" * len(routes))
+        return f" AND (route IS NULL OR route IN ({marks}))", tuple(routes)
+
+    def release_notice(
+        self,
+        notice_id: int,
+        wait: float = 30,
+        by: str | None = None,
+        route: str | None = None,
+        step: NoticeStep | None = None,
+    ) -> bool:
+        """Make a claimed notice unclaimed again: its taker could not show it, so another way
+        may claim it. With `by`, only a claim of that claimer; `route`: whom it is left to
+        now. True when it was released."""
+        mine = " AND claimed_by = ?" if by is not None else ""
         with self._conn(wait) as conn:
-            conn.execute("UPDATE notices SET claimed_at = NULL WHERE id = ?", (notice_id,))
+            cursor = conn.execute(
+                "UPDATE notices SET claimed_at = NULL, claimed_by = NULL,"
+                f" route = COALESCE(?, route) WHERE id = ? AND claimed_at IS NOT NULL{mine}",
+                (route, notice_id, *((by,) if by is not None else ())),
+            )
+            if cursor.rowcount == 1 and step is not None:
+                self._add_steps(conn, notice_id, [step])
+        return cursor.rowcount == 1
+
+    def reroute_notice(
+        self,
+        notice_id: int,
+        route: str,
+        step: NoticeStep,
+        was: Sequence[str] | None = None,
+        claimed_by: str | None = None,
+        wait: float = 30,
+    ) -> bool:
+        """Leave an unclaimed notice to `route` (from one of `was`, when given); with
+        `claimed_by`, claim it too (its new taker shows it at once). True when it was."""
+        where, args = self._routes(was)
+        with self._conn(wait) as conn:
+            cursor = conn.execute(
+                "UPDATE notices SET route = ?, claimed_at = ?, claimed_by = ?"
+                f" WHERE id = ? AND claimed_at IS NULL{where}",
+                (route, now() if claimed_by else None, claimed_by, notice_id, *args),
+            )
+            if cursor.rowcount == 1:
+                self._add_steps(conn, notice_id, [step])
+        return cursor.rowcount == 1
+
+    def notice_trace(self, limit: int = 20) -> list[dict[str, Any]]:
+        """The newest `limit` notices, newest first, claimed or not, each with its `steps`
+        (oldest first; none for a notice of older code)."""
+        with self._conn() as conn:
+            notices = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM notices ORDER BY id DESC LIMIT ?", (max(0, limit),)
+                )
+            ]
+            if not notices:
+                return []
+            low = notices[-1]["id"]
+            steps: dict[int, list[dict[str, Any]]] = {}
+            for row in conn.execute(
+                "SELECT * FROM notice_steps WHERE notice_id >= ? ORDER BY id", (low,)
+            ):
+                steps.setdefault(row["notice_id"], []).append(dict(row))
+        for notice in notices:
+            notice["steps"] = steps.get(notice["id"], [])
+        return notices
 
     # -- events -----------------------------------------------------------
 

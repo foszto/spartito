@@ -793,6 +793,40 @@ def decisions(
 
 
 @app.command()
+def notices(
+    limit: Annotated[int, typer.Option("--limit", "-n", help="How many, newest first.")] = 20,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", "-v", help="Each notice's steps as well.")
+    ] = False,
+    as_json: Annotated[bool, typer.Option("--json", help="As JSON, with the steps.")] = False,
+) -> None:
+    """How the recent desktop notifications went: one line per notice (newest first) with the
+    way it was shown, by which process, when, and why (docs/desktop.md: the trace)."""
+    if limit < 1:
+        raise fail("--limit takes a positive number")
+    found = orch().notice_trace(limit)
+    if as_json:
+        typer.echo(json.dumps(found, indent=2))
+        return
+    if not found:
+        typer.echo("no notices")
+    for notice in found:
+        line = notice["summary"]
+        head = (
+            f"#{notice['id']}  {notice['created_at']}  {notice['kind']}  {line['path']}"
+            f"  {line['actor']}  {line['at']}"
+        )
+        typer.secho(head, bold=verbose, nl=False)
+        typer.echo(f"  — {line['reason']}" if line["reason"] else "")
+        if verbose:
+            typer.echo(f"  {one_line(notice['text'], 100)}")
+            for item in notice["steps"]:
+                where = f" {item['path']}" if item["path"] else ""
+                detail = f": {item['detail']}" if item["detail"] else ""
+                typer.echo(f"    {item['at']}  {item['actor']}  {item['step']}{where}{detail}")
+
+
+@app.command()
 def decide(
     decision_id: int,
     answer: Annotated[str, typer.Argument(help="An option number, or free text.")],

@@ -27,10 +27,10 @@ the native window also posts the notifications itself (notifier.py), and `--noti
 posts the pending ones. On Linux the Qt window carries the icon, application name and desktop
 file name.
 
-Notices (macOS): the native window takes the notices while it is open, whether or not it may
-post them; those it may not post it shows inside itself (WindowView: a banner in the page,
-the Dock's bounce and badge), so osascript, whose click opens Script Editor, stays quiet while
-a window is open. What the window process says (`say`) goes to stderr and to the home's
+Notices (macOS): the native window takes the notices desktop.route leaves to it while it is
+open, whether or not it may post them; those it may not post it shows inside itself
+(WindowView: a banner in the page, the Dock's bounce and badge), so osascript, whose click
+opens Script Editor, stays quiet while a window is open. What the window process says (`say`) goes to stderr and to the home's
 `logs/app.log` (APP_LOG, emptied at start when above APP_LOG_LIMIT), where it can be read
 when the window was started from the Dock or Finder.
 
@@ -460,6 +460,7 @@ def start_notifier(session: Session, window=None) -> notifier.WindowNotifier | N
         return None
     from ..service import Orchestrator
 
+    desktop.ROLE = "window"  # in the notices' trace
     why = not_posting(session)
     center: notifier.Center = notifier.Unavailable()
     if why is None:
@@ -600,6 +601,7 @@ def notify_only() -> str | None:
         return None
     from ..service import Orchestrator
 
+    desktop.ROLE = "notify"  # in the notices' trace
     _, bundle = take_bundle_identity()
     target = notifier.notify(Orchestrator(), bundle, say)
     if target and bundle is not None:

@@ -381,19 +381,21 @@ def notice_id(value: Any, what: str) -> int:
 
 def poll_notices(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
     """A page that shows desktop notifications itself (desktop.py) polls here: `after` (a
-    notice id) gives the unclaimed notices above it, oldest first; without it none (a page
+    notice id) gives the unclaimed notices it may take, oldest first: those above it, and
+    those escalated to a page or waiting (core/notices.page_notices); without it none (a page
     that just opened replays nothing). `cursor`: the highest notice id so far. The poll also
-    marks the page present, so osascript leaves new notices to it for a while: a POST, so
-    that the same-origin check keeps other web pages from silencing the notifications."""
+    marks the page present, so desktop.route counts it for a while: a POST, so that the
+    same-origin check keeps other web pages from silencing the notifications."""
     after = body.get("after")
     after = None if after is None else notice_id(after, "after")
     orch.page_present()
     cursor = orch.notice_cursor()  # before the list: a notice added meanwhile is still listed
-    return {"notices": [] if after is None else orch.notices(after), "cursor": cursor}
+    return {"notices": [] if after is None else orch.page_notices(after), "cursor": cursor}
 
 
 def claim_notice(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
-    """Take a notice to show it: `claimed` is true for the first caller only."""
+    """Take a notice to show it: `claimed` is true for the first caller only, and only for a
+    notice desktop.route left to a page (or to a later way)."""
     notice = notice_id(request.path_params["notice_id"], "notice id")
     return {"claimed": orch.claim_notice(notice)}
 

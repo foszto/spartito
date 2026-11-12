@@ -1594,7 +1594,7 @@ def test_a_notice_the_page_never_took_is_shown_by_osascript_once_the_window_clos
     assert [call[-1] for call in calls(fake_osascript)] == [
         "Decision needed (p): which? — open Spartito to answer"
     ]
-    assert "handed to macOS" in window.app_log().read_text()
+    assert "had not shown; handed over" in window.app_log().read_text()
 
 
 class FakeAppKit(types.ModuleType):

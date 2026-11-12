@@ -1,4 +1,4 @@
-"""Desktop notifications on this machine (macOS only; elsewhere nothing, silently).
+"""Desktop notifications on this machine (macOS and Linux; elsewhere nothing, silently).
 
 Two occasions, each from the process where it happens:
 
@@ -13,39 +13,59 @@ Two occasions, each from the process where it happens:
   the agent busy: the one notification comes once that compaction has ended, and tells
   how the turn ended (the compaction is housekeeping; its own outcome is in the log).
 
-Each one is recorded as a *notice* (store table `notices`: its kind, the agent, the
-decision), then shown by the first of these that can, each with a click that opens Spartito
-at the agent or decision or, where that cannot be had, no misleading click target:
+Each one is recorded as a *notice* (store table `notices`), and `route` alone decides how it
+is shown, from what is present now (`presence`: the Spartito window process, a dashboard page
+allowed to notify, the launcher's app, notify-send). Every caller asks it: `show` (run end,
+decision), the detached helper (`deliver`: escalation, a busy store), the window process when
+it closes (core/notices.hand_over_notice), and the takers' claims (`claim`, `may_take`: the
+window process, the launcher's posting process, the page). On macOS, in this order:
 
-1. a dashboard page allowed to show notifications: it touches a marker file on each poll
-   (`page_present`, through the facade); while the marker is fresh (PAGE_FRESH_SECONDS) the
-   notice is left to the page, which claims it and shows it as a Web Notification;
-2. the Spartito window process on macOS (gui/notifier.py), allowed to notify: the same with
-   its own marker (`app_present`, APP_MARKER);
-3. macOS, nothing of these running, but the launcher installed and allowed to notify (the
-   grant file GRANT_FILE, written by the window process when it sees the grant): a detached
-   helper starts the launcher's app hidden (`open -n -g -j -a <bundle> --args --notify`),
-   which claims and posts the pending notices and exits; when `open` fails, or the notice is
-   still unclaimed after CLAIM_WAIT_SECONDS, the helper shows it with osascript (4.);
-4. Linux with `notify-send`: a detached helper shows it, with a default action that opens
-   `spartito app` at the target where this notify-send has actions (libnotify 0.7.10 or later);
-   without them, the text names the command that opens it;
-5. macOS otherwise: `osascript`, whose click opens Script Editor and cannot be changed, so
-   its text ends with where to look instead (CLAUSE_DECISION, CLAUSE_FINISHED).
+1. the Spartito window process (gui/notifier.py) while it runs and may post, or has not been
+   answered yet (`route` "window", path window-system): it claims the notice on its next poll
+   (POLL_SECONDS of the notifier, 2 s) and posts it, or shows it inside the window when the
+   post fails. It counts as present while its process runs (pid, guarded against a reused
+   one by the process's start time), even when its marker is late;
+2. the launcher's app, allowed to post (grant file GRANT_FILE, written by the window process
+   when it sees the grant, and a bundle whose interpreter copy is current): the detached
+   helper starts it hidden (`open -n -g -j -a <bundle> --args --notify`), which claims and
+   posts the pending notices and exits ("helper", launcher-helper);
+3. a dashboard page allowed to show notifications, polling (its marker is fresh,
+   PAGE_FRESH_SECONDS): it claims the notice and shows a Web Notification ("page");
+4. the window process that may not post: a banner inside the window and the Dock's badge
+   ("banner", window-banner);
+5. none of these now, but a launcher that may post exists (2. failed) or a window runs: the
+   notice waits unclaimed ("waiting"); the next posting process or page within its age
+   limit, or the window when it next opens (its backlog), takes it;
+6. no launcher that may post, no window, no page: `osascript`, whose click opens Script
+   Editor, so its text ends with where to look (CLAUSE_DECISION, CLAUSE_FINISHED).
 
-Whoever shows a notice claims it first, so it is shown once. A helper that cannot be
-started falls through to the next way in the same call. Without an agent nothing is recorded:
-4. or 5. shows it.
+On Linux: 3., then a detached helper with `notify-send` ("linux": a click opens `spartito
+app` at the target where notify-send has actions), else the notice waits for a page. Claims keep a notice to one showing: a taker claims only a
+notice left to it or to a later way of the list (`may_take`; the window that may post, any),
+so a better way may still take it, and a worse one only once it was left to it. Who was
+chosen and does not take the notice within ESCALATE_SECONDS (CLAIM_WAIT_SECONDS for the
+launcher's app) is skipped: the helper process `deliver` routes it again without it.
+
+Never blocking: the notice is recorded with at most STORE_WAIT_SECONDS of waiting; a busy
+store gets it as a spool file (run/notices/<uuid>.json), which the detached helper keeps
+trying to record (SPOOL_GIVE_UP_SECONDS), as does every poll of the window, a page or the
+posting process. Nothing goes out unrecorded except a notice without an agent.
+
+The trace: every step (record, route, escalate, claim, shown, release, fallback, drop) of every
+notice is a row of `notice_steps` (written by the process that took it, `actor`: role and pid)
+and a line in logs/notices.log (NOTICE_LOG, size-capped; it also has the steps the store did
+not take). `spartito notices` lists them.
 
 `osascript` gets the texts as arguments of its run handler, never inside the script source
 (they come from agents). Children are started and left alone: a reaper thread kills
-osascript after TIMEOUT_SECONDS, a helper ends itself (LINUX_WAIT_SECONDS at most); a missing
-binary or any error is ignored. Off with the global setting `desktop_notifications`
-(`spartito config desktop-notifications off`): then nothing is recorded either.
+osascript after TIMEOUT_SECONDS, a helper ends itself; a missing binary or any error is
+ignored. Off with the global setting `desktop_notifications` (`spartito config
+desktop-notifications off`): then nothing is recorded either.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -53,12 +73,16 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+import uuid
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from . import app_open, config, notify, settings
 from .models import RunStatus
-from .store import COMPACT, MESSAGE, Store
+from .store import COMPACT, MESSAGE, NoticeStep, Store
 
 SCRIPT = (
     "on run argv",
@@ -71,14 +95,20 @@ PLATFORM = sys.platform  # tests set another
 DECISION, FINISHED = "decision", "finished"  # the kinds of notice
 PAGE_MARKER = "page-notifier"  # in config.runtime_dir()
 PAGE_FRESH_SECONDS = 15.0  # a page polls far more often while it is visible
-STORE_WAIT_SECONDS = 2.0  # for the write lock of a notice; then osascript shows it unrecorded
-APP_MARKER = "app-notifier"  # in config.runtime_dir(): the Spartito window process (2.)
-GRANT_FILE = "app-notify.json"  # in config.runtime_dir(): {"identifier", "bundle"} (3.)
+STORE_WAIT_SECONDS = 2.0  # for the write lock of a notice; then it is spooled
+APP_MARKER = "app-notifier"  # in config.runtime_dir(): the window process's pid (older readers)
+APP_STATE = "app-notifier.json"  # beside it: {"pid", "start", "state"}, rewritten each poll
+GRANT_FILE = "app-notify.json"  # in config.runtime_dir(): {"identifier", "bundle"} (2.)
+SPOOL_DIR = "notices"  # in config.runtime_dir(): notices the busy store did not take yet
+SPOOL_GIVE_UP_SECONDS = 600.0  # the helper keeps trying to record a spooled notice this long
+NOTICE_LOG = "notices.log"  # in config.logs_dir(): one line per step
+NOTICE_LOG_LIMIT = 1024 * 1024  # bytes; then it moves to notices.log.1
 INTERPRETER_RECORD = ("Contents", "Resources", "interpreter.json")  # in the bundle (launcher.py)
 OPEN = "/usr/bin/open"  # tests set a fake
 NOTIFY_SEND = "notify-send"  # looked up on PATH; tests set a fake
-CLAIM_WAIT_SECONDS = 15.0  # for the launcher's app to claim the notice (3.)
-LATE_CLAIM_WAIT_SECONDS = 10.0  # a claim the busy store refused, tried once after showing
+CLAIM_WAIT_SECONDS = 15.0  # for the launcher's app to claim the notice (2.)
+ESCALATE_SECONDS = 20.0  # for the window process or a page to claim a notice left to it
+WAIT_STEP = 0.25  # between two looks at a notice the helper waits on
 OPEN_TIMEOUT = 10.0
 LINUX_WAIT_SECONDS = 1800.0  # a Linux helper waiting for a click ends after this
 CLAUSE_DECISION = " — open Spartito to answer"
@@ -86,6 +116,26 @@ CLAUSE_FINISHED = " — open Spartito to see it"
 LINUX_ICON = Path(__file__).parent / "web" / "static" / "icon-192.png"
 DESKTOP_ENTRY = "spartito"  # the launcher's desktop file name (gui/launcher.py)
 HELPER = "import sys; from orchestrator import desktop; sys.exit(desktop.helper(sys.argv[1:]))"
+
+# Whom a notice is left to (the `route` column), in the order of the module doc; a taker may
+# claim a notice left to it or to a later one (RANK), or recorded by older code (no route).
+WINDOW, HELPER_APP, PAGE, BANNER, WAITING = "window", "helper", "page", "banner", "waiting"
+OSASCRIPT, LINUX = "osascript", "linux"  # shown at once by the deciding process
+RANK = {WINDOW: 0, HELPER_APP: 1, PAGE: 2, BANNER: 3, WAITING: 4}
+# The paths, as the trace names them.
+PATHS = {
+    WINDOW: "window-system",
+    HELPER_APP: "launcher-helper",
+    PAGE: "page",
+    BANNER: "window-banner",
+    WAITING: "waiting",
+    OSASCRIPT: "osascript",
+    LINUX: "linux",
+}
+DROPPED = "dropped"  # a path: nobody shows it (a decision answered before it was shown)
+# The window process's notification states (gui/notifier.py) in which it takes notices to post.
+POSTING_STATES = ("allowed", "waiting", "asking", "")  # "": a window of older code
+ROLE: str | None = None  # this process's part, set by entry points; else guessed (`role`)
 
 
 def command(
@@ -107,6 +157,38 @@ def one_line(text: str, limit: int) -> str:
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
 
+# -- who this process is ---------------------------------------------------------------------
+
+
+def role() -> str:
+    """This process's part: ROLE when an entry point set it, else from its command line."""
+    if ROLE:
+        return ROLE
+    argv = sys.argv or [""]
+    script = Path(argv[0]).name
+    if script == "runner.py":
+        return "runner"
+    if script == "mcp_server.py":
+        return "mcp"
+    words = [arg for arg in argv[1:] if not arg.startswith("-")]
+    if words and words[0] == "app":
+        return "notify" if "--notify" in argv else "window"
+    if words and words[0] in ("web", "mcp"):
+        return words[0]
+    return "cli"
+
+
+TAKER_ROLE = {WINDOW: "window", BANNER: "window", HELPER_APP: "notify", PAGE: "page"}
+
+
+def actor(part: str | None = None) -> str:
+    """This process in the trace: '<role>:<pid>'; `part`: a taker (its role) or a role."""
+    return f"{TAKER_ROLE.get(part or '', part) or role()}:{os.getpid()}"
+
+
+# -- markers ---------------------------------------------------------------------------------
+
+
 def page_marker() -> Path:
     return config.runtime_dir() / PAGE_MARKER
 
@@ -116,44 +198,277 @@ def page_present() -> None:
     page_marker().touch()
 
 
+def page_age() -> float | None:
+    """Seconds since such a page last polled; None: never, or a marker from the future."""
+    return _age(page_marker())
+
+
 def page_fresh() -> bool:
     """Whether such a page polled within the last PAGE_FRESH_SECONDS."""
-    return _fresh(page_marker())
+    age = page_age()
+    return age is not None and age < PAGE_FRESH_SECONDS
 
 
 def app_marker() -> Path:
     return config.runtime_dir() / APP_MARKER
 
 
-def app_present() -> None:
-    """The Spartito window process, allowed to notify, is there: refresh its marker, which
-    names its pid."""
-    app_marker().write_text(f"{os.getpid()}\n")
+def app_state_path() -> Path:
+    return config.runtime_dir() / APP_STATE
+
+
+_own_start: str | None = None
+
+
+def app_present(state: str = "allowed") -> None:
+    """The Spartito window process polled: refresh its markers, the pid (for older readers)
+    and its notification state with the pid's start time (against a reused pid)."""
+    global _own_start
+    if _own_start is None:
+        _own_start = process_start(os.getpid()) or ""
+    pid = os.getpid()
+    app_marker().write_text(f"{pid}\n")
+    path = app_state_path()
+    temp = path.with_name(f"{path.name}.{pid}.tmp")
+    temp.write_text(json.dumps({"pid": pid, "start": _own_start, "state": state}))
+    temp.replace(path)
+
+
+def app_gone() -> None:
+    """The window process is going: no markers."""
+    for path in (app_marker(), app_state_path()):
+        path.unlink(missing_ok=True)
 
 
 def app_fresh() -> bool:
-    """Whether the window process refreshed its marker within PAGE_FRESH_SECONDS and is still
-    running (a force-quit window leaves a fresh marker behind)."""
-    if not _fresh(app_marker()):
+    """Whether a window process is there to take notices (see `window_presence`)."""
+    window = window_presence()
+    return window is not None and window.alive
+
+
+def _age(marker: Path) -> float | None:
+    try:
+        age = time.time() - marker.stat().st_mtime
+    except OSError:
+        return None
+    return age if age >= 0 else None  # a marker from the future: not to be trusted
+
+
+def process_start(pid: int) -> str | None:
+    """When process `pid` started, as `ps` says it (None: no such process, or no answer)."""
+    try:
+        done = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except OSError, subprocess.TimeoutExpired:
+        return None
+    return done.stdout.strip() or None if done.returncode == 0 else None
+
+
+def pid_running(pid: int) -> bool:
+    if pid <= 0:
         return False
     try:
-        pid = int(app_marker().read_text().strip())
-        if pid <= 0:
-            return False
         os.kill(pid, 0)
     except PermissionError:
         return True  # there, but another user's
-    except OSError, ValueError:
+    except OSError:
         return False
     return True
 
 
-def _fresh(marker: Path) -> bool:
+@dataclass(frozen=True)
+class Window:
+    """The window process as its markers and the process table show it."""
+
+    pid: int
+    alive: bool  # its process runs (and is the one that wrote the marker)
+    age: float | None  # seconds since its last poll
+    state: str  # its notification state ("": a window of older code)
+    why: str = ""  # why it does not count, when it does not
+
+    @property
+    def taker(self) -> str:
+        return WINDOW if self.state in POSTING_STATES else BANNER
+
+    def describe(self) -> str:
+        age = "?" if self.age is None else f"{self.age:.1f} s"
+        state = self.state or "older code"
+        alive = "running" if self.alive else f"not counted: {self.why}"
+        return f"window pid {self.pid} ({state}, polled {age} ago, {alive})"
+
+
+def window_presence() -> Window | None:
+    """The window process, None without a marker. It counts (`alive`) while its process runs:
+    the pid, guarded by the start time it recorded; a window of older code (no state file)
+    only while its marker is fresh, as older code had it."""
+    age = _age(app_marker())
     try:
-        age = time.time() - marker.stat().st_mtime
-    except OSError:
-        return False
-    return 0 <= age < PAGE_FRESH_SECONDS  # a marker from the future: not to be trusted
+        data = json.loads(app_state_path().read_text())
+        pid, start, state = int(data["pid"]), str(data.get("start") or ""), str(data["state"])
+    except OSError, ValueError, TypeError, KeyError:
+        try:
+            pid = int(app_marker().read_text().strip())
+        except OSError, ValueError:
+            return None
+        fresh = age is not None and age < PAGE_FRESH_SECONDS
+        alive = fresh and pid_running(pid)
+        why = "" if alive else ("its process is gone" if fresh else "its marker is stale")
+        return Window(pid, alive, age, "", why)
+    if not pid_running(pid):
+        return Window(pid, False, age, state, "its process is gone")
+    now_start = process_start(pid)
+    if start and now_start and now_start != start:
+        return Window(pid, False, age, state, "its pid belongs to another process now")
+    if not (start and now_start) and not (age is not None and age < PAGE_FRESH_SECONDS):
+        return Window(pid, False, age, state, "its start time is unknown and its marker stale")
+    return Window(pid, True, age, state)
+
+
+# -- the one decision ------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Presence:
+    """What `route` decides from: who is there to show a notice now."""
+
+    platform: str
+    window: Window | None = None
+    page: float | None = None  # seconds since a permitted page polled
+    bundle: Path | None = None  # the launcher's app that may post
+    no_bundle: str = ""  # why there is none
+    notify_send: str | None = None
+
+    @property
+    def page_fresh(self) -> bool:
+        return self.page is not None and self.page < PAGE_FRESH_SECONDS
+
+    @property
+    def live_window(self) -> Window | None:
+        return self.window if self.window is not None and self.window.alive else None
+
+    def describe(self) -> str:
+        parts = [self.window.describe() if self.window else "no window"]
+        parts.append("no page" if self.page is None else f"page polled {self.page:.1f} s ago")
+        if self.platform == "darwin":
+            parts.append("launcher ready" if self.bundle else f"launcher: {self.no_bundle}")
+        elif self.platform.startswith("linux"):
+            parts.append("notify-send" if self.notify_send else "no notify-send")
+        return "; ".join(parts)
+
+
+def presence() -> Presence:
+    platform = PLATFORM
+    window = window_presence() if platform == "darwin" else None
+    bundle, why = bundle_state() if platform == "darwin" else (None, "")
+    send = shutil.which(NOTIFY_SEND) if platform.startswith("linux") else None
+    return Presence(platform, window, page_age(), bundle, why, send)
+
+
+@dataclass(frozen=True)
+class Choice:
+    taker: str  # the route: WINDOW, HELPER_APP, PAGE, BANNER, WAITING, OSASCRIPT, LINUX
+    reason: str
+
+    @property
+    def path(self) -> str:
+        return PATHS[self.taker]
+
+    @property
+    def at_once(self) -> bool:
+        """Shown by the deciding process itself (claimed with the decision)."""
+        return self.taker in (OSASCRIPT, LINUX)
+
+
+def route(p: Presence, skip: Iterable[str] = ()) -> Choice:
+    """How a notice is shown now (the module doc's order), `skip`: takers that did not take
+    it. The one place that decides; everything else asks it or carries out its answer."""
+    skip = set(skip)
+    window = p.live_window
+    if window is not None and WINDOW in skip:
+        window = None
+    if p.platform == "darwin":
+        if window is not None and window.taker == WINDOW:
+            return Choice(WINDOW, f"the window process takes it ({window.state or 'older code'})")
+        if p.bundle is not None and HELPER_APP not in skip:
+            return Choice(HELPER_APP, "the launcher's app may post")
+        if p.page_fresh and PAGE not in skip:
+            return Choice(PAGE, "a permitted page polls")
+        if window is not None and BANNER not in skip:
+            return Choice(BANNER, f"the window may not post ({window.state})")
+        if p.bundle is not None or p.live_window is not None:
+            return Choice(WAITING, "nothing can show it now; the next taker or window does")
+        return Choice(OSASCRIPT, f"no window, no permitted page, no launcher ({p.no_bundle})")
+    if p.page_fresh and PAGE not in skip:
+        return Choice(PAGE, "a permitted page polls")
+    if p.platform.startswith("linux"):
+        if p.notify_send:
+            return Choice(LINUX, "notify-send")
+        return Choice(WAITING, "no notify-send on PATH; a page may take it")
+    return Choice(WAITING, f"no desktop notifications on {p.platform}; a page may take it")
+
+
+def may_take(taker: str, route_now: str | None) -> bool:
+    """Whether `taker` may claim a notice left to `route_now` (None: recorded by older code)."""
+    if route_now is None:
+        return True
+    return route_now in RANK and taker in RANK and RANK[route_now] >= RANK[taker]
+
+
+def takeable(taker: str) -> tuple[str, ...]:
+    return tuple(name for name in RANK if may_take(taker, name))
+
+
+# -- the trace -------------------------------------------------------------------------------
+
+
+def notice_log() -> Path:
+    return config.logs_dir() / NOTICE_LOG
+
+
+def log_step(notice: int | str | None, step: str, path: str | None, who: str, detail: str):
+    """One line in logs/notices.log; moved to notices.log.1 above NOTICE_LOG_LIMIT."""
+    with contextlib.suppress(OSError):
+        log = notice_log()
+        with contextlib.suppress(FileNotFoundError):
+            if log.stat().st_size > NOTICE_LOG_LIMIT:
+                log.replace(log.with_name(NOTICE_LOG + ".1"))
+        stamp = datetime.now().astimezone().isoformat(timespec="milliseconds")
+        name = "-" if notice is None else f"#{notice}" if isinstance(notice, int) else notice
+        line = f"{stamp} {name} {who} {step} {path or '-'}: {one_line(detail, 400)}\n"
+        with log.open("a", encoding="utf-8") as out:
+            out.write(line)
+
+
+def step(kind: str, path: str | None, detail: str = "", who: str | None = None) -> NoticeStep:
+    return NoticeStep(kind, path, who or actor(), detail, now_iso())
+
+
+def now_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="milliseconds")
+
+
+def note(store: Store | None, notice: int, item: NoticeStep, wait: float = 5.0) -> None:
+    """Trace a step: in the log, and in the store (the log says when the store refused)."""
+    log_step(notice, item.step, item.path, item.actor, item.detail)
+    if store is None:
+        return
+    try:
+        store.add_notice_step(notice, item, wait)
+    except Exception as exc:
+        log_step(notice, "lost", item.path, item.actor, f"the store did not take this step: {exc}")
+
+
+def logged(notice: int, items: Iterable[NoticeStep]) -> None:
+    for item in items:
+        log_step(notice, item.step, item.path, item.actor, item.detail)
+
+
+# -- showing a notice ------------------------------------------------------------------------
 
 
 def target_of(agent_id: str | None, decision_id: int | None) -> str:
@@ -167,66 +482,401 @@ def show(
     store: Store, body: str, agent_id: str | None = None, decision_id: int | None = None
 ) -> None:
     """Notify about `agent_id` (a decision notice with `decision_id`, else a finished one)
-    under the tool's name, unless switched off: record the notice, then leave it to whoever
-    can show it best (see the module doc). Never raises and never waits for a child."""
+    under the tool's name, unless switched off: record the notice as `route` decides, then
+    carry that out (see the module doc). Never raises and never waits for a child."""
     try:
         if not settings.desktop_notifications(store):
             return
-        notice = _record(store, body, agent_id, decision_id)
-        if notice is not None and (page_fresh() or app_fresh()):
+        found = presence()
+        choice = route(found)
+        if agent_id is None:  # nothing to record, so only a way that shows it at once
+            unrecorded(choice, found, body, decision_id)
             return
-        if PLATFORM == "darwin" and notice is not None and by_bundle(notice, body, decision_id):
+        kind = FINISHED if decision_id is None else DECISION
+        decided = step("route", choice.path, f"{choice.reason}; {found.describe()}")
+        recorded = step("record", None, "in the table at once")
+        began = time.monotonic()
+        try:
+            notice = store.add_notice(
+                kind,
+                agent_id,
+                body,
+                decision_id,
+                STORE_WAIT_SECONDS,
+                route=choice.taker,
+                claimed_by=actor() if choice.at_once else None,
+                steps=[recorded, decided],
+            )
+        except Exception as exc:
+            waited = time.monotonic() - began
+            why = f"the store was busy for {waited:.1f} s ({exc})"
+            spool(kind, agent_id, body, decision_id, why, decided)
             return
-        if PLATFORM.startswith("linux") and (send := shutil.which(NOTIFY_SEND)):
-            if notice is not None and _claim(store, notice) is False:
-                return  # a page showed it meanwhile
-            spawn(["linux", send, body, target_of(agent_id, decision_id)])
-            return  # no other way on Linux
-        plain(store, notice, body, decision_id)
+        logged(notice, [recorded, decided])
+        row = {"id": notice, "text": body, "agent_id": agent_id, "decision_id": decision_id}
+        carry_out(store, row, choice)
     except Exception:
         pass
 
 
-def by_bundle(notice: int, body: str, decision_id: int | None) -> bool:
-    """3. The launcher's app may post: a detached helper has it post the notice (osascript when
-    that fails); False when there is no such app or the helper could not be started."""
-    bundle = bundle_ready()
-    return bundle is not None and spawn(
-        ["bundle", OPEN, str(bundle), str(notice), body, _number(decision_id)]
-    )
+def unrecorded(choice: Choice, found: Presence, body: str, decision_id: int | None) -> None:
+    """A notice without an agent (never one of the two occasions): osascript or notify-send
+    show it when this platform has them, unrecorded; logged."""
+    if found.platform == "darwin":
+        taker, how = OSASCRIPT, "osascript"
+    elif found.platform.startswith("linux") and found.notify_send:
+        taker, how = LINUX, "notify-send"
+    else:
+        log_step(None, "drop", DROPPED, actor(), "no agent, nothing records it; not shown")
+        return
+    log_step(None, "shown", PATHS[taker], actor(), f"no agent, not recorded: {how}")
+    if taker == OSASCRIPT:
+        plain(body, decision_id)
+    else:
+        spawn(["linux", found.notify_send or NOTIFY_SEND, body, target_of(None, decision_id)])
 
 
-def without_window(store: Store, notice: int, body: str, decision_id: int | None) -> None:
-    """A recorded, unclaimed notice the Spartito window leaves as it closes (macOS): shown the
-    way `show` shows one with no window open, 3. or else 5. Never raises."""
+def carry_out(
+    store: Store,
+    notice: dict[str, Any],
+    choice: Choice,
+    detached: bool = False,
+    opener: str | None = None,
+) -> None:
+    """Do what `route` chose for a recorded notice (a row: id, text, agent_id, decision_id):
+    show it at once (osascript, notify-send; claimed with the choice), or have the detached
+    helper see it taken (`deliver`, run here when this is that helper)."""
+    nid, body, decision_id = notice["id"], str(notice["text"]), notice.get("decision_id")
+    if choice.taker == OSASCRIPT:
+        shown = plain(body, decision_id)
+        if shown is not None:
+            note(store, nid, step("shown", PATHS[OSASCRIPT], "osascript started"))
+        else:
+            note(store, nid, step("drop", PATHS[OSASCRIPT], "osascript could not be started"))
+        if detached and shown is not None:
+            shown.join(TIMEOUT_SECONDS + 1)  # this process ends next
+        return
+    if choice.taker == LINUX:
+        send = shutil.which(NOTIFY_SEND) or NOTIFY_SEND
+        target = target_of(notice.get("agent_id"), decision_id)
+        if detached:
+            note(store, nid, step("shown", PATHS[LINUX], "notify-send"))
+            linux_helper(send, body, target)
+        elif spawn(["linux", send, body, target]):
+            note(store, nid, step("shown", PATHS[LINUX], "notify-send helper started"))
+        else:
+            gone = "the notify-send helper did not start"
+            store.release_notice(
+                nid, STORE_WAIT_SECONDS, route=WAITING, step=step("release", PATHS[WAITING], gone)
+            )
+            logged(nid, [step("release", PATHS[WAITING], gone)])
+        return
+    if choice.taker == WAITING:
+        return
+    if detached:
+        deliver(store, nid, opener)
+    elif not spawn(["deliver", str(nid), opener or OPEN]):
+        note(
+            store,
+            nid,
+            step("fallback", choice.path, "the helper did not start; nobody escalates it"),
+        )
+
+
+# -- a busy store: the spool -----------------------------------------------------------------
+
+
+def spool_dir() -> Path:
+    path = config.runtime_dir() / SPOOL_DIR
+    path.mkdir(exist_ok=True)
+    return path
+
+
+def spool(
+    kind: str, agent_id: str, body: str, decision_id: int | None, why: str, decided: NoticeStep
+) -> Path | None:
+    """Keep a notice the busy store did not take as a file (written whole, then renamed into
+    place) and start the helper that records it; None when even that failed (logged)."""
+    name = f"{uuid.uuid4().hex}.json"
+    spooled = step("record", None, f"spooled: {why}")
+    items = [spooled, decided]
+    data = {
+        "kind": kind,
+        "agent_id": agent_id,
+        "text": body,
+        "decision_id": decision_id,
+        "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "steps": [vars(item) for item in items],
+    }
     try:
-        if not by_bundle(notice, body, decision_id):
-            plain(store, notice, body, decision_id)
+        path = spool_dir() / name
+        temp = path.with_name(f".{name}.tmp")
+        temp.write_text(json.dumps(data))
+        temp.replace(path)
+    except OSError as exc:
+        log_step(name, "drop", DROPPED, actor(), f"{why}; not spooled either ({exc}): lost")
+        return None
+    logged_name = f"spool:{name}"
+    for item in items:
+        log_step(logged_name, item.step, item.path, item.actor, item.detail)
+    if not spawn(["spool", str(path), OPEN]):
+        log_step(
+            logged_name, "fallback", None, actor(), "the helper did not start; a poll records it"
+        )
+    return path
+
+
+def ingest(store: Store, path: Path, wait: float = STORE_WAIT_SECONDS) -> dict[str, Any] | None:
+    """Record a spooled notice (taken by renaming its file, so only one process does), routed
+    as now; the notice row, or None (taken by another, or the store still busy)."""
+    taking = path.with_name(f"{path.name}.{os.getpid()}.taking")
+    try:
+        path.rename(taking)
+        data = json.loads(taking.read_text())
+    except OSError:
+        return None
+    except ValueError:
+        taking.unlink(missing_ok=True)
+        return None
+    found = presence()
+    choice = route(found)
+    items = [NoticeStep(**item) for item in data.get("steps", [])]
+    items.append(step("record", None, "recorded from the spool"))
+    items.append(step("route", choice.path, f"{choice.reason}; {found.describe()}"))
+    try:
+        nid = store.add_notice(
+            data["kind"],
+            data["agent_id"],
+            data["text"],
+            data.get("decision_id"),
+            wait,
+            route=choice.taker,
+            claimed_by=actor() if choice.at_once else None,
+            created_at=data.get("created_at"),
+            steps=items,
+        )
     except Exception:
-        pass
+        with contextlib.suppress(OSError):
+            taking.rename(path)
+        return None
+    taking.unlink(missing_ok=True)
+    logged(nid, items[-2:])
+    return {
+        "id": nid,
+        "text": data["text"],
+        "agent_id": data["agent_id"],
+        "decision_id": data.get("decision_id"),
+        "choice": choice,
+    }
 
 
-def _number(value: int | None) -> str:
-    return "" if value is None else str(value)
+def ingest_spool(store: Store, detached: bool = False) -> list[int]:
+    """Record every spooled notice the store takes now and carry out its route (a poll of the
+    window, a page or the posting process does this). The ids recorded."""
+    try:
+        paths = sorted(spool_dir().glob("*.json"))
+    except OSError:
+        return []
+    done = []
+    for path in paths:
+        row = ingest(store, path, wait=0.5)
+        if row is not None:
+            done.append(row["id"])
+            carry_out(store, row, row["choice"], detached)
+    return done
 
 
-def plain(
-    store: Store | None, notice: int | None, body: str, decision_id: int | None
-) -> threading.Thread | None:
-    """5. Claim the notice (when there is one and a store) and show it with osascript, its
-    text ending with where to look; a claim the busy store refused is tried once more after
-    osascript ended, so no other way shows the notice again. Returns the thread that waits
-    for osascript. Never raises."""
+def spool_helper(store: Store, path: Path, opener: str | None = None) -> None:
+    """The helper for a spooled notice: record it, however long the store is busy (up to
+    SPOOL_GIVE_UP_SECONDS), then carry out its route."""
+    deadline = time.monotonic() + SPOOL_GIVE_UP_SECONDS
+    while time.monotonic() < deadline:
+        if not path.exists():
+            return  # a poll recorded it
+        row = ingest(store, path)
+        if row is not None:
+            carry_out(store, row, row["choice"], detached=True, opener=opener)
+            return
+        time.sleep(0.5)
+    log_step(f"spool:{path.name}", "drop", DROPPED, actor(), "the store stayed busy; still spooled")
+
+
+# -- the detached helper: seeing a notice taken ----------------------------------------------
+
+
+def wait_taken(store: Store, notice: int, taker: str, seconds: float) -> str:
+    """Wait until the notice is claimed ("claimed"), left to another ("moved"), gone, or
+    `seconds` passed ("late")."""
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            row = store.notice(notice)
+        except Exception:
+            row = {"claimed_at": None, "route": taker}  # busy: look again
+        if row is None:
+            return "gone"
+        if row["claimed_at"] is not None:
+            return "claimed"
+        if row["route"] != taker:
+            return "moved"
+        if time.monotonic() >= deadline:
+            return "late"
+        time.sleep(WAIT_STEP)
+
+
+def deliver(store: Store, notice: int, opener: str | None = None) -> None:
+    """See the notice taken by whom `route` left it to; whoever does not take it in time is
+    skipped and the notice routed again (escalated), until it is taken, waits, or is shown
+    at once. The launcher's app is started here."""
+    skip: set[str] = set()
+    for _ in range(len(RANK) + 1):
+        row = store.notice(notice)
+        if row is None or row["claimed_at"] is not None:
+            return
+        taker = row["route"]
+        if taker in (WINDOW, PAGE, BANNER):
+            outcome = wait_taken(store, notice, taker, ESCALATE_SECONDS)
+            if outcome != "late":
+                return
+            who = (
+                presence().describe()
+                if taker != PAGE
+                else f"page polled {page_age() or 0:.1f} s ago"
+            )
+            why = f"{PATHS[taker]} did not take it within {ESCALATE_SECONDS:.0f} s ({who})"
+            skip |= {WINDOW, BANNER} if taker in (WINDOW, BANNER) else {PAGE}
+        elif taker == HELPER_APP:
+            bundle, no = bundle_state()
+            problem = no if bundle is None else start_launcher(opener or OPEN, bundle)
+            if problem is None:
+                outcome = wait_taken(store, notice, taker, CLAIM_WAIT_SECONDS)
+                if outcome != "late":
+                    return  # claimed, or the posting process left it to wait (and said why)
+                problem = f"its app did not take it within {CLAIM_WAIT_SECONDS:.0f} s"
+            why = f"launcher-helper: {problem}"
+            skip.add(HELPER_APP)
+        else:
+            return  # waiting, or shown at once
+        found = presence()
+        choice = route(found, skip)
+        moved = step("escalate", choice.path, f"{why}; now {choice.reason}; {found.describe()}")
+        claimer = actor() if choice.at_once else None
+        if not store.reroute_notice(notice, choice.taker, moved, was=(taker,), claimed_by=claimer):
+            return  # taken meanwhile
+        logged(notice, [moved])
+        if choice.at_once or choice.taker == WAITING:
+            carry_out(store, row, choice, detached=True, opener=opener)
+            return
+
+
+def start_launcher(opener: str, bundle: Path) -> str | None:
+    """Start the launcher's app hidden to post the pending notices; None, or why it failed."""
+    argv = [opener, "-n", "-g", "-j", "-a", str(bundle), "--args", "--notify"]
+    try:
+        done = subprocess.run(
+            argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=OPEN_TIMEOUT
+        )
+    except subprocess.TimeoutExpired:
+        return f"`open` took over {OPEN_TIMEOUT:.0f} s"
+    except OSError as exc:
+        return f"`open` did not run ({exc})"
+    if done.returncode != 0:
+        said = one_line(done.stderr or done.stdout, 160)
+        return f"`open` failed (exit {done.returncode}{': ' + said if said else ''})"
+    return None
+
+
+# -- the takers' side ------------------------------------------------------------------------
+
+
+def claim(
+    store: Store,
+    notice: int,
+    taker: str,
+    path: str | None = None,
+    detail: str = "",
+    who: str | None = None,
+) -> bool:
+    """`taker` claims the notice to show it, when it may (`may_take`); traced. True only for
+    the one that did."""
+    claimed = step("claim", path or PATHS.get(taker, taker), detail, who)
+    if store.claim_notice(notice, routes=takeable(taker), by=claimed.actor, step=claimed):
+        logged(notice, [claimed])
+        return True
+    return False
+
+
+def release_to_wait(store: Store, notice: int, why: str, who: str | None = None) -> bool:
+    """A taker could not show the notice it claimed: it waits again (traced)."""
+    item = step("release", PATHS[WAITING], why, who)
+    if store.release_notice(notice, route=WAITING, by=item.actor, step=item):
+        logged(notice, [item])
+        return True
+    return False
+
+
+def redirect(
+    store: Store, notice: dict[str, Any], why: str, skip: Iterable[str], who: str | None = None
+) -> Choice | None:
+    """A notice left to (or claimed by) a taker that is going (`who`, this process by
+    default): released when it was this one's claim, then routed again without the takers
+    in `skip` and carried out. None when another took it meanwhile."""
+    nid = notice["id"]
+    skip = tuple(skip)
+    mine = step("release", None, why, who)
+    released = store.release_notice(nid, by=mine.actor, step=mine)
+    if released:
+        logged(nid, [mine])
+    found = presence()
+    choice = route(found, skip)
+    moved = step("escalate", choice.path, f"{why}; now {choice.reason}; {found.describe()}")
+    claimer = actor() if choice.at_once else None
+    was = None if released else skip
+    if not store.reroute_notice(nid, choice.taker, moved, was=was, claimed_by=claimer):
+        return None
+    logged(nid, [moved])
+    carry_out(store, notice, choice)
+    return choice
+
+
+REASONS = ("fallback", "escalate", "release", "drop")
+
+
+def summary(notice: dict[str, Any]) -> dict[str, Any]:
+    """How a traced notice (store.notice_trace) went, as one line's fields: path, actor, at
+    (of the step that showed, claimed or left it), reason (the last fallback, escalation,
+    release or drop, else the route's reason)."""
+    steps = notice.get("steps") or []
+    if not steps:
+        claimed = notice.get("claimed_at")
+        return {
+            "path": "shown (older code)" if claimed else "unclaimed (older code)",
+            "actor": notice.get("claimed_by") or "-",
+            "at": claimed or notice.get("created_at"),
+            "reason": "recorded by older code: no trace",
+        }
+    last = steps[-1]
+    route_now = notice.get("route") or ""
+    if notice.get("claimed_at"):
+        last = next((s for s in reversed(steps) if s["step"] in ("shown", "drop", "claim")), last)
+        path = last["path"] or "-"
+    elif route_now == WAITING:
+        path = PATHS[WAITING]
+    else:
+        path = f"{PATHS.get(route_now, 'unclaimed')} (not taken yet)"
+    why = next((s for s in reversed(steps) if s["step"] in REASONS), None)
+    why = why or next((s for s in reversed(steps) if s["step"] == "route"), last)
+    return {"path": path, "actor": last["actor"], "at": last["at"], "reason": why["detail"]}
+
+
+def plain(body: str, decision_id: int | None) -> threading.Thread | None:
+    """Show the notice with osascript, its text ending with where to look (the caller claimed
+    it). Returns the thread that waits for osascript; None when there is none. Never raises."""
     try:
         clause = CLAUSE_FINISHED if decision_id is None else CLAUSE_DECISION
         argv = command(config.PROJECT_NAME, one_line(body, TEXT_CHARS - len(clause)) + clause)
         if argv is None:
             return None
-        claimed = True
-        if store is not None and notice is not None:
-            claimed = _claim(store, notice)
-            if claimed is False:
-                return None  # someone showed it meanwhile
         proc = subprocess.Popen(
             argv,
             stdin=subprocess.DEVNULL,
@@ -234,8 +884,7 @@ def plain(
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        later = (store, notice) if claimed is None else None
-        thread = threading.Thread(target=_reap, args=(proc, later), daemon=True)
+        thread = threading.Thread(target=_reap, args=(proc,), daemon=True)
         thread.start()
         return thread
     except Exception:
@@ -258,27 +907,7 @@ def spawn(args: list[str]) -> bool:
     return True
 
 
-def _record(store: Store, body: str, agent_id: str | None, decision_id: int | None) -> int | None:
-    """The new notice's id; None without an agent or if it could not be stored."""
-    if agent_id is None:
-        return None
-    try:
-        kind = FINISHED if decision_id is None else DECISION
-        return store.add_notice(kind, agent_id, body, decision_id, STORE_WAIT_SECONDS)
-    except Exception:
-        return None
-
-
-def _claim(store: Store, notice: int, wait: float = STORE_WAIT_SECONDS) -> bool | None:
-    """Claim the notice to show it: True, or False when someone else did; None when the
-    store was busy (it is shown anyway, as before notices existed)."""
-    try:
-        return store.claim_notice(notice, wait)
-    except Exception:
-        return None
-
-
-# -- 3. the launcher's app (macOS) -----------------------------------------------------------
+# -- the launcher's app (macOS) --------------------------------------------------------------
 
 
 def grant_path() -> Path:
@@ -335,58 +964,43 @@ def interpreter_problem(bundle: Path) -> str | None:
     return None
 
 
-def bundle_ready() -> Path | None:
-    """The launcher's app that can post a notification now: allowed (grant file), there, and
-    its interpreter copy current; None otherwise."""
+def bundle_state() -> tuple[Path | None, str]:
+    """The launcher's app that can post a notification now (allowed: grant file; there; its
+    interpreter copy current), or None and why not."""
     bundle = granted_bundle()
-    if bundle is None or not bundle.is_dir() or interpreter_problem(bundle):
-        return None
-    return bundle
+    if bundle is None:
+        return None, "no grant file (not installed, or not allowed)"
+    if not bundle.is_dir():
+        return None, f"the granted bundle is gone ({bundle.name})"
+    if problem := interpreter_problem(bundle):
+        return None, f"unusable: {problem}"
+    return bundle, ""
 
 
-def unclaimed(store: Store, notice: int) -> bool:
-    return any(row["id"] == notice for row in store.notices(notice - 1))
+def bundle_ready() -> Path | None:
+    return bundle_state()[0]
 
 
 # -- the detached helper ---------------------------------------------------------------------
 
 
 def helper(args: list[str]) -> int:
-    """`spawn`'s process: ["bundle", open, bundle, notice, body, decision] or
-    ["linux", notify-send, body, target]. Never raises."""
+    """`spawn`'s process: ["deliver", notice, open], ["spool", file, open] or ["linux",
+    notify-send, body, target]. Never raises."""
+    global ROLE
+    was, ROLE = ROLE, "helper"
     try:
-        if args and args[0] == "bundle" and len(args) == 6:
-            bundle_helper(args[1], Path(args[2]), int(args[3]), args[4], args[5])
+        if args and args[0] == "deliver" and len(args) == 3:
+            deliver(Store(), int(args[1]), args[2])
+        elif args and args[0] == "spool" and len(args) == 3:
+            spool_helper(Store(), Path(args[1]), args[2])
         elif args and args[0] == "linux" and len(args) == 4:
             linux_helper(args[1], args[2], args[3])
     except Exception:
         return 1
+    finally:
+        ROLE = was
     return 0
-
-
-def bundle_helper(opener: str, bundle: Path, notice: int, body: str, decision: str) -> None:
-    """Start the launcher's app to post the pending notices; when that fails, or the notice is
-    still unclaimed after CLAIM_WAIT_SECONDS, show it with osascript."""
-    store = Store()
-    argv = [opener, "-n", "-g", "-j", "-a", str(bundle), "--args", "--notify"]
-    try:
-        started = (
-            subprocess.run(
-                argv, stdin=subprocess.DEVNULL, capture_output=True, timeout=OPEN_TIMEOUT
-            ).returncode
-            == 0
-        )
-    except OSError, subprocess.TimeoutExpired:
-        started = False
-    if started:
-        deadline = time.monotonic() + CLAIM_WAIT_SECONDS
-        while time.monotonic() < deadline:
-            if not unclaimed(store, notice):
-                return
-            time.sleep(0.25)
-    shown = plain(store, notice, body, int(decision) if decision else None)
-    if shown is not None:
-        shown.join(TIMEOUT_SECONDS + LATE_CLAIM_WAIT_SECONDS + 1)  # this process ends next
 
 
 # -- 4. Linux --------------------------------------------------------------------------------
@@ -484,7 +1098,7 @@ def start_app(options: list[str]) -> None:
     )
 
 
-def _reap(proc: subprocess.Popen[bytes], later: tuple[Store, int] | None = None) -> None:
+def _reap(proc: subprocess.Popen[bytes]) -> None:
     try:
         proc.wait(timeout=TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
@@ -492,8 +1106,6 @@ def _reap(proc: subprocess.Popen[bytes], later: tuple[Store, int] | None = None)
         proc.wait()
     except Exception:
         pass
-    if later is not None:
-        _claim(*later, wait=LATE_CLAIM_WAIT_SECONDS)
 
 
 def display_name(store: Store, agent_id: str) -> str:

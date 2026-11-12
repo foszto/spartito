@@ -5,9 +5,11 @@ identifier; the notification centre accepts no other), and the notices the nativ
 inside itself when it may not post them:
 
 - the window process (`spartito app`, window.py): sets the centre's delegate before the GUI loop
-  runs and from then on, every POLL_SECONDS, keeps its marker fresh (desktop.app_present, so
-  osascript and the posting process leave new notices to it) and claims the new notices
-  (through the facade, once each, as a page does). It asks for permission once the window is
+  runs and from then on, every POLL_SECONDS, keeps its markers fresh (desktop.app_present, with
+  its state: desktop.route leaves notices to it while its process runs) and claims the notices
+  desktop.route left to it (through the facade, once each, as a page does). On its first poll
+  it takes the notices that waited for a window (the backlog: shown inside, the newest
+  IN_WINDOW and a count of the others; none for a decision no longer open). It asks for permission once the window is
   shown (`ask`; asked earlier, during the launch, the answer was seen to get lost) and reads
   the authorization status on each poll, so a lost answer, or a change in System Settings, is
   seen within a poll. Allowed, it records the grant (desktop.record_grant) and posts the
@@ -16,12 +18,17 @@ inside itself when it may not post them:
   Each change of that state is said (window.say: stderr and the app log) and shown in the page.
   A notice it shows inside stays counted on the Dock's badge until the page has it; one the page
   never took (no hook in the page, `evaluate_js` failing) is said once (PAGE_WAIT_SECONDS). As
-  the window closes (`closing`, then `close`) it claims nothing more and hands what it took but
-  did not get shown, and what is still unclaimed, to the way that applies without a window
-  (desktop.without_window: the posting process, else osascript; claims keep it to once);
-- the posting process (`spartito app --notify`, started hidden by desktop.bundle_helper when no
-  window runs): claims and posts the pending notices younger than MAX_AGE_SECONDS, then exits;
-  when it is not allowed (any more), it forgets the grant and shows them with osascript.
+  the window closes (`closing`, then `close`) it claims nothing more, removes its markers and
+  hands what it took but did not get shown (its own claims only), and what is still left to
+  it, to desktop.route without a window (core/notices.hand_over_notice); claims keep each to
+  one showing;
+- the posting process (`spartito app --notify`, started hidden by desktop.deliver when route
+  chose the launcher's app): claims and posts the pending notices left to it (or waiting)
+  younger than MAX_AGE_SECONDS, then exits. When it may not post (not allowed: it forgets the
+  grant; no answer from the system in time), or a post fails, the notices wait (traced); it
+  never falls back to osascript.
+
+Every claim, post, fallback and hand-over is traced (desktop.py: `spartito notices`).
 
 Each notification carries a userInfo {"home": <digest of this home>, "target": "decision:<n>"
 or the agent id}. A click on it (the default action) reaches the delegate of the running app,
@@ -230,8 +237,15 @@ class MacCenter:
 class Facade(Protocol):
     def notices(self, after: int = 0) -> list[dict[str, Any]]: ...
     def notice_cursor(self) -> int: ...
-    def claim_notice(self, notice_id: int) -> bool: ...
-    def hand_over_notice(self, notice: dict[str, Any]) -> None: ...
+    def claim_notice(self, notice_id: int, taker: str = ..., detail: str = ...) -> bool: ...
+    def notice_step(
+        self, notice_id: int, kind: str, path: str | None, detail: str, taker: str
+    ) -> None: ...
+    def release_notice(self, notice_id: int, why: str, taker: str) -> bool: ...
+    def leave_waiting(self, notice_id: int, why: str, taker: str) -> bool: ...
+    def hand_over_notice(self, notice: dict[str, Any], taker: str = ...) -> None: ...
+    def notice_backlog(self, before: int, taker: str) -> list[dict[str, Any]]: ...
+    def ingest_notices(self) -> list[int]: ...
 
 
 def text_of(notice: dict[str, Any]) -> str:
@@ -242,13 +256,13 @@ def post(
     center: Center,
     notice: dict[str, Any],
     done: Callable[[str | None], None],
-    fallback: Callable[[dict[str, Any]], None] | None = None,
+    fallback: Callable[[dict[str, Any], str], None],
 ) -> None:
-    """Post a claimed notice; a refused one is shown by `fallback` (default: osascript)."""
+    """Post a claimed notice; a refused one goes to `fallback(notice, error)`."""
 
     def posted(error: str | None) -> None:
         if error:
-            (fallback or osascript)(notice)
+            fallback(notice, error)
         done(error)
 
     try:
@@ -261,10 +275,6 @@ def post(
         )
     except Exception as exc:
         posted(str(exc) or type(exc).__name__)
-
-
-def osascript(notice: dict[str, Any]) -> None:
-    desktop.plain(None, None, str(notice["text"]), notice.get("decision_id"))
 
 
 def wait_for(center: Center, ask: Callable[[Callable], None], seconds: float = WAIT_SECONDS):
@@ -327,7 +337,9 @@ class WindowNotifier:
         self.identifier, self.bundle = identifier, bundle
         self.inside: InWindow = inside or Nowhere()
         self.app_name = bundle.stem if bundle is not None else config.PROJECT_NAME
-        self.cursor = orch.notice_cursor()  # a window opened now replays nothing older
+        self.cursor = orch.notice_cursor()  # older ones waited for a window: the backlog
+        self.backlog_taken = False
+        self.earlier = 0  # backlog notices beyond the IN_WINDOW shown: a count
         self.stop = threading.Event()
         self.thread: threading.Thread | None = None
         self.lock = threading.RLock()
@@ -367,11 +379,26 @@ class WindowNotifier:
         return f"notifications from {name}: not available ({self.detail}); {inside}"
 
     def view(self) -> dict[str, Any]:
+        notices = list(self.shown)
+        if self.earlier:
+            notices.insert(0, self.earlier_item())
         return {
             "version": self.version,
             "state": self.state,
             "line": self.line(),
-            "notices": list(self.shown),
+            "notices": notices,
+        }
+
+    def earlier_item(self) -> dict[str, Any]:
+        """The banner that counts the backlog notices not shown one by one."""
+        return {
+            "id": -self.cursor - 1,  # stays the same while this window runs
+            "kind": "earlier",
+            "text": (
+                f"{self.earlier} earlier notice(s) waited while no window was open:"
+                f" `{config.CLI_NAME} notices` lists them"
+            ),
+            "target": "",
         }
 
     def become(self, state: str, detail: str = "") -> None:
@@ -396,6 +423,11 @@ class WindowNotifier:
     @property
     def allowed(self) -> bool:
         return self.state == ALLOWED
+
+    @property
+    def taker(self) -> str:
+        """As which taker it claims (desktop.route): one that posts, or shows inside."""
+        return desktop.WINDOW if self.state in desktop.POSTING_STATES else desktop.BANNER
 
     # -- the window's life -------------------------------------------------------------
 
@@ -483,15 +515,48 @@ class WindowNotifier:
     def tick(self) -> None:
         if self.stop.is_set():
             return  # closing: no marker, no claims
-        desktop.app_present()
+        desktop.app_present(self.state)
         self.check()
+        with contextlib.suppress(Exception):
+            self.orch.ingest_notices()  # what a busy store left in the spool
+        if not self.backlog_taken:
+            self.take_backlog()
         for notice in self.orch.notices(self.cursor):
             if self.stop.is_set():
                 return
-            if self.orch.claim_notice(notice["id"]):
+            taker = self.taker
+            if desktop.may_take(taker, notice.get("route")) and self.orch.claim_notice(
+                notice["id"], taker, f"its poll ({self.state})"
+            ):
                 self.deliver(notice)
-            self.cursor = notice["id"]
         self.push()
+
+    def take_backlog(self) -> None:
+        """The notices that waited for a window: shown inside (not posted: no flood), the
+        newest IN_WINDOW one by one, the others as a count; decisions no longer open none."""
+        taken = []
+        taker = self.taker
+        for notice in self.orch.notice_backlog(self.cursor, taker):
+            if self.stop.is_set():
+                return
+            if self.orch.claim_notice(notice["id"], taker, "it waited for a window"):
+                taken.append(notice)
+        self.backlog_taken = True
+        if not taken:
+            return
+        with self.lock:
+            self.earlier += max(0, len(taken) - IN_WINDOW)
+        for notice in taken[:-IN_WINDOW]:
+            self.trace(notice, "shown", desktop.PATHS[desktop.BANNER], "counted in the window")
+        for notice in taken[-IN_WINDOW:]:
+            self.show_inside(notice, "it waited for a window", attention=False)
+        with contextlib.suppress(Exception):
+            self.inside.attention()
+        self.say(f"notifications: {len(taken)} notice(s) waited for a window; shown in it")
+
+    def trace(self, notice: dict[str, Any], kind: str, path: str | None, detail: str) -> None:
+        with contextlib.suppress(Exception):
+            self.orch.notice_step(notice["id"], kind, path, detail, desktop.WINDOW)
 
     def deliver(self, notice: dict[str, Any]) -> None:
         """A claimed notice: posted when allowed, else (or when the post fails) shown in the
@@ -499,11 +564,19 @@ class WindowNotifier:
         if self.handed:
             self.hand_over(notice)
         elif self.allowed:
-            post(self.center, notice, lambda error: None, self.show_inside)
+            post(self.center, notice, lambda error: self.posted(notice, error), self.refused)
         else:
-            self.show_inside(notice)
+            self.show_inside(notice, f"may not post ({self.state})")
 
-    def show_inside(self, notice: dict[str, Any]) -> None:
+    def posted(self, notice: dict[str, Any], error: str | None) -> None:
+        if not error:
+            self.trace(notice, "shown", desktop.PATHS[desktop.WINDOW], "posted")
+
+    def refused(self, notice: dict[str, Any], error: str) -> None:
+        self.trace(notice, "fallback", desktop.PATHS[desktop.BANNER], f"post failed: {error}")
+        self.show_inside(notice, "the post failed")
+
+    def show_inside(self, notice: dict[str, Any], why: str = "", attention: bool = True) -> None:
         with self.lock:
             late = self.handed
             if not late:
@@ -513,8 +586,10 @@ class WindowNotifier:
         if late:  # a post refused after the window closed
             self.hand_over(notice)
             return
-        with contextlib.suppress(Exception):
-            self.inside.attention()
+        self.trace(notice, "shown", desktop.PATHS[desktop.BANNER], why or "inside the window")
+        if attention:
+            with contextlib.suppress(Exception):
+                self.inside.attention()
         self.push()
 
     def push(self) -> None:
@@ -569,20 +644,27 @@ class WindowNotifier:
         self.stop.set()
 
     def close(self) -> None:
-        """After the GUI loop: stop, remove the marker, then hand over what the window took
-        but did not get shown and what came after its last poll (`desktop.show` left those
-        to the window while its marker was fresh)."""
+        """After the GUI loop: stop, remove the markers, then hand over what the window took
+        but did not get shown and what is still left to it (desktop.route left those to the
+        window while its process ran); a notice another took meanwhile stays as it is."""
         self.closing()
         if self.thread is not None:
             self.thread.join(POLL_SECONDS + 1)
-        desktop.app_marker().unlink(missing_ok=True)
+        desktop.app_gone()
         with self.lock:
+            already = self.handed
             self.handed = True
             left = list(self.unseen.values())
             self.unseen.clear()
+        if already:
+            return
         try:
-            last = self.orch.notice_cursor()  # recorded later: desktop.show's own
-            left += [n for n in self.orch.notices(self.cursor) if n["id"] <= last]
+            mine = (desktop.WINDOW, desktop.BANNER)
+            left += [
+                n
+                for n in self.orch.notices(0)
+                if n.get("route") in mine or (n.get("route") is None and n["id"] > self.cursor)
+            ]  # no route: older code, which left it to a window with a fresh marker
         except Exception:
             pass
         for notice in left:
@@ -590,12 +672,12 @@ class WindowNotifier:
         if left:
             self.say(
                 f"notifications: the window closed with {len(left)} notice(s) it had not"
-                " shown; handed to macOS"
+                f" shown; handed over (`{config.CLI_NAME} notices` shows where)"
             )
 
     def hand_over(self, notice: dict[str, Any]) -> None:
         with contextlib.suppress(Exception):
-            self.orch.hand_over_notice(notice)
+            self.orch.hand_over_notice(notice, desktop.WINDOW)
 
 
 def opener(open_target: Callable[[str], Any]) -> Callable[[str, dict[str, Any]], None]:
@@ -610,10 +692,13 @@ def opener(open_target: Callable[[str], Any]) -> Callable[[str, dict[str, Any]],
 
 
 def fresh(orch: Facade, now: float | None = None) -> list[dict[str, Any]]:
-    """The unclaimed notices younger than MAX_AGE_SECONDS, oldest first."""
+    """The unclaimed notices younger than MAX_AGE_SECONDS that the posting process may take
+    (left to it, waiting, or of older code), oldest first."""
     now = time.time() if now is None else now
     found = []
     for notice in orch.notices(0):
+        if not desktop.may_take(desktop.HELPER_APP, notice.get("route")):
+            continue
         try:
             created = datetime.fromisoformat(str(notice["created_at"]))
         except ValueError:
@@ -632,29 +717,49 @@ def post_pending(
     clicked: list[str],
     say: Callable[[str], None] = lambda line: None,
 ) -> str | None:
-    """The posting process: claim and post the pending notices (shown with osascript when
-    this app may not post), wait for the centre, then return the target of a click that came
-    meanwhile (`clicked`, filled by the delegate), else None."""
+    """The posting process: claim and post the pending notices it may take, wait for the
+    centre, then return the target of a click that came meanwhile (`clicked`, filled by the
+    delegate), else None. When it may not post, or a post fails, the notices wait (traced;
+    the window shows them when it opens); never osascript."""
+    with contextlib.suppress(Exception):
+        orch.ingest_notices()
     answer = wait_for(center, center.status)
     allowed = answer is not None and answer[0] in AUTHORIZED
-    if answer is None:  # no answer in time: osascript this once, the grant stays
-        say(f"notifications from {config.PROJECT_NAME}: the system did not answer; osascript")
+    why = ""
+    if answer is None:  # the grant stays: the next notice tries again
+        why = f"the notification centre did not answer within {WAIT_SECONDS:g} s"
     elif not allowed:
-        say(
-            f"notifications from {config.PROJECT_NAME}: not allowed (authorization status"
-            f" {answer[0]}); osascript"
-        )
+        why = f"not allowed (authorization status {answer[0]})"
         desktop.forget_grant(bundle)
+    if not allowed:
+        say(f"notifications from {config.PROJECT_NAME}: {why}; the notices wait")
+        for notice in fresh(orch):
+            if notice.get("route") == desktop.HELPER_APP:
+                orch.leave_waiting(notice["id"], why, desktop.HELPER_APP)
+        return clicked[0] if clicked else None
     pending: list[int] = []
     finished: list[str | None] = []
+
+    def failed(notice: dict[str, Any], error: str) -> None:
+        orch.release_notice(notice["id"], f"post failed: {error}", desktop.HELPER_APP)
+
+    def done(notice: dict[str, Any], error: str | None) -> None:
+        if not error:
+            with contextlib.suppress(Exception):
+                orch.notice_step(
+                    notice["id"],
+                    "shown",
+                    desktop.PATHS[desktop.HELPER_APP],
+                    "posted",
+                    desktop.HELPER_APP,
+                )
+        finished.append(error)
+
     for notice in fresh(orch):
-        if not orch.claim_notice(notice["id"]):
+        if not orch.claim_notice(notice["id"], desktop.HELPER_APP, "the posting process"):
             continue
-        if allowed:
-            pending.append(notice["id"])
-            post(center, notice, finished.append)
-        else:
-            osascript(notice)
+        pending.append(notice["id"])
+        post(center, notice, lambda error, n=notice: done(n, error), failed)
     deadline = time.monotonic() + WAIT_SECONDS
     while len(finished) < len(pending) and time.monotonic() < deadline:
         center.spin(0.05)
@@ -667,7 +772,7 @@ def notify(
     orch: Facade, bundle: Path | None, say: Callable[[str], None] = lambda line: None
 ) -> str | None:
     """`spartito app --notify`: post the pending notices as this app (see post_pending); the
-    target of a click that reached this process, or None. Without the framework: osascript."""
+    target of a click that reached this process, or None. Without the framework they wait."""
     clicked: list[str] = []
     try:
         center: Center = MacCenter(opener(clicked.append))
@@ -677,7 +782,7 @@ def notify(
 
 
 class Unavailable:
-    """No notification centre here: nothing is allowed, osascript shows them."""
+    """No notification centre here: nothing is allowed (the notices wait)."""
 
     def authorize(self, done: Callable[[bool, str | None], None]) -> None:
         done(False, "UserNotifications is not installed")

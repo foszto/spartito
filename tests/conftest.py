@@ -226,11 +226,24 @@ def no_real_notifications(tmp_path_factory: pytest.TempPathFactory, monkeypatch)
     missing = tmp_path_factory.mktemp("no-commands")
     monkeypatch.setattr(desktop, "OPEN", str(missing / "open"))
     monkeypatch.setattr(desktop, "NOTIFY_SEND", "orch-test-no-notify-send")
+    monkeypatch.setattr(desktop, "ROLE", None)  # a window test sets it for its process
 
     def no_center(*args, **kwargs):
         raise RuntimeError("no notification centre in tests")
 
     monkeypatch.setattr(notifier, "MacCenter", no_center)
+
+
+@pytest.fixture(autouse=True)
+def no_detached_helpers(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """desktop.spawn notes the detached helper's arguments instead of starting it, so no test
+    leaves a process behind that escalates a notice later; a test runs the helper itself
+    (desktop.helper) or starts it on purpose. Returns the notes."""
+    from orchestrator import desktop
+
+    noted: list[list[str]] = []
+    monkeypatch.setattr(desktop, "spawn", lambda args: noted.append(args) or True)
+    return noted
 
 
 @pytest.fixture(autouse=True)

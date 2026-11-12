@@ -165,9 +165,9 @@ def test_asked_once_the_window_is_shown_then_allowed_it_records_the_grant_and_po
         (f"spartito-notice-{finished}", "Spartito", "a-2 finished",
          {"home": digest, "target": "a-2"}),
     ]  # fmt: skip
-    assert [n["id"] for n in orch.notices()] == [old]  # older than the window: not replayed
+    assert orch.notices() == []  # older than the window: it waited, shown inside, not posted
     until(lambda: inside.views and inside.last["state"] == "allowed", what="the page's line")
-    assert inside.last["notices"] == [] and inside.attention_calls == 0
+    assert [n["id"] for n in inside.last["notices"]] == [old]
     window_notifier.close()
     assert not desktop.app_marker().exists()
 
@@ -353,7 +353,8 @@ def test_at_close_a_notice_the_page_never_took_is_shown_as_without_a_window_once
     assert orch.notices() == []  # claimed again, by osascript
     assert (
         lines[-1]
-        == "notifications: the window closed with 1 notice(s) it had not shown; handed to macOS"
+        == "notifications: the window closed with 1 notice(s) it had not shown; handed over"
+        " (`spartito notices` shows where)"
     )
     window_notifier.close()  # the fixture's close: nothing twice
     assert len(calls(fake_osascript)) == 1
@@ -405,22 +406,38 @@ def test_a_notice_recorded_after_the_last_poll_is_shown_once_the_window_closes(
 
 
 def test_without_a_window_the_launchers_app_posts_a_handed_over_notice(
-    orch: Orchestrator, fake_osascript, tmp_path, monkeypatch
+    orch: Orchestrator, fake_osascript, tmp_path, monkeypatch, no_detached_helpers
 ):
-    """The hand-over takes the way of desktop.show with no window: the launcher's app when it
-    may post (its helper falls back to osascript itself), else osascript."""
-    started: list[list[str]] = []
-    monkeypatch.setattr(desktop, "bundle_ready", lambda: tmp_path / "X.app")
-    monkeypatch.setattr(desktop, "spawn", lambda args: started.append(args) or True)
-    notice = orch.store.add_notice("decision", "a-1", "Decision needed", 4)
-    orch.claim_notice(notice)  # the window took it
+    """The hand-over asks desktop.route without the window: the launcher's app when it may
+    post (its helper never falls back to osascript), else osascript."""
+    monkeypatch.setattr(desktop, "PLATFORM", "darwin")
+    monkeypatch.setattr(desktop, "bundle_state", lambda: (tmp_path / "X.app", ""))
+    notice = orch.store.add_notice("decision", "a-1", "Decision needed", 4, route="window")
+    assert orch.claim_notice(notice, "window")  # the window took it
     orch.hand_over_notice({"id": notice, "text": "Decision needed", "decision_id": 4})
-    assert started == [
-        ["bundle", desktop.OPEN, str(tmp_path / "X.app"), str(notice), "Decision needed", "4"]
-    ]
-    assert [n["id"] for n in orch.notices()] == [notice]  # unclaimed: the posting app claims it
+    assert no_detached_helpers == [["deliver", str(notice), desktop.OPEN]]
+    assert [(n["id"], n["route"]) for n in orch.notices()] == [(notice, "helper")]
     time.sleep(0.2)
     assert calls(fake_osascript) == []
+
+
+def test_the_hand_over_shows_a_notice_a_page_claimed_meanwhile_only_once(
+    orch: Orchestrator, window_notifier, fake_osascript, monkeypatch
+):
+    """The window listed it, a page claimed it, the window closed: the hand-over leaves the
+    page's claim alone (the double show of item 20)."""
+    monkeypatch.setattr(desktop, "PLATFORM", "darwin")
+    window_notifier.tick()
+    notice = orch.store.add_notice("finished", "a-1", "a-1 finished", route="page")
+    listed = orch.notices(0)
+    assert orch.claim_notice(notice, "page")  # the page was quicker
+    for item in listed:
+        orch.hand_over_notice(item)
+    window_notifier.close()
+    time.sleep(0.3)
+    assert calls(fake_osascript) == [] and orch.notices() == []
+    (traced,) = orch.notice_trace(1)
+    assert traced["summary"]["path"] == "page" and traced["claimed_by"].startswith("page:")
 
 
 def test_while_the_page_does_not_take_the_notices_it_keeps_trying_and_the_badge_says_so(
@@ -640,22 +657,40 @@ def test_allowed_it_posts_the_fresh_pending_notices_once(
 
 
 @pytest.mark.parametrize("status", [0, 1])
-def test_not_allowed_it_forgets_the_grant_and_osascript_shows_them(
+def test_not_allowed_it_forgets_the_grant_and_the_notices_wait(
     orch: Orchestrator, fake_osascript, tmp_path, monkeypatch, status
 ):
     monkeypatch.setattr(desktop, "PLATFORM", "darwin")
     desktop.record_grant("local.x.app", tmp_path / "X.app")
-    orch.store.add_notice("decision", "a-2", "Decision needed", 3)
+    notice = orch.store.add_notice("decision", "a-2", "Decision needed", 3, route="helper")
     lines: list[str] = []
     center = FakeCenter(status=status)
     assert notifier.post_pending(orch, center, tmp_path / "X.app", [], lines.append) is None
     assert center.posted == [] and desktop.granted_bundle() is None
-    assert lines == [
-        f"notifications from Spartito: not allowed (authorization status {status}); osascript"
-    ]
-    until(lambda: calls(fake_osascript), what="the notification")
-    assert texts(fake_osascript) == ["Decision needed — open Spartito to answer"]
-    assert orch.notices() == []
+    why = f"not allowed (authorization status {status})"
+    assert lines == [f"notifications from Spartito: {why}; the notices wait"]
+    time.sleep(0.3)
+    assert calls(fake_osascript) == []
+    assert [(n["id"], n["route"]) for n in orch.notices()] == [(notice, "waiting")]
+    assert orch.notice_trace(1)[0]["summary"]["reason"] == why
+
+
+def test_a_post_that_fails_releases_the_notice_to_wait(
+    orch: Orchestrator, fake_osascript, tmp_path
+):
+    notice = orch.store.add_notice("finished", "a-1", "a-1 finished", route="helper")
+    center = FakeCenter(status=2, post_error="UNErrorDomain 1: refused")
+    assert notifier.post_pending(orch, center, tmp_path / "X.app", []) is None
+    assert len(center.posted) == 1
+    time.sleep(0.3)
+    assert calls(fake_osascript) == []
+    assert [(n["id"], n["route"]) for n in orch.notices()] == [(notice, "waiting")]
+    summary = orch.notice_trace(1)[0]["summary"]
+    assert (
+        summary["path"] == "waiting"
+        and summary["reason"] == "post failed: UNErrorDomain 1: refused"
+    )
+    assert summary["actor"].startswith("notify:")
 
 
 def test_a_click_that_reaches_the_posting_process_is_handed_on(orch: Orchestrator, tmp_path):
@@ -671,15 +706,15 @@ def test_a_click_that_reaches_the_posting_process_is_handed_on(orch: Orchestrato
     assert notifier.post_pending(orch, center, tmp_path / "X.app", clicked) == "a-1"
 
 
-def test_without_the_framework_osascript_shows_them(
+def test_without_the_framework_the_notices_wait(
     orch: Orchestrator, fake_osascript, tmp_path, monkeypatch
 ):
     """conftest.py makes the real centre unavailable, as a missing framework would."""
     monkeypatch.setattr(desktop, "PLATFORM", "darwin")
-    orch.store.add_notice("finished", "a-1", "a-1 finished")
+    orch.store.add_notice("finished", "a-1", "a-1 finished", route="helper")
     assert notifier.notify(orch, tmp_path / "X.app") is None
-    until(lambda: calls(fake_osascript), what="the notification")
-    assert texts(fake_osascript) == ["a-1 finished — open Spartito to see it"]
+    time.sleep(0.3)
+    assert calls(fake_osascript) == [] and [n["route"] for n in orch.notices()] == ["waiting"]
 
 
 def test_the_framework_is_imported_only_where_it_is_used():
@@ -694,19 +729,20 @@ def test_the_framework_is_imported_only_where_it_is_used():
     assert done.stdout.strip() == "False", done.stderr
 
 
-def test_no_answer_in_time_falls_back_once_and_keeps_the_grant(
+def test_no_answer_in_time_the_notices_wait_and_the_grant_stays(
     orch: Orchestrator, fake_osascript, tmp_path, monkeypatch
 ):
     monkeypatch.setattr(desktop, "PLATFORM", "darwin")
     monkeypatch.setattr(notifier, "WAIT_SECONDS", 0.2)
     desktop.record_grant("local.x.app", tmp_path / "X.app")
-    orch.store.add_notice("finished", "a-1", "a-1 finished")
+    orch.store.add_notice("finished", "a-1", "a-1 finished", route="helper")
     center = FakeCenter()
     center.status = lambda done: None  # type: ignore[method-assign]  # never answers
     lines: list[str] = []
     assert notifier.post_pending(orch, center, tmp_path / "X.app", [], lines.append) is None
-    assert lines == ["notifications from Spartito: the system did not answer; osascript"]
+    why = "the notification centre did not answer within 0.2 s"
+    assert lines == [f"notifications from Spartito: {why}; the notices wait"]
     assert desktop.granted_bundle() == tmp_path / "X.app" and center.posted == []
-    until(lambda: calls(fake_osascript), what="the notification")
-    assert texts(fake_osascript) == ["a-1 finished — open Spartito to see it"]
-    assert orch.notices() == []
+    time.sleep(0.3)
+    assert calls(fake_osascript) == [] and [n["route"] for n in orch.notices()] == ["waiting"]
+    assert orch.notice_trace(1)[0]["summary"]["reason"] == why

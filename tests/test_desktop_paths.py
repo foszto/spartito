@@ -31,6 +31,9 @@ def macos(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(desktop, "PLATFORM", "darwin")
 
 
+REAL_SPAWN = desktop.spawn  # before conftest.py's no_detached_helpers replaces it
+
+
 @pytest.fixture
 def spawned(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     """desktop.spawn, noted instead of started (it succeeds unless `spawned.fail`)."""
@@ -71,34 +74,99 @@ def fake_bundle(root: Path, environment: Path | None = None) -> Path:
     return bundle
 
 
-# -- the order -------------------------------------------------------------------------------
+# -- the order (desktop.route) ----------------------------------------------------------------
+
+LIVE = desktop.Window(1, True, 0.5, "allowed")
+DENIED = desktop.Window(1, True, 0.5, "denied")
+LATE = desktop.Window(1, True, 120.0, "allowed")  # its marker is late, its process runs
+GONE = desktop.Window(1, False, 0.5, "allowed", "its process is gone")
+BUNDLE = Path("/Applications/X.app")
 
 
-def test_a_fresh_page_comes_first(orch: Orchestrator, fake_osascript, macos, spawned, tmp_path):
+def mac(window=None, page=None, bundle=None) -> desktop.Presence:
+    return desktop.Presence("darwin", window, page, bundle, "" if bundle else "no grant file")
+
+
+@pytest.mark.parametrize(
+    ("found", "skip", "taker"),
+    [
+        (mac(LIVE, 1.0, BUNDLE), (), "window"),  # first: a window that may post
+        (mac(LATE), (), "window"),  # its process runs: present though its marker is late
+        (mac(DENIED, 1.0, BUNDLE), (), "helper"),  # then the launcher's app
+        (mac(GONE, 1.0, BUNDLE), (), "helper"),
+        (mac(DENIED, 1.0), (), "page"),  # then a page
+        (mac(LIVE, 1.0, BUNDLE), ("window",), "helper"),  # escalated: the window did not take it
+        (mac(LIVE, 1.0, BUNDLE), ("window", "helper"), "page"),
+        (mac(DENIED), (), "banner"),  # then the window that shows it inside
+        (mac(None, 1.0, BUNDLE), ("helper", "page"), "waiting"),  # a launcher: never osascript
+        (mac(LIVE), ("window",), "waiting"),  # a window runs: it waits for it
+        (mac(None, 30.0), (), "osascript"),  # nothing at all (the page is stale)
+        (mac(GONE), (), "osascript"),
+        (desktop.Presence("linux", None, 1.0, None, "", "/bin/notify-send"), (), "page"),
+        (desktop.Presence("linux", None, None, None, "", "/bin/notify-send"), (), "linux"),
+        (desktop.Presence("linux"), (), "waiting"),
+        (desktop.Presence("win32"), (), "waiting"),
+    ],
+)
+def test_the_route(found: desktop.Presence, skip: tuple[str, ...], taker: str):
+    choice = desktop.route(found, skip)
+    assert choice.taker == taker and choice.path == desktop.PATHS[taker] and choice.reason
+
+
+@pytest.mark.parametrize(
+    ("taker", "takes"),
+    [
+        ("window", {None, "window", "helper", "page", "banner", "waiting"}),
+        ("helper", {None, "helper", "page", "banner", "waiting"}),
+        ("page", {None, "page", "banner", "waiting"}),
+        ("banner", {None, "banner", "waiting"}),
+    ],
+)
+def test_a_taker_claims_what_is_left_to_it_or_to_a_later_way(taker: str, takes: set):
+    routes = {None, "window", "helper", "page", "banner", "waiting", "osascript", "linux"}
+    assert {route for route in routes if desktop.may_take(taker, route)} == takes
+
+
+def steps_of(orch: Orchestrator, notice: int) -> list[tuple[str, str | None]]:
+    (traced,) = [n for n in orch.notice_trace(50) if n["id"] == notice]
+    return [(item["step"], item["path"]) for item in traced["steps"]]
+
+
+def test_show_leaves_it_to_the_window_and_a_helper_watches(
+    orch: Orchestrator, fake_osascript, macos, spawned, tmp_path
+):
     desktop.record_grant("local.x.app", fake_bundle(tmp_path))
     desktop.page_present()
-    desktop.app_present()
+    desktop.app_present("allowed")
     desktop.show(orch.store, BODY, "a-1")
-    time.sleep(0.3)
-    assert spawned == [] and calls(fake_osascript) == []
-    assert len(orch.notices()) == 1  # left to the page
+    (notice,) = orch.notices()
+    assert notice["route"] == "window"
+    assert spawned == [["deliver", str(notice["id"]), desktop.OPEN]]
+    assert steps_of(orch, notice["id"]) == [("record", None), ("route", "window-system")]
+    assert calls(fake_osascript) == []
 
 
-def test_the_window_process_comes_next(orch: Orchestrator, fake_osascript, macos, spawned):
-    desktop.app_present()
-    desktop.show(orch.store, BODY, "a-1")
-    time.sleep(0.3)
-    assert spawned == [] and calls(fake_osascript) == []
-    assert len(orch.notices()) == 1  # left to the window process
-
-
-def test_a_stale_window_marker_counts_as_none(orch: Orchestrator, fake_osascript, macos, spawned):
-    desktop.app_present()
-    then = time.time() - desktop.PAGE_FRESH_SECONDS - 5
+def test_a_late_window_marker_with_a_live_process_still_counts(
+    orch: Orchestrator, fake_osascript, macos, spawned
+):
+    desktop.app_present("allowed")
+    then = time.time() - desktop.PAGE_FRESH_SECONDS - 60
     os.utime(desktop.app_marker(), (then, then))
+    window = desktop.window_presence()
+    assert window is not None and window.alive and window.age > desktop.PAGE_FRESH_SECONDS
     desktop.show(orch.store, BODY, "a-1")
-    until(lambda: calls(fake_osascript), what="the notification")
-    assert spawned == [] and orch.notices() == []
+    (notice,) = orch.notices()
+    assert notice["route"] == "window" and calls(fake_osascript) == []
+
+
+def test_a_reused_pid_is_not_the_window(orch: Orchestrator, macos, monkeypatch):
+    desktop.app_present("allowed")
+    data = json.loads(desktop.app_state_path().read_text())
+    data["start"] = "Mon Jan  1 00:00:00 2001"  # this pid's process started later
+    desktop.app_state_path().write_text(json.dumps(data))
+    window = desktop.window_presence()
+    assert window is not None and not window.alive
+    assert window.why == "its pid belongs to another process now"
 
 
 def test_then_the_allowed_launcher_is_started_to_post(
@@ -108,15 +176,13 @@ def test_then_the_allowed_launcher_is_started_to_post(
     desktop.record_grant("local.x.app", bundle)
     desktop.show(orch.store, "Decision needed: which?", "a-1", 7)
     (notice,) = orch.notices()  # unclaimed: the launcher's app claims it
-    assert spawned == [
-        ["bundle", desktop.OPEN, str(bundle), str(notice["id"]), "Decision needed: which?", "7"]
-    ]
-    time.sleep(0.3)
+    assert notice["route"] == "helper"
+    assert spawned == [["deliver", str(notice["id"]), desktop.OPEN]]
     assert calls(fake_osascript) == []
 
 
 @pytest.mark.parametrize("why", ["no grant", "no bundle", "stale copy", "other platform"])
-def test_without_an_allowed_launcher_osascript_shows_it(
+def test_without_a_launcher_that_may_post_osascript_shows_it(
     orch: Orchestrator, fake_osascript, macos, spawned, tmp_path, monkeypatch, why
 ):
     bundle = fake_bundle(tmp_path)
@@ -132,32 +198,36 @@ def test_without_an_allowed_launcher_osascript_shows_it(
     if why == "other platform":
         time.sleep(0.3)
         assert calls(fake_osascript) == [] and spawned == []
+        assert [n["route"] for n in orch.notices()] == ["waiting"]
         return
     until(lambda: calls(fake_osascript), what="the notification")
     assert spawned == [] and texts(fake_osascript) == [f"{BODY} — open Spartito to see it"]
     assert orch.notices() == []
+    (traced,) = orch.notice_trace(1)
+    reason = {"no grant": "no grant file", "no bundle": "is gone", "stale copy": "Python changed"}
+    assert traced["summary"]["path"] == "osascript" and reason[why] in traced["summary"]["reason"]
 
 
-def test_a_launcher_that_cannot_be_started_falls_back_in_the_same_call(
+def test_a_helper_that_cannot_be_started_is_traced_never_osascript(
     orch: Orchestrator, fake_osascript, macos, spawned, tmp_path
 ):
     desktop.record_grant("local.x.app", fake_bundle(tmp_path))
     desktop.spawn.fail = True  # type: ignore[attr-defined]
     desktop.show(orch.store, BODY, "a-1")
     assert len(spawned) == 1
-    until(lambda: calls(fake_osascript), what="the notification")
-    assert texts(fake_osascript) == [f"{BODY} — open Spartito to see it"]
-    assert orch.notices() == []
+    time.sleep(0.3)
+    assert calls(fake_osascript) == []
+    (notice,) = orch.notices()
+    assert steps_of(orch, notice["id"])[-1] == ("fallback", "launcher-helper")
 
 
 def test_without_an_agent_nothing_is_recorded_and_osascript_shows_it(
     orch: Orchestrator, fake_osascript, macos, spawned, tmp_path
 ):
-    desktop.record_grant("local.x.app", fake_bundle(tmp_path))
-    desktop.app_present()
     desktop.show(orch.store, "hello")
     until(lambda: calls(fake_osascript), what="the notification")
     assert spawned == [] and texts(fake_osascript) == ["hello — open Spartito to see it"]
+    assert "shown osascript: no agent, not recorded" in desktop.notice_log().read_text()
 
 
 def test_show_does_not_wait_for_the_helper(orch: Orchestrator, macos, tmp_path, monkeypatch):
@@ -170,6 +240,7 @@ def test_show_does_not_wait_for_the_helper(orch: Orchestrator, macos, tmp_path, 
         assert options["start_new_session"] and options["stdin"] == subprocess.DEVNULL
         return real_popen([sys.executable, "-c", "import time; time.sleep(3)"], **options)
 
+    monkeypatch.setattr(desktop, "spawn", REAL_SPAWN)
     monkeypatch.setattr(desktop.subprocess, "Popen", slow)
     desktop.record_grant("local.x.app", fake_bundle(tmp_path))
     begin = time.monotonic()
@@ -238,7 +309,7 @@ def test_the_interpreter_record(tmp_path: Path):
     )
 
 
-# -- 3. the bundle helper --------------------------------------------------------------------
+# -- the detached helper: the launcher's app, escalation -----------------------------------------
 
 FAKE_OPEN = """#!/bin/sh
 printf '%s\\n' "$@" > "$(dirname "$0")/open.args"
@@ -255,50 +326,88 @@ def fake_open(tmp_path: Path) -> Path:
     return path
 
 
+def left_to(orch: Orchestrator, route: str, body: str = BODY, decision: int | None = None) -> int:
+    return orch.store.add_notice(
+        "finished" if decision is None else "decision", "a-1", body, decision, route=route
+    )
+
+
 def test_the_helper_starts_the_bundle_hidden_and_leaves_the_notice_to_it(
-    orch: Orchestrator, fake_osascript, macos, fake_open, tmp_path, monkeypatch
+    orch: Orchestrator, fake_osascript, macos, fake_open, tmp_path
 ):
-    bundle = fake_bundle(tmp_path)
-    notice = orch.store.add_notice("finished", "a-1", BODY)
-    threading.Timer(0.3, orch.claim_notice, (notice,)).start()  # the app's posting process
-    desktop.bundle_helper(str(fake_open), bundle, notice, BODY, "")
+    desktop.record_grant("local.x.app", fake_bundle(tmp_path))
+    notice = left_to(orch, "helper")
+    threading.Timer(0.3, orch.claim_notice, (notice, "helper")).start()  # its posting process
+    desktop.deliver(orch.store, notice, str(fake_open))
     args = (fake_open.parent / "open.args").read_text().splitlines()
-    assert args == ["-n", "-g", "-j", "-a", str(bundle), "--args", "--notify"]
+    assert args == [
+        "-n",
+        "-g",
+        "-j",
+        "-a",
+        str(tmp_path / "Spartito Test.app"),
+        "--args",
+        "--notify",
+    ]
     time.sleep(0.3)
     assert calls(fake_osascript) == []
 
 
 @pytest.mark.parametrize("why", ["open fails", "nobody claims"])
-def test_the_helper_falls_back_to_osascript(
+def test_when_the_launchers_app_does_not_take_it_it_waits_never_osascript(
     orch: Orchestrator, fake_osascript, macos, fake_open, tmp_path, monkeypatch, why
 ):
     monkeypatch.setattr(desktop, "CLAIM_WAIT_SECONDS", 0.5)
     if why == "open fails":
         monkeypatch.setenv("FAKE_OPEN_EXIT", "1")
-    notice = orch.store.add_notice("decision", "a-1", "Decision needed", 4)
-    desktop.bundle_helper(str(fake_open), fake_bundle(tmp_path), notice, "Decision needed", "4")
-    until(lambda: calls(fake_osascript), what="the notification")
-    assert texts(fake_osascript) == ["Decision needed — open Spartito to answer"]
-    assert orch.notices() == []
+    desktop.record_grant("local.x.app", fake_bundle(tmp_path))
+    notice = left_to(orch, "helper", "Decision needed", 4)
+    desktop.deliver(orch.store, notice, str(fake_open))
+    time.sleep(0.3)
+    assert calls(fake_osascript) == []
+    assert [n["route"] for n in orch.notices()] == ["waiting"]
+    (traced,) = orch.notice_trace(1)
+    said = {"open fails": "`open` failed (exit 1)", "nobody claims": "did not take it within"}
+    assert said[why] in traced["summary"]["reason"] and traced["summary"]["path"] == "waiting"
 
 
+def test_a_window_that_does_not_take_its_notice_is_escalated_to_the_launcher(
+    orch: Orchestrator, fake_osascript, macos, fake_open, tmp_path, monkeypatch
+):
+    """Present (its process runs) but not polling: after ESCALATE_SECONDS the launcher's app
+    is started instead."""
+    monkeypatch.setattr(desktop, "ESCALATE_SECONDS", 0.3)
+    monkeypatch.setattr(desktop, "CLAIM_WAIT_SECONDS", 3)
+    desktop.record_grant("local.x.app", fake_bundle(tmp_path))
+    desktop.app_present("allowed")
+    notice = left_to(orch, "window")
+    claimed = threading.Event()
+
+    def posting_process() -> None:
+        until(lambda: (fake_open.parent / "open.args").exists(), what="the start")
+        claimed.set() if orch.claim_notice(notice, "helper") else None
+
+    threading.Thread(target=posting_process, daemon=True).start()
+    desktop.deliver(orch.store, notice, str(fake_open))
+    assert claimed.is_set() and calls(fake_osascript) == []
+    assert steps_of(orch, notice)[0][0] == "escalate"
+    assert "window-system did not take it within" in orch.notice_trace(1)[0]["steps"][0]["detail"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the helper process routes as this platform")
 def test_the_detached_helper_runs_as_its_own_process(
     orch: Orchestrator, fake_osascript, fake_open, tmp_path, monkeypatch
 ):
     """The command line `spawn` starts, run for real (with the fake open, which fails, and
-    the fake osascript of the PATH)."""
+    the fake osascript of the PATH): the notice waits, nothing is shown."""
     monkeypatch.setenv("FAKE_OPEN_EXIT", "1")
-    notice = orch.store.add_notice("finished", "a-1", BODY)
-    bundle = fake_bundle(tmp_path)
-    args = ["bundle", str(fake_open), str(bundle), str(notice), BODY, ""]
+    desktop.record_grant("local.x.app", fake_bundle(tmp_path))
+    notice = left_to(orch, "helper")
+    args = ["deliver", str(notice), str(fake_open)]
     done = subprocess.run([sys.executable, "-c", desktop.HELPER, *args], timeout=60)
     assert done.returncode == 0
-    if sys.platform == "darwin":  # osascript is looked for on macOS only
-        until(lambda: calls(fake_osascript), what="the notification")  # left running
-        assert texts(fake_osascript) == [f"{BODY} — open Spartito to see it"]
-        assert orch.notices() == []
-    else:
-        assert len(orch.notices()) == 1
+    assert [n["route"] for n in orch.notices()] == ["waiting"] and calls(fake_osascript) == []
+    assert orch.notice_trace(1)[0]["steps"][-1]["actor"].startswith("helper:")
     junk = subprocess.run([sys.executable, "-c", desktop.HELPER, "nonsense"], timeout=60)
     assert junk.returncode == 0
 
@@ -456,15 +565,17 @@ def parse(target: str) -> tuple[str | None, int | None]:
     return (target or None), None
 
 
-@pytest.mark.parametrize("marker", ["dead", "junk", "zero"])
+@pytest.mark.parametrize("marker", ["dead", "junk", "zero", "dead (older code)"])
 def test_a_window_that_is_gone_counts_as_none_even_with_a_fresh_marker(
     orch: Orchestrator, fake_osascript, macos, spawned, marker
 ):
-    """A force-quit window leaves its marker fresh for a while: its pid tells."""
+    """A force-quit window leaves its markers behind: its pid tells."""
     dead = subprocess.Popen([sys.executable, "-c", ""])
     dead.wait()
-    content = {"dead": str(dead.pid), "junk": "not a pid", "zero": "0"}[marker]
-    desktop.app_marker().write_text(content)
+    content = {"dead": str(dead.pid), "junk": "not a pid", "zero": "0"}.get(marker, "")
+    if marker == "dead":
+        desktop.app_state_path().write_text(json.dumps({"pid": dead.pid, "state": "allowed"}))
+    desktop.app_marker().write_text(content or str(dead.pid))
     assert not desktop.app_fresh()
     desktop.show(orch.store, BODY, "a-1")
     until(lambda: calls(fake_osascript), what="the notification")
@@ -472,5 +583,18 @@ def test_a_window_that_is_gone_counts_as_none_even_with_a_fresh_marker(
 
 
 def test_the_window_marker_names_a_live_process():
-    desktop.app_present()
+    desktop.app_present("denied")
     assert desktop.app_marker().read_text() == f"{os.getpid()}\n" and desktop.app_fresh()
+    window = desktop.window_presence()
+    assert window is not None and window.state == "denied" and window.taker == "banner"
+    desktop.app_gone()
+    assert desktop.window_presence() is None
+
+
+def test_a_window_of_older_code_counts_while_its_marker_is_fresh():
+    desktop.app_marker().write_text(f"{os.getpid()}\n")  # older code: no state file
+    window = desktop.window_presence()
+    assert window is not None and window.alive and window.taker == "window"
+    then = time.time() - desktop.PAGE_FRESH_SECONDS - 5
+    os.utime(desktop.app_marker(), (then, then))
+    assert not desktop.window_presence().alive

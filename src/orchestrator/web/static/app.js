@@ -1501,10 +1501,12 @@ function openSettings() {
 // -- notifications from this page ----------------------------------------------
 // With the browser's permission this page shows the desktop notifications (desktop.py: notices)
 // itself, so that a click opens the agent or the decision. It polls with a POST (the same-origin
-// check keeps other sites from faking it); while the polls come, osascript leaves new notices to
-// the page. Each notice is claimed first, so two pages, or a page and osascript, never show the
-// same one. Without the Notification API (an embedded WebKit window) none of this runs and
-// osascript shows them as before.
+// check keeps other sites from faking it); while the polls come, the server's route counts the
+// page present and leaves to it what Spartito's window or the launcher's app does not take. Each
+// notice is claimed first, so two pages, or a page and another way, never show the same one;
+// the server lists what this page may take, also older notices escalated to a page later, so
+// the cursor never moves back. Without the Notification API (an embedded WebKit window) none of
+// this runs.
 // Hidden pages: browsers throttle the page's own timers (Chrome: once a minute after five
 // minutes hidden), which would let the marker go stale, so the poll is ticked by a dedicated
 // worker (static/tick.js), whose timers are not throttled with the page.
@@ -1539,14 +1541,14 @@ async function pollNotices() {
     // port): start from the server's, replaying nothing.
     if (noticeCursor === null || noticeCursor > data.cursor) { moveNoticeCursor(data.cursor); return; }
     for (const notice of data.notices) {
-      if (Date.now() - Date.parse(notice.created_at) > NOTICE_MAX_AGE_MS) { moveNoticeCursor(notice.id); continue; }
+      if (Date.now() - Date.parse(notice.created_at) > NOTICE_MAX_AGE_MS) { moveNoticeCursor(Math.max(noticeCursor, notice.id)); continue; }
       let claimed;
       try {
         claimed = (await call(`/api/notices/${notice.id}/claim`, {})).claimed;
       } catch (error) {
         return;  // no answer: this notice and the ones after it on the next tick
       }
-      moveNoticeCursor(notice.id);
+      moveNoticeCursor(Math.max(noticeCursor, notice.id));
       if (!claimed) continue;
       try { showNotice(notice); } catch (error) { /* the browser refused it */ }
     }

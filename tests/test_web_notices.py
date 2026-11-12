@@ -57,6 +57,7 @@ def test_after_a_cursor_the_unclaimed_notices_oldest_first(
         "decision_id": 7,
         "text": "decision text",
         "created_at": data["notices"][1]["created_at"],
+        "route": None,
     }
     assert poll(client, second).json() == {"notices": [], "cursor": third}
     assert poll(client, 10**6).json() == {"notices": [], "cursor": third}  # above: the page resets
@@ -137,3 +138,23 @@ def test_the_routes_keep_the_host_and_origin_checks(client: TestClient, orch: Or
     assert not desktop.page_marker().exists()  # no refused poll counts as a page
 
     assert [n["id"] for n in poll(client, 0).json()["notices"]] == [notice]  # still unclaimed
+
+
+def test_a_page_gets_only_what_route_left_to_it_and_what_was_escalated_to_it_later(
+    client: TestClient, orch: Orchestrator
+) -> None:
+    window = orch.store.add_notice("finished", "a-1", "left to the window", route="window")
+    page = orch.store.add_notice("finished", "a-2", "left to a page", route="page")
+    data = poll(client, 0).json()
+    assert [n["id"] for n in data["notices"]] == [page]
+    late = client.post(f"/api/notices/{window}/claim", json={}, headers=ORIGIN)
+    assert late.json() == {"claimed": False}  # the window's: a page may not take it
+    item = desktop.step("escalate", "page", "the window did not take it")
+    assert orch.store.reroute_notice(window, "page", item, was=("window",))
+    data = poll(client, data["cursor"]).json()  # behind the cursor, escalated: listed again
+    assert [n["id"] for n in data["notices"]] == [window, page]
+    assert client.post(f"/api/notices/{window}/claim", json={}, headers=ORIGIN).json() == {
+        "claimed": True
+    }
+    (traced,) = [n for n in orch.notice_trace() if n["id"] == window]
+    assert traced["summary"]["path"] == "page" and traced["summary"]["actor"].startswith("page:")

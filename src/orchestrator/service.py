@@ -10,7 +10,7 @@ from typing import Any
 from . import app_open, board, decisions, desktop, git, providers
 from .core import access, boards, compaction, delivery, dispatch, launcher, lifecycle, reads, views
 from .core import archive as archiving
-from .core import notices as page_notices
+from .core import notices as notice_reads
 from .core import setup as agent_setup
 from .core.dispatch import ORCHESTRATOR_ID as ORCHESTRATOR_ID  # old import path
 from .core.dispatch import slug as slug  # old import path
@@ -309,13 +309,20 @@ class Orchestrator:
     get_event = reads.get_event
     events = reads.events
 
-    # -- notices for a dashboard page (core/notices.py) -------------------
+    # -- notices: pages, Spartito's window and posting process (core/notices.py) --
 
-    notices = page_notices.notices
-    notice_cursor = page_notices.notice_cursor
-    claim_notice = page_notices.claim_notice
-    hand_over_notice = page_notices.hand_over_notice
-    page_present = page_notices.page_present
+    notices = notice_reads.notices
+    page_notices = notice_reads.page_notices
+    notice_cursor = notice_reads.notice_cursor
+    claim_notice = notice_reads.claim_notice
+    notice_step = notice_reads.notice_step
+    release_notice = notice_reads.release_notice
+    leave_waiting = notice_reads.leave_waiting
+    hand_over_notice = notice_reads.hand_over_notice
+    notice_backlog = notice_reads.notice_backlog
+    ingest_notices = notice_reads.ingest_notices
+    notice_trace = notice_reads.notice_trace
+    page_present = notice_reads.page_present
 
     # -- the dashboard window of `spartito app` (app_open.py) ----------------
 
