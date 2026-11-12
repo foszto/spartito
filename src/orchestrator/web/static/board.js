@@ -549,6 +549,97 @@
     for (const fillIn of hooks.detail) fillIn(box, item);
   }
 
+  // -- selecting items and dispatching them ------------------------------------------------
+  // Idea and ready cards have a checkbox (Space on the card toggles it). Dispatch sends exactly
+  // the selection, one message per project to its lead, after a confirmation that says which
+  // lead gets which items; an item no longer idea or ready is skipped and said so.
+
+  const picked = new Set();
+  const pickable = item => item.state === 'idea' || item.state === 'ready';
+
+  function pick(item, on = !picked.has(item.id)) {
+    if (on) picked.add(item.id); else picked.delete(item.id);
+    const node = ui.root.querySelector(`.bv-card[data-id="${item.id}"]`);
+    if (node) { node.classList.toggle('bv-picked', on); node.querySelector('[data-part=pick]').checked = on; }
+    selectionBar();
+    announce(`${on ? 'Selected' : 'Unselected'} #${item.id} · ${picked.size} selected`);
+  }
+
+  function selectionBar() {
+    const box = ui.root && ui.root.querySelector('.bv-selbar');
+    if (!box) return;
+    box.hidden = !picked.size;
+    box.querySelector('.bv-selcount').textContent = `${picked.size} selected`;
+    box.querySelector('.bv-selids').textContent = [...picked].sort((a, b) => a - b).map(id => `#${id}`).join(' ');
+  }
+
+  const short = text => (text.length > 48 ? `${text.slice(0, 47)}…` : text);
+  async function dispatch(ids) {
+    const chosen = ids.map(find).filter(Boolean);
+    if (!chosen.length) return;
+    // The lead each project's items go to: the one it has, or one started for them.
+    const known = await call('/api/state').then(data => data.projects, () => []);
+    const leadOf = name => {
+      const project = known.find(p => p.name === name);
+      const lead = project && project.agents.find(a => a.role === 'lead' && (!a.parent_id || a.parent_id === 'orchestrator'));
+      return lead ? lead.id : `a new lead of ${name}`;
+    };
+    const projects = [...new Set(chosen.map(item => item.project))].sort();
+    const lines = projects.map(name => `${name} → ${leadOf(name)}: `
+      + chosen.filter(item => item.project === name).map(item => `#${item.id} ${short(item.title)}`).join(', '));
+    confirmDialog({
+      title: `Dispatch ${plural(chosen.length, 'item')}?`,
+      text: `${lines.join(' · ')}. Each lead gets its items as one message from you; they become in progress, linked to it.`,
+      ok: 'Dispatch',
+      action: async () => {
+        const result = await call('/api/board/dispatch-items', { ids: chosen.map(item => item.id) });
+        for (const item of chosen) picked.delete(item.id);
+        const sent = result.results.map(group => `${group.items.map(item => `#${item.id}`).join(', ')} to ${group.agent_id}`);
+        const skipped = result.skipped.map(entry => `#${entry.id} not sent: ${entry.reason}`);
+        const said = [sent.length ? `Sent ${sent.join('; ')}` : 'Nothing sent', ...skipped].join(' · ');
+        toast(said, !sent.length, skipped.length ? 9000 : 0);
+        announce(said);
+        ui.pending = true;
+        await load();
+        selectionBar();
+      },
+    });
+  }
+
+  hooks.head.push(root => {
+    const box = el('div', 'bv-selbar');
+    box.hidden = true;
+    box.setAttribute('role', 'region'); box.setAttribute('aria-label', 'Selected items');
+    box.append(el('span', 'bv-selcount'), el('span', 'bv-selids mono'),
+      button('primary', 'send', 'Dispatch', () => dispatch([...picked])),
+      button('ghost', 'x', 'Clear', () => { picked.clear(); paint(); selectionBar(); announce('Selection cleared'); }));
+    root.querySelector('.bv-head').after(box);
+  });
+  hooks.card.push((node, item) => {
+    node.addEventListener('keydown', event => {
+      if (event.target !== node || event.key !== ' ' || event.altKey || event.ctrlKey || event.metaKey) return;
+      event.preventDefault();
+      if (pickable(item)) pick(item);
+      else announce(`Only idea and ready items can be dispatched; #${item.id} is ${LABEL[item.state]}`);
+    });
+    if (!pickable(item)) return;
+    const box = el('input', 'bv-pick');
+    box.type = 'checkbox'; box.dataset.part = 'pick'; box.checked = picked.has(item.id);
+    box.setAttribute('aria-label', `Select #${item.id} for dispatch`);
+    box.onchange = () => pick(item, box.checked);
+    node.classList.toggle('bv-picked', box.checked);
+    node.querySelector('.bv-card-head').prepend(box);
+  });
+  hooks.menu.push(item => (pickable(item) ? [
+    [picked.has(item.id) ? 'Unselect' : 'Select for dispatch', () => pick(item)],
+    [`Dispatch #${item.id}…`, () => dispatch([item.id])],
+  ] : []));
+  // An item gone, or no longer idea or ready, leaves the selection.
+  hooks.paint.push(() => {
+    for (const id of [...picked]) { const item = find(id); if (!item || !pickable(item)) picked.delete(id); }
+    selectionBar();
+  });
+
   // -- the entry in the left column --------------------------------------------------------
 
   function navEntry(selected) {
