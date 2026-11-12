@@ -35,12 +35,12 @@ the restart below replaces. Steps, on the real app:
    the sidebar, a quiet line says the notification state, for example `notifications:
    Spartito shows them; a click opens it there`. The same lines are in
    `~/.orchestrator/logs/app.log`. If macOS shows a prompt for *Spartito*, allow it.
-3. Close every dashboard tab in your browsers (a page allowed to notify shows the notice
-   first). Click another app's window so Spartito is in the background, and have a lead record
-   a decision.
+3. Click another app's window so Spartito is in the background, and have a lead record a
+   decision. (The open window comes before a page allowed to notify, so browser tabs may stay
+   open.)
 4. Expect one notification titled *Spartito*: `Decision needed (<project>): …`. Click it:
    the Spartito window comes to the front with the **Decisions** window on that decision. No
-   Script Editor.
+   Script Editor. `spartito notices -n 1` shows `window-system  window:<pid>`.
 5. **System Settings › Notifications › Spartito**: switch **Allow notifications** off. The
    state line changes within a few seconds to `… not allowed (System Settings › Notifications
    › Spartito); notices are shown in this window`.
@@ -50,10 +50,17 @@ the restart below replaces. Steps, on the real app:
    opens and the banner closes.
 7. Switch **Allow notifications** on again.
 
-If a step fails, send the step number, what you saw, and `~/.orchestrator/logs/app.log`
-(it holds the window's notification state lines, each click on a notification with its target,
-whether the page did not take notices and how many were handed over at close, why the window
-ended, and why a native window could not open; no notice text).
+If a step fails, send the step number, what you saw, the output of `spartito notices -v -n 5`
+(each notice's way, process and reason; it includes the notices' texts, so shorten them if
+needed), and `~/.orchestrator/logs/app.log` (the window's notification state lines, each
+click on a notification with its target, whether the page did not take notices and how many
+were handed over at close, why the window ended, and why a native window could not open; no
+notice text). `~/.orchestrator/logs/notices.log` has the same steps as `spartito notices`,
+also for notices the database was too busy to take at once.
+
+**Any notification from Script Editor (`osascript`) while the window was open** is what this
+trace is for: run `spartito notices -v -n 10` right after it and send the lines of that
+notice. Its `route` step says which process decided and what it saw.
 
 **Verified so far on a live installation:** a click on a notification Spartito posted opened
 Spartito at its target (step 4). Steps 5 and 6 (permission off: banner, bounce, badge) have
@@ -193,14 +200,15 @@ every dashboard page first and wait 20 s.
 |---|---|
 | `open -a ~/Applications/"Spartito Check.app"`, switch to another app, trigger a notification | one notification from *Spartito Check*; `ls "$ORCH_HOME/run"` lists `app-notifier` and `app-notify.json` |
 | Click it | the window comes to the front at the agent or decision |
-| Close the window, trigger another | one notification from *Spartito Check*, no Dock icon appears for it |
+| Close the window, trigger another | one notification from *Spartito Check*, no Dock icon appears for it; `spartito_test notices -n 1` shows `launcher-helper  notify:<pid>` |
 | Click it | *Spartito Check* starts and opens the window at the agent or decision; close it |
 | Catch the hidden start: trigger another and at once run `for i in $(seq 400); do a=$(lsappinfo find bundleID=$(defaults read ~/Applications/"Spartito Check.app"/Contents/Info CFBundleIdentifier)); [ -n "$a" ] && { lsappinfo info -only applicationtype $a; break; }; sleep 0.25; done` | `type="UIElement"` |
 | Open the window, look under the agent list | the quiet line `notifications: Spartito Check shows them; a click opens it there`; the same line is in `$ORCH_HOME/logs/app.log` |
 | Turn *Spartito Check* off in **System Settings › Notifications** | within a few seconds the line reads `notifications from Spartito Check: not allowed (…); notices are shown in this window`; `app-notify.json` is gone |
 | Switch to another app, trigger another | no macOS notification and no `osascript` one; the Dock icon bounces once with the badge `1`; a banner at the top right of the window; clicking the Dock icon removes the badge; clicking the banner opens the agent or decision and closes it |
 | Trigger four more, then reload the window (Cmd-R) | at most three banners, the newest; closed ones stay closed |
-| Close the window, trigger another | a plain macOS notification ending with `— open Spartito to see it` (or `to answer`) |
+| Close the window, trigger another | a plain macOS notification ending with `— open Spartito to see it` (or `to answer`): the launcher may not post any more (`app-notify.json` is gone) |
+| `spartito_test notices -v -n 3` | the last line's path is `osascript`, its reason starts `no window, no permitted page, no launcher (no grant file`; the one before is `window-banner` from `window:<pid>` |
 | `spartito_test config desktop-notifications off`, trigger another | no notification at all; then `spartito_test config desktop-notifications on` |
 
 If Safari blocked the prompt earlier: Safari **Settings › Websites › Notifications**.

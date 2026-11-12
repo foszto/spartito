@@ -123,21 +123,25 @@ latest message came from you has finished: its turn ended and neither it nor any
 descendants has a running or queued turn. So Maestro notifies you once its agents are done; an
 agent started by a lead does not notify you.
 
-Each notification is recorded as a notice in the database (kept for one day). Who shows it:
+Each notification is recorded as a notice in the database (kept for one day). Who shows it,
+the first of these that is there:
 
+- on macOS, Spartito's open window: it posts the notice when *Spartito* is allowed (a click
+  opens the agent or decision), else shows it inside the window (a banner, the Dock's badge);
+- with no window that may post, the launcher's app, once *Spartito* is allowed: started
+  hidden, it posts the notice;
 - an open dashboard page (a tab, the installed app, or the browser window of `spartito app`) that
   is allowed to show notifications: the **Enable notifications** button in its header, or
   **Models and effort** › **Notifications** › **Allow in this browser**. It shows them as
-  Web Notifications, and a click opens the agent or the decision. While such a page has
-  polled within the last 15 seconds, notices are left to it;
-- otherwise Spartito itself: on macOS its open window, which takes every notice and posts it
-  when *Spartito* is allowed, else shows it inside the window (a banner, the Dock's badge);
-  with no window open, the launcher's app, once *Spartito* is allowed; on Linux
-  `notify-send`. A click opens the agent or decision;
+  Web Notifications, and a click opens the agent or the decision. It counts while it has
+  polled within the last 15 seconds; on Linux it comes first, then `notify-send`;
+- with a launcher that may post or a window, but none of these able to take it now: the
+  notice waits, and the window shows it when it next opens;
 - otherwise, on macOS, `osascript` shows a plain notification, whose text ends with where to
   look (`— open Spartito to answer`, `— open Spartito to see it`), as its click cannot open
   Spartito.
 
+`spartito notices` lists how the recent ones were shown, by which process, and why.
 Off, nothing is recorded and nothing is shown. Details, including hidden tabs, the launcher and
 Linux: [desktop.md](desktop.md#notifications-with-click-through).
 
@@ -375,5 +379,9 @@ The main files under `~/.orchestrator/` (or `$ORCH_HOME`):
 | `run/web.json` | the running dashboard server: pid, host, port, start time |
 | `run/app.lock` | held by the open `spartito app` window |
 | `run/page-notifier` | touched by a dashboard page that shows notifications |
+| `run/app-notifier`, `run/app-notifier.json` | the open native window's pid, start time and notification state |
+| `run/app-notify.json` | the launcher's app that may post notifications |
+| `run/notices/` | notices the busy database did not take yet (recorded by the next helper or poll) |
+| `logs/notices.log` | one line per step of each notification (see `spartito notices`) |
 | `run/app-profile/` | the browser profile of `spartito app` in Chromium app mode |
 | `run/app-webview/` | the native window's web storage (Linux; macOS WebKit keeps its own) |

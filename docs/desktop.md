@@ -42,7 +42,7 @@ nothing.
 |---|---|---|
 | background service (`spartito service`) | launchd agent | systemd user unit |
 | installable page | Chrome (and other Chromium-family browsers), Safari | Chromium-family browsers |
-| notification click-through | an open dashboard page; else Spartito itself (launcher installed and allowed); else, while the Spartito window is open, a banner inside it; else `osascript`, whose text says where to look | an open dashboard page; else `notify-send`, with a click action from libnotify 0.7.10 |
+| notification click-through | the Spartito window; else Spartito itself (launcher installed and allowed); else an open dashboard page; else, while the Spartito window is open, a banner inside it; else waiting for one of these, or `osascript` (no launcher), whose text says where to look | an open dashboard page; else `notify-send`, with a click action from libnotify 0.7.10 |
 | launcher (`spartito app install`) | `~/Applications/Spartito.app` | desktop entry and icons |
 | `spartito app` native window | Cocoa (WebKit), extra `app` | Qt WebEngine, extra `app` |
 | `spartito app` browser fallback | Chromium-family browser in app mode, else the default browser | the same |
@@ -151,33 +151,52 @@ messaged directly has finished together with all its agents (details:
 [configuration.md](configuration.md#desktop-notifications-desktop_notifications)). Each one is
 recorded as a *notice* in the database; notices are kept for one day.
 
-**Who shows a notice.** The first of these that can, in this order; whoever shows it claims it
-first, so it is shown once:
+**Who shows a notice.** One decision (`desktop.route`) picks the way from what is there at
+that moment; every process that records, hands over or takes a notice asks it, and each claims
+the notice first, so it is shown once. On macOS, in this order:
 
-1. **An open dashboard page** allowed to show notifications (a tab, the installed page, or the
+1. **The Spartito window** (the native window of `spartito app`) while its process runs and
+   it may post notifications, or has not had its answer yet. Allowed (started through the
+   launcher, permission given), it posts the notification itself; a click brings the window
+   to the front at the agent or decision. A post the system refuses is shown inside the
+   window instead. The window counts as present while its process runs, however late its
+   marker is (see [How the page and the window are found](#notifications-with-click-through)).
+2. **The Spartito app, started to post** (launcher installed and allowed: the grant file
+   `run/app-notify.json` names a bundle whose interpreter copy is current): a background
+   helper starts the app hidden, without a window or Dock icon; it posts the pending notices
+   and exits. A click starts Spartito and opens the window at the agent or decision.
+3. **An open dashboard page** allowed to show notifications (a tab, the installed page, or the
    browser window of `spartito app`): a Web Notification titled *Spartito*. A click brings the
    page to the front and opens the agent, or the **Decisions** window on that decision with
    its answer box focused; a decision that is no longer open selects the agent that asked it.
-2. **The Spartito window** (macOS, the native window of `spartito app`, while it is open): it
-   takes every notice, whether or not it may post notifications. Allowed (started through the
-   launcher, permission given), it posts the notification itself; a click brings the window
-   to the front at the agent or decision. Otherwise (not asked yet, not allowed, refused by
-   macOS, not available) it shows the notice inside the window: see
-   [Notices inside the window](#notices-inside-the-window).
-3. **The Spartito app, started to post** (macOS, no window open, launcher installed and
-   allowed): the background process starts the app hidden, without a window or Dock icon; it
-   posts the pending notices and exits. A click starts Spartito and opens the window at the
-   agent or decision.
-4. **`notify-send`** (Linux): see [Linux](#linux).
-5. **`osascript`** (macOS, otherwise: no permitted page, no Spartito window open, and no
-   launcher allowed to notify). Its click opens Script Editor and cannot be changed, so the
-   text ends with ` — open Spartito to answer` (a decision) or ` — open Spartito to see it`.
+4. **The Spartito window that may not post** (not allowed, refused by macOS, not available):
+   it shows the notice inside the window: see [Notices inside the window](#notices-inside-the-window).
+5. **Waiting**: none of these can take it now, but a launcher that may post exists, or a
+   window runs. The notice stays unclaimed: the next app started to post or the next
+   permitted page takes it (within 10 minutes), else the window shows it when it next opens.
+6. **`osascript`**: only with no launcher that may post, no window and no permitted page. Its
+   click opens Script Editor and cannot be changed, so the text ends with
+   ` — open Spartito to answer` (a decision) or ` — open Spartito to see it`.
 
-A path that cannot be started falls through to the next one in the same call: when the app
-of step 3 cannot be started, or has not taken the notice within 15 seconds, `osascript` shows
-it. Without an agent (nothing recorded) step 4 or 5 shows it. Nothing here makes a turn or the
-decision tool wait: the notice is recorded with at most a 2-second wait for the database, and
-everything else runs in detached processes.
+On Linux: a permitted page, else `notify-send` (see [Linux](#linux)), else the notice waits
+for a page.
+
+**When the chosen way does not take it.** A background helper watches each notice left to
+the window, the launcher's app or a page. The window or a page that has not claimed it
+within 20 seconds, or the launcher's app within 15 seconds after it was started (or that
+could not be started: `open` failed or took over 10 seconds), is skipped and the decision is
+made again without it: the window's notice goes to the launcher's app, then a page, and so
+on. The launcher's app never falls back to `osascript`: when it may not post (permission
+withdrawn, or the system did not answer within 5 seconds) or a post fails, the notice waits
+(step 5). With the window open, `osascript` is never used.
+
+**Nothing waits for it, nothing is lost silently.** A turn or the decision tool waits at
+most 2 seconds for the database to record the notice. When the database stays busy longer,
+the notice is written to `run/notices/<id>.json` and the helper records it as soon as the
+database is free (it keeps trying for 10 minutes); a poll of the window, of a page or of the
+posting app records such files too. The notice is then decided as usual, so a busy database
+no longer sends it to `osascript` unrecorded. Every step is traced:
+see [Reading the trace](#reading-the-trace).
 
 **Allowing the page.** Once per browser and address: the **Enable notifications** button in
 the dashboard's header (shown while the browser has not decided), or **Models and effort** ›
@@ -195,9 +214,10 @@ start (the system prompts only once) and reads the authorization status every 2 
 a permission given or withdrawn later in System Settings, or an answer to the request that
 never arrives (see [Why notices went to osascript](#why-notices-went-to-osascript)),
 is seen within seconds. When allowed it writes `run/app-notify.json` (the bundle's identifier
-and path): from then on step 3 is used when no window is open. A posting app that finds the
-permission withdrawn removes the file and leaves the notices to `osascript`; one that gets no
-answer from the system in time leaves them to `osascript` this once and keeps the file.
+and path): from then on step 2 is used when no window is open. A posting app that finds the
+permission withdrawn removes the file and leaves the notices waiting (the next ones then go
+to a page or `osascript`); one that gets no answer from the system in time leaves them waiting
+and keeps the file.
 Spartito posts notifications itself only through the interpreter copy of the launcher (see
 [Launcher](#launcher-name-and-icon)): the notification centre refuses a process that only
 names the bundle through `CFProcessPath`.
@@ -228,35 +248,43 @@ click that reaches the window, and `window ended: <why>` (a stop signal, `--clos
 window closed, or the GUI loop ended) when the window goes.
 
 **How the page and the window are found.** A permitted page polls the server every 4 seconds
-and touches `run/page-notifier`; the native window's process (macOS) touches
-`run/app-notifier` every 2 seconds, allowed to post or not, and writes its pid into it. Each counts as present for 15 seconds after its last
-touch, the window only while its process runs. Some cases in detail:
+and touches `run/page-notifier`; it counts as present for 15 seconds after its last poll. The
+native window's process (macOS) writes `run/app-notifier` (its pid) and
+`run/app-notifier.json` (its pid, the process's start time and its notification state) every
+2 seconds, allowed to post or not, and removes both when it closes. It counts as present
+while that process runs, however late the files are (a window that macOS throttles in the
+background, or a poll that stalls): a pid whose process is gone, or that another process
+started later now has, does not count. A window of older code (no `app-notifier.json`)
+counts while its marker is under 15 seconds old. Some cases in detail:
 
 - **Hidden tabs.** The poll runs from a small worker, so the throttling of hidden tabs does
   not stop it. A tab the browser freezes (for example Chrome's Energy Saver) stops polling;
   after 15 seconds the next path takes over.
 - **Reloads.** A reloaded page carries on from the last notice it handled, so a notice
   recorded during the reload is still shown. A notice older than 10 minutes when a page first
-  sees it is skipped; so does the posting app of step 3.
+  sees it is skipped, unless it was left to a page later (an escalation) or waits; so does
+  the posting app of step 2.
 - **The native window** shows no Web Notifications (its WebKit has none); it takes the notices
-  itself (step 2) and touches `run/app-notifier` whether or not it may post them.
+  itself (step 1 or 4) and writes its markers whether or not it may post them.
 - **Off.** With `spartito config desktop-notifications off`, nothing is recorded and nothing is
   shown.
 
-**What a notification carries** (steps 2 and 3): the text, and a `userInfo` of
+**What a notification carries** (steps 1 and 2): the text, and a `userInfo` of
 `{"home": <the home digest of /api/ping>, "target": "decision:<n>" | "<agent id>"}`. A click is
 acted on only for the notification itself (not a dismissal), for this home, and for a target
 that passes the deep-link check; it then becomes a deep-link request to the window (see
 [Own window](#own-window)).
 
-**`spartito app --notify`** is internal: the hidden start of step 3 (`open -n -g -j -a <bundle>
---args --notify`). It claims and posts the pending notices, waits up to 5 seconds for the
-system, and exits; a click that reaches it in that time opens the window at the target.
+**`spartito app --notify`** is internal: the hidden start of step 2 (`open -n -g -j -a <bundle>
+--args --notify`). It claims and posts the pending notices left to it or waiting (younger than
+10 minutes), waits up to 5 seconds for the system, and exits; a click that reaches it in that
+time opens the window at the target. A notice it cannot post waits.
 
 ### Notices inside the window
 
 While the native window of `spartito app` is open on macOS and may not post notifications, it
-shows each new notice itself, so `osascript` (whose click opens Script Editor) stays quiet:
+shows the notices left to it itself (step 4: no launcher's app and no page took them), so
+`osascript` (whose click opens Script Editor) stays quiet:
 
 - a **banner** at the top right of the page: *Spartito* and the text. A click on it goes to the
   decision (the **Decisions** window on it) or the agent and closes the banner; **×** closes
@@ -269,17 +297,61 @@ shows each new notice itself, so `osascript` (whose click opens Script Editor) s
 The window process takes each notice once, as a page does, so nothing else shows it again. A
 notice it is allowed to post but the system refuses is shown inside the window too.
 
+**Notices that waited for a window.** On its first poll the window takes the notices that are
+still unclaimed (step 5: the launcher's app failed, nobody else could post) and shows them
+inside, whether or not it may post: the newest three as banners, the others counted in one
+banner (`<n> earlier notice(s) waited while no window was open: `spartito notices` lists
+them`), with one bounce of the Dock icon. A decision notice whose decision is no longer open
+is not shown (the trace says `dropped`). `logs/app.log` says `<n> notice(s) waited for a
+window; shown in it`.
+
 While the page does not take the notices (no hook in a page, `evaluate_js` failing), the window
 keeps trying on each poll and keeps their number on the Dock's badge, also once the window is
 active; after 10 seconds `logs/app.log` says `the window's page did not take <n> notice(s)`.
 No `osascript` while the window is open.
 
 **When the window closes** (its close button, Cmd-Q, a stop signal, `--close-after`), it claims
-nothing more from that moment, removes its marker, and then hands over to the way that applies
-with no window open (the launcher's app if it may post, else `osascript` with its clause): the
-notices it took but its page did not show, and those recorded after its last poll, which
-`desktop.show` had left to it. Each is claimed again before it is shown, so none comes twice;
-`logs/app.log` says `the window closed with <n> notice(s) it had not shown; handed to macOS`.
+nothing more from that moment, removes its markers, and then hands over: the notices it took
+but its page did not show (it releases only its own claims), and those still left to it. Each
+is decided again without the window (the launcher's app, a permitted page, else `osascript`
+with its clause when no launcher may post). A notice that a page or the launcher's app
+claimed meanwhile stays theirs, so none comes twice; `logs/app.log` says `the window closed
+with <n> notice(s) it had not shown; handed over (`spartito notices` shows where)`.
+
+### Reading the trace
+
+Every notice of the last day keeps its steps: in the database (table `notice_steps`) and,
+one line per step, in `$ORCH_HOME/logs/notices.log` (moved to `notices.log.1` above 1 MB). The
+log also has what the database did not take: a notice spooled while it was busy (named
+`spool:<file>` until it is recorded), and a step it refused. `spartito notices` shows them:
+
+```
+#41  2026-11-12T09:14:03+00:00  decision  window-system  window:5120  2026-11-12T09:14:04.210+00:00  — the window process takes it (allowed); window pid 5120 (allowed, polled 0.4 s ago, running); no page; launcher ready
+#40  2026-11-12T09:02:11+00:00  finished  waiting  notify:4987  2026-11-12T09:02:13.902+00:00  — post failed: UNErrorDomain 1: Notifications are not allowed for this application
+```
+
+Each line: the notice, when it was recorded, its kind, **how it was shown** (the path),
+**by which process** (`<role>:<pid>`: `runner`, `mcp`, `web`, `cli`, `window`, `notify` for
+the hidden posting app, `helper` for the background helper, `page` for a page through the
+server), when that step happened, and **why**: the last fallback, escalation or release, else
+the reason of the decision with what was present (the window's pid, state, the age of its
+last poll and whether its process runs; the age of the page's poll; whether the launcher may
+post, or why not).
+
+The paths: `window-system` (posted by the window), `window-banner` (shown inside the window),
+`launcher-helper` (posted by the app started to post), `page`, `linux` (`notify-send`),
+`osascript`, `waiting` (nobody took it yet), `dropped` (a decision answered before it was
+shown, or `osascript` could not be started); `… (not taken yet)` while it is still left to
+that way. A notice of older code has no steps.
+
+`spartito notices -v` adds the text and each step: `record` (at once, or `spooled: the store
+was busy for <n> s`, then `recorded from the spool`), `route` (the decision), `escalate`
+(who did not take it in time, and the new decision), `claim`, `shown`, `fallback` (a post the
+system refused: shown inside instead; a helper that did not start), `release` (back to
+waiting, with the error or the permission status), `drop`. `--json` gives the same as data.
+So for a notice that came from `osascript` while the window was open, the line says which
+process decided and what it saw: a window process not running, a stale window of older code,
+or no launcher that may post and why.
 
 ### Why notices went to osascript
 
@@ -628,19 +700,26 @@ other platforms it installs nothing.
   notification Spartito had posted opened Spartito at its target. **Not verified by a real
   run:** the Dock
   bounce and badge as seen on screen, banners in the window of a launcher whose permission is
-  off, and Spartito started by a click while no window is open (step 3).
+  off, and Spartito started by a click while no window is open (step 2).
 - A denied permission for *Spartito* stays until it is changed in System Settings ›
   Notifications; meanwhile the open window shows the notices inside itself, and with no window
-  open they come from `osascript`.
+  open they come from a permitted page or `osascript`. A notice that waited because the
+  launcher's app could not post it is shown in the window when it next opens, not by
+  `osascript`.
 - The system may decide the permission without answering the request (see
   [Why notices went to osascript](#why-notices-went-to-osascript)); the window then sees the
   decision within 2 seconds through the status, but its state line says "no answer to the
   request" first.
 - A notice the window's page does not take (a page without its hook, `evaluate_js` failing)
   shows no banner while the window is open: it stays on the Dock's badge, `logs/app.log` says
-  so, and macOS shows it (the launcher's app or `osascript`) when the window closes.
-- A window that is force-quit hands nothing over: what it took but its page had not shown is
-  lost, and what was recorded during its last 15 seconds is not shown.
+  so, and it is decided again (the launcher's app, a page or `osascript`) when the window
+  closes.
+- A window that is force-quit hands nothing over: what it took but its page had not shown
+  stays claimed and is not shown. What was left to it but not yet taken, at most what was
+  recorded since its last poll (2 seconds), is moved on by the helper 20 seconds later; from
+  the moment its process is gone, new notices take the next way at once.
+- While the launcher's app keeps failing (it starts but cannot post, or `open` fails), each
+  notice waits for the window, a page or the next start of that app; the trace says why.
 - A launcher bundle under a temporary folder (`/tmp`, `/var/folders`) is refused by the
   notification centre.
 - In the Chromium fallback window Spartito posts no notifications itself; the page in it can.
@@ -649,8 +728,9 @@ other platforms it installs nothing.
 - After a Python upgrade, until `spartito app install` runs again, Spartito posts notifications
   itself only from a window whose stale copy still starts; otherwise an open window shows them
   inside itself, and with no window open `osascript` shows them.
-- After a busy database, an "agent finished" notice shown by `osascript` can be posted a second
-  time by Spartito within ten minutes.
+- A notice recorded from the spool keeps the time it was first recorded; one that waited
+  longer than 10 minutes there is skipped by pages and the posting app (the window still
+  shows it when it opens).
 - On Linux with `xdg-open` but no browser installed, `spartito app` prints `xdg-open`'s errors
   instead of the "no browser could be opened" line.
 - `spartito app uninstall` on Linux leaves the empty directories that install created.

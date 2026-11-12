@@ -132,8 +132,8 @@ src/orchestrator/
   board.py         task board: one item's rules
   decisions.py     decisions
   keep_awake.py    sleep inhibitor
-  desktop.py       desktop notifications: who shows a notice (page, Spartito, notify-send,
-                   `osascript`)
+  desktop.py       desktop notifications: the one route of a notice (Spartito's window, its
+                   launcher's app, a page, notify-send, `osascript`), its helper and trace
   git.py           worktree handling
   config.py        paths under `~/.orchestrator/` (or `$ORCH_HOME`)
 ```

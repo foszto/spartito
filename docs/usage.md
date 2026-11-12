@@ -19,6 +19,7 @@ lists as `#12`. *Project lead* or *lead* is the agent with role `lead` of a proj
 | `spartito app` | dashboard in its own window |
 | `spartito menubar` | running agents and open decisions in the macOS menu bar |
 | `spartito service install/uninstall/status/logs` | dashboard as a background service |
+| `spartito notices` | how the recent desktop notifications were shown, and why |
 | `spartito ask <project> "…"` | message the project lead (creates it) |
 | `spartito spawn -p <project> "…"` | start an agent (`-r` role, `-n` name, `--provider`, `--after`, `--share`, `--base`) |
 | `spartito send <agent> "…"` | follow-up message, queued if the agent is busy |
@@ -88,6 +89,7 @@ spartito service install [--host 127.0.0.1] [--port 8787]
 spartito service status
 spartito service logs [--lines|-n 20]
 spartito service uninstall
+spartito notices [--limit|-n 20] [--verbose|-v] [--json]
 ```
 
 - `app` shows the dashboard in its own window: a native one with the extra `app`, else a
@@ -105,6 +107,12 @@ spartito service uninstall
   replaces the unit and restarts the service. `status` shows whether it is installed and
   running and whether the dashboard answers; `logs` shows where its output goes (on macOS
   also the last lines); `uninstall` stops and removes it.
+- `notices` lists the recent desktop notifications of this home, newest first, one line each:
+  its number, when it was recorded, its kind, the way it was shown (`window-system`,
+  `window-banner`, `launcher-helper`, `page`, `linux`, `osascript`, `waiting`, `dropped`),
+  the process that showed or last moved it (`<role>:<pid>`), when, and the reason of the last
+  fallback or escalation. `-v` adds each notice's text and steps, `--json` gives all of it.
+  How to read it: [desktop.md](desktop.md#reading-the-trace).
 
 Details: [desktop.md](desktop.md).
 
