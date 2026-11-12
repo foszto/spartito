@@ -25,18 +25,19 @@ Repeat step 2 after every Python upgrade (Homebrew or uv).
 `orch app install` is **not** needed again when the merge changes neither the launcher nor the
 dependencies: the launcher only starts `orch app` from the tool environment, which with
 `--editable` is the merged checkout. It is needed after a Python upgrade, or when the state
-line below says `run orch app install again`. Steps, on the real app:
+line below says `run orch app install again`. Nor is a restart of the dashboard service: it
+reads the page (`index.html`) and its static files from disk on each request, so a running
+service already serves the merged page; the notices are taken by the window process, which
+the restart below replaces. Steps, on the real app:
 
-1. Quit Spartito (Cmd-Q). If the dashboard service runs, `orch service install` (restarts it
-   with the merged code; the window loads its page from that server, and an older page has
-   no place for the state line or the banners).
+1. Quit Spartito (Cmd-Q).
 2. Start Spartito from the Dock or `~/Applications`. Under the agent list, at the bottom of
    the sidebar, a quiet line says the notification state, for example `notifications:
    Spartito shows them; a click opens it there`. The same lines are in
    `~/.orchestrator/logs/app.log`. If macOS shows a prompt for *Spartito*, allow it.
 3. Close every dashboard tab in your browsers (a page allowed to notify shows the notice
    first). Click another app's window so Spartito is in the background, and have a lead record
-   a decision (or answer one with **Ask** in the dashboard first).
+   a decision.
 4. Expect one notification titled *Spartito*: `Decision needed (<project>): …`. Click it:
    the Spartito window comes to the front with the **Decisions** window on that decision. No
    Script Editor.
@@ -51,7 +52,12 @@ line below says `run orch app install again`. Steps, on the real app:
 
 If a step fails, send the step number, what you saw, and `~/.orchestrator/logs/app.log`
 (it holds the window's notification state lines, each click on a notification with its target,
-why the window ended, and why a native window could not open; no notice text).
+whether the page did not take notices and how many were handed over at close, why the window
+ended, and why a native window could not open; no notice text).
+
+**Verified so far on a live installation:** a click on a notification Spartito posted opened
+Spartito at its target (step 4). Steps 5 and 6 (permission off: banner, bounce, badge) have
+not been seen on a live installation yet.
 
 ## Setup
 

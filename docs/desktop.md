@@ -42,7 +42,7 @@ nothing.
 |---|---|---|
 | background service (`orch service`) | launchd agent | systemd user unit |
 | installable page | Chrome (and other Chromium-family browsers), Safari | Chromium-family browsers |
-| notification click-through | an open dashboard page; else Spartito itself (launcher installed and allowed); else `osascript`, whose text says where to look | an open dashboard page; else `notify-send`, with a click action from libnotify 0.7.10 |
+| notification click-through | an open dashboard page; else Spartito itself (launcher installed and allowed); else, while the Spartito window is open, a banner inside it; else `osascript`, whose text says where to look | an open dashboard page; else `notify-send`, with a click action from libnotify 0.7.10 |
 | launcher (`orch app install`) | `~/Applications/Spartito.app` | desktop entry and icons |
 | `orch app` native window | Cocoa (WebKit), extra `app` | Qt WebEngine, extra `app` |
 | `orch app` browser fallback | Chromium-family browser in app mode, else the default browser | the same |
@@ -269,6 +269,18 @@ shows each new notice itself, so `osascript` (whose click opens Script Editor) s
 The window process takes each notice once, as a page does, so nothing else shows it again. A
 notice it is allowed to post but the system refuses is shown inside the window too.
 
+While the page does not take the notices (no hook in a page, `evaluate_js` failing), the window
+keeps trying on each poll and keeps their number on the Dock's badge, also once the window is
+active; after 10 seconds `logs/app.log` says `the window's page did not take <n> notice(s)`.
+No `osascript` while the window is open.
+
+**When the window closes** (its close button, Cmd-Q, a stop signal, `--close-after`), it claims
+nothing more from that moment, removes its marker, and then hands over to the way that applies
+with no window open (the launcher's app if it may post, else `osascript` with its clause): the
+notices it took but its page did not show, and those recorded after its last poll, which
+`desktop.show` had left to it. Each is claimed again before it is shown, so none comes twice;
+`logs/app.log` says `the window closed with <n> notice(s) it had not shown; handed to macOS`.
+
 ### Why notices went to osascript
 
 Before this change the window asked for permission during its launch and took notices only
@@ -484,7 +496,7 @@ The script runs the copy with `__PYVENV_LAUNCHER__` naming the environment's int
 `sys.prefix` and the packages are the environment's, and the process is the bundle's own
 executable: macOS shows it as *Spartito* with its icon, and the notification centre accepts
 it. When no working copy can be made, install says
-`notifications from Spartito itself are not available (<why>); notifications without an open dashboard page come from osascript`
+`notifications from Spartito itself are not available (<why>); without a dashboard page allowed to notify, an open window shows them inside itself, else osascript`
 and the script runs the environment's interpreter with `CFProcessPath` set to the script:
 CoreFoundation then takes the script for the process's executable, which gives name, icon and
 identifier, but no notifications of its own.
@@ -612,7 +624,9 @@ other platforms it installs nothing.
   notifications, `osascript` not called); clicks on posted notifications were logged in
   `logs/app.log` and brought the window to the front at the decision; the delegate, driven
   with a delivered notification's `userInfo`, did the same; banners inside a real WebKit
-  window without a launcher appeared one per notice. **Not verified by a real run:** the Dock
+  window without a launcher appeared one per notice. On a live installation, a click on a
+  notification Spartito had posted opened Spartito at its target. **Not verified by a real
+  run:** the Dock
   bounce and badge as seen on screen, banners in the window of a launcher whose permission is
   off, and Spartito started by a click while no window is open (step 3).
 - A denied permission for *Spartito* stays until it is changed in System Settings ›
@@ -622,17 +636,19 @@ other platforms it installs nothing.
   [Why notices went to osascript](#why-notices-went-to-osascript)); the window then sees the
   decision within 2 seconds through the status, but its state line says "no answer to the
   request" first.
-- The window shows the state line and the banners through the page of the server it uses. A
-  dashboard service still running code from before this change serves a page without them:
-  the window then takes the notices, bounces the Dock icon and sets the badge, but shows no
-  banner until the service is restarted (`orch service install`).
+- A notice the window's page does not take (a page without its hook, `evaluate_js` failing)
+  shows no banner while the window is open: it stays on the Dock's badge, `logs/app.log` says
+  so, and macOS shows it (the launcher's app or `osascript`) when the window closes.
+- A window that is force-quit hands nothing over: what it took but its page had not shown is
+  lost, and what was recorded during its last 15 seconds is not shown.
 - A launcher bundle under a temporary folder (`/tmp`, `/var/folders`) is refused by the
   notification centre.
 - In the Chromium fallback window Spartito posts no notifications itself; the page in it can.
 - A click on an `osascript` notification opens Script Editor and cannot be redirected; its text
   says where to look instead.
 - After a Python upgrade, until `orch app install` runs again, Spartito posts notifications
-  itself only from a window whose stale copy still starts; otherwise `osascript` shows them.
+  itself only from a window whose stale copy still starts; otherwise an open window shows them
+  inside itself, and with no window open `osascript` shows them.
 - After a busy database, an "agent finished" notice shown by `osascript` can be posted a second
   time by Spartito within ten minutes.
 - On Linux with `xdg-open` but no browser installed, `orch app` prints `xdg-open`'s errors

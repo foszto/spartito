@@ -313,6 +313,7 @@ class Orchestrator:
     notices = page_notices.notices
     notice_cursor = page_notices.notice_cursor
     claim_notice = page_notices.claim_notice
+    hand_over_notice = page_notices.hand_over_notice
     page_present = page_notices.page_present
 
     # -- the dashboard window of `orch app` (app_open.py) ----------------

@@ -241,7 +241,8 @@ need the extras: `uv tool install --editable '.[app,menubar]'` (also over an exi
 - **Notifications with click-through.** A click opens Spartito at the agent or decision. They
   come from an open dashboard page allowed to show them (the **Enable notifications** button
   in its header), else on macOS from Spartito itself (launcher installed, *Spartito* allowed
-  once), else from `notify-send` on Linux. The plain macOS notification that remains
+  once), else from `notify-send` on Linux. An open Spartito window that may not post shows them
+  inside itself (a banner, the Dock's badge). The plain macOS notification that remains
   (`osascript`) cannot be clicked through; its text ends with `— open Spartito to answer` or
   `— open Spartito to see it`.
 - **Menu-bar item** (macOS only). `orch menubar` (extra `menubar`) shows the running agents and
@@ -251,7 +252,7 @@ need the extras: `uv tool install --editable '.[app,menubar]'` (also over an exi
 |---|---|---|
 | background service | launchd agent | systemd user unit |
 | installable page | Chrome, Safari | Chromium-family browsers |
-| notification click-through | an open page; else Spartito itself (launcher); else `osascript`, no click | an open page; else `notify-send` (click from libnotify 0.7.10) |
+| notification click-through | an open page; else Spartito itself (launcher); else a banner in the open Spartito window; else `osascript`, no click | an open page; else `notify-send` (click from libnotify 0.7.10) |
 | launcher | `~/Applications/Spartito.app` | desktop entry |
 | `orch app` native window | Cocoa (WebKit), extra `app` | Qt WebEngine, extra `app` (PyQt6: GPL-3.0-only) |
 | `orch app` browser fallback | yes | yes |

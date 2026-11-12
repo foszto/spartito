@@ -13,7 +13,12 @@ inside itself when it may not post them:
   seen within a poll. Allowed, it records the grant (desktop.record_grant) and posts the
   notices; otherwise (not asked yet, not allowed, refused by the system, not available) it
   shows them inside the window (`InWindow`: a banner in the page and the Dock's attention).
-  Each change of that state is said (window.say: stderr and the app log) and shown in the page;
+  Each change of that state is said (window.say: stderr and the app log) and shown in the page.
+  A notice it shows inside stays counted on the Dock's badge until the page has it; one the page
+  never took (no hook in the page, `evaluate_js` failing) is said once (PAGE_WAIT_SECONDS). As
+  the window closes (`closing`, then `close`) it claims nothing more and hands what it took but
+  did not get shown, and what is still unclaimed, to the way that applies without a window
+  (desktop.without_window: the posting process, else osascript; claims keep it to once);
 - the posting process (`orch app --notify`, started hidden by desktop.bundle_helper when no
   window runs): claims and posts the pending notices younger than MAX_AGE_SECONDS, then exits;
   when it is not allowed (any more), it forgets the grant and shows them with osascript.
@@ -49,6 +54,8 @@ TEXT_CHARS = 240
 IN_WINDOW = 3  # the newest notices the window shows inside itself; older ones drop out
 NO_ANSWER_SECONDS = 30.0  # asked this long ago without an answer: said once
 SETTINGS = "System Settings › Notifications"
+STATUS_WAIT_SECONDS = 10.0  # a status read without a completion this long: read again
+PAGE_WAIT_SECONDS = 10.0  # notices the page has not taken for this long: said once
 # The states of the window process's notifications (WindowNotifier.state).
 WAITING, ASKING, ALLOWED, DENIED, REFUSED, UNAVAILABLE = (
     "waiting",  # not asked yet: the window is not shown yet
@@ -224,6 +231,7 @@ class Facade(Protocol):
     def notices(self, after: int = 0) -> list[dict[str, Any]]: ...
     def notice_cursor(self) -> int: ...
     def claim_notice(self, notice_id: int) -> bool: ...
+    def hand_over_notice(self, notice: dict[str, Any]) -> None: ...
 
 
 def text_of(notice: dict[str, Any]) -> str:
@@ -275,6 +283,7 @@ class InWindow(Protocol):
 
     def show(self, view: dict[str, Any]) -> bool: ...  # True: the page has this view now
     def attention(self) -> None: ...  # a new notice inside the window: draw the eye to it
+    def hold(self, count: int) -> None: ...  # notices the page has not taken: keep the badge
 
 
 class Nowhere:
@@ -284,6 +293,9 @@ class Nowhere:
         return True
 
     def attention(self) -> None:
+        pass
+
+    def hold(self, count: int) -> None:
         pass
 
 
@@ -322,8 +334,13 @@ class WindowNotifier:
         self.state, self.detail = (UNAVAILABLE, why_not) if why_not else (WAITING, "")
         self.asked_at: float | None = None
         self.no_answer_said = False
-        self.checking = False  # a status request is out
+        self.checking_since: float | None = None  # a status request is out since then
         self.shown: deque[dict[str, Any]] = deque(maxlen=IN_WINDOW)
+        self.unseen: dict[int, dict[str, Any]] = {}  # shown inside, not taken by the page yet
+        self.held = 0  # the count the Dock's badge keeps for the page
+        self.stuck_since: float | None = None  # the page has not taken new notices since then
+        self.stuck_said = False
+        self.handed = False  # closed: what comes now goes the way without a window
         self.version = 0  # of what the page should show (state line and notices)
         self.dirty = True  # the page does not show the current version (yet)
 
@@ -417,8 +434,12 @@ class WindowNotifier:
 
     def status(self, code: int) -> None:
         """An authorization status read on a poll: allowed or not, whatever the request's
-        answer was (or whether one came)."""
-        self.checking = False
+        answer was (or whether one came). Never raises (it runs in the centre's callback)."""
+        self.checking_since = None
+        with contextlib.suppress(Exception):
+            self.read_status(code)
+
+    def read_status(self, code: int) -> None:
         if self.stop.is_set() or self.state in (WAITING, UNAVAILABLE):
             return
         if self.state == ASKING and code in (1, *AUTHORIZED):
@@ -433,8 +454,11 @@ class WindowNotifier:
         # 0 (not determined): no answer yet, or a status read that crossed the answer
 
     def check(self) -> None:
-        if self.state in (WAITING, UNAVAILABLE) or self.checking:
-            return
+        now = time.monotonic()
+        if self.state in (WAITING, UNAVAILABLE) or (
+            self.checking_since is not None and now - self.checking_since < STATUS_WAIT_SECONDS
+        ):
+            return  # a read without a completion does not stop the later ones
         if (
             self.state == ASKING
             and not self.no_answer_said
@@ -444,11 +468,11 @@ class WindowNotifier:
             self.no_answer_said = True
             self.changed()
             self.say(self.line())
-        self.checking = True
+        self.checking_since = now
         try:
             self.center.status(self.status)
         except Exception:
-            self.checking = False
+            self.checking_since = None
 
     def loop(self) -> None:
         while not self.stop.is_set():
@@ -457,9 +481,13 @@ class WindowNotifier:
             self.stop.wait(POLL_SECONDS)
 
     def tick(self) -> None:
+        if self.stop.is_set():
+            return  # closing: no marker, no claims
         desktop.app_present()
         self.check()
         for notice in self.orch.notices(self.cursor):
+            if self.stop.is_set():
+                return
             if self.orch.claim_notice(notice["id"]):
                 self.deliver(notice)
             self.cursor = notice["id"]
@@ -468,21 +496,32 @@ class WindowNotifier:
     def deliver(self, notice: dict[str, Any]) -> None:
         """A claimed notice: posted when allowed, else (or when the post fails) shown in the
         window."""
-        if self.allowed:
+        if self.handed:
+            self.hand_over(notice)
+        elif self.allowed:
             post(self.center, notice, lambda error: None, self.show_inside)
         else:
             self.show_inside(notice)
 
     def show_inside(self, notice: dict[str, Any]) -> None:
         with self.lock:
-            self.shown.append(in_window_item(notice))
-            self.changed()
+            late = self.handed
+            if not late:
+                self.shown.append(in_window_item(notice))
+                self.unseen[notice["id"]] = notice
+                self.changed()
+        if late:  # a post refused after the window closed
+            self.hand_over(notice)
+            return
         with contextlib.suppress(Exception):
             self.inside.attention()
         self.push()
 
     def push(self) -> None:
-        """Hand the page the current view when it does not have it (a reload: `repush`)."""
+        """Hand the page the current view when it does not have it (a reload: `repush`);
+        while it does not take new notices, keep them on the badge and say so once."""
+        if self.stop.is_set():
+            return  # the window is going: what it did not take is handed over at close
         with self.lock:
             if not self.dirty:
                 return
@@ -491,20 +530,72 @@ class WindowNotifier:
             taken = self.inside.show(view)
         except Exception:
             taken = False
+        now = time.monotonic()
         with self.lock:
             if taken and view["version"] == self.version:
                 self.dirty = False
+            if taken:
+                for item in view["notices"]:
+                    self.unseen.pop(item["id"], None)
+            waiting = self.dirty and bool(self.unseen)
+            held = len(self.unseen) if waiting else 0
+            if not waiting:
+                self.stuck_since = None
+            elif self.stuck_since is None:
+                self.stuck_since = now
+            stuck = waiting and not self.stuck_said and now - self.stuck_since >= PAGE_WAIT_SECONDS
+            back = not waiting and self.stuck_said
+            self.stuck_said = (self.stuck_said or stuck) and not back
+        if held != self.held:
+            self.held = held
+            with contextlib.suppress(Exception):
+                self.inside.hold(held)
+        if stuck:
+            self.say(
+                f"notifications: the window's page did not take {held} notice(s) (no hook in"
+                " the page, or it did not answer); the Dock's badge keeps them, and macOS shows"
+                " them when the window closes"
+            )
+        elif back:
+            self.say("notifications: the window's page shows the notices again")
 
     def repush(self) -> None:
         """The page was (re)loaded: it shows nothing of this yet."""
         with self.lock:
             self.dirty = True
 
-    def close(self) -> None:
+    def closing(self) -> None:
+        """The window is going (closed, a stop signal, time up): claim and push nothing more."""
         self.stop.set()
+
+    def close(self) -> None:
+        """After the GUI loop: stop, remove the marker, then hand over what the window took
+        but did not get shown and what came after its last poll (`desktop.show` left those
+        to the window while its marker was fresh)."""
+        self.closing()
         if self.thread is not None:
             self.thread.join(POLL_SECONDS + 1)
         desktop.app_marker().unlink(missing_ok=True)
+        with self.lock:
+            self.handed = True
+            left = list(self.unseen.values())
+            self.unseen.clear()
+        try:
+            last = self.orch.notice_cursor()  # recorded later: desktop.show's own
+            left += [n for n in self.orch.notices(self.cursor) if n["id"] <= last]
+        except Exception:
+            pass
+        for notice in left:
+            self.hand_over(notice)
+        if left:
+            self.say(
+                f"notifications: the window closed with {len(left)} notice(s) it had not"
+                " shown; handed to macOS"
+            )
+
+    def hand_over(self, notice: dict[str, Any]) -> None:
+        with contextlib.suppress(Exception):
+            self.orch.hand_over_notice(notice)
 
 
 def opener(open_target: Callable[[str], Any]) -> Callable[[str, dict[str, Any]], None]:

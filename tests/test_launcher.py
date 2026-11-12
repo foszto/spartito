@@ -363,7 +363,7 @@ def test_install_and_uninstall_commands(tmp_path: Path, monkeypatch, platform: s
         assert result.exit_code == 0, result.output
         note = (
             "notifications from Spartito Test itself are not available (not checked in tests);"
-            " notifications without an open dashboard page come from osascript\n"
+            " without a dashboard page allowed to notify, an open window shows them inside itself, else osascript\n"
             if platform == "darwin"
             else ""
         )
@@ -566,7 +566,7 @@ def test_a_copy_that_does_not_work_is_removed_and_the_script_uses_cfprocesspath(
     launcher.install(written, notes)
     assert notes == [
         "notifications from Spartito itself are not available (the copy did not run);"
-        " notifications without an open dashboard page come from osascript"
+        " without a dashboard page allowed to notify, an open window shows them inside itself, else osascript"
     ]
     assert not written.interpreter.exists() and not written.record.exists()
     assert not list(written.interpreter.parent.glob(".spartito-python.*"))

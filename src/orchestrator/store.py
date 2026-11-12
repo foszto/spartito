@@ -1212,6 +1212,12 @@ class Store:
             )
         return cursor.rowcount == 1
 
+    def release_notice(self, notice_id: int, wait: float = 30) -> None:
+        """Make a claimed notice unclaimed again: its taker could not show it (the Spartito
+        window closing before its page took it), so another way may claim it."""
+        with self._conn(wait) as conn:
+            conn.execute("UPDATE notices SET claimed_at = NULL WHERE id = ?", (notice_id,))
+
     # -- events -----------------------------------------------------------
 
     def add_event(self, run_id: int, agent_id: str, kind: str, text: str) -> None:

@@ -34,6 +34,13 @@ def claim_notice(orch: Facade, notice_id: int) -> bool:
     return orch.store.claim_notice(notice_id)
 
 
+def hand_over_notice(orch: Facade, notice: dict[str, Any]) -> None:
+    """A notice Spartito's window took but did not show, or left unclaimed, as it closes: shown
+    as if no window were open (desktop.without_window), still only once."""
+    orch.store.release_notice(notice["id"])
+    desktop.without_window(orch.store, notice["id"], str(notice["text"]), notice.get("decision_id"))
+
+
 def page_present(orch: Facade) -> None:
     """A page able to show notifications is polling: osascript leaves notices to it for
     desktop.PAGE_FRESH_SECONDS."""

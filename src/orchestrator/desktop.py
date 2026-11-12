@@ -175,16 +175,33 @@ def show(
         notice = _record(store, body, agent_id, decision_id)
         if notice is not None and (page_fresh() or app_fresh()):
             return
-        if PLATFORM == "darwin" and notice is not None and (bundle := bundle_ready()):
-            argv = ["bundle", OPEN, str(bundle), str(notice), body, _number(decision_id)]
-            if spawn(argv):
-                return
+        if PLATFORM == "darwin" and notice is not None and by_bundle(notice, body, decision_id):
+            return
         if PLATFORM.startswith("linux") and (send := shutil.which(NOTIFY_SEND)):
             if notice is not None and _claim(store, notice) is False:
                 return  # a page showed it meanwhile
             spawn(["linux", send, body, target_of(agent_id, decision_id)])
             return  # no other way on Linux
         plain(store, notice, body, decision_id)
+    except Exception:
+        pass
+
+
+def by_bundle(notice: int, body: str, decision_id: int | None) -> bool:
+    """3. The launcher's app may post: a detached helper has it post the notice (osascript when
+    that fails); False when there is no such app or the helper could not be started."""
+    bundle = bundle_ready()
+    return bundle is not None and spawn(
+        ["bundle", OPEN, str(bundle), str(notice), body, _number(decision_id)]
+    )
+
+
+def without_window(store: Store, notice: int, body: str, decision_id: int | None) -> None:
+    """A recorded, unclaimed notice the Spartito window leaves as it closes (macOS): shown the
+    way `show` shows one with no window open, 3. or else 5. Never raises."""
+    try:
+        if not by_bundle(notice, body, decision_id):
+            plain(store, notice, body, decision_id)
     except Exception:
         pass
 

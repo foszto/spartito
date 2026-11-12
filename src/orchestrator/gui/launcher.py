@@ -393,7 +393,7 @@ def make_interpreter(item: Launcher) -> tuple[bool, list[str]]:
         item.record.unlink(missing_ok=True)
         return False, [
             f"notifications from {item.name} itself are not available ({problem});"
-            " notifications without an open dashboard page come from osascript"
+            " without a dashboard page allowed to notify, an open window shows them inside itself, else osascript"
         ]
     temp.replace(item.interpreter)
     stat = source.stat()

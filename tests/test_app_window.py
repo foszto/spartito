@@ -348,6 +348,7 @@ class FakeWindow:
         self.raised: list[str] = []  # restore and show, as called
         self.location = url  # what evaluate_js("location.href") answers
         self.synced: list[dict] = []  # the views handed to the page (window.SYNC_JS)
+        self.hook = True  # False: a page without spartitoApp (served by an older server)
 
     def destroy(self) -> None:
         self.destroyed.set()
@@ -362,6 +363,8 @@ class FakeWindow:
         head, tail = window.SYNC_JS.split("{}")
         if script.startswith(head) and script.endswith(tail):
             view = json.loads(script[len(head) : -len(tail)])
+            if not self.hook:
+                return -1
             self.synced.append(view)
             return view["version"]  # the page shows it now
         assert script == window.WHERE_JS
@@ -1514,6 +1517,9 @@ def test_with_the_window_open_a_decision_notice_reaches_its_page_and_never_osasc
         def attention(self) -> None:
             bounced.append("bounce")
 
+        def hold(self, count: int) -> None:
+            bounced.append(f"hold {count}")
+
     monkeypatch.setattr(window.MacDock, "make", classmethod(lambda cls: Dock()))
     webview.open_for = None
     orch = Orchestrator()
@@ -1544,6 +1550,135 @@ def test_with_the_window_open_a_decision_notice_reaches_its_page_and_never_osasc
     assert orch.notices() == []  # claimed by the window
     time.sleep(0.2)
     assert calls(fake_osascript) == []
+
+
+def test_a_notice_the_page_never_took_is_shown_by_osascript_once_the_window_closes(
+    webview: FakeWebview, fake_osascript, monkeypatch
+):
+    """A page without the hook: the window keeps the notice (badge, no osascript) while it is
+    open, says so, and hands it over when it closes."""
+    from orchestrator import desktop
+    from orchestrator.gui import notifier
+
+    monkeypatch.setattr(desktop, "PLATFORM", "darwin")
+    monkeypatch.setattr(notifier, "POLL_SECONDS", 0.05)
+    monkeypatch.setattr(notifier, "PAGE_WAIT_SECONDS", 0.2)
+    held: list[int] = []
+
+    class Dock:
+        def attention(self) -> None:
+            pass
+
+        def hold(self, count: int) -> None:
+            held.append(count)
+
+    monkeypatch.setattr(window.MacDock, "make", classmethod(lambda cls: Dock()))
+    webview.open_for = None
+    orch = Orchestrator()
+
+    def meanwhile() -> None:
+        win = webview.windows[-1]
+        win.hook = False
+        until_true(desktop.app_fresh)
+        desktop.show(orch.store, "Decision needed (p): which?", "a-1", 9)
+        until_true(lambda: orch.notices() == [] and held == [1])
+        until_true(lambda: "did not take" in window.app_log().read_text())
+        assert calls(fake_osascript) == []  # not while the window runs
+        win.destroy()
+
+    webview.on_start = lambda: threading.Thread(target=meanwhile, daemon=True).start()
+    result = run_app()
+    assert result.exit_code == 0, result.output
+    until_true(lambda: calls(fake_osascript))
+    time.sleep(0.2)
+    assert [call[-1] for call in calls(fake_osascript)] == [
+        "Decision needed (p): which? — open Spartito to answer"
+    ]
+    assert "handed to macOS" in window.app_log().read_text()
+
+
+class FakeAppKit(types.ModuleType):
+    """AppKit and Foundation for MacDock: an application whose activity a test sets, a Dock
+    tile that keeps its badge, a main queue that runs each block at once."""
+
+    NSApplicationDidBecomeActiveNotification = "became active"
+    NSInformationalRequest = 10
+
+    def __init__(self) -> None:
+        super().__init__("AppKit")
+        self.active = False
+        self.badge: str | None = None
+        self.bounces: list[int] = []
+        self.observers: list = []
+        test = self
+
+        class Tile:
+            def setBadgeLabel_(self, label) -> None:
+                test.badge = label
+
+        class App:
+            def isActive(self) -> bool:
+                return test.active
+
+            def dockTile(self) -> Tile:
+                return Tile()
+
+            def requestUserAttention_(self, kind: int) -> None:
+                test.bounces.append(kind)
+
+        class Queue:
+            def addOperationWithBlock_(self, work) -> None:
+                work()
+
+        class Center:
+            def addObserverForName_object_queue_usingBlock_(self, name, obj, queue, block):
+                test.observers.append((name, block))
+                return object()
+
+        self.NSApplication = types.SimpleNamespace(sharedApplication=App)
+        self.NSOperationQueue = types.SimpleNamespace(mainQueue=Queue)
+        self.NSNotificationCenter = types.SimpleNamespace(defaultCenter=Center)
+
+    def activate(self) -> None:
+        self.active = True
+        for name, block in self.observers:
+            if name == self.NSApplicationDidBecomeActiveNotification:
+                block(None)
+
+
+@pytest.fixture
+def appkit(monkeypatch) -> FakeAppKit:
+    fake = FakeAppKit()
+    monkeypatch.setitem(sys.modules, "AppKit", fake)
+    monkeypatch.setitem(sys.modules, "Foundation", fake)
+    return fake
+
+
+def test_the_dock_bounces_and_counts_notices_while_in_the_background(appkit: FakeAppKit):
+    dock = window.MacDock.make()
+    assert isinstance(dock, window.MacDock)
+    dock.attention()
+    dock.attention()
+    assert appkit.badge == "2" and appkit.bounces == [appkit.NSInformationalRequest] * 2
+    appkit.activate()  # the window focused, the Dock icon or a banner clicked
+    assert appkit.badge is None
+    dock.attention()  # active: the notice is in sight
+    assert appkit.badge is None and len(appkit.bounces) == 2
+
+
+def test_the_dock_keeps_the_notices_the_page_has_not_taken_on_the_badge(appkit: FakeAppKit):
+    dock = window.MacDock()
+    dock.attention()
+    dock.hold(1)
+    appkit.activate()
+    assert appkit.badge == "1"  # the page does not show it: the badge stays
+    dock.hold(0)
+    assert appkit.badge is None
+
+
+def test_without_appkit_there_is_no_dock(monkeypatch):
+    monkeypatch.setitem(sys.modules, "AppKit", None)
+    assert window.MacDock.make() is None
 
 
 def until_true(predicate, timeout: float = 20.0) -> None:

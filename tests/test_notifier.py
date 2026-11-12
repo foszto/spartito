@@ -52,6 +52,7 @@ class FakeInside:
     def __init__(self) -> None:
         self.views: list[dict] = []
         self.attention_calls = 0
+        self.holds: list[int] = []
         self.takes = True
 
     def show(self, view: dict) -> bool:
@@ -61,6 +62,9 @@ class FakeInside:
 
     def attention(self) -> None:
         self.attention_calls += 1
+
+    def hold(self, count: int) -> None:
+        self.holds.append(count)
 
     @property
     def last(self) -> dict:
@@ -324,6 +328,191 @@ def test_the_page_gets_the_view_until_it_has_it_and_again_after_a_reload(
     window_notifier.repush()  # the page was reloaded
     window_notifier.tick()
     assert len(inside.views) == 2 and inside.views[0] == inside.views[1]
+
+
+# -- the window closing ----------------------------------------------------------------------
+
+
+def osascript_texts(log: Path, count: int) -> list[str]:
+    until(lambda: len(calls(log)) >= count, what=f"{count} osascript call(s)")
+    time.sleep(0.2)  # and no more
+    return texts(log)
+
+
+def test_at_close_a_notice_the_page_never_took_is_shown_as_without_a_window_once(
+    orch: Orchestrator, window_notifier, inside, lines, fake_osascript, monkeypatch
+):
+    """(a) Claimed and shown inside, but the page did not take it: osascript at close."""
+    monkeypatch.setattr(desktop, "PLATFORM", "darwin")
+    inside.takes = False
+    orch.store.add_notice("decision", "a-1", "Decision needed", 4)
+    window_notifier.tick()
+    assert orch.notices() == [] and calls(fake_osascript) == []  # the window's while it runs
+    window_notifier.close()
+    assert osascript_texts(fake_osascript, 1) == ["Decision needed — open Spartito to answer"]
+    assert orch.notices() == []  # claimed again, by osascript
+    assert (
+        lines[-1]
+        == "notifications: the window closed with 1 notice(s) it had not shown; handed to macOS"
+    )
+    window_notifier.close()  # the fixture's close: nothing twice
+    assert len(calls(fake_osascript)) == 1
+
+
+def test_at_close_a_notice_the_page_took_is_not_shown_again(
+    orch: Orchestrator, window_notifier, inside, lines, fake_osascript, monkeypatch
+):
+    monkeypatch.setattr(desktop, "PLATFORM", "darwin")
+    orch.store.add_notice("finished", "a-1", "a-1 finished")
+    window_notifier.tick()
+    assert [n["target"] for n in inside.last["notices"]] == ["a-1"]
+    window_notifier.close()
+    time.sleep(0.3)
+    assert calls(fake_osascript) == [] and lines == []
+
+
+def test_closing_the_window_claims_and_pushes_nothing_more_and_close_hands_it_over(
+    orch: Orchestrator, window_notifier, inside, fake_osascript, monkeypatch
+):
+    """(b) Between the end of the GUI loop and `close`, a poll claims nothing for a page that
+    is gone; the notice is left for the hand-over."""
+    monkeypatch.setattr(desktop, "PLATFORM", "darwin")
+    window_notifier.tick()
+    pushed = len(inside.views)
+    window_notifier.closing()
+    orch.store.add_notice("finished", "a-1", "a-1 finished")
+    window_notifier.tick()
+    assert [n["agent_id"] for n in orch.notices()] == ["a-1"]  # not claimed
+    assert len(inside.views) == pushed and inside.attention_calls == 0
+    window_notifier.close()
+    assert osascript_texts(fake_osascript, 1) == ["a-1 finished — open Spartito to see it"]
+
+
+def test_a_notice_recorded_after_the_last_poll_is_shown_once_the_window_closes(
+    orch: Orchestrator, window_notifier, fake_osascript, monkeypatch
+):
+    """(c) desktop.show leaves it to the window (fresh marker, live pid); the window closes
+    before its next poll: the hand-over shows it, once."""
+    monkeypatch.setattr(desktop, "PLATFORM", "darwin")
+    window_notifier.tick()
+    desktop.show(orch.store, "Decision needed", "a-1", 5)
+    time.sleep(0.2)
+    assert calls(fake_osascript) == []  # left to the window
+    window_notifier.close()
+    assert osascript_texts(fake_osascript, 1) == ["Decision needed — open Spartito to answer"]
+    desktop.show(orch.store, "a-2 finished", "a-2")  # no window now: osascript, as before
+    assert osascript_texts(fake_osascript, 2)[1] == "a-2 finished — open Spartito to see it"
+
+
+def test_without_a_window_the_launchers_app_posts_a_handed_over_notice(
+    orch: Orchestrator, fake_osascript, tmp_path, monkeypatch
+):
+    """The hand-over takes the way of desktop.show with no window: the launcher's app when it
+    may post (its helper falls back to osascript itself), else osascript."""
+    started: list[list[str]] = []
+    monkeypatch.setattr(desktop, "bundle_ready", lambda: tmp_path / "X.app")
+    monkeypatch.setattr(desktop, "spawn", lambda args: started.append(args) or True)
+    notice = orch.store.add_notice("decision", "a-1", "Decision needed", 4)
+    orch.claim_notice(notice)  # the window took it
+    orch.hand_over_notice({"id": notice, "text": "Decision needed", "decision_id": 4})
+    assert started == [
+        ["bundle", desktop.OPEN, str(tmp_path / "X.app"), str(notice), "Decision needed", "4"]
+    ]
+    assert [n["id"] for n in orch.notices()] == [notice]  # unclaimed: the posting app claims it
+    time.sleep(0.2)
+    assert calls(fake_osascript) == []
+
+
+def test_while_the_page_does_not_take_the_notices_it_keeps_trying_and_the_badge_says_so(
+    orch: Orchestrator, window_notifier, inside, lines, fake_osascript, monkeypatch
+):
+    monkeypatch.setattr(desktop, "PLATFORM", "darwin")
+    monkeypatch.setattr(notifier, "PAGE_WAIT_SECONDS", 0.0)
+    inside.takes = False  # no hook in the page, or evaluate_js fails
+    orch.store.add_notice("finished", "a-1", "a-1 finished")
+    orch.store.add_notice("finished", "a-2", "a-2 finished")
+    window_notifier.tick()
+    window_notifier.tick()
+    window_notifier.tick()
+    assert inside.holds == [1, 2]  # the badge keeps them
+    stuck = (
+        "notifications: the window's page did not take 1 notice(s) (no hook in the page, or it"
+        " did not answer); the Dock's badge keeps them, and macOS shows them when the window"
+        " closes"
+    )
+    assert [line for line in lines if "did not take" in line] == [stuck]  # said once
+    assert calls(fake_osascript) == []
+    inside.takes = True
+    window_notifier.tick()
+    assert inside.holds == [1, 2, 0]
+    assert [n["target"] for n in inside.last["notices"]] == ["a-1", "a-2"]
+    assert lines[-1] == "notifications: the window's page shows the notices again"
+    window_notifier.close()
+    time.sleep(0.3)
+    assert calls(fake_osascript) == []  # the page had them
+
+
+class DroppingCenter(FakeCenter):
+    """Drops the completion of the first status read, as the system was seen to do."""
+
+    def __init__(self) -> None:
+        super().__init__(status=2)
+        self.reads = 0
+
+    def status(self, done) -> None:
+        self.reads += 1
+        if self.reads > 1:
+            done(self.status_value)
+
+
+def test_a_status_read_without_a_completion_does_not_stop_later_reads(
+    orch: Orchestrator, lines, inside, tmp_path, monkeypatch
+):
+    center = DroppingCenter()
+    made = notifier.WindowNotifier(
+        orch, center, "local.x.app", tmp_path / "X.app", lines.append, inside
+    )
+    made.ask()  # no answer to the request either
+    made.tick()
+    made.tick()
+    assert center.reads == 1 and made.state == notifier.ASKING  # waiting for that read
+    monkeypatch.setattr(notifier, "STATUS_WAIT_SECONDS", 0.0)
+    made.tick()
+    assert center.reads == 2 and made.state == notifier.ALLOWED
+    made.close()
+
+
+class LaterCenter(FakeCenter):
+    """Completes each status read later, on another thread (as the system does)."""
+
+    def __init__(self) -> None:
+        super().__init__(status=0)
+        self.waiting: list = []
+
+    def status(self, done) -> None:
+        self.waiting.append(done)
+
+
+def test_an_error_in_the_status_callback_does_not_stop_later_reads(
+    orch: Orchestrator, inside, tmp_path
+):
+    center = LaterCenter()
+    failing = [True]
+
+    def say(line: str) -> None:
+        if failing and "no answer to the request" in line:
+            failing.clear()
+            raise OSError("stderr is gone")
+
+    made = notifier.WindowNotifier(orch, center, "local.x.app", tmp_path / "X.app", say, inside)
+    made.ask()
+    made.tick()
+    center.waiting.pop()(1)  # its callback fails inside: nothing reaches the centre
+    made.tick()
+    assert len(center.waiting) == 1  # read again at once
+    center.waiting.pop()(2)
+    assert made.state == notifier.ALLOWED
+    made.close()
 
 
 # -- a click ---------------------------------------------------------------------------------

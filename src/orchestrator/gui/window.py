@@ -359,15 +359,18 @@ def native_window(session: Session) -> bool:
             zoomable=True,
         )
 
-        def on_closed() -> None:  # one handler: pywebview runs each in a thread of its own
-            closed.set()
-            session.done.set()
-
-        window.events.closed += on_closed
         # The centre's delegate is set before the GUI loop runs: a click that started this
         # app reaches it. The notices are taken from now on; permission is asked once the
         # window is shown (`ask_when_shown`).
         notices = start_notifier(session, window)
+
+        def on_closed() -> None:  # one handler: pywebview runs each in a thread of its own
+            if notices is not None:
+                notices.closing()  # the page is gone: nothing more is claimed for it
+            closed.set()
+            session.done.set()
+
+        window.events.closed += on_closed
 
         def close_later() -> None:  # runs in pywebview's own thread, once the GUI runs
             if this_platform() == "darwin" and not session.bundled:
@@ -384,6 +387,8 @@ def native_window(session: Session) -> bool:
             with watching_requests(session, lambda: bring_native_forward(window)):
                 if not session.done.wait(session.close_after):  # closed, a stop signal
                     timed_out.set()  # or time is up
+            if notices is not None:
+                notices.closing()
             if not closed.is_set():
                 window.destroy()
 
@@ -490,12 +495,14 @@ def clicked_open(target: str) -> None:
 
 class Dock(Protocol):
     def attention(self) -> None: ...
+    def hold(self, count: int) -> None: ...
 
 
 class MacDock:
     """The Dock's part for notices shown inside the window (AppKit, on the main thread): one
     bounce and a badge counting them while the app is not the active one; the badge goes when
-    it becomes active (the window focused, a banner used)."""
+    it becomes active (the window focused, a banner used), except for the notices the page has
+    not taken (`hold`), which it keeps counting."""
 
     def __init__(self) -> None:
         import AppKit  # pyobjc, which pywebview's Cocoa backend brings
@@ -503,6 +510,7 @@ class MacDock:
 
         self.AppKit, self.Foundation = AppKit, Foundation
         self.unseen = 0
+        self.held = 0
         self.observer = Foundation.NSNotificationCenter.defaultCenter().addObserverForName_object_queue_usingBlock_(
             AppKit.NSApplicationDidBecomeActiveNotification,
             None,
@@ -526,14 +534,26 @@ class MacDock:
             if app.isActive():
                 return
             self.unseen += 1
-            app.dockTile().setBadgeLabel_(str(self.unseen))
+            self.badge()
             app.requestUserAttention_(self.AppKit.NSInformationalRequest)
 
         self.on_main(draw)
 
+    def hold(self, count: int) -> None:
+        def keep() -> None:
+            self.held = count
+            self.badge()
+
+        self.on_main(keep)
+
     def clear(self) -> None:
         self.unseen = 0
-        self.AppKit.NSApplication.sharedApplication().dockTile().setBadgeLabel_(None)
+        self.badge()
+
+    def badge(self) -> None:
+        count = max(self.unseen, self.held)
+        tile = self.AppKit.NSApplication.sharedApplication().dockTile()
+        tile.setBadgeLabel_(str(count) if count else None)
 
 
 # The page's hook for the window process (static/app.js: spartitoApp.sync): the view's version
@@ -564,6 +584,10 @@ class WindowView:
     def attention(self) -> None:
         if self.dock is not None:
             self.dock.attention()
+
+    def hold(self, count: int) -> None:
+        if self.dock is not None:
+            self.dock.hold(count)
 
 
 def notify_only() -> str | None:
