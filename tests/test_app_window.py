@@ -420,7 +420,7 @@ def webview(monkeypatch: pytest.MonkeyPatch) -> FakeWebview:
 # DevTools endpoint and stays; "exit<N>" leaves at once with code N. The endpoint (with
 # --remote-debugging-port=0) lists a background page always and the page while it is shown.
 # Notes its argv, then "TERM" when terminated, in $FAKE_CHROMIUM_LOG, and what /api/ping
-# answered it in <log>.ping.
+# answered it in <log>.ping. Its window is closed at once when <log>.close exists.
 CHROMIUM = """#!PYTHON
 import json, os, signal, sys, threading, time, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -449,6 +449,8 @@ listed = []  # when the page was first listed
 
 
 def window_open():
+    if os.path.exists(log + ".close"):
+        return False
     return not listed or time.monotonic() - listed[0] < open_for
 
 
@@ -958,7 +960,7 @@ def second_app(target: str = "") -> dict:
     deadline = time.monotonic() + 10
     while (reply := app_open.answered(number)) is None and time.monotonic() < deadline:
         time.sleep(0.02)
-    assert reply is not None
+    assert reply is not None, f"the first app did not answer request #{number} within 10 s"
     return {"id": number, **reply}
 
 
@@ -1120,18 +1122,36 @@ def test_one_app_per_home(webview: FakeWebview, monkeypatch):
 
 
 def test_second_app_brings_chromium_app_mode_forward(chromium: Path, monkeypatch):
-    monkeypatch.setenv("FAKE_CHROMIUM_OPEN_FOR", "3")
-    seen = []
+    """The second `spartito app` asks once the first one itself sees the browser's page (the
+    browser may take long to start), and the window stays open until it is answered."""
+    monkeypatch.setenv("FAKE_CHROMIUM_OPEN_FOR", "1e9")  # until <log>.close, below
+    shown = window.open_pages
+    asking: list[threading.Thread] = []
+    seen: list[dict] = []
 
-    def opened() -> None:  # once the browser shows the page (its endpoint lists it)
-        until_true(lambda: window.open_pages(config.runtime_dir() / "app-profile"))
-        seen.append(second_app("decision:2"))
+    def ask() -> None:
+        try:
+            seen.append(second_app("decision:2"))
+        except Exception as exc:  # for the test's own assertion below
+            seen.append({"error": f"{type(exc).__name__}: {exc}"})
+        finally:
+            Path(f"{chromium}.close").touch()  # the owner closes the window
 
-    threading.Thread(target=opened, daemon=True).start()
-    result = run_app()
+    def open_pages(profile: Path) -> int | None:
+        pages = shown(profile)
+        if pages and not asking:  # the window is up: now the second app
+            asking.append(threading.Thread(target=ask, daemon=True))
+            asking[0].start()
+        return pages
+
+    monkeypatch.setattr(window, "open_pages", open_pages)
+    result = run_app("--close-after", "120")  # ends the test should the page never show
     assert result.exit_code == 0, result.output
+    assert asking, "the first app never saw the browser's page"
+    asking[0].join(30)
+    assert len(seen) == 1, "the second app got no answer"
     assert seen[0] == {
-        "id": seen[0]["id"],
+        "id": seen[0].get("id"),
         "raised": True,
         "detail": "asked its browser to bring it to the front",
     }
