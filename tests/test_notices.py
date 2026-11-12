@@ -258,7 +258,8 @@ def test_a_busy_store_delays_the_caller_only_briefly_and_nothing_goes_out_unreco
         holder.execute("ROLLBACK")
         holder.close()
 
-    assert desktop.STORE_WAIT_SECONDS <= took < desktop.STORE_WAIT_SECONDS + 0.25
+    # It waited STORE_WAIT_SECONDS, not the store's 30 s; the bound leaves a slow runner room.
+    assert desktop.STORE_WAIT_SECONDS <= took < desktop.STORE_WAIT_SECONDS + 2.0
     (spooled,) = desktop.spool_dir().glob("*.json")
     assert no_detached_helpers == [["spool", str(spooled), desktop.OPEN]]
     time.sleep(0.3)

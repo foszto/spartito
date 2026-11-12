@@ -1123,10 +1123,8 @@ def test_second_app_brings_chromium_app_mode_forward(chromium: Path, monkeypatch
     monkeypatch.setenv("FAKE_CHROMIUM_OPEN_FOR", "3")
     seen = []
 
-    def opened() -> None:  # once the browser shows the page
-        while "--app=" not in (chromium.read_text() if chromium.exists() else ""):
-            time.sleep(0.02)
-        time.sleep(0.5)
+    def opened() -> None:  # once the browser shows the page (its endpoint lists it)
+        until_true(lambda: window.open_pages(config.runtime_dir() / "app-profile"))
         seen.append(second_app("decision:2"))
 
     threading.Thread(target=opened, daemon=True).start()

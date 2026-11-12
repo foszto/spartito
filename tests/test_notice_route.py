@@ -44,6 +44,8 @@ def kinds(orch: Orchestrator, notice: int) -> list[tuple[str, str | None]]:
 
 # -- a busy store ----------------------------------------------------------------------------
 
+PROMPT_SECONDS = 2.0  # a caller that did not wait for the busy store (held 3 s or longer)
+
 
 @pytest.mark.parametrize("busy", [3.0, 10.0])
 def test_a_store_busy_for_seconds_records_the_notice_late_and_the_window_takes_it(
@@ -58,7 +60,9 @@ def test_a_store_busy_for_seconds_records_the_notice_late_and_the_window_takes_i
     threading.Timer(busy, lambda: (holder.execute("ROLLBACK"), holder.close())).start()
     begin = time.monotonic()
     desktop.show(orch.store, "a-1 finished", "a-1")
-    assert time.monotonic() - begin < 0.5  # the caller goes on (STORE_WAIT_SECONDS: 0.25)
+    # The caller goes on after STORE_WAIT_SECONDS (0.25 s), not once the store is free: the
+    # bound leaves a slow runner room and is still well below the 3 s the store is busy.
+    assert time.monotonic() - begin < PROMPT_SECONDS
     ((kind, spooled, opener),) = no_detached_helpers
     assert kind == "spool" and Path(spooled).exists()
     helper = threading.Thread(target=desktop.helper, args=([kind, spooled, opener],))

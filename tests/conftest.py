@@ -25,6 +25,16 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ORCH_NOTIFY_DELAY", "0")  # notifications start without the delay
 
 
+@pytest.fixture(autouse=True)
+def plain_help(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Help pages as plain text wherever the tests run: typer's rich help forces a terminal
+    (escape codes) when GITHUB_ACTIONS, FORCE_COLOR or PY_COLORS is set, read once when typer
+    is imported. Its own switch off, here for this process (whenever typer was imported) and
+    in the environment for the children."""
+    monkeypatch.setattr("typer.rich_utils.FORCE_TERMINAL", False)
+    monkeypatch.setenv("_TYPER_FORCE_DISABLE_TERMINAL", "1")
+
+
 # Stands in for caffeinate and systemd-inhibit, so no test touches the power settings.
 # Lasts until the runner pid it was given (its last argument) has ended, as the real ones
 # do. Notes in $FAKE_INHIBIT_LOG "<pid> start <name> <ORCH_TURN or unmarked> <args>", then
