@@ -27,6 +27,28 @@
 .bv-more { width: 100%; justify-content: flex-start; }
 .bv-failed .btn { margin-top: 4px; }
 
+/* live state: the linked agent's status dot and word, the branch's git state */
+.bv-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--faint); }
+.bv-dot[data-status="running"] { background: var(--running); animation: pulse 1.2s ease-in-out infinite; }
+.bv-dot[data-status="waiting"] { background: var(--waiting); }
+.bv-dot[data-status="done"] { background: var(--done); }
+.bv-dot[data-status="failed"] { background: var(--failed); }
+.bv-dot[data-status="stopped"], .bv-dot[data-status="skipped"] { background: var(--other); }
+.bv-dot[data-status="archived"], .bv-dot[data-status="unknown"] { background: none; box-shadow: inset 0 0 0 1.5px var(--faint); }
+.bv-status { color: var(--muted); }
+.bv-git { font-variant-numeric: tabular-nums; }
+.bv-git.dirty { color: var(--waiting); background: color-mix(in srgb, var(--waiting) 14%, transparent); }
+.bv-git.merged { color: var(--done); background: color-mix(in srgb, var(--done) 14%, transparent); }
+.bv-git.error { color: var(--failed); background: var(--failed-soft); }
+.bv-synced { color: var(--faint); }
+.bv-extra { display: flex; flex-direction: column; }
+.bv-live { order: -3; }
+.bv-live h4 { margin: 6px 0; font-size: 13px; }
+.bv-live-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin: 0 0 6px; font-size: 12.5px; }
+.bv-live-key { width: 52px; color: var(--muted); }
+.bv-live-agent { display: inline-flex; align-items: center; gap: 6px; border: 0; background: none; padding: 0; color: var(--accent); font-weight: 500; }
+.bv-live-agent:hover { text-decoration: underline; }
+
 /* a card */
 .bv-card { position: relative; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--bv-card);
   cursor: pointer; box-shadow: 0 1px 2px rgba(20, 24, 40, .05); }

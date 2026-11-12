@@ -222,6 +222,94 @@
     if (next) { event.preventDefault(); next.focus(); }
   }
 
+  // -- live state: the linked agent's status, the branch's git state ----------------------
+  // From each item's `live` (the server's cached git pass; the view's `synced_at` says when it
+  // last ran). `git` null (no branch, or not checked yet) shows nothing.
+
+  const AGENT_WORDS = { unknown: 'gone' };
+  const agentWord = agent => AGENT_WORDS[agent.status] || agent.status;
+  function dot(status) {
+    const node = el('span', 'bv-dot');
+    node.dataset.status = status;
+    return node;
+  }
+  // The branch's state as {text, cls, title}: commits ahead/behind its base, uncommitted work,
+  // merged, or the error of the last check (`error` keeps the values seen before it).
+  function gitState(git) {
+    const checked = `checked ${ago(git.checked_at)}`;
+    if (git.error) return { text: 'git error', cls: 'error', title: `${git.branch}: ${git.error} · ${checked}` };
+    if (git.merged) return { text: 'merged ✓', cls: 'merged', title: `${git.branch} is merged into its base · ${checked}` };
+    const short = [], long = [];
+    if (git.ahead) { short.push(`↑${git.ahead}`); long.push(`${plural(git.ahead, 'commit')} ahead of its base`); }
+    if (git.behind) { short.push(`↓${git.behind}`); long.push(`${git.behind} behind`); }
+    if (git.dirty) { short.push('dirty'); long.push('uncommitted work in its worktree'); }
+    if (!short.length) { short.push('no new commits'); long.push('nothing ahead of its base'); }
+    return { text: short.join(' · '), cls: git.dirty ? 'dirty' : '', title: `${git.branch}: ${long.join(', ')} · ${checked}` };
+  }
+  function gitChip(git) {
+    const state = gitState(git), node = el('span', `chip bv-git ${state.cls}`, state.text);
+    node.title = state.title;
+    return node;
+  }
+  // live.pr, the pull request of the item's branch, is reserved for a later batch: it renders
+  // here, as a chip for the card and the detail. Null today, so nothing is shown.
+  function prChip(pr) {
+    return null;
+  }
+
+  hooks.card.push((node, item) => {
+    const live = item.live;
+    if (!live) return;
+    const agent = node.querySelector('[data-part=agent]');
+    if (agent && live.agent && live.agent.id === item.agent_id) {
+      const word = agentWord(live.agent);
+      agent.querySelector('svg').replaceWith(dot(live.agent.status));
+      agent.append(el('span', 'bv-status', word));
+      agent.title = `${item.agent_id}: ${word} · open its conversation`;
+    }
+    const branch = node.querySelector('.bv-branch');
+    if (branch && live.git) branch.after(gitChip(live.git));
+    const pr = prChip(live.pr);
+    if (pr) node.querySelector('.bv-meta').append(pr);
+  });
+  hooks.head.push(root => {
+    const synced = el('span', 'bv-synced');
+    root.querySelector('.bv-said').before(synced);
+  });
+  hooks.paint.push(() => {
+    const synced = ui.root.querySelector('.bv-synced'), at = ui.data.synced_at;
+    synced.textContent = at ? ` · git state checked ${ago(at)}` : '';
+    synced.title = at ? new Date(at).toLocaleString() : '';
+  });
+  hooks.detail.push((box, item) => {
+    const live = item.live;
+    if (!live || (!live.agent && !item.branch)) return;
+    const section = el('section', 'bv-live');
+    section.append(el('h4', '', 'Live state'));
+    if (live.agent) {
+      const row = el('p', 'bv-live-row'), agent = el('button', 'link bv-live-agent');
+      agent.type = 'button'; agent.title = 'Open its conversation';
+      agent.append(dot(live.agent.status), live.agent.id);
+      agent.onclick = () => { select(live.agent.id); if (ui.dialog.open) ui.dialog.close(); };
+      row.append(el('span', 'bv-live-key', 'Agent'), agent, el('span', 'bv-status', agentWord(live.agent)));
+      section.append(row);
+    }
+    if (item.branch) {
+      const row = el('p', 'bv-live-row');
+      row.append(el('span', 'bv-live-key', 'Branch'), el('span', 'mono', item.branch));
+      if (live.git) {
+        const state = gitState(live.git);
+        row.append(gitChip(live.git), el('span', 'bv-when', state.title.slice(state.title.lastIndexOf('checked'))));
+      } else {
+        row.append(el('span', 'bv-when', 'not checked yet'));
+      }
+      section.append(row);
+    }
+    const pr = prChip(live.pr);
+    if (pr) section.append(pr);
+    box.append(section);
+  });
+
   // The result of a move, read out by screen readers: "#12 → Ready, 2 of 5".
   function announce(text) { if (ui.root) ui.root.querySelector('.bv-said').textContent = text ? ` · ${text}` : ''; }
   function placeText(id) {
