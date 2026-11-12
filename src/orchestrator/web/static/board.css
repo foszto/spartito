@@ -1,0 +1,61 @@
+/* The task board across projects (board.js): a view in #view, its dialog, its entry in the nav. */
+.bv { --bv-col: var(--sunken); --bv-card: var(--surface);
+  container-type: inline-size; display: flex; flex-direction: column; min-height: 0; height: 100%; }
+:root[data-theme="dark"] .bv { --bv-col: var(--surface); --bv-card: var(--raised); }
+.bv-avatar { background: var(--accent-soft); color: var(--accent); }
+.bv .top-bar { flex-wrap: wrap; row-gap: 8px; }
+.bv .top-bar .who { min-width: 160px; }
+.bv-sub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.bv-said { color: var(--text); font-weight: 500; }
+.bv-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.bv-tools select.input { width: auto; max-width: 220px; height: 32px; padding: 0 8px; }
+.bv-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; white-space: nowrap; cursor: pointer; }
+
+/* four columns; in the all-projects view each is grouped by project */
+.bv-cols { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr); gap: 12px; padding: 16px 20px 20px; overflow: auto; }
+.bv-col { display: flex; flex-direction: column; min-height: 0; min-width: 0; padding: 8px; border-radius: var(--radius);
+  background: var(--bv-col); border: 1px solid var(--line); }
+.bv-col h3 { display: flex; align-items: center; gap: 6px; margin: 2px 4px 8px; font-size: 12px; font-weight: 600;
+  color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.bv-col h3 .count { color: var(--faint); font-weight: 500; }
+.bv-list { flex: 1; min-height: 64px; overflow: auto; display: flex; flex-direction: column; gap: 10px; padding: 2px; }
+.bv-group { display: flex; flex-direction: column; gap: 6px; border-radius: 10px; }
+.bv-group h4 { margin: 0 2px; font-size: 12px; font-weight: 600; color: var(--muted); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.bv-empty { color: var(--faint); font-size: 12.5px; padding: 4px; }
+.bv-more { width: 100%; justify-content: flex-start; }
+.bv-failed .btn { margin-top: 4px; }
+
+/* a card */
+.bv-card { position: relative; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--bv-card);
+  cursor: pointer; box-shadow: 0 1px 2px rgba(20, 24, 40, .05); }
+.bv-card:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.bv-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.bv-card-head { display: flex; align-items: center; gap: 6px; min-height: 20px; }
+.bv-id { color: var(--faint); font-size: 11.5px; }
+.bv-title { margin-top: 2px; font-weight: 500; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3; overflow: hidden; }
+.bv-desc { margin-top: 2px; color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; display: -webkit-box;
+  -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.bv-meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; min-width: 0; }
+.bv-meta .chip { max-width: 100%; }
+button.chip { border: 0; font: inherit; font-size: 12px; cursor: pointer; }
+.bv-agent { color: var(--accent); }
+.bv-agent:hover { background: var(--accent-soft); }
+
+/* the item dialog */
+.bv-dialog { width: min(680px, calc(100vw - 32px)); }
+.bv-stamp { margin: -4px 0 10px; color: var(--muted); font-size: 12.5px; }
+.bv-extra:empty { display: none; }
+
+/* narrow: two columns, then one; the lists grow instead of scrolling */
+@container (max-width: 760px) {
+  .bv-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: auto; }
+  .bv-col { min-height: auto; }
+  .bv-list { flex: none; overflow: visible; }
+}
+@container (max-width: 460px) {
+  .bv-cols { grid-template-columns: minmax(0, 1fr); padding: 12px; }
+  .bv .top-bar { padding: 12px; }
+}
