@@ -356,10 +356,13 @@ no declarative pipeline layer.
 | `ORCH_HOME` | state directory (default `~/.orchestrator`) |
 | `ORCH_PROVIDERS` | extra providers, `name=package.module:Class`, comma-separated |
 | `ORCH_NOTIFY_DELAY` | seconds a notification turn waits to collect results (default 5) |
+| `ORCH_DESKTOP_NOTIFICATIONS` | `off` (or `0`, `false`, `no`): no desktop notification by any path; notices are still recorded, with the reason, in `spartito notices` ([desktop.md](desktop.md#notifications-with-click-through)). For CI and manual runs of a checkout |
+| `ORCH_TURN_HOME` | set by the runner for an agent's turn: the home of the instance it belongs to. A process with it that works on another home shows no desktop notification |
 | `CODEX_HOME` | read for Codex rollout files and `config.toml` (Codex's own variable) |
 | `PYWEBVIEW_GUI` | the pywebview backend of `spartito app` on Linux (pywebview's own variable; default Qt) |
 
-The background service (`spartito service install`) keeps only `PATH`, `LANG`, `LC_*`, `ORCH_*`,
+The background service (`spartito service install`) keeps only `PATH`, `LANG`, `LC_*`, `ORCH_*`
+(not `ORCH_AGENT_ID`, `ORCH_TURN`, `ORCH_TURN_HOME` or `ORCH_DESKTOP_NOTIFICATIONS`),
 `CLAUDE_CONFIG_DIR` and `CODEX_HOME` from the shell it is installed from; run the install
 again after changing them. See [desktop.md](desktop.md#background-service).
 

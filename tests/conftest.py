@@ -18,6 +18,10 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """No test may see the real ~/.orchestrator, even one that never asks for `orch`."""
     monkeypatch.setenv("ORCH_HOME", str(tmp_path / "home"))
     monkeypatch.delenv("ORCH_AGENT_ID", raising=False)
+    # Neither the turn's home of an agent running the tests nor the switch: the tests of the
+    # desktop paths need them unset (the fake osascript keeps them off the desktop).
+    monkeypatch.delenv("ORCH_TURN_HOME", raising=False)
+    monkeypatch.delenv("ORCH_DESKTOP_NOTIFICATIONS", raising=False)
     monkeypatch.setenv("ORCH_NOTIFY_DELAY", "0")  # notifications start without the delay
 
 

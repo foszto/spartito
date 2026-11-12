@@ -280,6 +280,14 @@ counts while its marker is under 15 seconds old. Some cases in detail:
   itself (step 1 or 4) and writes its markers whether or not it may post them.
 - **Off.** With `spartito config desktop-notifications off`, nothing is recorded and nothing is
   shown.
+- **Off for one shell.** With `ORCH_DESKTOP_NOTIFICATIONS=off` in the environment (for CI and
+  manual runs of a checkout in a temporary home), no path shows anything; each notice is still
+  recorded and `spartito notices` gives the path `not-shown` with the reason.
+- **Nested homes.** A Spartito started from an agent's turn that works on another home than
+  the agent's own (for example `ORCH_HOME=<temporary> spartito spawn …` from an agent's shell)
+  shows nothing either, and neither does anything it starts: the runner gives every turn its
+  home in `ORCH_TURN_HOME`, and the outermost one is kept. Such a notice is recorded with the
+  reason "started by an agent of another home".
 
 **What a notification carries** (steps 1 and 2): the text, and a `userInfo` of
 `{"home": <the home digest of /api/ping>, "target": "decision:<n>" | "<agent id>"}`. A click is
@@ -371,7 +379,8 @@ pushed out of its banner by newer notices, the step before says it was shown),
 `launcher-helper` (posted by the app started to post), `page`, `linux` (`notify-send`),
 `osascript`, `waiting` (nobody took it yet), `dropped` (a decision answered before it was
 shown; an older finished one of many that waited, counted in another's text; or `osascript`
-could not be started); `… (not taken yet)` while it is still left to that way; `not
+could not be started), `not-shown` (the environment said so: `ORCH_DESKTOP_NOTIFICATIONS=off`,
+or started by an agent of another home); `… (not taken yet)` while it is still left to that way; `not
 recorded` for a notice a process of older code claimed (it records no steps: the line has
 its `claimed_by`, else `unknown (older code)`, and when it was claimed). A notice of older code has no steps.
 

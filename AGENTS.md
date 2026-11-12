@@ -43,6 +43,8 @@ for f in src/orchestrator/web/static/*.js; do node --check "$f"; done
   session data. Use the placeholders of the docs (`my-app`, `~/src/my-app`, `fix-login-3f2a`).
 - Never develop or test against the real `~/.orchestrator` or a running dashboard or
   service. Set a temporary `ORCH_HOME` for anything you run, and use a port other than 8787.
+  A manual run in a temporary home must also set `ORCH_DESKTOP_NOTIFICATIONS=off`, so that no
+  notice reaches the desktop (`docs/desktop.md`).
   Run the checkout's code with `uv run spartito …` or `uv run python -m orchestrator …`, not
   an installed `spartito`.
 - Nothing visible on the desktop while testing. Do not run `spartito app`, `spartito menubar`,

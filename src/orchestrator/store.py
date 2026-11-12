@@ -304,7 +304,8 @@ RUN_META_ADDED = (
 )
 # notices columns added after its first version (desktop.py). route: whom the notice is left
 # to ('window', 'helper', 'page', 'banner', 'waiting'; 'osascript' or 'linux' when shown at
-# once; NULL: recorded by older code, anyone may take it); claimed_by: '<role>:<pid>' of the
+# once, 'quiet' when the environment says nothing is shown; both claimed at once; NULL:
+# recorded by older code, anyone may take it); claimed_by: '<role>:<pid>' of the
 # claimer (NULL: older code). Older code inserts and claims with named columns, unaffected.
 NOTICES_ADDED = (("route", "TEXT"), ("claimed_by", "TEXT"))
 # run_usage columns added after its first version.

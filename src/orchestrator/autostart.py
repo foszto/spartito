@@ -37,8 +37,9 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
 ENV_NAMES = ("PATH", "LANG", "CLAUDE_CONFIG_DIR", "CODEX_HOME")
 ENV_PREFIXES = ("ORCH_", "LC_")
-# Markers of the calling process (an agent, a turn), not settings: never carried over.
-ENV_EXCLUDED = ("ORCH_AGENT_ID", "ORCH_TURN")
+# Markers of the calling process (an agent, a turn), not settings, and the switch for one
+# shell's runs (the instance's own is the desktop_notifications setting): never carried over.
+ENV_EXCLUDED = ("ORCH_AGENT_ID", "ORCH_TURN", config.TURN_HOME_ENV, config.NOTIFICATIONS_ENV)
 LOG_LIMIT = 5 * 1024 * 1024  # bytes; launchd does not rotate the log
 PING_TIMEOUT = 2.0  # seconds
 LABEL_RULE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,99}")  # it names the unit file

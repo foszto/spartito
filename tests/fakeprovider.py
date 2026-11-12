@@ -23,6 +23,9 @@ before a compaction, like Codex; FAKE_COMPACT_NOOP=1 adds `NOOP` to every compac
 runner passed it (prompt, slash_commands, output_schema, compact_below) to `ctx.json` in
 the run's scratch directory.
 
+`ENVCHILD` has a child process (like a command the agent runs) write its environment to
+`.fake-env.json` in the working directory.
+
 `AWAKE` first waits (up to 10 s) until the fake sleep inhibitor of its runner (conftest.py)
 has logged its start, so the turn cannot end before the inhibitor is up: a new script may
 take longer to start than a short turn lasts.
@@ -137,6 +140,9 @@ if prompt.startswith("/compact"):
 if "STALE" in words:
     print(json.dumps({"result": "", "notification": True, **extra}), flush=True)
 print(json.dumps({"text": "working"}), flush=True)
+if "ENVCHILD" in words:  # a command of the turn, as an agent's shell runs one
+    dump = "import json, os; open('.fake-env.json', 'w').write(json.dumps(dict(os.environ)))"
+    subprocess.run([sys.executable, "-c", dump], check=True)
 if "DIE" in words:
     note(subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3600)"]).pid)
     os.kill(os.getpid(), signal.SIGKILL)

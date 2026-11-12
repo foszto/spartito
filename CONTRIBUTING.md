@@ -25,10 +25,13 @@ repository ([docs/desktop.md](docs/desktop.md#optional-dependencies)).
 **Run the tool from the checkout, never against your real state.** Spartito keeps its state
 in `~/.orchestrator/` unless `ORCH_HOME` says otherwise. If you develop against that
 directory, you can damage your own projects, agents and database. Point `ORCH_HOME` at a
-temporary directory in every shell you develop in:
+temporary directory in every shell you develop in, and switch desktop notifications off
+there (`ORCH_DESKTOP_NOTIFICATIONS=off`: notices are recorded, nothing is shown), or an agent
+you start there notifies on your desktop when it finishes:
 
 ```sh
 export ORCH_HOME="$(mktemp -d)"
+export ORCH_DESKTOP_NOTIFICATIONS=off
 uv run spartito --help
 ```
 

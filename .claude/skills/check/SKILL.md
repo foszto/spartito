@@ -4,10 +4,12 @@ description: Runs the project's full check set (tests, ruff, dashboard scripts) 
 ---
 
 Run each command from the repository root, with a temporary `ORCH_HOME`, so that nothing
-touches the real `~/.orchestrator`:
+touches the real `~/.orchestrator`, and with `ORCH_DESKTOP_NOTIFICATIONS=off`, so that a manual
+run in that home shows no desktop notification (pytest fakes them anyway):
 
 ```sh
 export ORCH_HOME="$(mktemp -d)"
+export ORCH_DESKTOP_NOTIFICATIONS=off
 uv run pytest -n auto
 uv run ruff check
 uv run ruff format --check

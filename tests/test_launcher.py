@@ -55,6 +55,7 @@ def test_identifier_follows_the_label_rule_of_the_service():
 def test_launcher_of_this_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setenv("ORCH_AGENT_ID", "worker-1")  # a marker of the caller: not carried
     monkeypatch.setenv("ORCH_TURN", "7")
+    monkeypatch.setenv("ORCH_TURN_HOME", str(tmp_path / "outer"))
     monkeypatch.setenv("ORCH_NOTIFY_DELAY", "0")
     monkeypatch.setenv("SECRET_TOKEN", "x")
     found = launcher.launcher(platform="darwin")
@@ -64,7 +65,7 @@ def test_launcher_of_this_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     assert found.identifier == f"local.spartito-{autostart.home_hash(home)[:8]}.app"
     assert found.env == autostart.captured_env(home)
     assert found.env["ORCH_HOME"] == str(home)
-    assert {"ORCH_AGENT_ID", "ORCH_TURN", "SECRET_TOKEN"}.isdisjoint(found.env)
+    assert {"ORCH_AGENT_ID", "ORCH_TURN", "ORCH_TURN_HOME", "SECRET_TOKEN"}.isdisjoint(found.env)
     assert found.argv == (sys.executable, "-m", "orchestrator", "app")
     assert found.path == launcher.default_dir("mac") / "Spartito.app"
     linux = launcher.launcher("Spartito Test", tmp_path, platform="linux")

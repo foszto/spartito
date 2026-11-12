@@ -40,6 +40,12 @@ window process, the launcher's posting process, the page). On macOS, in this ord
 6. no launcher that may post, no window, no page: `osascript`, whose click opens Script
    Editor, so its text ends with where to look (CLAUSE_DECISION, CLAUSE_FINISHED).
 
+Before all of these, on every platform: nothing is shown ("quiet", path not-shown; claimed
+at once, so no taker ever gets it) when the environment says so (`quiet_reason`):
+config.NOTIFICATIONS_ENV is off, or this process descends from an agent's turn of another
+home (config.TURN_HOME_ENV, set by the runner; e.g. a test run in a temporary ORCH_HOME from
+an agent's shell, whose notices would otherwise reach the owner's desktop through osascript).
+
 On Linux: 3., then a detached helper with `notify-send` ("linux": a click opens `spartito
 app` at the target where notify-send has actions), else the notice waits for a page. Claims keep a notice to one showing: a taker claims only a
 notice left to it or to a later way of the list (`may_take`; the window that may post, any),
@@ -125,6 +131,7 @@ HELPER = "import sys; from orchestrator import desktop; sys.exit(desktop.helper(
 WINDOW, HELPER_APP, PAGE, BANNER, WAITING = "window", "helper", "page", "banner", "waiting"
 OSASCRIPT, LINUX = "osascript", "linux"  # shown at once by the deciding process
 RANK = {WINDOW: 0, HELPER_APP: 1, PAGE: 2, BANNER: 3, WAITING: 4}
+QUIET = "quiet"  # shown by nobody, by what the environment says (`quiet_reason`)
 # The paths, as the trace names them.
 PATHS = {
     WINDOW: "window-system",
@@ -134,6 +141,7 @@ PATHS = {
     WAITING: "waiting",
     OSASCRIPT: "osascript",
     LINUX: "linux",
+    QUIET: "not-shown",
 }
 DROPPED = "dropped"  # a path: nobody shows it (a decision answered before it was shown)
 COUNTED = "window-count"  # a path: counted in the window's "more" banner, not shown in one
@@ -346,6 +354,7 @@ class Presence:
     bundle: Path | None = None  # the launcher's app that may post
     no_bundle: str = ""  # why there is none
     notify_send: str | None = None
+    quiet: str = ""  # why nothing may be shown here (`quiet_reason`)
 
     @property
     def page_fresh(self) -> bool:
@@ -356,6 +365,8 @@ class Presence:
         return self.window if self.window is not None and self.window.alive else None
 
     def describe(self) -> str:
+        if self.quiet:
+            return self.quiet
         parts = [self.window.describe() if self.window else "no window"]
         parts.append("no page" if self.page is None else f"page polled {self.page:.1f} s ago")
         if self.platform == "darwin":
@@ -367,10 +378,37 @@ class Presence:
 
 def presence() -> Presence:
     platform = PLATFORM
+    if quiet := quiet_reason():
+        return Presence(platform, quiet=quiet)
     window = window_presence() if platform == "darwin" else None
     bundle, why = bundle_state() if platform == "darwin" else (None, "")
     send = shutil.which(NOTIFY_SEND) if platform.startswith("linux") else None
     return Presence(platform, window, page_age(), bundle, why, send)
+
+
+OFF_WORDS = ("off", "0", "false", "no")
+
+
+def quiet_reason(environ: dict[str, str] | None = None) -> str:
+    """Why this process may show no desktop notification at all ("" when it may): the
+    switch config.NOTIFICATIONS_ENV is off, or config.TURN_HOME_ENV names another home than
+    this one (started, maybe through other Spartito processes, from an agent's turn of
+    another instance)."""
+    env = os.environ if environ is None else environ
+    switch = env.get(config.NOTIFICATIONS_ENV, "").strip()
+    if switch.lower() in OFF_WORDS:
+        return f"{config.NOTIFICATIONS_ENV}={switch}: not shown"
+    outer = env.get(config.TURN_HOME_ENV)
+    if outer and not same_home(outer, config.home()):
+        return f"started by an agent of another home ({outer}): not shown"
+    return ""
+
+
+def same_home(one: str, other: Path) -> bool:
+    try:
+        return Path(one).expanduser().resolve() == other.resolve()
+    except OSError, RuntimeError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -384,13 +422,16 @@ class Choice:
 
     @property
     def at_once(self) -> bool:
-        """Shown by the deciding process itself (claimed with the decision)."""
-        return self.taker in (OSASCRIPT, LINUX)
+        """Shown (or, quiet, not shown) by the deciding process itself: claimed with the
+        decision."""
+        return self.taker in (OSASCRIPT, LINUX, QUIET)
 
 
 def route(p: Presence, skip: Iterable[str] = ()) -> Choice:
     """How a notice is shown now (the module doc's order), `skip`: takers that did not take
     it. The one place that decides; everything else asks it or carries out its answer."""
+    if p.quiet:
+        return Choice(QUIET, p.quiet)
     skip = set(skip)
     window = p.live_window
     if window is not None and WINDOW in skip:
@@ -526,6 +567,9 @@ def show(
 def unrecorded(choice: Choice, found: Presence, body: str, decision_id: int | None) -> None:
     """A notice without an agent (never one of the two occasions): osascript or notify-send
     show it when this platform has them, unrecorded; logged."""
+    if found.quiet:
+        log_step(None, "drop", PATHS[QUIET], actor(), f"no agent, not recorded; {found.quiet}")
+        return
     if found.platform == "darwin":
         taker, how = OSASCRIPT, "osascript"
     elif found.platform.startswith("linux") and found.notify_send:
@@ -553,6 +597,9 @@ def carry_out(
     wait at most STORE_WAIT_SECONDS for the store (else only the log has them)."""
     nid, body, decision_id = notice["id"], str(notice["text"]), notice.get("decision_id")
     wait = 5.0 if detached else STORE_WAIT_SECONDS
+    if choice.taker == QUIET:
+        note(store, nid, step("drop", PATHS[QUIET], choice.reason), wait)
+        return
     if choice.taker == OSASCRIPT:
         shown = plain(body, decision_id)
         if shown is not None:
@@ -903,7 +950,7 @@ def summary(notice: dict[str, Any]) -> dict[str, Any]:
     last = steps[-1]
     route_now = notice.get("route") or ""
     outcome = next((s for s in reversed(steps) if s["step"] in OUTCOMES), None)
-    if claimed and outcome is None and route_now not in (OSASCRIPT, LINUX):
+    if claimed and outcome is None and route_now not in (OSASCRIPT, LINUX, QUIET):
         return {
             "path": "not recorded",
             "actor": notice.get("claimed_by") or "unknown (older code)",

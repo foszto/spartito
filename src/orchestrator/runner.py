@@ -149,13 +149,19 @@ def mcp_server(agent: Agent) -> McpServer:
     return McpServer(
         command=sys.executable,
         args=["-m", "orchestrator.mcp_server"],
-        env={"ORCH_HOME": str(config.home()), "ORCH_AGENT_ID": agent.id},
+        # Given here, not only inherited: Codex starts MCP servers with a few variables only.
+        env={
+            "ORCH_HOME": str(config.home()),
+            "ORCH_AGENT_ID": agent.id,
+            config.TURN_HOME_ENV: config.turn_home(),
+        },
     )
 
 
 def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> None:
     # A sub-agent's runner inherits the mark of the lead's turn (through the lead's MCP
-    # server); nothing this runner starts (git, hooks) may carry it.
+    # server); nothing this runner starts (git, hooks) may carry it. The turn's home
+    # (config.TURN_HOME_ENV) stays: it says which instance this one runs under.
     os.environ.pop(TURN_ENV, None)
     role = roles.load(agent.role, project.path if project else None)
     provider = providers.get(agent.provider)
@@ -424,6 +430,7 @@ def _start(invocation: Invocation, cwd: str, token: str, stderr: Any) -> subproc
     env = {k: v for k, v in os.environ.items() if k not in invocation.unset_env}
     env.update(invocation.env)
     env[TURN_ENV] = token
+    env[config.TURN_HOME_ENV] = config.turn_home()
     if invocation.canary is not None:
         invocation.canary.unlink(missing_ok=True)
     # In the runner's process group (the runner leads its own session and group, see

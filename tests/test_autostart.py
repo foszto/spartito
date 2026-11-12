@@ -214,6 +214,8 @@ def test_only_whitelisted_variables_reach_the_unit():
         "CODEX_HOME": "/cfg/codex",
         "ORCH_AGENT_ID": "worker-1",
         "ORCH_TURN": "7",
+        "ORCH_TURN_HOME": "/home/someone/.orchestrator",
+        "ORCH_DESKTOP_NOTIFICATIONS": "off",
         "ANTHROPIC_API_KEY": "sk-secret",
         "GITHUB_TOKEN": "ghp-secret",
         "HOME": "/home/someone",

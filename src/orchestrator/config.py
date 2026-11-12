@@ -14,12 +14,25 @@ ORCHESTRATOR_NAME = "Maestro"  # the top-level orchestrator agent
 # `mcp__orch__` tools, the `[orch notification]` marker, ORCH_* variables, ~/.orchestrator and
 # orch.db, a project's .orch/ folder and the agents' `orch/` branches.
 CLI_NAME = "spartito"
+# The home of the instance whose agent's turn this process descends from: the runner gives it
+# to the agent's CLI and MCP server, and everything they start inherits it. The outermost one
+# is kept, so a Spartito started from an agent's shell on another home (a test run in a
+# temporary ORCH_HOME), and all it starts, knows it is nested (desktop.py: shows nothing).
+TURN_HOME_ENV = "ORCH_TURN_HOME"
+# "off" (or 0, false, no): no desktop notification by any path (CI, manual runs of a checkout);
+# notices are still recorded and traced. The setting `desktop_notifications` records none.
+NOTIFICATIONS_ENV = "ORCH_DESKTOP_NOTIFICATIONS"
 
 
 def home() -> Path:
     path = Path(os.environ.get("ORCH_HOME", "~/.orchestrator")).expanduser()
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def turn_home() -> str:
+    """TURN_HOME_ENV for a turn started here: the inherited one, else this home (resolved)."""
+    return os.environ.get(TURN_HOME_ENV) or str(home().resolve())
 
 
 def db_path() -> Path:
