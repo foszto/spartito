@@ -177,7 +177,13 @@ def state(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
             "projects": {p.name: orch.settings(p.name) for p in orch.projects()},
         },
         "roles": [
-            {"name": r.name, "description": r.description, "worktree": r.worktree, "lead": r.lead}
+            {
+                "name": r.name,
+                "description": r.description,
+                "worktree": r.worktree,
+                "lead": r.lead,
+                "provider": r.provider,  # its default provider; null: the project's
+            }
             for r in roles.available()
             if r.name != ORCHESTRATOR_ID
         ],
