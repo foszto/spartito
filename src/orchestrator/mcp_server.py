@@ -148,8 +148,7 @@ def spawn_agent(
       (combine with `after`); text is cut at 4000 chars, `{{result:<agent-id>:full}}` is not.
     name: short label, becomes part of the agent id and branch (`orch/<name>-xxxx`).
     role: see list_roles. `lead` agents can spawn their own sub-agents.
-    provider: `claude` or `codex`; default: the role's, else the project's. One not available
-      here is refused, naming the others; a default that is not falls back (`note`).
+    provider: `claude` or `codex`; default: the role's, else the project's.
     model, effort: leave unset to use the configured defaults for the agent's tier; set them
       only when the user asks or the task clearly needs a stronger or cheaper setting.
     worktree: own git worktree and branch (default for most roles) or the main checkout.

@@ -29,10 +29,12 @@ LEAD_EXTRA_CHARS: dict[str, int] = {}
 LEAD_EXTRA_CHARS["list_board"] = 64  # P3: `live`
 LEAD_EXTRA_BUDGET = 140
 LEAD_EXTRA_CHARS["request_decision"] = 64  # P5: `item`
-LEAD_EXTRA_CHARS["spawn_agent"] = 106  # provider choice: the role's default, availability
+LEAD_EXTRA_CHARS["spawn_agent"] = 6  # provider choice: the role's default
 # Master's add_project and ask_project_lead as listed (560 + 712): only the orchestrator gets
-# them since the provider choice (they always refused other agents), so a lead pays less.
+# them since the provider choice (they always refused other agents). Taken off master's
+# listing, not off what is new: the budget above still limits what every agent pays.
 LEAD_DROPPED_CHARS = 560 + 712
+LEAD_BASE_CHARS = MASTER_LISTING_CHARS - LEAD_DROPPED_CHARS
 
 
 def seed(orch: Orchestrator, project: str) -> None:
@@ -108,11 +110,11 @@ def test_the_tool_listing_costs_a_lead_only_its_budget(
 ) -> None:
     removed = removed_for(caller, monkeypatch)
     seen = [tool for tool in listing() if tool["name"] not in removed]
-    lead_extra = sum(LEAD_EXTRA_CHARS.values()) - LEAD_DROPPED_CHARS
+    lead_extra = sum(LEAD_EXTRA_CHARS.values())
     assert lead_extra <= LEAD_EXTRA_BUDGET
-    assert chars(seen) <= MASTER_LISTING_CHARS + lead_extra + extra
+    assert chars(seen) <= LEAD_BASE_CHARS + lead_extra + extra
     if not extra:
-        assert chars(seen) == MASTER_LISTING_CHARS + lead_extra
+        assert chars(seen) == LEAD_BASE_CHARS + lead_extra
         assert removed == list(mcp_server.ORCHESTRATOR_TOOLS)
     else:
         assert removed == []
