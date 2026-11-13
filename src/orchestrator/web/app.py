@@ -28,6 +28,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from .. import __version__, config, roles
+from ..models import Agent
 from ..service import ORCHESTRATOR_ID, NeedsConfirmation, Orchestrator, OrchestratorError
 from ..settings import ARCHIVE_AFTER, ARCHIVE_AFTER_DEFAULT, COMPACT_AT, COMPACT_AT_DEFAULT, TIERS
 from . import board_api, code_api
@@ -86,9 +87,14 @@ def optional(body: dict[str, Any], key: str) -> Any:
     return value.strip() or None if isinstance(value, str) else value
 
 
-def queued(agent_id: str, run_id: int, note: str | None = None) -> dict[str, Any]:
-    """A dispatch's reply; `note`: what choosing the agent's provider had to tell, or null."""
-    return {"agent_id": agent_id, "run_id": run_id, "note": note}
+def queued(agent_id: str, run_id: int) -> dict[str, Any]:
+    return {"agent_id": agent_id, "run_id": run_id}
+
+
+def dispatched(agent: Agent, run_id: int) -> dict[str, Any]:
+    """The reply to a message that may have created its agent; `note`: what choosing the
+    agent's provider had to tell (a fallback, a lead that keeps its own), else null."""
+    return {**queued(agent.id, run_id), "note": agent.provider_note}
 
 
 def index(request: Request) -> HTMLResponse:
@@ -286,7 +292,7 @@ def spawn_agent(orch: Orchestrator, request: Request, body: dict) -> dict[str, A
         base=optional(body, "base"),
         after=optional(body, "after"),
     )
-    return queued(agent.id, run.id, agent.provider_note)
+    return dispatched(agent, run.id)
 
 
 def message_agent(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
@@ -297,14 +303,14 @@ def message_agent(orch: Orchestrator, request: Request, body: dict) -> dict[str,
 def message_orchestrator(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
     agent = orch.orchestrator()
     run = orch.send(agent.id, required(body, "message"))
-    return queued(agent.id, run.id, agent.provider_note)
+    return dispatched(agent, run.id)
 
 
 def message_lead(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
     """`provider`: the lead's when it is created now (default: the project's)."""
     lead = orch.lead(request.path_params["name"], provider=optional(body, "provider"))
     run = orch.send(lead.id, required(body, "message"))
-    return queued(lead.id, run.id, lead.provider_note)
+    return dispatched(lead, run.id)
 
 
 def set_agent_model(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
