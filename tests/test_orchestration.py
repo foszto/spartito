@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
 
 import pytest
 
 from orchestrator import git
-from orchestrator.models import Usage
+from orchestrator.models import Run, Usage
 from orchestrator.service import Orchestrator, OrchestratorError
 
 
@@ -126,6 +129,58 @@ def test_stop_ends_running_and_queued_turns(orch: Orchestrator, project: str) ->
 
     assert [run.status.value for run in orch.store.runs_of(agent.id)] == ["stopped", "stopped"]
     assert orch.store.usage_of(agent.id) == {}
+
+
+# Imported by every Python process of the test that has its directory on PYTHONPATH: holds
+# the runner `python -m orchestrator.runner <HOLD_RUN>` in its start, before runner.py's
+# `__main__` block, until the file HOLD_GO exists (at most a minute).
+HELD_START = """\
+import os, sys, time
+if sys.argv[:1] == ["-m"] and sys.argv[-1] == os.environ.get("HOLD_RUN"):
+    deadline = time.monotonic() + 60
+    while not os.path.exists(os.environ["HOLD_GO"]) and time.monotonic() < deadline:
+        time.sleep(0.01)
+"""
+
+
+def test_a_queued_turn_whose_runner_lost_the_stop_signal_does_not_start(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A runner launched by a process that ignores SIGTERM (a runner ending its turn)
+    ignores it too until runner.py's `__main__` block: a stop's SIGTERM in that window is
+    lost. The stop's mark must still keep the queued turn from starting."""
+    if threading.current_thread() is not threading.main_thread():
+        pytest.skip("signal handlers are set in the main thread only")
+    agent, _ = orch.spawn(project, "SLEEP 60", worktree=False)
+    deadline = time.monotonic() + 10
+    while orch.view(agent)["status"] != "running" and time.monotonic() < deadline:
+        time.sleep(0.1)
+    site = tmp_path / "site"
+    site.mkdir()
+    (site / "sitecustomize.py").write_text(HELD_START)
+    go = tmp_path / "go"
+    monkeypatch.setenv("PYTHONPATH", f"{site}{os.pathsep}{os.environ['PYTHONPATH']}")
+    monkeypatch.setenv("HOLD_GO", str(go))
+    monkeypatch.setenv("HOLD_RUN", str(orch.store.last_run(agent.id).id + 1))
+    ignored = signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    try:
+        queued = orch.send(agent.id, "queued")
+    finally:
+        signal.signal(signal.SIGTERM, ignored)
+    kill = orch._kill
+
+    def lost(run: Run, sig: int) -> None:
+        kill(run, sig)  # the held runner ignores it: the signal is gone
+        if run.id == queued.id:
+            go.touch()  # now it goes on: handlers, then waiting for its turn
+
+    monkeypatch.setattr(orch, "_kill", lost)
+    try:
+        assert orch.stop(agent.id) == 2
+    finally:
+        go.touch()
+
+    assert [run.status.value for run in orch.store.runs_of(agent.id)] == ["stopped", "stopped"]
 
 
 def test_a_run_whose_runner_died_is_reported_as_failed(orch: Orchestrator, project: str) -> None:

@@ -814,6 +814,11 @@ def take_turn(store: Store, run: Run, kind: str) -> None:
     run_id = run.id
     inhibitor = None
     try:
+        # A stop marks its runs before it signals them (launcher.stop_runs). A SIGTERM that
+        # came before main's handler was not fatal if this runner inherited it ignored (a
+        # runner ending its turn launches with SIGTERM ignored): the mark still stops it.
+        if store.meta(run_id).stopping:
+            raise Stopped
         if kind == NOTIFICATION:
             prepared = notify.start(store, run)
             if prepared is None:
