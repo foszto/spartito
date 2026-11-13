@@ -19,10 +19,12 @@ const ICONS = {
   stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
   trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
   archive: '<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11h14V8M10 12h4"/>',
+  coin: '<circle cx="12" cy="12" r="9"/><path d="M15 9.2c-.5-.8-1.6-1.3-3-1.3-1.7 0-3 .8-3 2s1.3 1.7 3 2.1 3 .9 3 2.1-1.3 2-3 2c-1.4 0-2.5-.5-3-1.3M12 6v1.9M12 16.1V18"/>',
   restore: '<path d="M4 12a8 8 0 1 0 2.5-5.8M4 4v4h4"/>',
   pencil: '<path d="M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4"/>',
   compress: '<path d="M4 9h16M4 15h16M12 3v4M10 5l2 2 2-2M12 21v-4M10 19l2-2 2 2"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
+  code: '<path d="m8 7-5 5 5 5M16 7l5 5-5 5"/>',
   sliders: '<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>',
   moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
   ask: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.4 2.3c-.6.3-.9.8-.9 1.4v.6M12 16.8v.4"/>',
@@ -34,6 +36,7 @@ const TIER_INFO = {
   worker: ['Workers', 'Every other role: worker, planner, reviewer, tester.'],
 };
 const ARCHIVE = 'archive:';  // the selection that shows the archive
+const COST = 'cost:';  // the selection that shows the cost report and the budgets
 const DECISION = 'decision:';  // #decision:<id> opens the decisions dialog on that decision
 const SUGGESTIONS = [
   'Which projects and agents exist, and what is each of them doing?',
@@ -91,6 +94,7 @@ function avatar(provider, status) {
   const node = el('span', `avatar ${provider === ORCH ? 'orch' : provider} ${status || ''}`);
   if (provider === ORCH) node.append(icon('logo'));
   else if (provider === 'archive') node.append(icon('archive'));
+  else if (provider === 'cost') node.append(icon('coin'));
   else node.append((provider || '?').slice(0, 2).replace(/^./, c => c.toUpperCase()));
   if (status !== undefined) node.append(el('span', 'dot'));
   return node;
@@ -340,6 +344,9 @@ function renderNav() {
     entry.classList.add('archive-entry');
     nav.append(entry);
   }
+  const costs = navItem(COST, 'cost', '', 'Cost', 'spend and budgets', 0);
+  costs.classList.add('cost-entry');
+  nav.append(costs);
   // Tokens and cost of every run ever recorded (the server's `spent`), archived agents' too.
   const used = tokens(state.spent.tokens) || [0, 0];
   const cost = `$${state.spent.cost_usd.toFixed(2)}`;
@@ -378,6 +385,9 @@ function buildView() {
   chips.append(lead, setup, tail);
   who.append(title, chips, note);
   const detailsButton = button('ghost', 'info', 'Details', () => { $('details').hidden = !$('details').hidden; });
+  const codeButton = button('ghost', 'code', 'Code', () => toggleCode());
+  codeButton.id = 'codeButton'; codeButton.hidden = true;
+  codeButton.title = 'The files of its worktree and its changes against the base branch (read-only)';
   const stop = button('danger', 'stop', 'Stop', stopAgent);
   const compact = button('ghost', 'compress', 'Compact', () => compactAgent(selected));
   compact.id = 'compact';
@@ -386,7 +396,7 @@ function buildView() {
   const remove = button('ghost icon', 'trash', '', () => removeAgent(selected), 'Delete agent for good');
   detailsButton.id = 'detailsButton'; stop.id = 'stop'; archive.id = 'archive'; restore.id = 'restore'; remove.id = 'remove';
   archive.title = 'Hide it from the lists; everything is kept and it can be restored';
-  top.append(face, who, compact, detailsButton, stop, archive, restore, remove);
+  top.append(face, who, compact, codeButton, detailsButton, stop, archive, restore, remove);
 
   const details = el('div'); details.id = 'details'; details.hidden = true;
   const facts = el('dl'); facts.id = 'facts';
@@ -398,6 +408,7 @@ function buildView() {
   const thread = el('div', 'thread'); thread.id = 'thread';
   const welcome = el('div', 'welcome'); welcome.id = 'welcome';
   log.append(welcome, thread);
+  const code = el('div', 'code-view'); code.id = 'code'; code.hidden = true;
   const busy = el('div'); busy.id = 'busy';
   const queue = el('div', 'queue'); queue.id = 'queue'; queue.hidden = true;
 
@@ -423,8 +434,8 @@ function buildView() {
     catch (error) { toast(error.message, true); }
     finally { send.disabled = false; input.focus(); }
   };
-  view.append(top, details, log, queue, busy, form);
-  shown = selected; lastEvent = 0; toolGroup = null; setupData = null;
+  view.append(top, details, code, log, queue, busy, form);
+  shown = selected; lastEvent = 0; toolGroup = null; setupData = null; codeShown = null;
   input.focus();
 }
 
@@ -472,6 +483,9 @@ function renderHeader(agent, setupFreshness = true) {
   $('restore').hidden = !agent?.archived;
   $('remove').hidden = !agent?.archived;  // only archived agents are deleted
   $('detailsButton').hidden = !agent;
+  // The code view: only for an agent with a worktree of its own (a branch).
+  $('codeButton').hidden = !agent?.branch;
+  if (!agent?.branch && codeShown) toggleCode(false);
   renderWelcome(agent, leadProject);
 
   const busy = $('busy');
@@ -553,6 +567,162 @@ function renderHeader(agent, setupFreshness = true) {
   }
   $('changes').textContent = agent.changes || '';
   $('changes').hidden = !agent.changes;
+}
+
+// -- the code view of a worktree (read-only) ---------------------------------
+//
+// Loaded only when opened (and on Refresh): the changed files against the base branch, each
+// file's patch when its row is opened; the file tree, a file when it is clicked. Every name and
+// every line goes into the page as text (el), never as markup.
+
+let codeShown = null;  // {id, tab} while the code view is open
+const codeUrl = (id, what, path) => `/api/agents/${encodeURIComponent(id)}/code/${what}`
+  + (path === undefined ? '' : `?path=${encodeURIComponent(path)}`);
+const patchClass = line => (line.startsWith('@@') ? 'hunk' : /^(diff |index |new file|deleted file|old mode|new mode|similarity|rename |--- |\+\+\+ )/.test(line)
+  ? 'meta' : line.startsWith('+') ? 'add' : line.startsWith('-') ? 'del' : '');
+const sizeText = bytes => (bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`);
+const countText = file => (file.submodule ? 'submodule' : file.binary ? 'binary' : file.too_large ? 'too large'
+  : file.added == null ? '' : `+${file.added} −${file.removed ?? 0}`);
+
+// The heading of the list of changes: how many files, against which base.
+function changesHead(data) {
+  if (!data.files.length) return `No changes against ${data.base}`;
+  const count = data.total == null ? `${data.files.length}+` : String(data.total);
+  return `${count} ${data.total === 1 ? 'file' : 'files'} changed against ${data.base}, committed and uncommitted`;
+}
+
+// What was cut or left out of an answer, for the note above it ('' when nothing).
+function codeNote(data) {
+  if (data.max_files !== undefined) {
+    if (!data.truncated) return '';
+    return data.total == null ? `Showing ${data.files.length} files: the list was cut.` : `Showing ${data.files.length} of ${data.total} files (the first ${data.max_files}).`;
+  }
+  if (data.binary) return 'Binary file: not shown.';
+  if (data.too_large) return 'Too large to show.';
+  if (data.kind === 'symlink') return `Symbolic link to ${data.target} (not followed).`;
+  if (data.max_lines !== undefined) {
+    if (!data.truncated) return data.submodule ? 'Submodule: only its commit is compared.' : '';
+    return data.lines == null ? `Patch cut: showing its first ${sizeText(data.max_bytes)}.` : `Patch cut: showing at most ${data.max_lines} of ${data.lines} lines.`;
+  }
+  return data.truncated ? `File cut: showing the first ${sizeText(data.max_bytes)} of ${sizeText(data.size)}.` : '';
+}
+
+// The paths as nested folders: {dirs: Map(name -> node), files: [{name, path}]}.
+function fileTree(paths) {
+  const root = { dirs: new Map(), files: [] };
+  for (const path of paths) {
+    const parts = path.split('/');
+    let node = root;
+    for (const part of parts.slice(0, -1)) {
+      if (!node.dirs.has(part)) node.dirs.set(part, { dirs: new Map(), files: [] });
+      node = node.dirs.get(part);
+    }
+    node.files.push({ name: parts[parts.length - 1], path });
+  }
+  return root;
+}
+
+// A patch as one line per element, coloured by its kind.
+function renderPatch(text) {
+  const pre = el('pre', 'code-text patch');
+  for (const line of text.replace(/\n$/, '').split('\n')) pre.append(el('span', patchClass(line), `${line}\n`));
+  return pre;
+}
+
+function codeMessage(box, text, isError) {
+  box.replaceChildren(el('div', `code-note${isError ? ' error' : ''}`, text));
+}
+
+function toggleCode(open = !codeShown) {
+  const box = $('code');
+  codeShown = open ? { id: selected, tab: 'changes' } : null;
+  box.hidden = !open; $('log').hidden = open;
+  $('codeButton').classList.toggle('active', open);
+  if (open) renderCode(); else box.replaceChildren();
+}
+
+function renderCode() {
+  const box = $('code'), view = codeShown;
+  if (!view) return;
+  const tabs = el('div', 'code-tabs');
+  for (const [tab, label] of [['changes', 'Changes'], ['tree', 'Files']]) {
+    const node = button(`ghost${view.tab === tab ? ' active' : ''}`, null, label, () => { view.tab = tab; renderCode(); });
+    tabs.append(node);
+  }
+  tabs.append(el('span', 'grow'), button('ghost', 'restore', 'Refresh', renderCode), button('ghost', 'x', 'Close', () => toggleCode(false)));
+  const body = el('div', 'code-body');
+  box.replaceChildren(tabs, body);
+  codeMessage(body, 'Loading…');
+  (view.tab === 'changes' ? loadChanges : loadTree)(view, body);
+}
+
+async function loadChanges(view, body) {
+  let data;
+  try { data = await call(codeUrl(view.id, 'changes')); } catch (error) { if (codeShown === view) codeMessage(body, error.message, true); return; }
+  if (codeShown !== view) return;
+  body.replaceChildren(el('div', 'code-head', changesHead(data)));
+  if (data.base_fallback) body.append(el('div', 'code-note', `Its own base ${data.requested_base} names no commit any more: compared with ${data.base}, the project's base branch.`));
+  if (codeNote(data)) body.append(el('div', 'code-note', codeNote(data)));
+  for (const file of data.files) {
+    const row = el('details', 'code-file'), head = el('summary');
+    head.append(el('span', `code-status s-${file.status}`, file.untracked ? 'new' : file.status),
+      el('span', 'code-path', file.path), el('span', 'code-count', countText(file)));
+    row.append(head);
+    row.addEventListener('toggle', () => { if (row.open && !row.dataset.loaded) { row.dataset.loaded = '1'; loadPatch(view, row, file.path); } });
+    body.append(row);
+  }
+}
+
+async function loadPatch(view, row, path) {
+  const box = el('div', 'code-patch'); row.append(box);
+  codeMessage(box, 'Loading…');
+  let data;
+  try { data = await call(codeUrl(view.id, 'patch', path)); } catch (error) { codeMessage(box, error.message, true); return; }
+  box.replaceChildren();
+  if (codeNote(data)) box.append(el('div', 'code-note', codeNote(data)));
+  if (data.patch) box.append(renderPatch(data.patch));
+}
+
+async function loadTree(view, body) {
+  let data;
+  try { data = await call(codeUrl(view.id, 'tree')); } catch (error) { if (codeShown === view) codeMessage(body, error.message, true); return; }
+  if (codeShown !== view) return;
+  const list = el('div', 'code-tree'), file = el('div', 'code-content');
+  codeMessage(file, data.files.length ? 'Choose a file.' : 'No files.');
+  body.replaceChildren();
+  if (codeNote(data)) body.append(el('div', 'code-note', codeNote(data)));
+  const split = el('div', 'code-split'); split.append(list, file); body.append(split);
+  renderCodeFolder(list, fileTree(data.files), view, file, new Set(data.submodules || []));
+}
+
+// One folder's entries; a sub-folder's own entries are built when it is first opened.
+function renderCodeFolder(parent, node, view, target, submodules) {
+  for (const [name, child] of [...node.dirs].sort(([a], [b]) => a.localeCompare(b))) {
+    const folder = el('details', 'code-dir'), head = el('summary', '', name);
+    folder.append(head);
+    folder.addEventListener('toggle', () => {
+      if (folder.open && !folder.dataset.built) { folder.dataset.built = '1'; renderCodeFolder(folder, child, view, target, submodules); }
+    });
+    parent.append(folder);
+  }
+  for (const entry of node.files) {
+    const item = el('button', 'code-leaf', entry.name); item.type = 'button'; item.title = entry.path;
+    // A submodule is named, never entered: its files belong to another repository.
+    if (submodules.has(entry.path)) { item.disabled = true; item.append(el('span', 'code-count', ' submodule')); }
+    else item.onclick = () => loadFile(view, target, entry.path);
+    parent.append(item);
+  }
+}
+
+async function loadFile(view, target, path) {
+  target.replaceChildren(el('div', 'code-head', path));
+  target.dataset.path = path;  // a later click wins over an earlier answer
+  let data;
+  try { data = await call(codeUrl(view.id, 'file', path)); } catch (error) { data = { error: error.message }; }
+  if (target.dataset.path !== path) return;
+  if (data.error) { target.append(el('div', 'code-note error', data.error)); return; }
+  if (codeNote(data)) target.append(el('div', 'code-note', codeNote(data)));
+  if (data.content != null) target.append(el('pre', 'code-text', data.content));
 }
 
 // -- model and effort of the selected agent ---------------------------------
@@ -967,6 +1137,115 @@ async function renderArchive() {
       list.append(row);
     }
   }
+}
+
+// -- cost --------------------------------------------------------------------
+// The spend of the recorded runs and the budgets (/api/cost): loaded when the view is opened,
+// when one of its choices changes and on Refresh; never with /api/state. Read-only: budgets
+// are set with the command (`budget set`). Every text goes in as textContent.
+const COST_GROUPS = [['project', 'By project'], ['day', 'By day (local time)'], ['agent', 'By agent']];
+const COST_PERIODS = { day: 'today', month: 'this month', total: 'in total' };
+const BUDGET_STATES = { ok: 'ok', warning: 'warning', reached: 'reached' };
+let costChoice = { by: 'project', since: '', project: '' }, costTicket = 0;
+
+function costUrl(choice) {
+  const query = new URLSearchParams({ by: choice.by });
+  if (choice.since) query.set('since', choice.since);
+  if (choice.project) query.set('project', choice.project);
+  return `/api/cost?${query}`;
+}
+// A cost, or n/a when none was reported (Codex reports none): never $0.00 for that.
+function moneyText(value) {
+  return typeof value === 'number' ? `$${value.toFixed(2)}` : 'n/a';
+}
+// A row's cost, with * when some of its turns reported none.
+function costCell(row) {
+  return moneyText(row.cost_usd) + (row.unpriced && typeof row.cost_usd === 'number' ? '*' : '');
+}
+function costNotes(report) {
+  const notes = ['Recorded usage: turns run by very old versions may have no record.'];
+  if (report.unpriced) {
+    notes.push(`* ${plural(report.unpriced, 'turn')} reported no cost (Codex reports none): their tokens are counted, `
+      + 'their cost is not in the figures; n/a: no turn of the row reported one.');
+  }
+  if (report.rows.some(row => row.removed)) notes.push('Removed agents: what agents deleted for good had spent; their turns are not kept.');
+  if (report.removed_left_out) notes.push('What removed agents had spent has no dates: left out when a start day is set.');
+  return notes;
+}
+function costTable(report) {
+  const table = el('table', 'cost-table'), head = el('tr');
+  const first = { project: 'Project', day: 'Day', agent: 'Agent' }[report.by] || '';
+  for (const name of [first, 'Turns', 'Prompt', 'Output', 'Cost']) head.append(el('th', '', name));
+  table.append(head);
+  const total = { ...report.total, label: 'Total' };
+  for (const row of [...report.rows, total]) {
+    const line = el('tr', row === total ? 'total' : row.removed ? 'removed' : '');
+    const prompt = row.tokens.in + row.tokens.cache_read + row.tokens.cache_write;
+    line.append(el('td', '', row.label), el('td', 'num', row.turns === null ? '–' : String(row.turns)),
+      el('td', 'num', count(prompt)), el('td', 'num', count(row.tokens.out)), el('td', 'num', costCell(row)));
+    table.append(line);
+  }
+  return table;
+}
+function budgetText(budget) {
+  const used = typeof budget.percent === 'number' ? ` (${budget.percent} %)` : '';
+  return `${budget.project || 'Global'}: ${moneyText(budget.spent_usd)} of ${moneyText(budget.amount_usd)}`
+    + ` ${COST_PERIODS[budget.period] || budget.period}${used} · warns at ${budget.warn_at} %`
+    + ` · hard stop ${budget.hard_stop ? 'on' : 'off'}`;
+}
+function budgetList(budgets) {
+  const box = el('div', 'budgets');
+  if (!budgets.length) {
+    box.append(el('div', 'empty-note', `No budgets. \`${CLI} budget set AMOUNT [-p PROJECT]\` sets one.`));
+    return box;
+  }
+  for (const budget of budgets) {
+    const known = Object.hasOwn(BUDGET_STATES, budget.state);
+    const row = el('div', 'budget');
+    row.append(el('span', `pill budget-${known ? budget.state : 'ok'}`, known ? BUDGET_STATES[budget.state] : String(budget.state)),
+      el('span', '', budgetText(budget)));
+    box.append(row);
+  }
+  box.append(el('p', 'setup-note', 'Budgets count reported cost only (Codex reports none); day and month in local time; '
+    + "'total' also counts removed agents. Cost is known when a turn ends and turns run in parallel, so a budget can be overshot. "
+    + `Set or remove them with \`${CLI} budget\`.`));
+  return box;
+}
+async function loadCost() {
+  const ticket = ++costTicket;
+  let data;
+  try {
+    data = await call(costUrl(costChoice));
+  } catch (error) {
+    if (ticket === costTicket && $('costBody')) $('costBody').replaceChildren(el('div', 'empty-note', error.message));
+    return;
+  }
+  if (ticket !== costTicket || selected !== COST || !$('costBody')) return;
+  $('costBody').replaceChildren(el('h4', 'cost-head', 'Budgets'), budgetList(data.budgets),
+    el('h4', 'cost-head', 'Spend'), costTable(data.report), ...costNotes(data.report).map(text => el('p', 'setup-note', text)));
+}
+async function renderCost() {
+  if (shown === COST) return;  // built and loaded: Refresh or a choice loads it again
+  const page = el('div', 'archive-view cost-view'), head = el('div', 'top-bar'), who = el('div', 'who');
+  const face = avatar('cost'); face.id = 'face';
+  who.append(el('h2', '', 'Cost'), el('div', 'setup-note', 'What the recorded turns spent, and the budgets. Read-only.'));
+  const by = el('select', 'input'), since = el('input', 'input'), project = el('select', 'input');
+  by.setAttribute('aria-label', 'Group by'); since.setAttribute('aria-label', 'From this day on');
+  project.setAttribute('aria-label', 'Project');
+  options(by, COST_GROUPS, costChoice.by);
+  since.type = 'date'; since.value = costChoice.since;
+  options(project, [['', 'All projects'], ...state.projects.map(p => [p.name, p.name])], costChoice.project);
+  const change = () => { costChoice = { by: by.value, since: since.value, project: project.value }; loadCost(); };
+  by.onchange = change; since.onchange = change; project.onchange = change;
+  const tools = el('div', 'cost-tools');
+  tools.append(by, since, project, button('ghost', 'restore', 'Refresh', loadCost));
+  head.append(face, who, tools);
+  const body = el('div', 'archive-list cost-body'); body.id = 'costBody';
+  body.append(el('div', 'empty-note', 'Loading…'));
+  page.append(head, body);
+  $('view').replaceChildren(page);
+  shown = COST;
+  await loadCost();
 }
 
 // -- list dialogs ------------------------------------------------------------
@@ -1448,6 +1727,16 @@ function renderSettings() {
   rows.append(box);
   rows.append(compactAtBox(scope, data));
   if (!scope) rows.append(...SWITCHES.map(switchBox));
+  if (!scope) rows.append(versionBox(state));
+}
+
+// The installed version (from /api/state); checking for a newer one is a command, never the page.
+function versionBox({ project_name: name, version }) {
+  const box = el('div', 'tier');
+  box.append(el('h4', '', 'Version'), el('p', 'about',
+    `${name || 'Spartito'} ${version || 'unknown'}. \`${CLI} version --check\` asks PyPI for a newer release; `
+    + `\`${CLI} upgrade\` prepares an upgrade. Nothing checks on its own.`));
+  return box;
 }
 
 function compactAtBox(scope, data) {
@@ -1734,6 +2023,7 @@ async function refresh() {
     renderBoard();
     const target = selected;
     if (target === ARCHIVE) { await renderArchive(); return; }
+    if (target === COST) { await renderCost(); return; }
     if (window.BoardView && BoardView.owns(target)) { shown = await BoardView.render($('view'), target, shown); return; }
     const exists = Boolean(findAgent(target)) || isArchived(target);
     const virtual = !exists && (target === ORCH || target.startsWith('lead:'));

@@ -6,6 +6,7 @@ import contextlib
 import fcntl
 import os
 import re
+import selectors
 import signal
 import subprocess
 import time
@@ -25,12 +26,14 @@ def _run(
     args: tuple[str, ...],
     timeout: float | None,
     env: dict[str, str] | None = None,
+    lenient: bool = False,
 ) -> tuple[int, str, str]:
     """Run git; returns (exit code, stdout, stderr). With `timeout` it really returns within
     about timeout + KILL_GRACE: git runs in a process group of its own, which is killed on
     timeout (hooks and helpers too), and a process that still holds the pipes (stuck in
     the kernel, or moved to another session) is left behind. Raises GitError on timeout.
-    `env`: git's environment (None: this process's)."""
+    `env`: git's environment (None: this process's). `lenient`: the output read as UTF-8
+    with invalid bytes replaced (else in the locale's encoding, strictly)."""
     if timeout is not None and timeout <= 0:
         raise GitError(f"git {' '.join(args)}: no time left")
     proc = subprocess.Popen(
@@ -39,6 +42,8 @@ def _run(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8" if lenient else None,
+        errors="replace" if lenient else None,
         start_new_session=timeout is not None,
         env=env,
     )
@@ -352,3 +357,297 @@ def summary(
     if dirty:
         parts.append(f"uncommitted:\n{dirty}")
     return "\n".join(parts) or "no changes"
+
+
+# -- reading a worktree for the dashboard's code view -----------------------------------
+#
+# An agent can write its repository's configuration and attributes, so these calls must not
+# run anything that configuration names: no external diff or textconv driver, no fsmonitor
+# hook, no clean filter (every configured filter driver is blanked, see `view_env`), no lazy
+# fetch of a partial clone, and no git started inside a submodule (whose own configuration
+# would apply): diffs show a submodule as its commit only and never ask whether its work
+# tree is dirty, whatever `diff.submodule`, `diff.ignoreSubmodules` or `submodule.*.ignore`
+# say. No pager, no optional locks (nothing written to the index), paths taken literally.
+# Names are listed the same way whatever the repository's own settings: composed (NFC) on
+# macOS, where git converts what the file system gives it (core.precomposeUnicode), so that a
+# name stored decomposed on disk is never listed in the bytes it has there; and ignore
+# patterns match in any letter case (core.ignoreCase), the stricter reading.
+# Every call is read as a stream and stops at a byte cap (`_run_capped`) and a timeout, and
+# runs without REPOSITORY_ENV.
+
+VIEW_FLAGS = (
+    "--no-pager",
+    "--no-optional-locks",
+    "--literal-pathspecs",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.quotePath=false",
+    "-c",
+    "core.precomposeUnicode=true",
+    "-c",
+    "core.ignoreCase=true",
+    "-c",
+    "diff.submodule=short",
+    "-c",
+    "submodule.recurse=false",
+)
+DIFF_FLAGS = (
+    "--no-ext-diff",
+    "--no-textconv",
+    "--no-renames",
+    "--no-color",
+    "--no-relative",
+    "--submodule=short",
+    "--ignore-submodules=dirty",
+)
+VIEW_CAP = 4 * 1024 * 1024  # bytes of one git call's output, unless the caller sets another
+READ_CHUNK = 64 * 1024
+ERROR_CAP = 64 * 1024  # bytes of git's error output kept
+SUBMODULE = "160000"  # the mode of a submodule's entry (a commit, not a file)
+
+
+@dataclass(frozen=True)
+class Output:
+    """What a capped git call printed: `text` (UTF-8, invalid bytes replaced) of the `read`
+    bytes taken, at most the cap; `cut`: the cap was reached and git was stopped."""
+
+    text: str
+    cut: bool
+    read: int
+
+
+def _stop(proc: subprocess.Popen) -> None:
+    """Kill git's process group (helpers too) and give it KILL_GRACE to go."""
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, signal.SIGKILL)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=KILL_GRACE)
+
+
+def _run_capped(
+    repo: str | Path, args: tuple[str, ...], timeout: float, env: dict[str, str], cap: int
+) -> tuple[int | None, bytes, str, bool]:
+    """Run git, reading its output as it comes and never more than `cap` bytes of it:
+    (exit code, None when stopped; stdout; stderr; cut). Reaching the cap counts as cut:
+    git is stopped (its process group killed). Raises GitError when git does not end
+    within `timeout` (it is stopped then too)."""
+    proc = subprocess.Popen(
+        ["git", "-C", str(repo), *args],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+        env=env,
+    )
+    assert proc.stdout is not None and proc.stderr is not None
+    out, err, cut = bytearray(), bytearray(), False
+    deadline = time.monotonic() + timeout
+    try:
+        with selectors.DefaultSelector() as pipes:
+            pipes.register(proc.stdout, selectors.EVENT_READ)
+            pipes.register(proc.stderr, selectors.EVENT_READ)
+            while pipes.get_map() and not cut:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    _stop(proc)
+                    raise GitError(f"git {args[-1]}: no answer within {timeout:g} s")
+                for key, _ in pipes.select(left):
+                    if key.fileobj is proc.stdout:
+                        chunk = os.read(key.fd, min(READ_CHUNK, cap - len(out)))
+                        out += chunk
+                        cut = len(out) >= cap
+                    else:
+                        chunk = os.read(key.fd, READ_CHUNK)
+                        err += chunk[: max(0, ERROR_CAP - len(err))]
+                    if not chunk:
+                        pipes.unregister(key.fileobj)
+                    if cut:
+                        break
+        if cut:
+            _stop(proc)
+            return None, bytes(out), err.decode("utf-8", "replace"), True
+        try:
+            code = proc.wait(timeout=max(0.0, deadline - time.monotonic()) + KILL_GRACE)
+        except subprocess.TimeoutExpired:
+            _stop(proc)
+            raise GitError(f"git {args[-1]}: no answer within {timeout:g} s") from None
+        return code, bytes(out), err.decode("utf-8", "replace"), False
+    finally:
+        proc.stdout.close()
+        proc.stderr.close()
+
+
+def _view(worktree: str | Path, env: dict[str, str], *args: str, cap: int = VIEW_CAP) -> Output:
+    """git with VIEW_FLAGS in `worktree`, at most `cap` bytes of its output."""
+    code, out, err, cut = _run_capped(worktree, (*VIEW_FLAGS, *args), CHECK_TIMEOUT, env, cap)
+    if not cut and code != 0:
+        raise GitError(f"git {args[0]}: {err.strip() or 'failed'}")
+    return Output(out.decode("utf-8", "replace"), cut, len(out))
+
+
+def view_env(worktree: str | Path) -> dict[str, str]:
+    """The environment of the code view's git calls: this process's without REPOSITORY_ENV,
+    no lazy fetch, and every filter driver the configuration names blanked (no clean
+    command or process, not required), so that reading a worktree file runs nothing."""
+    env = _own_env()
+    env["GIT_NO_LAZY_FETCH"] = "1"
+    code, out, _ = _run(
+        worktree,
+        ("--no-pager", "config", "--null", "--name-only", "--get-regexp", r"^filter\."),
+        CHECK_TIMEOUT,
+        env,
+        lenient=True,
+    )
+    if code not in (0, 1):  # 1: none configured
+        raise GitError("git config: the filter drivers could not be read")
+    drivers = {name[len("filter.") :].rpartition(".")[0] for name in out.split("\0") if name}
+    blank = [
+        (f"filter.{driver}.{key}", value)
+        for driver in sorted(drivers)
+        for key, value in (("clean", ""), ("process", ""), ("required", "false"))
+    ]
+    env["GIT_CONFIG_COUNT"] = str(len(blank))
+    for index, (key, value) in enumerate(blank):
+        env[f"GIT_CONFIG_KEY_{index}"] = key
+        env[f"GIT_CONFIG_VALUE_{index}"] = value
+    return env
+
+
+def verified_worktree(repo: str | Path, worktree: str | Path) -> Path:
+    """The resolved top level of `worktree` once it is verified to be a worktree of the
+    repository at `repo`: its top level is `worktree` itself and its common git directory
+    the repository's. Raises GitError (also when it does not exist)."""
+    if not Path(worktree).is_dir():
+        raise GitError(f"{worktree} does not exist")
+    env = _own_env()
+    args = ("rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir")
+    found = git(worktree, *args, timeout=CHECK_TIMEOUT, env=env).splitlines()
+    common = git(repo, *args[:2], args[3], timeout=CHECK_TIMEOUT, env=env)
+    top = Path(worktree).resolve()
+    if len(found) != 2 or [Path(p).resolve() for p in found] != [top, Path(common).resolve()]:
+        raise GitError(f"{worktree} is not a worktree of {repo}")
+    return top
+
+
+def resolve_commit(worktree: str | Path, revision: str, env: dict[str, str]) -> str | None:
+    """The commit `revision` names in the worktree's repository (a branch, a remote-tracking
+    branch, a tag, a commit id, …), None when it names none. Never read as an option."""
+    if not revision or revision.startswith("-") or any(c in revision for c in "\0\n\r"):
+        return None
+    args = ("rev-parse", "--verify", "--quiet", "--end-of-options", f"{revision}^{{commit}}")
+    code, out, _ = _run(worktree, (*VIEW_FLAGS, *args), CHECK_TIMEOUT, env, lenient=True)
+    found = out.strip()
+    return found if code == 0 and _COMMIT.fullmatch(found) else None
+
+
+def merge_base(worktree: str | Path, commit: str, env: dict[str, str]) -> str | None:
+    """The commit the worktree's HEAD shares with `commit` (an id), None when none."""
+    if not _COMMIT.fullmatch(commit):
+        raise GitError(f"not a commit id: {commit!r}")
+    args = ("merge-base", commit, "HEAD")
+    code, out, err = _run(worktree, (*VIEW_FLAGS, *args), CHECK_TIMEOUT, env, lenient=True)
+    if code == 1:
+        return None
+    if code != 0 or not _COMMIT.fullmatch(out.strip()):
+        raise GitError(f"git merge-base: {err.strip() or out.strip()}")
+    return out.strip()
+
+
+def _entries(output: Output) -> list[str]:
+    """The entries of a -z listing; when it was cut, the last (perhaps partial) one is left
+    out."""
+    entries = output.text.split("\0")
+    return entries[:-1] if output.cut else entries
+
+
+def _paths(output: Output) -> list[str]:
+    """The paths of a -z listing; a nested repository's `dir/` is left out."""
+    return [path for path in _entries(output) if path and not path.endswith("/")]
+
+
+def listed_files(
+    worktree: str | Path,
+    env: dict[str, str],
+    path: str | None = None,
+    untracked: bool = False,
+    cap: int = VIEW_CAP,
+) -> tuple[list[str], bool]:
+    """The files git knows or would track (`untracked`: only the untracked, not ignored
+    ones), sorted, each once; with `path` only that one (or those below it). With whether
+    the listing was cut at `cap` bytes."""
+    kinds = ("-o",) if untracked else ("-c", "-o")
+    args = ("ls-files", *kinds, "--exclude-standard", "-z", "--", *([path] if path else []))
+    output = _view(worktree, env, *args, cap=cap)
+    return sorted(set(_paths(output))), output.cut
+
+
+def tracked_files(
+    worktree: str | Path, env: dict[str, str], cap: int = VIEW_CAP
+) -> tuple[list[tuple[str, bool]], bool]:
+    """The files in the index: (path, whether it is a submodule); with whether the listing
+    was cut at `cap` bytes."""
+    output = _view(worktree, env, "ls-files", "-c", "-s", "-z", cap=cap)
+    found = []
+    for entry in _entries(output):
+        info, tab, name = entry.partition("\t")
+        if tab and name:
+            found.append((name, info.split(" ")[0] == SUBMODULE))
+    return found, output.cut
+
+
+@dataclass(frozen=True)
+class Change:
+    """One tracked file that differs: its status letter (A, M, D, T), added and removed
+    lines (None for a binary file), whether it is a submodule (its commit only)."""
+
+    path: str
+    status: str
+    added: int | None
+    removed: int | None
+    submodule: bool
+
+
+def diff_stat(
+    worktree: str | Path,
+    commit: str,
+    env: dict[str, str],
+    path: str | None = None,
+    cap: int = VIEW_CAP,
+) -> tuple[list[Change], bool]:
+    """The tracked files that differ between `commit` and the worktree (committed, staged
+    and unstaged changes together); with `path` only that one. With whether git's output
+    was cut at `cap` bytes."""
+    if not _COMMIT.fullmatch(commit):
+        raise GitError(f"not a commit id: {commit!r}")
+    spec = ("--", *([path] if path else []))
+    raw = _view(worktree, env, "diff", *DIFF_FLAGS, "--raw", "-z", commit, *spec, cap=cap)
+    fields = _entries(raw)
+    kinds: dict[str, tuple[str, bool]] = {}
+    for i in range(0, len(fields) - 1, 2):
+        info = fields[i].lstrip(":").split(" ")
+        if len(info) >= 5:
+            kinds[fields[i + 1]] = (info[4][:1], SUBMODULE in info[:2])
+    counts = _view(worktree, env, "diff", *DIFF_FLAGS, "--numstat", "-z", commit, *spec, cap=cap)
+    found = []
+    for entry in _entries(counts):
+        added, _, rest = entry.partition("\t")
+        removed, _, name = rest.partition("\t")
+        if not name:
+            continue
+        status, submodule = kinds.get(name, ("M", False))
+        binary = added == "-"
+        added_n = None if binary else int(added)
+        removed_n = None if binary else int(removed)
+        found.append(Change(name, status, added_n, removed_n, submodule))
+    return found, raw.cut or counts.cut
+
+
+def diff_patch(
+    worktree: str | Path, commit: str, path: str, env: dict[str, str], cap: int = VIEW_CAP
+) -> Output:
+    """The patch of one tracked file between `commit` and the worktree, at most `cap`
+    bytes of it (a submodule: its commit change only)."""
+    if not _COMMIT.fullmatch(commit):
+        raise GitError(f"not a commit id: {commit!r}")
+    return _view(worktree, env, "diff", *DIFF_FLAGS, "--patch", commit, "--", path, cap=cap)

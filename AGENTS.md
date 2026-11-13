@@ -45,6 +45,10 @@ for f in src/orchestrator/web/static/*.js; do node --check "$f"; done
   service. Set a temporary `ORCH_HOME` for anything you run, and use a port other than 8787.
   A manual run in a temporary home must also set `ORCH_DESKTOP_NOTIFICATIONS=off`, so that no
   notice reaches the desktop (`docs/desktop.md`).
+  The suite replaces an inherited `ORCH_HOME` with a temporary one and fails a test that
+  reaches a real home (`tests/home_guard.py`); tests must not undo the suite's environment
+  patches. Only children that inherit `os.environ` get the temporary home, and no child gets
+  the refusal: a child given an environment of its own must be given `ORCH_HOME`.
   Run the checkout's code with `uv run spartito …` or `uv run python -m orchestrator …`, not
   an installed `spartito`.
 - Nothing visible on the desktop while testing. Do not run `spartito app`, `spartito menubar`,
@@ -61,5 +65,6 @@ for f in src/orchestrator/web/static/*.js; do node --check "$f"; done
 - `docs/agents.md`: MCP tools, dependencies, notifications, decisions, compaction.
 - `docs/desktop.md`: background service, notifications, `spartito app`, launcher, menu bar.
 - `docs/board.md`: the task board.
+- `docs/state.md`: backup and restore of the state, moving a home.
 - `docs/releasing.md`: the version, PyPI and the release workflow.
 - `ROADMAP.md`: where the project is heading.

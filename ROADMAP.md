@@ -61,15 +61,20 @@ Which actions are allowed remotely: everything, or only reading and answering de
 files of its worktree and the diff against the base branch, next to its conversation. The
 working assumption is read-only browsing and diffs.
 
-**Today.** Every agent works in its own
-[git worktree](docs/concepts.md#worktrees-and-branches). The agent view and `spartito status`
-show its commits since the base branch and its uncommitted files, and the
-[task board](docs/board.md) shows a branch as ahead, behind, dirty or merged. File contents
-and diffs are not shown anywhere.
+**Today.** Read-only browsing is done. **Code** in the agent view of an agent with its own
+[git worktree](docs/concepts.md#worktrees-and-branches) shows the files it changed against the
+base branch, committed and uncommitted together, with each file's patch, and the worktree's
+files with their content ([usage.md](docs/usage.md#dashboard)). Only files git tracks or would
+track are served, symbolic links are never followed, binary files are not shown, and large
+lists, patches and files are cut. `spartito status` still shows only the commits and the
+uncommitted files.
 
-**Open questions.** Read-only, or with comments sent back to the agent, or editing? Limits for
-large diffs and binary files. Serving file contents widens what the dashboard exposes, which
-ties this item to authentication.
+**What remains.** Review comments sent back to the agent, editing, and the code view on the
+command line. Serving file contents widens what the dashboard exposes (it already refuses
+other hosts and other sites), which ties this item to authentication.
+
+**Open questions.** Whether an agent that shares another agent's worktree, and a lead in the
+main checkout, should get the code view too.
 
 ### Operations
 
@@ -242,15 +247,19 @@ asleep, and how cost is kept in check.
 package, a signed macOS launcher), a backup of the state before the schema changes, and no
 mismatch between the page and the server after an update.
 
-**Today.** Spartito is published on PyPI as `spartito` from a version tag by GitHub Actions
-([docs/releasing.md](docs/releasing.md)), without a changelog. Schema changes
+**Today.** Done in part. `spartito --version`, `spartito version` and the dashboard's settings
+show the version; `spartito version --check` asks PyPI for a newer release, only when typed
+(there is no automatic check). `spartito upgrade` prepares an upgrade: it refuses while turns
+run, backs the state up, prints the command for the kind of install and lists what must be
+restarted ([upgrading](docs/usage.md#upgrading)). Spartito is published on PyPI as `spartito`
+from a version tag by GitHub Actions ([docs/releasing.md](docs/releasing.md)), without a
+changelog. Schema changes
 are additive and applied when the database opens. After an update, a running dashboard keeps
-its old code while the page is new, so it has to be restarted
-([upgrading](docs/usage.md#upgrading-from-orch)). The launcher's copy of Python is signed ad
-hoc only.
+its old code while the page is new, so it has to be restarted. The launcher's copy of Python is
+signed ad hoc only.
 
-**Open questions.** Versioning. Whether the page should
-notice a server of another version (`/api/ping` reports it).
+**Open questions.** Versioning and a changelog. Whether the page should notice a server of
+another version (`/api/ping` reports it).
 
 #### Observability
 
@@ -271,25 +280,31 @@ private data.
 **What it means.** Limits per project, agent or day that warn or stop, and cost over time and
 per board item.
 
-**Today.** Every turn stores its tokens and cost. `spartito ps`, the agent lists and the
-dashboard show totals, the dashboard's over every recorded run
-([tokens and cost](docs/agents.md#tokens-and-cost)). Codex reports no cost. There are no
-limits and no reports over time.
+**Today.** Done in part. `spartito cost` and the dashboard's **Cost** view report the recorded
+spend per project, local day or agent, deleted agents' spend included. Budgets, global and
+per project, per day, month or all time, warn once at a threshold and once at the amount;
+an opt-in hard stop refuses new message turns once the amount is reached and never stops a
+running one ([budgets](docs/configuration.md#budgets)). Codex reports no cost, so its turns
+count no money. There are no budgets per agent and no cost per board item.
 
-**Open questions.** What a limit does to a running turn, and how to budget a provider that
-reports no cost.
+**Open questions.** Budgets per agent, cost per board item, and how to budget a provider that
+reports no cost (by tokens?).
 
 #### State backup, export and move
 
 **What it means.** Back up the state, export it, and move it to another machine. This is a
 step towards shared team state.
 
-**Today.** All state is in one directory (`~/.orchestrator/`, or `ORCH_HOME`): the database,
-the worktrees, the logs ([state](docs/architecture.md#state)). Projects are stored with their
-local paths. There is no export or import command.
+**Today.** `spartito state backup` copies the database with SQLite's online backup API, safe
+while agents run, with the home's roles and `loadout.toml` and optionally the logs;
+`spartito state list` lists the backups; `spartito state restore` restores one in place,
+refusing while turns run and keeping the replaced state as a new backup
+([state.md](docs/state.md)). Moving a home is a documented procedure that keeps every absolute
+path ([moving a home](docs/state.md#moving-a-home)).
 
-**Open questions.** What moves (the database only, or the worktrees too), how paths are
-rewritten, and how to copy a database that is in use.
+**Open questions.** Rewriting the stored paths (the home, the projects, the worktrees) for a
+move to other paths; exporting one project and importing it into another home; carrying
+uncommitted worktree files and provider sessions along; scheduled backups and pruning old ones.
 
 #### The rest of the internal refactoring
 

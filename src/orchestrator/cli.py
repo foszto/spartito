@@ -13,7 +13,7 @@ from typing import Annotated
 
 import typer
 
-from . import autostart, config, loadout, providers, roles
+from . import __version__, autostart, config, loadout, providers, roles
 from .models import Agent
 from .providers.claude import loadout_flags
 from .service import (
@@ -51,6 +51,27 @@ app = typer.Typer(
     f" steered through one orchestrator agent. Start with `{CLI} project add`, then `{CLI} chat`"
     f" or `{CLI} web`.",
 )
+
+
+def show_version(value: bool) -> None:
+    if value:
+        typer.echo(f"{CLI} {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def root(
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version", is_eager=True, callback=show_version, help="Print the version and exit."
+        ),
+    ] = False,
+) -> None:
+    # No docstring: the help of the command line stays the one given to `app`.
+    pass
+
+
 project_app = typer.Typer(
     no_args_is_help=True, rich_markup_mode=MARKUP, help="Manage projects (git repositories)."
 )
@@ -1537,6 +1558,383 @@ def list_roles() -> None:
     for role in roles.available():
         flags = ("lead " if role.lead else "") + ("worktree" if role.worktree else "checkout")
         typer.echo(f"{role.name:<13} {flags:<14} {role.description}")
+
+
+# -- cost reports and budgets -------------------------------------------------
+
+
+def money(value: float | None) -> str:
+    """`$1.23`; `n/a` when no cost was reported (Codex reports none)."""
+    return "n/a" if value is None else f"${value:,.2f}"
+
+
+def cost_cell(row: dict) -> str:
+    """The cost of a report row, with `*` when some of its turns reported no cost."""
+    return money(row["cost_usd"]) + ("*" if row["unpriced"] and row["cost_usd"] is not None else "")
+
+
+def prompt_tokens(counts: dict) -> int:
+    return counts["in"] + counts["cache_read"] + counts["cache_write"]
+
+
+@app.command()
+def cost(
+    by: Annotated[
+        str, typer.Option("--by", help="Group by project (default), day (local time) or agent.")
+    ] = "project",
+    since: Annotated[
+        str | None,
+        typer.Option("--since", help="Only from this local day on (YYYY-MM-DD)."),
+    ] = None,
+    project: Annotated[
+        str | None, typer.Option("--project", "-p", help="Only this project's agents.")
+    ] = None,
+    as_json: Annotated[bool, typer.Option("--json", help="As JSON.")] = False,
+) -> None:
+    """Report the spend of the recorded runs per project, day or agent, with a total.
+
+    Recorded usage only: turns run by very old versions may have no record. Codex reports no
+    cost: its turns and tokens are listed, its cost is `n/a`. What agents deleted for good had
+    spent is listed in rows of its own; it has no dates, so `--since` leaves it out. Budgets:
+    `{cli} budget`."""
+    try:
+        data = orch().cost_report(by, since, project)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    if as_json:
+        typer.echo(json.dumps(data, indent=2))
+        return
+    scope = f" of {project}" if project else ""
+    when = f"since {data['since']}" if data["since"] else "all time"
+    typer.echo(f"recorded usage{scope} by {by}, {when}")
+    heading = {"project": "PROJECT", "day": "DAY", "agent": "AGENT"}[by]
+    labels = [row["label"] for row in data["rows"]] + ["TOTAL"]
+    width = max(len(label) for label in [*labels, heading]) + 2
+    typer.echo(f"{heading:<{width}}{'TURNS':>7}{'PROMPT':>10}{'OUTPUT':>10}{'COST':>12}")
+    total = {**data["total"], "label": "TOTAL"}
+    for row in [*data["rows"], total]:
+        turns = "-" if row["turns"] is None else str(row["turns"])
+        line = (
+            f"{row['label']:<{width}}{turns:>7}{count(prompt_tokens(row['tokens'])):>10}"
+            f"{count(row['tokens']['out']):>10}{cost_cell(row):>12}"
+        )
+        typer.secho(line, bold=row is total)
+    if data["unpriced"]:
+        typer.echo(
+            f"\n* {data['unpriced']} turn(s) reported no cost (Codex reports none): their tokens"
+            " are counted, their cost is not in the figures; n/a: no turn of the row reported one."
+        )
+    if any(row["removed"] for row in data["rows"]):
+        typer.echo("Removed agents: what agents deleted for good had spent; turns not kept.")
+    if data["removed_left_out"]:
+        typer.echo("What removed agents had spent has no dates and is left out with --since.")
+
+
+budget_app = typer.Typer(
+    rich_markup_mode=MARKUP,
+    help="Budgets: one global and one per project, each warning at a threshold; the hard stop"
+    " that refuses new turns is opt-in.",
+)
+app.add_typer(budget_app, name="budget")
+
+
+def show_budgets() -> None:
+    found = orch().budget_list()
+    if not found:
+        typer.echo(f"no budgets; `{CLI} budget set AMOUNT [-p PROJECT]` sets one")
+        return
+    typer.echo(
+        f"{'SCOPE':<20} {'PERIOD':<7} {'SPENT':>10} {'AMOUNT':>10} {'USED':>6}"
+        f" {'WARN AT':>8} {'HARD STOP':>10}  STATE"
+    )
+    colors = {"warning": typer.colors.YELLOW, "reached": typer.colors.RED}
+    for item in found:
+        percent = "-" if item["percent"] is None else f"{item['percent']}%"
+        state = typer.style(item["state"], fg=colors.get(item["state"]))
+        typer.echo(
+            f"{item['project'] or 'global':<20} {item['period']:<7} {money(item['spent_usd']):>10}"
+            f" {money(item['amount_usd']):>10} {percent:>6} {str(item['warn_at']) + '%':>8}"
+            f" {'on' if item['hard_stop'] else 'off':>10}  {state}"
+        )
+    typer.echo(
+        "Reported cost only (Codex reports none); day and month in local time; 'total' also"
+        " counts removed agents. Checked after each turn, so a budget can be overshot."
+    )
+
+
+@budget_app.callback(invoke_without_command=True)
+def budget_main(ctx: typer.Context) -> None:
+    """List the budgets with what is spent in their current period (`{cli} budget list`)."""
+    if not ctx.invoked_subcommand:
+        show_budgets()
+
+
+@budget_app.command("list")
+def budget_list() -> None:
+    """List the budgets: each with what is spent in its current period, the percentage of
+    its amount, and its state (ok, warning, reached)."""
+    show_budgets()
+
+
+@budget_app.command("set")
+def budget_set(
+    amount: Annotated[
+        float | None,
+        typer.Argument(help="The amount in USD (may be left out to change an existing budget)."),
+    ] = None,
+    project: Annotated[
+        str | None,
+        typer.Option("--project", "-p", help="For this project instead of the global budget."),
+    ] = None,
+    period: Annotated[
+        str | None,
+        typer.Option("--period", help="day, month (a new budget's default) or total; local time."),
+    ] = None,
+    warn_at: Annotated[
+        int | None,
+        typer.Option("--warn-at", help="Warn at this percentage of the amount (default 80)."),
+    ] = None,
+    hard_stop: Annotated[
+        bool | None,
+        typer.Option(
+            "--hard-stop/--no-hard-stop",
+            help="Refuse new turns once the amount is reached (default: off).",
+        ),
+    ] = None,
+) -> None:
+    """Set the global budget, or a project's with `-p`. A value not given keeps what the budget
+    had. The owner is warned once per period at the threshold and once at the amount. With
+    `--hard-stop`, new message turns are refused once the amount is reached, until it is raised
+    (`{cli} budget set AMOUNT`) or removed (`{cli} budget remove`)."""
+    try:
+        item = orch().set_budget(amount, project, period, warn_at, hard_stop)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    stop = ", hard stop" if item["hard_stop"] else ""
+    per = "in total" if item["period"] == "total" else f"per {item['period']}"
+    typer.echo(
+        f"{item['project'] or 'global'} budget: {money(item['amount_usd'])} {per},"
+        f" warning at {item['warn_at']}%{stop}; spent {money(item['spent_usd'])}"
+        f" ({item['state']})"
+    )
+
+
+@budget_app.command("remove")
+def budget_remove(
+    project: Annotated[
+        str | None,
+        typer.Option("--project", "-p", help="The project's budget instead of the global one."),
+    ] = None,
+) -> None:
+    """Remove the global budget, or a project's with `-p`."""
+    try:
+        orch().remove_budget(project)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    typer.echo(f"removed the {project or 'global'} budget")
+
+
+# -- state: backup, list, restore -------------------------------------------
+
+state_app = typer.Typer(
+    no_args_is_help=True,
+    rich_markup_mode=MARKUP,
+    help="Back up the state (the database, your roles and loadout.toml, optionally the logs),"
+    " list the backups, restore one. Moving a home: docs/state.md.",
+)
+app.add_typer(state_app, name="state")
+
+
+def size_text(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return ""  # not reached
+
+
+@state_app.command("backup")
+def state_backup(
+    to: Annotated[
+        str | None,
+        typer.Option(
+            "--to", help="The new directory to write it to (default: one in the home's backups/)."
+        ),
+    ] = None,
+    logs: Annotated[bool, typer.Option("--logs", help="Include the logs/ directory.")] = False,
+) -> None:
+    """Back up the state, also while agents run: the database (through SQLite's online backup
+    API, then checked with `PRAGMA integrity_check`), the home's roles/ and loadout.toml, and
+    with `--logs` the logs. Nothing outside the home: no worktrees, no provider data.
+    `{cli} state list` lists them, `{cli} state restore` restores one."""
+    try:
+        result = orch().backup_state(to, logs)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    parts = ["database", *result["files"]]
+    typer.echo(f"backup: {result['path']}")
+    typer.echo(f"  {', '.join(parts)}; {size_text(result['size'])}")
+    for path in result["skipped"]:
+        typer.echo(f"  left out (a symbolic link): {path}")
+    typer.secho(f"warning: {result['warning']}", fg=typer.colors.YELLOW, err=True)
+
+
+@state_app.command("list")
+def state_list(as_json: Annotated[bool, typer.Option("--json", help="As JSON.")] = False) -> None:
+    """List the backups in the home's backups/, newest first: the directories `{cli} state
+    backup` made and database files (`*.db`) put there by hand."""
+    found = orch().list_backups()
+    if as_json:
+        typer.echo(json.dumps(found, indent=2))
+        return
+    if not found:
+        typer.echo("no backups")
+    for item in found:
+        when = item["time"].replace("T", " ").replace("+00:00", " UTC")
+        logs = "logs" if item["logs"] else ""
+        typer.echo(f"{item['name']:<34} {when}  {size_text(item['size']):>9}  {logs}".rstrip())
+
+
+@state_app.command("restore")
+def state_restore(
+    backup: Annotated[
+        str,
+        typer.Argument(
+            help="A name from `state list`, or the path of a backup directory or database file."
+        ),
+    ],
+    yes: Annotated[
+        bool, typer.Option("--yes", "-y", help="Restore; without it, only say what it would do.")
+    ] = False,
+    logs: Annotated[
+        bool, typer.Option("--logs", help="Also restore the backup's logs/, if it has them.")
+    ] = False,
+) -> None:
+    """Restore a backup into this home. Refuses while any turn is running or queued, and a file
+    that is not an intact state database. Without `--yes` it only says what it would do. The
+    state it replaces is first kept as a new backup, so nothing is lost; the database is
+    replaced in place, so a running dashboard keeps working, but restart it."""
+
+    def kept(path: str, name: str) -> None:
+        """Printed before the restore commits: the replaced state is findable whatever follows."""
+        typer.echo(
+            f"the replaced state is kept in {path}"
+            f" (`{CLI} state restore {name} --yes` brings it back)"
+        )
+
+    try:
+        result = orch().restore_state(backup, confirm=yes, logs=logs, announce=kept)
+    except NeedsConfirmation as exc:
+        typer.echo(str(exc))
+        typer.secho(
+            f"nothing changed; run `{CLI} state restore {backup} --yes` to restore", err=True
+        )
+        raise typer.Exit(1) from None
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    typer.echo(f"restored {result['restored']}")
+    if result["files"]:
+        typer.echo(f"  and the backup's {', '.join(result['files'])}")
+    for path in result["kept_skipped"]:
+        typer.echo(f"  not in the kept backup (a symbolic link): {path}")
+    for entry in result["left"]:
+        typer.echo(f"  not restored: {entry}")
+    if result["newer"]:
+        typer.secho(f"note: {result['newer']}", fg=typer.colors.YELLOW, err=True)
+    typer.secho(result["restart"], fg=typer.colors.YELLOW, err=True)
+
+
+# -- version and upgrades -----------------------------------------------------
+
+
+@app.command("version")
+def version_command(
+    check: Annotated[
+        bool,
+        typer.Option(
+            "--check",
+            help="Ask PyPI whether a newer release exists (the only network request, and only"
+            " with this option).",
+        ),
+    ] = False,
+) -> None:
+    """Print the version and the kind of install: an editable checkout (with its directory) or
+    an installed package. With `--check`, ask PyPI's JSON API whether a newer release exists;
+    {cli} never does this on its own."""
+    o = Orchestrator  # static methods: no database is opened
+    info = o.version_info()
+    typer.echo(f"{CLI} {info['version']}")
+    where = f" ({info['checkout']})" if info["kind"] == "editable" and info["checkout"] else ""
+    how = " (uv tool)" if info["kind"] == "package" and info["tool"] else ""
+    typer.echo(f"install: {info['label']}{where}{how}")
+    if not check:
+        return
+    try:
+        result = o.check_release()
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    installed, latest = result["installed"], result["latest"]
+    typer.echo(
+        {
+            "newer": f"a newer release is on PyPI: {latest} (installed: {installed});"
+            f" `{CLI} upgrade` prepares the upgrade",
+            "current": f"up to date: {installed} is the latest release on PyPI",
+            "ahead": f"{installed} is newer than the latest release on PyPI ({latest})",
+            "unknown": f"the latest release on PyPI is {latest}; the version of this install"
+            f" is not known ({installed})",
+            "unpublished": f"{result['name']} is not published on PyPI (installed: {installed})",
+        }[result["status"]]
+    )
+
+
+@app.command()
+def upgrade(
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Only print the plan: no backup, and active turns listed."),
+    ] = False,
+) -> None:
+    """Prepare an upgrade; it runs no package manager and no git. Refuses while any turn is
+    queued or running, backs the state up (as `{cli} state backup`), then prints the kind of
+    install, the command that upgrades it and what must be restarted afterwards."""
+    from .gui import launcher
+
+    try:
+        launcher_there = launcher.installed(launcher.launcher())
+    except launcher.LauncherError:  # not on this platform
+        launcher_there = False
+    try:
+        plan = orch().prepare_upgrade(launcher_there, dry_run)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    for line in plan["busy"]:
+        typer.secho(f"active: {line} (without --dry-run this refuses)", fg=typer.colors.YELLOW)
+    backup = plan["backup"]
+    if backup:
+        typer.echo(f"backup: {backup['path']}")
+        typer.echo(f"  to go back: `{CLI} state restore {backup['name']} --yes`")
+        typer.secho(f"warning: {backup['warning']}", fg=typer.colors.YELLOW, err=True)
+    else:
+        typer.echo(f"backup: none (dry run); without --dry-run one goes into {plan['backups_dir']}")
+    info = plan["install"]
+    where = f" ({info['checkout']})" if info["kind"] == "editable" and info["checkout"] else ""
+    typer.echo(f"install: {CLI} {plan['version']}, {info['label']}{where}")
+    if plan["commands"]:
+        typer.echo("upgrade it with:")
+        for line in plan["commands"]:
+            typer.echo(f"  {line}")
+    for note in plan["notes"]:
+        typer.echo(f"  note: {note}")
+    if plan["restart"]:
+        typer.echo("then restart:")
+        for item in plan["restart"]:
+            typer.echo(f"  - {item}")
+    else:
+        typer.echo("then restart: nothing of this home runs that needs it")
+    typer.echo("not visible from here, if you run them:")
+    for item in plan["unseen"]:
+        typer.echo(f"  - {item}")
+    typer.echo(f"check the new version with `{CLI} version`.")
 
 
 def name_the_command(group: typer.Typer) -> None:

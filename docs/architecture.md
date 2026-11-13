@@ -28,11 +28,13 @@ the same database, so they can be used side by side.
 
 State lives under `~/.orchestrator/` (or `$ORCH_HOME`):
 
-- `orch.db`: projects, agents, turns, events, usage, settings, board, decisions, notices;
+- `orch.db`: projects, agents, turns, events, usage, settings, budgets, board, decisions,
+  notices;
 - `worktrees/<project>/<agent-id>/`: the agents' worktrees;
 - `workspace/`: the orchestrator's working directory;
 - `run/`: files about live processes: the running dashboard server's `web.json`, locks and
-  markers, the browser profile of `spartito app`.
+  markers, the browser profile of `spartito app`;
+- `backups/`: backups of the state ([state.md](state.md)).
 
 The full list of files: [configuration.md](configuration.md#files).
 
@@ -94,6 +96,7 @@ src/orchestrator/
   web/             dashboard: one page and a JSON API
     app.py           the page and the JSON API, with the guards against other origins
     board_api.py     the JSON API of the board view across projects
+    code_api.py      the JSON API of the code view of an agent's worktree (read-only)
     serve.py         running the dashboard server, shared by `spartito web` and `spartito app`
   gui/             `spartito app`: the window (window.py), finding a running server (locate.py),
                    the launcher (launcher.py), notifications posted by Spartito itself
@@ -116,6 +119,13 @@ src/orchestrator/
     boards.py        the task board across projects: the joined view, placing, dispatching
                      named items, an item's history
     board_git.py     the cached git state of the board items' branches
+    code_view.py     an agent's worktree, read-only: changed files, patches, files, contents
+    state.py         backups of the state: making, listing and restoring them
+    costs.py         cost reports from the recorded usage; budgets, their warnings and
+                     the opt-in hard stop
+    upgrade.py       the version and the kind of install, the explicit check for a newer
+                     release on PyPI (the only network request, never automatic), and
+                     preparing an upgrade: backup, command, what to restart
   runner.py        one turn in its own detached process
   store.py         SQLite (WAL): the only shared state
   providers/       base.py (protocol), claude.py, codex.py

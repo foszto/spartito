@@ -3,6 +3,7 @@
 - [Commands at a glance](#commands-at-a-glance)
 - [Command reference](#command-reference)
 - [Dashboard](#dashboard)
+- [Upgrading](#upgrading)
 - [Upgrading from `orch`](#upgrading-from-orch)
 - [Upgrading to the distribution name `spartito`](#upgrading-to-the-distribution-name-spartito)
 
@@ -36,6 +37,11 @@ lists as `#12`. *Project lead* or *lead* is the agent with role `lead` of a proj
 | `spartito archive`, `spartito restore`, `spartito rm` | archive, bring back, delete for good |
 | `spartito board …`, `spartito decisions`, `spartito decide` | task board and decisions |
 | `spartito config …` | settings |
+| `spartito cost` | spend of the recorded turns per project, day or agent |
+| `spartito budget …` | budgets: list, set, remove |
+| `spartito state backup/list/restore` | back up the state, list and restore backups |
+| `spartito --version`, `spartito version [--check]` | the version, the kind of install, a check for a newer release |
+| `spartito upgrade` | prepare an upgrade: backup, the command for this install, what to restart |
 | `spartito roles` | available roles |
 
 ## Command reference
@@ -268,13 +274,106 @@ spartito roles
 
 See [configuration.md](configuration.md).
 
+### Cost and budgets
+
+```sh
+spartito cost [--by project|day|agent] [--since YYYY-MM-DD] [-p PROJECT] [--json]
+spartito budget [list]
+spartito budget set [AMOUNT] [-p PROJECT] [--period day|month|total] [--warn-at PERCENT] [--hard-stop|--no-hard-stop]
+spartito budget remove [-p PROJECT]
+```
+
+- `cost` reports what the recorded turns spent, grouped by project (the default), by day
+  (local time) or by agent, with a total row: turns, prompt tokens (input with cache reads and
+  writes), output tokens and cost. `--since` starts at local midnight of that day; `-p` keeps
+  one project. It is *recorded usage*: turns run by very old versions may have no record, so
+  the total can be slightly below the dashboard's summary. Codex reports no cost: its turns
+  and tokens are listed, a row none of whose turns reported a cost shows `n/a`, and a cost
+  marked `*` leaves such turns out (a footnote counts them). What agents deleted for good had
+  spent has rows of its own: one per project (`my-app: removed agents`), one per agent
+  (`fix-login-3f2a (removed)`), or one undated row by day, because the dates of its turns are
+  not kept; `--since` leaves it out.
+- `budget` (or `budget list`) lists the budgets: the global one and one per project, each
+  with what is spent in its current period, the percentage of its amount, the threshold, the
+  hard stop and the state (`ok`, `warning`, `reached`).
+- `budget set` creates or changes the global budget, or a project's with `-p`. A new budget
+  needs `AMOUNT` (USD) and defaults to `--period month`, `--warn-at 80` and no hard stop; for
+  an existing one, every value not given stays as it was, so `budget set 20` raises the amount
+  only and `budget set --no-hard-stop` turns the stop off.
+- `budget remove` removes the global budget, or a project's with `-p`.
+
+How budgets count, warn and stop: [configuration.md](configuration.md#budgets).
+
+### State backup and restore
+
+```sh
+spartito state backup [--to DIR] [--logs]
+spartito state list [--json]
+spartito state restore BACKUP [--yes|-y] [--logs]
+```
+
+- `backup` copies the database with SQLite's online backup API (safe while agents run),
+  checks the copy with `PRAGMA integrity_check`, and adds the home's `roles/` and
+  `loadout.toml` (symbolic links left out); `--logs` adds `logs/`. It goes into a new directory
+  in the home's `backups/`, named after the UTC time, or into `--to DIR` (not inside a
+  directory it copies); directories 0700, files 0600. It
+  prints where the backup is and a warning: a backup holds prompts, answers and tool output,
+  which can include secrets.
+- `list` shows the backups in `backups/`, database files put there by hand (`*.db`) included,
+  newest first: name, time, size, and whether the logs are in it.
+- `restore` takes a name from `list`, or the path of a backup directory or database file. It
+  refuses a file that is not an intact state database and any restore while a turn is running
+  or queued. Without `--yes` it only says what it would do and exits with 1. It keeps the
+  current state as a new backup (`<time>-before-restore`), complete and printed before the
+  replace commits, and replaces the database's content in place under one write lock, so
+  nothing another process commits is lost, then copies the
+  backup's `roles/` and `loadout.toml` (with `--logs` also its `logs/`) over the home's,
+  leaving symbolic links as they are. Tables and columns of a newer version's backup that this
+  version does not have are not restored. Restart a running dashboard afterwards.
+
+Details, and moving a home to another directory or machine: [state.md](state.md).
+
+### Version and upgrades
+
+```sh
+spartito --version
+spartito version [--check]
+spartito upgrade [--dry-run]
+```
+
+- `--version` prints `spartito <version>` and exits.
+- `version` prints the version and the kind of install: `editable checkout` with the
+  checkout's directory, or `installed package` (with `(uv tool)` for a `uv tool install`).
+  `--check` asks PyPI whether a newer release exists and says one of: up to date, a newer
+  release (which one), this install is newer than the latest release, or that `spartito` is not
+  published on PyPI (the index's 404 is an answer, exit code 0). A network failure or an
+  answer it does not understand is a one-line error with exit code 1. The request is
+  `GET https://pypi.org/pypi/spartito/json` with the header `User-Agent: spartito` and no other
+  header of Spartito's own (no version, platform, path or home), a 10-second timeout, at most
+  512 KB read and no redirect followed. Versions are compared as PEP 440 orders the plain
+  cases: by their release numbers (`0.10.0` is newer than `0.9.1`), then
+  dev < a < b < rc < final < post, each with its number (`rc1` < `rc2`, `post1` < `post2`);
+  a `+local` part is ignored.
+- `upgrade` prepares an upgrade and prints how to do it; it runs no package manager and no
+  git. It refuses while any turn is queued or running (as `state restore` does; a turn whose
+  runner is gone does not count), backs the state up into the home's `backups/` (as
+  `state backup`) and prints the backup and the command that restores it, then the kind of
+  install with the command that upgrades it, and what to restart afterwards. `--dry-run`
+  prints the same plan without a backup and lists the active turns instead of refusing.
+  The steps around it: [Upgrading](#upgrading).
+
+**No automatic check.** Spartito makes no network request of its own: nothing checks for
+updates in the background, at start or on a schedule, and the dashboard does not either.
+`spartito version --check` is the one request, and only when you type it.
+
 ## Dashboard
 
 `spartito web` serves a single page on `http://127.0.0.1:8787`. It reads the same database as the
 command line, so both can be used side by side.
 
 **Left column.** **Maestro** (the orchestrator) at the top; then each project with its agents
-as a tree, and the **Archive** entry when something is archived. A project's row has buttons
+as a tree, the **Archive** entry when something is archived, and the **Cost** entry. A
+project's row has buttons
 to talk to its lead, start a new agent, open its task board, archive every finished agent
 whose work is safe, and remove the project. **+** next to *Projects* adds a project through a
 folder picker that marks git repositories. The header has the **Decisions** button (with the
@@ -303,6 +402,35 @@ instructions) and **Archive** / **Restore**. The model and effort drop-downs:
   `other…` for any name (Enter applies, Esc discards), and `inherit (…)`, which clears the
   agent's own value and shows what applies instead (the tier setting or `CLI default`);
 - mark the agent's own value as `own`; a change applies from the next turn.
+
+**Code view.** **Code** in the header of an agent with a worktree of its own shows its code in
+place of the conversation, read-only, and loads it only when opened (**Refresh** loads it
+again):
+
+- **Changes**: the files changed against the agent's base (the branch, tag or commit it
+  started from; when that no longer exists, the project's base branch, which the page then
+  says), counted from the commit the branch shares with it, committed and uncommitted
+  together, with added and removed lines; untracked files that are not ignored are listed as
+  `new`. Opening a file loads its patch. A submodule is listed by its commit only.
+- **Files**: the worktree's files as folders; a click shows a file's content. A submodule is
+  named but not opened.
+
+Only files git tracks or would track are shown, and only under a name that is, byte for
+byte, both the one the file system has and the one git lists (no case or Unicode variant; on
+macOS a name stored decomposed is not shown at all): an ignored file such as `.env` and
+anything under `.git` never are. A symbolic link is shown as its target and never followed. Binary files are
+named but not shown. Limits, each noted on the page when reached: 1,000 changed files, 5,000
+files in the tree, 2,000 lines or 1 MB of one patch, 512 KB of one file, and 4 MB of any
+list git gives. Nothing is edited, and neither the repository's nor a submodule's own diff,
+textconv, filter or fsmonitor commands are run.
+
+**Cost** (the entry at the bottom of the left column): the report of `spartito cost` with the
+same three groupings (by project, by day in local time, by agent), a start day and a project,
+and above it each budget with what is spent in its current period, its amount, the percentage
+and its state (`ok`, `warning` or `reached`). Codex turns show their tokens and `n/a` for the
+cost, with the same footnotes as the command. It is read-only: budgets are set with
+`spartito budget set`. It loads when it is opened, when a choice changes and on **Refresh**,
+never with the page's regular refresh.
 
 **New agent** (**+** in a project's row): task, role, provider, name, model, effort,
 workspace (own worktree, main checkout or another agent's worktree) and *Start after*
@@ -338,6 +466,67 @@ convenient from scripts:
 - `POST /api/agents/<id>/model` with `{"model": "...", "effort": null}`: `null` clears a value,
   a missing key leaves it unchanged.
 - `POST /api/agents/<id>/compact` with `{"instructions": "..."}`.
+- `GET /api/cost?by=project|day|agent&since=YYYY-MM-DD&project=<name>`: the cost report
+  and the budgets with their state, as the **Cost** view shows them.
+- `GET /api/agents/<id>/code/changes`, `…/code/patch?path=<path>`, `…/code/tree` and
+  `…/code/file?path=<path>`: the code view (`web/code_api.py`). Besides the Host check, these
+  refuse a request whose `Origin` or `Sec-Fetch-Site` names another site, GET included.
+
+## Upgrading
+
+The dashboard's settings show the installed version, and `spartito version` the version and
+the kind of install; `spartito version --check` asks PyPI for a newer release. An upgrade has
+three parts.
+
+**Before.** Run `spartito upgrade` (or `spartito upgrade --dry-run` first, which changes
+nothing). It refuses while any turn is queued or running: wait for them (`spartito ps` shows
+no agent `running` or `waiting`) or `spartito stop` the agents. Then it backs the state up and
+prints where, with the command that brings it back, for example:
+
+```
+backup: /home/dev/.orchestrator/backups/20261113T142530Z
+  to go back: `spartito state restore 20261113T142530Z --yes`
+```
+
+**The upgrade.** `spartito upgrade` prints the command for the kind of install it found, with
+paths quoted for the shell:
+
+| install | upgrade |
+|---|---|
+| `uv tool install 'spartito[app,menubar]'` (a package from PyPI) | `uv tool upgrade spartito`: it keeps the extras and the Python of the install |
+| a package installed with pip | `<python> -m pip install --upgrade spartito`, with the extras you installed (`'spartito[app,menubar]'`) |
+| `uv tool install --editable '.[app,menubar]'` from a checkout | in the checkout: `git pull` (or update its branch as you do), then the same `uv tool install --editable` line with the extras the install has |
+| a checkout used with `uv run` (Spartito runs in the checkout's own `.venv`) | in the checkout: `git pull`, then `uv sync` with the extras you synced with ([CONTRIBUTING.md](../CONTRIBUTING.md#setup)) |
+| a checkout installed editable into another environment | in the checkout: `git pull`, then `<python> -m pip install -e .` with that environment's Python and the extras you installed (`uv pip install --python <python> -e .` where it has no pip) |
+
+A package installed from a file or URL instead of PyPI is installed again from there. An
+environment without the distribution `spartito` (an install from before it was renamed) takes
+the steps of [Upgrading to the distribution name `spartito`](#upgrading-to-the-distribution-name-spartito).
+
+**After.** Processes that started before the upgrade keep running the old code until they are
+restarted. `spartito upgrade` lists the ones it finds for this home, with how to restart each:
+
+- the background service, if it is installed: `spartito service install` again, with the
+  `--host` and `--port` of its unit, which it prints; this restarts it;
+- an open `spartito app` window (found by the lock it holds): quit it and open it again; its
+  own dashboard server stops with it;
+- the menu-bar item (found the same way): quit it and start `spartito menubar` again;
+- a dashboard server recorded as running that is neither the service's nor the window's: a
+  `spartito web` started by hand, to stop (Ctrl-C) and start again;
+- the launcher, if it is installed: `spartito app install` again, which records the new
+  version and the install's Python.
+
+What it cannot see it names in words: an open `spartito chat` (leave it, and continue with
+`spartito chat --continue`), and a `spartito web` started by hand that is not the last
+dashboard server started (only that one is recorded). Then check the version with
+`spartito version`, and in the dashboard's settings once the page is reloaded.
+
+**Going back.** Install the previous version (for a package, for example
+`uv tool install 'spartito[app,menubar]==0.1.0'`; for a checkout, check out the earlier
+commit and install or sync as above), restart as above, and if the newer version changed the
+state in a way you want undone, restore the backup: `spartito state restore <name> --yes`.
+Schema changes are additive, so an older version opens a database a newer one has used
+([backups and versions](state.md#backups-and-versions)).
 
 ## Upgrading from `orch`
 

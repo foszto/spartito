@@ -8,10 +8,24 @@ from pathlib import Path
 from typing import Any
 
 from . import app_open, board, decisions, desktop, git, providers
-from .core import access, boards, compaction, delivery, dispatch, launcher, lifecycle, reads, views
+from .core import (
+    access,
+    boards,
+    compaction,
+    costs,
+    delivery,
+    dispatch,
+    launcher,
+    lifecycle,
+    reads,
+    upgrade,
+    views,
+)
 from .core import archive as archiving
+from .core import code_view as code_views
 from .core import notices as notice_reads
 from .core import setup as agent_setup
+from .core import state as state_backups
 from .core.dispatch import ORCHESTRATOR_ID as ORCHESTRATOR_ID  # old import path
 from .core.dispatch import slug as slug  # old import path
 from .core.setup import cache_effect as cache_effect  # old import path
@@ -296,6 +310,13 @@ class Orchestrator:
     wait = views.wait
     changes = views.changes
 
+    # -- the code view of a worktree, read-only (core/code_view.py) -------
+
+    code_changes = code_views.code_changes
+    code_patch = code_views.code_patch
+    code_tree = code_views.code_tree
+    code_file = code_views.code_file
+
     # -- plain reads (core/reads.py) --------------------------------------
 
     projects = reads.projects
@@ -312,6 +333,13 @@ class Orchestrator:
     total_spent = reads.total_spent
     get_event = reads.get_event
     events = reads.events
+
+    # -- cost reports and budgets (core/costs.py) ---------------------------
+
+    cost_report = costs.report
+    budget_list = costs.budget_list
+    set_budget = costs.set_budget
+    remove_budget = costs.remove_budget
 
     # -- notices: pages, Spartito's window and posting process (core/notices.py) --
 
@@ -356,3 +384,15 @@ class Orchestrator:
     auto_archive = archiving.auto_archive
     tidy = archiving.tidy
     remove = archiving.remove
+
+    # -- state: backup, list, restore (core/state.py) ---------------------
+
+    backup_state = state_backups.backup
+    list_backups = state_backups.listing
+    restore_state = state_backups.restore
+
+    # -- version and upgrades (core/upgrade.py) ---------------------------
+
+    version_info = staticmethod(upgrade.version_info)
+    check_release = staticmethod(upgrade.check)  # the only network call, and only on request
+    prepare_upgrade = upgrade.prepare

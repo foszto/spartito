@@ -91,3 +91,9 @@ def workspace_dir() -> Path:
 
 def user_roles_dir() -> Path:
     return home() / "roles"
+
+
+def backups_dir() -> Path:
+    """Where `state backup` puts a backup by default (created by it, not here: listing it
+    must not create it)."""
+    return home() / "backups"

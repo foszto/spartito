@@ -29,7 +29,7 @@ from .. import __version__, config, providers, roles
 from ..providers.base import model_choices
 from ..service import ORCHESTRATOR_ID, NeedsConfirmation, Orchestrator, OrchestratorError
 from ..settings import ARCHIVE_AFTER, ARCHIVE_AFTER_DEFAULT, COMPACT_AT, COMPACT_AT_DEFAULT, TIERS
-from . import board_api
+from . import board_api, code_api
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
@@ -142,6 +142,8 @@ def state(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
         # Display names; the ids, roles and API paths stay "orchestrator".
         "project_name": config.PROJECT_NAME,
         "orchestrator_name": config.ORCHESTRATOR_NAME,
+        # The installed version, shown in the settings (the same /api/ping reports).
+        "version": __version__,
         "orchestrator": top,
         # Its model and effort before the first message, so they can be chosen up front.
         "orchestrator_setup": None if top else orch.setup(ORCHESTRATOR_ID),
@@ -438,6 +440,17 @@ def update_board_item(orch: Orchestrator, request: Request, body: dict) -> dict[
     return orch.update_board_item(request.path_params["item_id"], changes).to_dict()
 
 
+def cost(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """The cost report of the recorded runs (`?by=project|day|agent`, `?since=YYYY-MM-DD`,
+    `?project=`) and every budget with what is spent in its current period. Read-only (GET),
+    and only asked for when the page's cost view is opened: never part of /api/state."""
+    query = request.query_params
+    report = orch.cost_report(
+        query.get("by") or "project", query.get("since") or None, query.get("project") or None
+    )
+    return {"report": report, "budgets": orch.budget_list()}
+
+
 def move_board_item(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
     return orch.move_board_item(request.path_params["item_id"], body.get("direction")).to_dict()
 
@@ -480,11 +493,13 @@ app = Starlette(
         Route("/api/notices/poll", api(poll_notices), methods=["POST"]),
         Route("/api/notices/{notice_id:int}/claim", api(claim_notice), methods=["POST"]),
         Route("/api/board", api(list_board)),
+        Route("/api/cost", api(cost)),
         Route("/api/board/add", api(add_board_item), methods=["POST"]),
         Route("/api/board/dispatch", api(dispatch_board), methods=["POST"]),
         Route("/api/board/{item_id:int}", api(update_board_item), methods=["POST"]),
         Route("/api/board/{item_id:int}/move", api(move_board_item), methods=["POST"]),
         *board_api.ROUTES,
+        *code_api.ROUTES,
     ],
     middleware=[Middleware(LocalOnly)],
 )

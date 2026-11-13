@@ -293,6 +293,26 @@ CREATE TABLE IF NOT EXISTS board_blockers (
     PRIMARY KEY (item_id, decision_id)
 );
 CREATE INDEX IF NOT EXISTS board_blockers_decision ON board_blockers(decision_id);
+-- Budgets (core/costs.py): one global (scope '') and one per project (scope: its name). A
+-- table of its own, unknown to older code, and never keys in `settings`: an older dashboard
+-- that saves the settings keeps only the keys it knows. period: 'day' | 'month' | 'total', in
+-- local time; warn_at: the warning threshold in percent of amount_usd; hard_stop: 1 refuses
+-- new message turns once the amount is reached (opt-in). announced_period: the period
+-- ('2026-11-13', '2026-11' or 'total') of the last warning; announced_level: what was
+-- announced in it (1: the threshold, 2: the amount), so that parallel runners and restarts
+-- announce each once (Store.raise_announced).
+CREATE TABLE IF NOT EXISTS budgets (
+    scope TEXT PRIMARY KEY,
+    amount_usd REAL NOT NULL,
+    period TEXT NOT NULL DEFAULT 'month',
+    warn_at INTEGER NOT NULL DEFAULT 80,
+    hard_stop INTEGER NOT NULL DEFAULT 0,
+    announced_period TEXT,
+    announced_level INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+-- The spend of a period (Store.spent_since) reads the usage records from a time on.
+CREATE INDEX IF NOT EXISTS run_usage_created ON run_usage(created_at);
 """
 
 ANYONE = object()  # withdraw_queued/replace_queued: whoever queued the run
@@ -331,10 +351,127 @@ LOST_TRIGGER_SECONDS = 120  # an ended run still unchecked this long lost its tr
 
 EVENT_TEXT_LIMIT = 4000
 WAL_WAIT_SECONDS = 3.0
+# The tables every state database has had since the first release (tests/test_store.py:
+# OLD_SCHEMA): a file without them is not one. The newer ones are added when it is opened.
+STATE_TABLES = ("projects", "agents", "settings", "runs", "events")
 
 
 def now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _quoted(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _schema(conn: sqlite3.Connection, db: str = "main") -> dict[str, set[str]]:
+    """The tables of a database (`db`: one attached to `conn`) and their columns."""
+    tables = [
+        row[0]
+        for row in conn.execute(
+            f"SELECT name FROM {db}.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        )
+    ]
+    return {
+        table: {row[1] for row in conn.execute(f"PRAGMA {db}.table_info({_quoted(table)})")}
+        for table in tables
+    }
+
+
+def known_schema() -> dict[str, set[str]]:
+    """The tables and columns this version creates: SCHEMA and the *_ADDED lists."""
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.executescript(SCHEMA)
+        added = (("run_meta", RUN_META_ADDED), ("run_usage", RUN_USAGE_ADDED))
+        for table, columns in (*added, ("notices", NOTICES_ADDED)):
+            present = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            for name, ddl in columns:
+                if name not in present:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+        return _schema(conn)
+    finally:
+        conn.close()
+
+
+def check_database(path: Path) -> list[str]:
+    """Raise ValueError unless the file `path` is an intact state database: readable as
+    SQLite, `PRAGMA integrity_check` ok, with the tables of STATE_TABLES. Else return the
+    tables and `table.column`s it has that this version does not know (a newer version
+    wrote it). Opening it may fold a -wal file beside it into it, as any open does."""
+    if not path.is_file():
+        raise ValueError(f"{path} is not a file")
+    try:
+        conn = sqlite3.connect(path, timeout=30)
+        try:
+            result = [row[0] for row in conn.execute("PRAGMA integrity_check")]
+            schema = _schema(conn)
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as exc:
+        raise ValueError(f"{path} is not a readable SQLite database ({exc})") from None
+    if result != ["ok"]:
+        raise ValueError(f"{path} fails the integrity check: {'; '.join(result[:5])}")
+    if missing := [table for table in STATE_TABLES if table not in schema]:
+        raise ValueError(f"{path} is not a state database (no table {', '.join(missing)})")
+    known = known_schema()
+    unknown: list[str] = []
+    for table, columns in sorted(schema.items()):
+        if table not in known:
+            unknown.append(table)
+        else:
+            unknown += [f"{table}.{column}" for column in sorted(columns - known[table])]
+    return unknown
+
+
+def _commit(conn: sqlite3.Connection) -> None:
+    """The commit of Store.replace_from (a function of its own for the tests)."""
+    conn.execute("COMMIT")
+
+
+def _replace_content(conn: sqlite3.Connection, note: str) -> list[str]:
+    """Inside `conn`'s write transaction (Store.replace_from): make the rows of every table of
+    `main` those of the attached database `restored`. A table it lacks ends up empty, and a
+    column it lacks gets its default (an older version's backup). Its tables and columns that
+    `main` lacks (a newer version's) are not copied: they are returned as `table` and
+    `table.column`. Then the restored turns that were queued or running end as stopped with
+    `note` (their runners are gone) and every run counts as checked, so nothing wakes a parent.
+    Row ids never go back: each AUTOINCREMENT sequence stays at least what it was here and
+    in `restored`, so a new turn never reuses an earlier turn's logs/run-<id>."""
+    live, restored = _schema(conn), _schema(conn, "restored")
+    for table, columns in live.items():
+        conn.execute(f"DELETE FROM main.{_quoted(table)}")
+        if table in restored:
+            names = ", ".join(_quoted(column) for column in sorted(columns & restored[table]))
+            conn.execute(
+                f"INSERT INTO main.{_quoted(table)} ({names})"
+                f" SELECT {names} FROM restored.{_quoted(table)}"
+            )
+    left_out: list[str] = []
+    for table, columns in sorted(restored.items()):
+        if table not in live:
+            left_out.append(table)
+        else:
+            left_out += [f"{table}.{column}" for column in sorted(columns - live[table])]
+    has_sequence = conn.execute(
+        "SELECT 1 FROM restored.sqlite_master WHERE name = 'sqlite_sequence'"
+    ).fetchone()
+    for name, seq in (
+        conn.execute("SELECT name, seq FROM restored.sqlite_sequence").fetchall()
+        if has_sequence
+        else []
+    ):
+        conn.execute(
+            "UPDATE main.sqlite_sequence SET seq = MAX(seq, ?) WHERE name = ?", (seq, name)
+        )
+    conn.execute(
+        f"UPDATE main.runs SET status = ?, error = ?, ended_at = ?"
+        f" WHERE status IN ('{ACTIVE[0]}', '{ACTIVE[1]}')",
+        (RunStatus.STOPPED.value, note, now()),
+    )
+    if "checked" in live.get("run_meta", set()):
+        conn.execute("UPDATE main.run_meta SET checked = 1 WHERE checked = 0")
+    return left_out
 
 
 def _older_than(timestamp: str | None, seconds: float) -> bool:
@@ -538,6 +675,64 @@ class Store:
                 conn.execute("ROLLBACK")
                 raise
             conn.execute("COMMIT")
+        finally:
+            conn.close()
+
+    # -- backup and restore (core/state.py) -------------------------------
+
+    def backup(self, dest: Path) -> None:
+        """Copy the database into the file `dest` (new, or empty) with SQLite's online backup
+        API: one consistent snapshot, taken in one step under a read transaction, so it is
+        safe while other processes write; never a copy of the file. The copy is in
+        rollback-journal mode: a single file, with no -wal beside it."""
+        source = sqlite3.connect(self.path, timeout=30)
+        try:
+            target = sqlite3.connect(dest)
+            try:
+                source.backup(target)
+                target.execute("PRAGMA journal_mode=DELETE")
+            finally:
+                target.close()
+        finally:
+            source.close()
+
+    def replace_from(
+        self,
+        source: Path,
+        snapshot: Path,
+        note: str,
+        check: Callable[[], None],
+        seal: Callable[[], None],
+    ) -> list[str]:
+        """Make this database's content that of the database file `source`, keeping the
+        content it replaces in the new (empty) file `snapshot`, with no commit of another
+        process falling between the two: one connection takes the write lock (BEGIN
+        IMMEDIATE) and holds it while `check` runs (raising there changes nothing), while
+        `snapshot` is taken with the backup API from a second connection (readers still read
+        the committed state; nobody can commit meanwhile) and passes check_database, while
+        `seal` runs (it makes the snapshot's backup complete and findable: whatever happens
+        from then on, the replaced content is kept), and while the rows are replaced from
+        `source`, attached (_replace_content); then it commits. A writer that comes meanwhile waits and commits on top of the restored state.
+        Rows, not pages, are copied: no schema object or file is swapped under the connections
+        other processes hold (they see the restored rows from their next read), and the
+        database keeps its page size and WAL. Returns what of `source` was not copied (a newer
+        version's tables and columns). Raises ValueError when the snapshot is not usable."""
+        conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        try:
+            conn.execute("PRAGMA foreign_keys=OFF")  # rows are copied table by table
+            conn.execute("ATTACH DATABASE ? AS restored", (str(source),))
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                check()
+                self.backup(snapshot)
+                check_database(snapshot)
+                seal()
+                left_out = _replace_content(conn, note)
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            _commit(conn)  # if it fails, closing the connection rolls back
+            return left_out
         finally:
             conn.close()
 
@@ -1273,6 +1468,138 @@ class Store:
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM run_usage WHERE run_id = ?", (run_id,)).fetchone()
         return from_row(Usage, row) if row else None
+
+    # -- cost reports and budgets (core/costs.py) ------------------------
+
+    # A usage record with the project of its run's agent (NULL: the orchestrator). Records
+    # whose run is gone (deleted by older code, which does not know run_usage) are left out,
+    # as Store.usage_sums leaves them out.
+    _RECORDS = (
+        " FROM run_usage u JOIN runs r ON r.id = u.run_id LEFT JOIN agents a ON a.id = r.agent_id"
+    )
+
+    def usage_records(self, since: str | None = None, project: str | None = None) -> list[dict]:
+        """The usage records of the runs, oldest first: run_id, agent_id, project, the token
+        counts, cost_usd (NULL: none reported, e.g. Codex) and created_at. `since`: only those
+        written at or after this UTC time (as `now()` writes it); `project`: only that
+        project's agents (None: every agent, the orchestrator too). Runs recorded by code from
+        before usage records have none."""
+        where, args = self._record_filter(since, project)
+        columns = ", ".join(f"u.{key}" for key in (*TOKEN_FIELDS, "cost_usd", "created_at"))
+        with self._read() as conn:
+            rows = conn.execute(
+                f"SELECT u.run_id, r.agent_id, a.project, {columns}{self._RECORDS}{where}"
+                " ORDER BY u.created_at, u.run_id",
+                args,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def _record_filter(since: str | None, project: str | None) -> tuple[str, list[Any]]:
+        conditions, args = [], []
+        if since is not None:
+            conditions.append("u.created_at >= ?")
+            args.append(since)
+        if project is not None:
+            conditions.append("a.project = ?")
+            args.append(project)
+        return (" WHERE " + " AND ".join(conditions) if conditions else ""), args
+
+    def removed_spend(self, project: str | None = None) -> list[dict]:
+        """What the agents deleted for good had spent (spent_removed), one row per deletion:
+        agent_id, project (NULL: the orchestrator, or not known), the token sums, cost_usd and
+        removed_at. When it was spent is not recorded. `project`: only that project's."""
+        query = f"SELECT agent_id, project, {', '.join(TOKEN_FIELDS)}, cost_usd, removed_at"
+        query += " FROM spent_removed"
+        args: tuple[Any, ...] = ()
+        if project is not None:
+            query, args = query + " WHERE project = ?", (project,)
+        with self._read() as conn:
+            return [dict(row) for row in conn.execute(query + " ORDER BY id", args).fetchall()]
+
+    def spent_since(self, since: str | None, project: str | None, removed: bool) -> float:
+        """The reported cost of the usage records written at or after `since` (None: all), of
+        one project's agents (None: every agent), plus with `removed` what deleted agents (of
+        that project) had spent; read together, so a deletion meanwhile counts once."""
+        where, args = self._record_filter(since, project)
+        with self._read() as conn:
+            total = conn.execute(
+                f"SELECT COALESCE(SUM(u.cost_usd), 0){self._RECORDS}{where}", args
+            ).fetchone()[0]
+            if removed:
+                query = "SELECT COALESCE(SUM(cost_usd), 0) FROM spent_removed"
+                one = () if project is None else (project,)
+                query += "" if project is None else " WHERE project = ?"
+                total += conn.execute(query, one).fetchone()[0]
+        return float(total)
+
+    def budgets(self) -> list[dict]:
+        """Every budget (table budgets), the global one ('') first, then by project."""
+        with self._conn() as conn:
+            rows = conn.execute("SELECT * FROM budgets ORDER BY scope").fetchall()
+        return [dict(row) for row in rows]
+
+    def set_budget(
+        self,
+        scope: str,
+        amount_usd: float | None,
+        period: str | None,
+        warn_at: int | None,
+        hard_stop: bool | None,
+        defaults: dict[str, Any],
+    ) -> dict:
+        """Create or change the budget of `scope`; a value left None stays as it was (a new
+        budget: `defaults`, which also holds amount_usd's). What was announced is forgotten
+        when the amount, the period or the threshold changes, so the new figures warn anew.
+        One transaction: two changes at once do not undo each other's fields."""
+        with self.transaction() as conn:
+            row = conn.execute("SELECT * FROM budgets WHERE scope = ?", (scope,)).fetchone()
+            old = dict(row) if row else {**defaults, "announced_period": None, "announced_level": 0}
+            new = {
+                "amount_usd": old["amount_usd"] if amount_usd is None else amount_usd,
+                "period": old["period"] if period is None else period,
+                "warn_at": old["warn_at"] if warn_at is None else warn_at,
+                "hard_stop": int(old["hard_stop"] if hard_stop is None else hard_stop),
+            }
+            if new["amount_usd"] is None:
+                raise ValueError("a new budget needs an amount")
+            changed = any(new[key] != old[key] for key in ("amount_usd", "period", "warn_at"))
+            announced = (None, 0) if changed else (old["announced_period"], old["announced_level"])
+            conn.execute(
+                "INSERT OR REPLACE INTO budgets (scope, amount_usd, period, warn_at, hard_stop,"
+                " announced_period, announced_level, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (scope, *new.values(), *announced, now()),
+            )
+            return dict(conn.execute("SELECT * FROM budgets WHERE scope = ?", (scope,)).fetchone())
+
+    def remove_budget(self, scope: str) -> bool:
+        with self._conn() as conn:
+            return conn.execute("DELETE FROM budgets WHERE scope = ?", (scope,)).rowcount > 0
+
+    def raise_announced(self, budget: dict, period: str, level: int) -> bool:
+        """Record that `level` was announced for `budget` (a row as read) in `period`; True
+        only when nothing as high was announced in that period yet and the budget's amount,
+        period and threshold are still those read. One conditional UPDATE: of several
+        processes raising the same level at once exactly one gets True."""
+        with self._conn() as conn:
+            return (
+                conn.execute(
+                    "UPDATE budgets SET announced_period = ?, announced_level = ?"
+                    " WHERE scope = ? AND amount_usd = ? AND period = ? AND warn_at = ?"
+                    " AND (announced_period IS NOT ? OR announced_level < ?)",
+                    (
+                        period,
+                        level,
+                        budget["scope"],
+                        budget["amount_usd"],
+                        budget["period"],
+                        budget["warn_at"],
+                        period,
+                        level,
+                    ),
+                ).rowcount
+                == 1
+            )
 
     # -- deliveries -------------------------------------------------------
 
