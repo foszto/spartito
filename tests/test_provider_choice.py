@@ -114,7 +114,11 @@ def test_an_unusable_default_falls_back_to_the_first_usable_with_a_note(
         " this agent runs on codex",
     )
     assert availability.choose(None, [("codex", "the project's default")]).note is None
-    assert availability.choose(None).provider == "codex"
+    assert availability.choose(None) == availability.Choice(
+        "codex",
+        "claude (the first supported provider) is not available: not installed (not_installed"
+        " here); this agent runs on codex",
+    )
 
 
 def test_unknown_counts_as_usable_and_nothing_usable_is_an_error(

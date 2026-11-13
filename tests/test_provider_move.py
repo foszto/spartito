@@ -33,6 +33,39 @@ def test_the_orchestrator_before_its_first_use_is_created_on_the_provider(
         orch.set_provider(ORCHESTRATOR_ID, "claude")
 
 
+def test_creating_the_orchestrator_on_a_fallback_by_a_setting_says_so(
+    orch: Orchestrator, monkeypatch, client: TestClient
+) -> None:
+    """The model command and endpoint create the orchestrator on first use: their reply
+    tells of the fallback, which no first run of this process would tell."""
+    statuses(monkeypatch, claude="not_installed")
+    note = (
+        "claude (the first supported provider) is not available: not installed (not_installed"
+        " here); this agent runs on codex"
+    )
+
+    result = CliRunner().invoke(cli.app, ["model", ORCHESTRATOR_ID, "--effort", "high"])
+
+    assert result.exit_code == 0, result.output
+    assert f"note: {note}" in output(result) and "moved from" not in output(result)
+    assert orch.agent(ORCHESTRATOR_ID).provider == "codex"
+    again = CliRunner().invoke(cli.app, ["model", ORCHESTRATOR_ID, "--effort", "low"])
+    assert "note:" not in output(again)
+    assert "note" not in orch.set_overrides(ORCHESTRATOR_ID, {"effort": "medium"})
+
+
+def test_the_model_endpoint_tells_of_the_orchestrators_fallback(
+    orch: Orchestrator, monkeypatch, client: TestClient
+) -> None:
+    statuses(monkeypatch, claude="not_installed")
+    url = f"/api/agents/{ORCHESTRATOR_ID}/model"
+
+    reply = client.post(url, json={"effort": "high"}, headers=ORIGIN).json()
+
+    assert reply["provider"] == "codex" and reply["effort_override"] == "high"
+    assert reply["note"].endswith("this agent runs on codex")
+    assert "note" not in client.post(url, json={"effort": "low"}, headers=ORIGIN).json()
+
 def test_an_agent_without_a_session_moves_at_once(
     orch: Orchestrator, project: str, two_fakes, no_launch: list[int]
 ) -> None:

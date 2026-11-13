@@ -118,7 +118,8 @@ def setup(orch: Facade, agent_id: str, wait: bool = True) -> dict[str, Any]:
     existing session does to the prompt cache (`restarts`, `may restart`, `keeps`) and
     `cache_hint` says it in words. The orchestrator is shown before its first use too
     (`exists` false), without creating anything; `wait=False` shows it on the provider it
-    would get without waiting for an availability check."""
+    would get without waiting for an availability check. The replies of set_overrides and
+    set_provider add `note` when they created the orchestrator on a fallback provider."""
     if wait:
         agent = orch._agent_or_orchestrator_draft(agent_id)
     else:
@@ -169,10 +170,15 @@ def set_overrides(orch: Facade, agent_id: str, changes: dict[str, Any]) -> dict[
             raise OrchestratorError(
                 f"{agent.provider} has no effort {effort!r} (use: {', '.join(allowed)})"
             )
-    if agent.id == ORCHESTRATOR_ID:
-        orch.orchestrator()
+    note = orch.orchestrator().provider_note if agent.id == ORCHESTRATOR_ID else None
     orch.store.set_overrides(agent.id, changes)
-    return orch.setup(agent.id)
+    return _noting(orch.setup(agent.id), note)
+
+
+def _noting(setup: dict[str, Any], note: str | None) -> dict[str, Any]:
+    """`setup` with `note` when the call created the orchestrator on a fallback provider (what
+    choosing it had to tell); without the key otherwise."""
+    return {**setup, "note": note} if note else setup
 
 
 def _agent_or_orchestrator_draft(orch: Facade, agent_id: str, wait: bool = True) -> Agent:
@@ -193,8 +199,8 @@ def set_provider(
     says what happens). The agent's own model and effort are cleared (they were the old
     provider's); its worktree, branch, board items and sub-agents stay."""
     if agent_id == ORCHESTRATOR_ID and orch.store.get_agent(ORCHESTRATOR_ID) is None:
-        orch.orchestrator(provider)
-        return orch.setup(ORCHESTRATOR_ID)
+        note = orch.orchestrator(provider).provider_note
+        return _noting(orch.setup(ORCHESTRATOR_ID), note)
     agent = orch.agent(agent_id)
     if provider == agent.provider:
         return orch.setup(agent.id)

@@ -232,7 +232,8 @@ def choose(
     the reason and the usable alternatives. Else the first named of `defaults` ((name, what
     it is: "the project's default")) is the intended one; when it is not usable, the first
     usable provider in registry order is chosen, with a note that says so. Without
-    defaults: the first usable one. `unknown` counts as usable. Nothing usable: NoneUsable.
+    defaults: the first usable one, with a note when that is not the first registered one.
+    `unknown` counts as usable. Nothing usable: NoneUsable.
     `wait=False` never waits for a check (what is not checked yet counts as usable)."""
     entries = {entry["name"]: entry for entry in listing(wait=wait, models=False)}
     usable_names = [name for name, entry in entries.items() if entry["usable"]]
@@ -251,8 +252,12 @@ def choose(
         raise NoneUsable(f"no provider is available here: {each}. See {DOCS}")
     chosen = usable_names[0]
     if intended is None:
-        return Choice(chosen)
-    what = next(what for name, what in defaults if name)
+        first = next(iter(entries))  # nothing named: still say what is skipped
+        if chosen == first:
+            return Choice(chosen)
+        intended, what = first, "the first supported provider"
+    else:
+        what = next(what for name, what in defaults if name)
     note = (
         f"{intended} ({what}) is not available: {_state(entries[intended])}; "
         f"this agent runs on {chosen}"

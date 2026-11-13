@@ -1448,16 +1448,19 @@ def model_command(
     }
     o = orch()
     moved_from = None
+    moved: dict = {}
     try:
         if provider:
-            moved_from = o.setup(agent_id)["provider"]
+            before = o.setup(agent_id)
+            moved_from = before["provider"] if before["exists"] else None
             try:
-                setup = o.set_provider(agent_id, provider, confirm=yes)
+                moved = o.set_provider(agent_id, provider, confirm=yes)
             except NeedsConfirmation as exc:
                 if not typer.confirm(f"{exc}. Move anyway?"):
                     raise typer.Exit(1) from None
-                setup = o.set_provider(agent_id, provider, confirm=True)
-        setup = o.set_overrides(agent_id, changes) if changes else o.setup(agent_id)
+                moved = o.set_provider(agent_id, provider, confirm=True)
+        # the newer setup, keeping the note of a move that created the orchestrator
+        setup = moved | (o.set_overrides(agent_id, changes) if changes else o.setup(agent_id))
     except OrchestratorError as exc:
         raise fail(exc) from None
     typer.secho(f"{setup['agent_id']}  {setup['provider']}", bold=True)
@@ -1471,6 +1474,7 @@ def model_command(
             f"note: moved from {moved_from} to {setup['provider']}: the next message starts a"
             " new conversation"
         )
+    print_note(setup.get("note"))
     if not changes:
         return
     notes = []

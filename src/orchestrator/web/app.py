@@ -318,7 +318,8 @@ def set_agent_model(orch: Orchestrator, request: Request, body: dict) -> dict[st
     key keeps the value. Creates the orchestrator on first use, like a message does.
     `provider` moves the agent to that provider first (set_provider); a move that would
     start its conversation anew answers `confirm` (what happens) instead, until the
-    request is repeated with `confirm: true`. Returns the agent's setup."""
+    request is repeated with `confirm: true`. Returns the agent's setup, with `note` when
+    this created the orchestrator on a fallback provider."""
     agent_id = request.path_params["agent_id"]
     changes = {key: value for key, value in body.items() if key not in ("provider", "confirm")}
     setup = None
@@ -327,8 +328,8 @@ def set_agent_model(orch: Orchestrator, request: Request, body: dict) -> dict[st
             setup = orch.set_provider(agent_id, provider, bool(body.get("confirm")))
         except NeedsConfirmation as exc:
             return {"confirm": str(exc)}
-    if changes or setup is None:
-        setup = orch.set_overrides(agent_id, changes)
+    if changes or setup is None:  # the newer setup, keeping a note of the move's
+        setup = (setup or {}) | orch.set_overrides(agent_id, changes)
     return setup
 
 
