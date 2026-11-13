@@ -220,12 +220,15 @@ shows them.
   pass the amount: by the cost of every turn that was running when it was reached.
 - **Hard stop** (opt-in). With it on, once the amount is reached in the current period, a new
   message turn of any agent the budget counts (Maestro, a lead, a worker) is refused before
-  its CLI starts: it ends as failed, with an error that names the budget and how to raise it
-  (`spartito budget set AMOUNT`), turn the stop off (`spartito budget set --no-hard-stop`) or
-  remove it (`spartito budget remove`), with `-p PROJECT` for a project's budget. A running
-  turn is never stopped. Notification turns (a parent told that its agents finished) and
-  compactions still run, so no parent is left waiting. With no budget, or the stop off,
-  turns run as without budgets.
+  its CLI starts: it ends as failed, with an error that names the budget and says that
+  changing it is the owner's decision. The error reaches the parent agent, so it does not
+  spell out the commands; you raise the budget with `spartito budget set AMOUNT`, turn the
+  stop off with `spartito budget set --no-hard-stop` or remove it with
+  `spartito budget remove`, with `-p PROJECT` for a project's budget. A running turn is never
+  stopped. Notification turns (a parent told that its agents finished) and compactions still
+  run, so no parent is left waiting. With no budget, or the stop off, turns run as without
+  budgets. The hard stop is a spending brake, not a security boundary: an agent with a shell
+  can run the same commands as the owner.
 
 ## Loadout
 

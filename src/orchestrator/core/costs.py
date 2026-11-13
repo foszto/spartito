@@ -325,20 +325,20 @@ def usage_recorded(store: Store, agent_id: str) -> list[str]:
 def refusal(store: Store, project: str | None) -> str | None:
     """Why a new message turn of an agent of `project` (None: the orchestrator) is refused:
     a budget counting it has the hard stop on and its amount is reached in its current
-    period. None: it may run (no such budget, the hard stop off, or below the amount)."""
+    period. None: it may run (no such budget, the hard stop off, or below the amount).
+
+    The text becomes the run's error, which reaches the parent agent: it names the budget
+    but not the commands that lift it, since changing a budget is the owner's decision (the
+    owner finds them in `budget list`, the docs and the dashboard)."""
     for budget in _in_scope(store, project):
         if not budget["hard_stop"]:
             continue
         status = _status(store, budget)
         if status["state"] != "reached":
             continue
-        option = f" -p {budget['scope']}" if budget["scope"] else ""
-        cli = config.CLI_NAME
         return (
-            f"refused: the {scope_text(budget['scope'])} budget is reached"
-            f" ({_figures(status)}) and its hard stop is on; raise it with"
-            f" `{cli} budget set <amount>{option}`, turn the stop off with"
-            f" `{cli} budget set{option} --no-hard-stop`, or remove it with"
-            f" `{cli} budget remove{option}`"
+            f"refused by the hard stop of the {scope_text(budget['scope'])} budget, which is"
+            f" reached: {_figures(status)}. Changing a budget is the owner's decision, not an"
+            ' agent\'s (see "Budgets" in docs/configuration.md).'
         )
     return None

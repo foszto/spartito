@@ -19,12 +19,12 @@ from test_code_view import FAKE_DOM, page_functions, run_node
 from test_store import OLD_SCHEMA
 from typer.testing import CliRunner
 
-from orchestrator import cli, config
+from orchestrator import cli, config, mcp_server
 from orchestrator.core import costs
 from orchestrator.errors import OrchestratorError
 from orchestrator.models import Agent, Project, RunStatus, Usage
 from orchestrator.service import Orchestrator
-from orchestrator.store import Store
+from orchestrator.store import NOTIFICATION, Store
 from orchestrator.web.app import app
 
 ZONE = "Europe/Berlin"  # UTC+1 in November: local midnight is 23:00 UTC the day before
@@ -421,9 +421,11 @@ def test_the_hard_stop_refuses_a_new_turn_but_never_stops_a_running_one(
 ) -> None:
     agent, first = orch.spawn(project, "TOKENS 100", worktree=False)
     finished(orch, agent.id)
+    pids = Path(agent.cwd) / ".fake-pids"  # each launch of the fake CLI adds its pid first
+    launched = len(pids.read_text().splitlines())
     running = orch.send(agent.id, "SLEEP 2 TOKENS 100")
     deadline = time.monotonic() + 15
-    while orch.get_run(running.id).status is not RunStatus.RUNNING:
+    while len(pids.read_text().splitlines()) <= launched:  # its CLI runs: past any refusal
         assert time.monotonic() < deadline
         time.sleep(0.05)
     orch.set_budget(0.0005, project, hard_stop=True)  # reached while the turn runs
@@ -435,9 +437,12 @@ def test_the_hard_stop_refuses_a_new_turn_but_never_stops_a_running_one(
     finished(orch, agent.id)
     run = orch.get_run(refused.id)
     assert run.status is RunStatus.FAILED
-    assert f"the project {project} budget is reached" in run.error
-    assert f"`{config.CLI_NAME} budget set <amount> -p {project}`" in run.error
-    assert f"`{config.CLI_NAME} budget remove -p {project}`" in run.error
+    assert run.error == (
+        f"refused by the hard stop of the project {project} budget, which is reached:"
+        " $0.00 of $0.00 this month (400 %). Changing a budget is the owner's decision, not an"
+        ' agent\'s (see "Budgets" in docs/configuration.md).'
+    )
+    assert config.CLI_NAME not in run.error  # the agent that reads it gets no command
     assert orch.get_usage(refused.id) is None  # the CLI never ran
 
     orch.set_budget(1.0, project)  # raised: turns run again, the stop stays on
@@ -456,6 +461,27 @@ def test_the_hard_stop_lets_a_compaction_run(orch: Orchestrator, project: str) -
 
     assert orch.get_run(compaction.id).status is RunStatus.DONE
     assert "budget" not in (orch.get_run(compaction.id).error or "")
+
+
+def test_the_hard_stop_lets_the_parents_notification_turn_run(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lead = orch.create_agent(project, name="lead", role="lead", worktree=False).id
+    spender = orch.create_agent(project, name="spender", worktree=False).id
+    turn(orch, spender, None, 0.001, 100)
+    orch.set_budget(0.0005, hard_stop=True)  # the global budget, reached
+    monkeypatch.setenv("ORCH_AGENT_ID", lead)  # the lead's MCP server spawns the child
+    child = mcp_server.spawn_agent("TOKENS 10", worktree=False)["id"]
+    monkeypatch.delenv("ORCH_AGENT_ID")
+
+    assert orch.wait_idle([lead, child], 30), "agents did not settle in time"
+
+    (refused,) = orch.store.runs_of(child)
+    assert refused.status is RunStatus.FAILED and "refused by the hard stop" in refused.error
+    meta = orch.store.meta_of(lead)
+    notes = [run for run in orch.store.runs_of(lead) if meta[run.id].kind == NOTIFICATION]
+    assert notes and all(run.status is RunStatus.DONE for run in notes)
+    assert "refused by the hard stop" in notes[0].prompt  # the lead learns why
 
 
 def test_a_failing_budget_check_lets_the_turn_run(
