@@ -368,6 +368,10 @@ def summary(
 # would apply): diffs show a submodule as its commit only and never ask whether its work
 # tree is dirty, whatever `diff.submodule`, `diff.ignoreSubmodules` or `submodule.*.ignore`
 # say. No pager, no optional locks (nothing written to the index), paths taken literally.
+# Names are listed the same way whatever the repository's own settings: composed (NFC) on
+# macOS, where git converts what the file system gives it (core.precomposeUnicode), so that a
+# name stored decomposed on disk is never listed in the bytes it has there; and ignore
+# patterns match in any letter case (core.ignoreCase), the stricter reading.
 # Every call is read as a stream and stops at a byte cap (`_run_capped`) and a timeout, and
 # runs without REPOSITORY_ENV.
 
@@ -379,6 +383,10 @@ VIEW_FLAGS = (
     "core.fsmonitor=false",
     "-c",
     "core.quotePath=false",
+    "-c",
+    "core.precomposeUnicode=true",
+    "-c",
+    "core.ignoreCase=true",
     "-c",
     "diff.submodule=short",
     "-c",

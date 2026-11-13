@@ -316,9 +316,10 @@ again):
 - **Files**: the worktree's files as folders; a click shows a file's content. A submodule is
   named but not opened.
 
-Only files git tracks or would track are shown, and only under the exact name the file
-system has (no case or Unicode variant): an ignored file such as `.env` and anything under
-`.git` never are. A symbolic link is shown as its target and never followed. Binary files are
+Only files git tracks or would track are shown, and only under a name that is, byte for
+byte, both the one the file system has and the one git lists (no case or Unicode variant; on
+macOS a name stored decomposed is not shown at all): an ignored file such as `.env` and
+anything under `.git` never are. A symbolic link is shown as its target and never followed. Binary files are
 named but not shown. Limits, each noted on the page when reached: 1,000 changed files, 5,000
 files in the tree, 2,000 lines or 1 MB of one patch, 512 KB of one file, and 4 MB of any
 list git gives. Nothing is edited, and neither the repository's nor a submodule's own diff,

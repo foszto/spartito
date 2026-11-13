@@ -4,8 +4,9 @@ their content.
 
 Only an agent of a registered project that owns a worktree is shown, once git verifies the
 worktree to be one of the project's repository. A path is accepted only when it is a plain
-relative path spelled exactly as the file system has it (no case or Unicode variant) that
-git lists (tracked, or untracked and not ignored; never `.git/`), and a file is opened one
+relative path that is, byte for byte, both the name the file system has (no case or Unicode
+variant) and a name git lists (tracked, or untracked and not ignored; never `.git/`; listed
+under forced settings, see git.VIEW_FLAGS, so a name stored decomposed is never served), and a file is opened one
 directory at a time without following any symbolic link, after its resolved path is checked
 to be inside the resolved worktree. A link is shown as its target; a submodule as its commit,
 never entered. Nothing is written or cached; every git call is a read under git.VIEW_FLAGS,
@@ -24,8 +25,6 @@ from __future__ import annotations
 import functools
 import os
 import stat
-import sys
-import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -150,32 +149,54 @@ class Entry:
     target: str | None = None
 
 
-DARWIN = sys.platform == "darwin"
+_DIRS = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+
+
+def _entries(root: Path, directory: tuple[str, ...]) -> set[str] | None:
+    """The names in the directory `directory` (components) below `root`, entered without
+    following links; None when it cannot be read (gone, a link, not a directory)."""
+    try:
+        fd = os.open(root, _DIRS)
+    except OSError:
+        return None
+    try:
+        for part in directory:
+            inner = os.open(part, _DIRS, dir_fd=fd)
+            os.close(fd)
+            fd = inner
+        return set(os.listdir(fd))
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def on_disk(root: Path, paths: list[str]) -> list[str]:
+    """Those of `paths` (in order) whose every component is, byte for byte, an entry of its
+    directory: no case variant and no Unicode normalisation variant of it, which a case- or
+    normalisation-insensitive file system would open as well. Each directory is read once."""
+    seen: dict[tuple[str, ...], set[str] | None] = {}
+    kept = []
+    for path in paths:
+        parts = path.split("/")
+        for index, part in enumerate(parts):
+            directory = tuple(parts[:index])
+            if directory not in seen:
+                seen[directory] = _entries(root, directory)
+            names = seen[directory]
+            if names is None or part not in names:
+                break
+        else:
+            kept.append(path)
+    return kept
 
 
 def spelled(root: Path, path: str) -> None:
-    """Refuse `path` unless each of its components is spelled exactly as its directory's
-    entry is: never a case variant or a Unicode normalisation variant that a case- or
-    normalisation-insensitive file system would also open (git's own matching may treat
-    them as different names, and so as not ignored). On macOS a component may also be the
-    precomposed (NFC) form of the entry, the form git lists there. Directories are entered
-    without following links. Raises OrchestratorError, OSError."""
-    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
-    parts = path.split("/")
-    fd = os.open(root, flags)
-    try:
-        for index, part in enumerate(parts):
-            names = set(os.listdir(fd))
-            if part not in names and not (
-                DARWIN and part in {unicodedata.normalize("NFC", name) for name in names}
-            ):
-                raise OrchestratorError(f"{path} is not a file in this worktree (names are exact)")
-            if index < len(parts) - 1:
-                inner = os.open(part, flags, dir_fd=fd)
-                os.close(fd)
-                fd = inner
-    finally:
-        os.close(fd)
+    """Refuse `path` unless each of its components is, byte for byte, the entry of its
+    directory (on_disk): git's matching (ignore patterns among it) may treat a variant as
+    another name. Raises OrchestratorError."""
+    if not on_disk(root, [path]):
+        raise OrchestratorError(f"{path} is not a file in this worktree (names are exact)")
 
 
 def read_entry(root: Path, path: str, limit: int) -> Entry:
@@ -262,6 +283,7 @@ def code_changes(orch: Facade, agent_id: str) -> dict[str, Any]:
         row.update(removed=change.removed, binary=change.added is None, too_large=False)
         rows[change.path] = {**row, "untracked": False, "submodule": change.submodule}
     others, others_cut = git.listed_files(tree.root, tree.env, untracked=True, cap=LIST_BYTES)
+    others = on_disk(tree.root, others)  # what code_patch would serve, no other spelling
     cut = cut or others_cut
     paths = sorted({*rows, *others})
     shown = paths[:MAX_CHANGED]
@@ -345,7 +367,8 @@ def code_tree(orch: Facade, agent_id: str) -> dict[str, Any]:
     tracked, cut = git.tracked_files(tree.root, tree.env, LIST_BYTES)
     others, others_cut = git.listed_files(tree.root, tree.env, untracked=True, cap=LIST_BYTES)
     cut = cut or others_cut
-    files = sorted({path for path, _ in tracked} | set(others))
+    # What code_file would serve: listed by git in the bytes the file system has.
+    files = on_disk(tree.root, sorted({path for path, _ in tracked} | set(others)))
     shown = files[:MAX_TREE]
     modules = {path for path, submodule in tracked if submodule}
     return {

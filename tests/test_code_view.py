@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+import unicodedata
 from dataclasses import replace
 from pathlib import Path
 
@@ -552,19 +553,105 @@ def test_an_ignored_file_is_not_served_through_a_case_variant(
         assert "PRIVATE-KEY" not in json.dumps(answer) and "secrets" not in json.dumps(answer)
 
 
-def test_unicode_variants_are_refused_and_real_names_are_served(
-    orch: Orchestrator, agent_id: str, tree: Path
-) -> None:
-    precomposed = "café.txt"
-    decomposed = "café.txt"
-    (tree / precomposed).write_text("coffee\n")
+def nfc(name: str) -> str:
+    return unicodedata.normalize("NFC", name)
 
-    assert orch.code_file(agent_id, precomposed)["content"] == "coffee\n"
-    assert "+coffee" in orch.code_patch(agent_id, precomposed)["patch"]
-    assert by_path(orch.code_changes(agent_id))[precomposed]["added"] == 1
-    for read in (orch.code_file, orch.code_patch):
+
+def nfd(name: str) -> str:
+    return unicodedata.normalize("NFD", name)
+
+
+FORMS = {"nfc": nfc, "nfd": nfd}
+
+
+def normalisation_insensitive(directory: Path) -> bool:
+    """Whether a name created in one Unicode form opens under the other, and the form it
+    was created in is the one kept (APFS); else the aliases these tests need do not exist."""
+    probe = directory / nfd("probe-\u00e9")
+    probe.write_text("")
+    try:
+        kept = nfd("probe-\u00e9") in os.listdir(directory)
+        return kept and (directory / nfc("probe-\u00e9")).exists()
+    finally:
+        probe.unlink()
+
+
+def needs_normalisation_aliases(directory: Path) -> None:
+    if not normalisation_insensitive(directory):
+        pytest.skip(
+            "the temporary directory's file system does not open a name created in one Unicode"
+            " form (NFC/NFD) under the other while keeping the created form: no alias to test"
+        )
+
+
+@pytest.mark.parametrize("precompose", ["false", "true"])
+@pytest.mark.parametrize("stored", ["nfd", "nfc"])
+@pytest.mark.parametrize("ignored", ["directory", "file"])
+def test_an_ignored_name_is_served_in_no_unicode_form(
+    orch: Orchestrator, agent_id: str, tree: Path, precompose: str, stored: str, ignored: str
+) -> None:
+    """`.gitignore` names the directory `n\u00e9/` or the file `n\u00e9.key` in the form it
+    is stored in on disk; whatever core.precomposeunicode says, neither spelling serves it."""
+    needs_normalisation_aliases(tree)
+    form = FORMS[stored]
+    name = form("n\u00e9") + ("/" if ignored == "directory" else ".key")
+    (tree / ".gitignore").write_text(f"{name}\n", encoding="utf-8")
+    commit_all(tree)
+    run_git(tree, "config", "core.precomposeunicode", precompose)
+    if ignored == "directory":
+        (tree / name).mkdir()
+        target = f"{name}key"
+        (tree / target).write_text("PRIVATE-KEY\n")
+    else:
+        target = name
+        (tree / target).write_text("PRIVATE-KEY\n")
+    assert form("n\u00e9") in "".join(os.listdir(tree))  # stored as created
+
+    for spelling in (nfc(target), nfd(target)):
+        assert (tree / spelling).read_text() == "PRIVATE-KEY\n"  # either form opens it
+        for read in (orch.code_file, orch.code_patch):
+            with pytest.raises(OrchestratorError):
+                read(agent_id, spelling)
+    for answer in (orch.code_tree(agent_id), orch.code_changes(agent_id)):
+        listed = json.dumps(answer, ensure_ascii=False)
+        assert "n\u00e9" not in nfc(listed) and "PRIVATE-KEY" not in listed
+
+
+@pytest.mark.parametrize("precompose", ["false", "true"])
+def test_non_ascii_names_are_served_only_in_the_listed_spelling(
+    orch: Orchestrator, agent_id: str, tree: Path, precompose: str
+) -> None:
+    """A tracked and an untracked name stored composed: listed, opened and diffed in that
+    spelling, refused in the other. One stored decomposed has no byte-identical listing
+    (git lists it composed): it is neither listed nor served."""
+    needs_normalisation_aliases(tree)
+    tracked, untracked, loose = (
+        nfc("caf\u00e9.txt"),
+        nfc("na\u00efve.md"),
+        nfd("r\u00e9sum\u00e9.txt"),
+    )
+    (tree / tracked).write_text("coffee\n")
+    commit_all(tree)
+    (tree / tracked).write_text("coffee\ntea\n")
+    (tree / untracked).write_text("plain\n")
+    (tree / loose).write_text("loose\n")
+    run_git(tree, "config", "core.precomposeunicode", precompose)
+
+    files = orch.code_tree(agent_id)["files"]
+    rows = by_path(orch.code_changes(agent_id))
+    assert tracked in files and untracked in files
+    assert (rows[tracked]["added"], rows[untracked]["added"]) == (2, 1)
+    assert [p for p in [*files, *rows] if nfc(p) == nfc(loose)] == []
+    assert orch.code_file(agent_id, tracked)["content"] == "coffee\ntea\n"
+    assert orch.code_file(agent_id, untracked)["content"] == "plain\n"
+    assert "+tea" in orch.code_patch(agent_id, tracked)["patch"]
+    assert "+plain" in orch.code_patch(agent_id, untracked)["patch"]
+    for path in (nfd(untracked), nfd(tracked), loose, nfc(loose)):
         with pytest.raises(OrchestratorError):
-            read(agent_id, decomposed)
+            orch.code_file(agent_id, path)
+    for path in (nfd(untracked), loose, nfc(loose)):
+        with pytest.raises(OrchestratorError):
+            orch.code_patch(agent_id, path)
 
 
 # -- git's output read only up to a cap ------------------------------------------------------
