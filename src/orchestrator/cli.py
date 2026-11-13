@@ -13,7 +13,7 @@ from typing import Annotated
 
 import typer
 
-from . import autostart, config, loadout, providers, roles
+from . import __version__, autostart, config, loadout, providers, roles
 from .models import Agent
 from .providers.claude import loadout_flags
 from .service import (
@@ -51,6 +51,27 @@ app = typer.Typer(
     f" steered through one orchestrator agent. Start with `{CLI} project add`, then `{CLI} chat`"
     f" or `{CLI} web`.",
 )
+
+
+def show_version(value: bool) -> None:
+    if value:
+        typer.echo(f"{CLI} {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def root(
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version", is_eager=True, callback=show_version, help="Print the version and exit."
+        ),
+    ] = False,
+) -> None:
+    # No docstring: the help of the command line stays the one given to `app`.
+    pass
+
+
 project_app = typer.Typer(
     no_args_is_help=True, rich_markup_mode=MARKUP, help="Manage projects (git repositories)."
 )
@@ -1821,6 +1842,99 @@ def state_restore(
     if result["newer"]:
         typer.secho(f"note: {result['newer']}", fg=typer.colors.YELLOW, err=True)
     typer.secho(result["restart"], fg=typer.colors.YELLOW, err=True)
+
+
+# -- version and upgrades -----------------------------------------------------
+
+
+@app.command("version")
+def version_command(
+    check: Annotated[
+        bool,
+        typer.Option(
+            "--check",
+            help="Ask PyPI whether a newer release exists (the only network request, and only"
+            " with this option).",
+        ),
+    ] = False,
+) -> None:
+    """Print the version and the kind of install: an editable checkout (with its directory) or
+    an installed package. With `--check`, ask PyPI's JSON API whether a newer release exists;
+    {cli} never does this on its own."""
+    o = Orchestrator  # static methods: no database is opened
+    info = o.version_info()
+    typer.echo(f"{CLI} {info['version']}")
+    where = f" ({info['checkout']})" if info["kind"] == "editable" and info["checkout"] else ""
+    how = " (uv tool)" if info["kind"] == "package" and info["tool"] else ""
+    typer.echo(f"install: {info['label']}{where}{how}")
+    if not check:
+        return
+    try:
+        result = o.check_release()
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    installed, latest = result["installed"], result["latest"]
+    typer.echo(
+        {
+            "newer": f"a newer release is on PyPI: {latest} (installed: {installed});"
+            f" `{CLI} upgrade` prepares the upgrade",
+            "current": f"up to date: {installed} is the latest release on PyPI",
+            "ahead": f"{installed} is newer than the latest release on PyPI ({latest})",
+            "unknown": f"the latest release on PyPI is {latest}; the version of this install"
+            f" is not known ({installed})",
+            "unpublished": f"{result['name']} is not published on PyPI (installed: {installed})",
+        }[result["status"]]
+    )
+
+
+@app.command()
+def upgrade(
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Only print the plan: no backup, and active turns listed."),
+    ] = False,
+) -> None:
+    """Prepare an upgrade; it runs no package manager and no git. Refuses while any turn is
+    queued or running, backs the state up (as `{cli} state backup`), then prints the kind of
+    install, the command that upgrades it and what must be restarted afterwards."""
+    from .gui import launcher
+
+    try:
+        launcher_there = launcher.installed(launcher.launcher())
+    except launcher.LauncherError:  # not on this platform
+        launcher_there = False
+    try:
+        plan = orch().prepare_upgrade(launcher_there, dry_run)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    for line in plan["busy"]:
+        typer.secho(f"active: {line} (without --dry-run this refuses)", fg=typer.colors.YELLOW)
+    backup = plan["backup"]
+    if backup:
+        typer.echo(f"backup: {backup['path']}")
+        typer.echo(f"  to go back: `{CLI} state restore {backup['name']} --yes`")
+        typer.secho(f"warning: {backup['warning']}", fg=typer.colors.YELLOW, err=True)
+    else:
+        typer.echo(f"backup: none (dry run); without --dry-run one goes into {plan['backups_dir']}")
+    info = plan["install"]
+    where = f" ({info['checkout']})" if info["kind"] == "editable" and info["checkout"] else ""
+    typer.echo(f"install: {CLI} {plan['version']}, {info['label']}{where}")
+    if plan["commands"]:
+        typer.echo("upgrade it with:")
+        for line in plan["commands"]:
+            typer.echo(f"  {line}")
+    for note in plan["notes"]:
+        typer.echo(f"  note: {note}")
+    if plan["restart"]:
+        typer.echo("then restart:")
+        for item in plan["restart"]:
+            typer.echo(f"  - {item}")
+    else:
+        typer.echo("then restart: nothing of this home runs that needs it")
+    typer.echo("not visible from here, if you run them:")
+    for item in plan["unseen"]:
+        typer.echo(f"  - {item}")
+    typer.echo(f"check the new version with `{CLI} version`.")
 
 
 def name_the_command(group: typer.Typer) -> None:

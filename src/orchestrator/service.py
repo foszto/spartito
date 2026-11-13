@@ -18,6 +18,7 @@ from .core import (
     launcher,
     lifecycle,
     reads,
+    upgrade,
     views,
 )
 from .core import archive as archiving
@@ -389,3 +390,9 @@ class Orchestrator:
     backup_state = state_backups.backup
     list_backups = state_backups.listing
     restore_state = state_backups.restore
+
+    # -- version and upgrades (core/upgrade.py) ---------------------------
+
+    version_info = staticmethod(upgrade.version_info)
+    check_release = staticmethod(upgrade.check)  # the only network call, and only on request
+    prepare_upgrade = upgrade.prepare
