@@ -308,16 +308,21 @@ instructions) and **Archive** / **Restore**. The model and effort drop-downs:
 place of the conversation, read-only, and loads it only when opened (**Refresh** loads it
 again):
 
-- **Changes**: the files changed against the base branch, counted from the commit the branch
-  shares with it, committed and uncommitted together, with added and removed lines;
-  untracked files that are not ignored are listed as `new`. Opening a file loads its patch.
-- **Files**: the worktree's files as folders; a click shows a file's content.
+- **Changes**: the files changed against the agent's base (the branch, tag or commit it
+  started from; when that no longer exists, the project's base branch, which the page then
+  says), counted from the commit the branch shares with it, committed and uncommitted
+  together, with added and removed lines; untracked files that are not ignored are listed as
+  `new`. Opening a file loads its patch. A submodule is listed by its commit only.
+- **Files**: the worktree's files as folders; a click shows a file's content. A submodule is
+  named but not opened.
 
-Only files git tracks or would track are shown: an ignored file such as `.env` and anything
-under `.git` never are. A symbolic link is shown as its target and never followed. Binary
-files are named but not shown. Limits, each noted on the page when reached: 1,000 changed
-files, 5,000 files in the tree, 2,000 lines of one patch and 512 KB of one file. Nothing is
-edited, and the repository's own diff, textconv, filter and fsmonitor commands are not run.
+Only files git tracks or would track are shown, and only under the exact name the file
+system has (no case or Unicode variant): an ignored file such as `.env` and anything under
+`.git` never are. A symbolic link is shown as its target and never followed. Binary files are
+named but not shown. Limits, each noted on the page when reached: 1,000 changed files, 5,000
+files in the tree, 2,000 lines or 1 MB of one patch, 512 KB of one file, and 4 MB of any
+list git gives. Nothing is edited, and neither the repository's nor a submodule's own diff,
+textconv, filter or fsmonitor commands are run.
 
 **New agent** (**+** in a project's row): task, role, provider, name, model, effort,
 workspace (own worktree, main checkout or another agent's worktree) and *Start after*
