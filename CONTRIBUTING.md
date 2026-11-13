@@ -130,6 +130,10 @@ directly, and the branch of a pull request is never force-pushed.
 
 - Branch from `master`; keep each pull request small and focused on one change.
 - The description says what changed, why, and how you tested it.
+- A pull request with a change users notice adds a line under `## [Unreleased]` in
+  [CHANGELOG.md](CHANGELOG.md): a short sentence, commands in backticks, no relative links
+  (the section becomes the notes of the GitHub Release). How the version is chosen:
+  [the versioning rule](docs/releasing.md#the-version).
 - Commit subjects follow the history: a short lowercase area, a colon, then what is now true,
   for example `docs: the task board` or `spent total: keep what agents deleted for good had
   spent`. The body, if any, explains the change in prose.

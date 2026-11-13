@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
 
-SCRIPTS = Path(__file__).parent.parent / "scripts"
+ROOT = Path(__file__).parent.parent
+SCRIPTS = ROOT / "scripts"
 
 CHANGELOG = """\
 # Changelog
@@ -117,3 +119,10 @@ def test_the_script_prints_the_section_or_fails_with_one_line(tmp_path: Path) ->
     assert failed.returncode != 0 and failed.stdout == ""
     assert failed.stderr.count("\n") == 1
     assert "0.3.0" in failed.stderr and str(path) in failed.stderr
+
+
+def test_the_changelog_has_the_notes_of_the_version_in_pyproject(changelog) -> None:
+    """A version bump without its section fails here, in CI, before a tag stops the release."""
+    with (ROOT / "pyproject.toml").open("rb") as handle:
+        version = tomllib.load(handle)["project"]["version"]
+    assert changelog.notes(version, ROOT / "CHANGELOG.md").strip()

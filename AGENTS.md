@@ -30,6 +30,8 @@ for f in src/orchestrator/web/static/*.js; do node --check "$f"; done
   `store.py`'s `SCHEMA`, and columns through the `*_ADDED` lists that `Store` adds with
   `ALTER TABLE … ADD COLUMN`. Older databases and older code must keep working
   (`tests/test_store.py`).
+- A change users notice adds a line under `## [Unreleased]` in `CHANGELOG.md` (the versioning
+  rule: `docs/releasing.md#the-version`).
 - `tests/test_architecture.py` enforces the layer rule. Its list of exceptions may only
   shrink.
 - Texts that tell someone to run the command name it through `config.CLI_NAME`: `CLI` in
@@ -67,4 +69,5 @@ for f in src/orchestrator/web/static/*.js; do node --check "$f"; done
 - `docs/board.md`: the task board.
 - `docs/state.md`: backup and restore of the state, moving a home.
 - `docs/releasing.md`: the version, PyPI and the release workflow.
+- `CHANGELOG.md`: what each release changed.
 - `ROADMAP.md`: where the project is heading.

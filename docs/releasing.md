@@ -26,6 +26,18 @@ This also updates `uv.lock`. An environment that installed the checkout before t
 reports the old version until it is installed again (`uv sync`, or the `uv tool install` line
 you used).
 
+**The versioning rule.** While the version is 0.x, a release that brings new features or any
+change of behaviour, of the commands, of the API or of the database schema raises the minor
+version (0.2.0 → 0.3.0); a release with fixes only raises the patch version (0.2.0 → 0.2.1).
+Schema changes stay additive in every release, so an older version keeps opening a database
+a newer one has used. A published version number is never used again, not even after a
+release is deleted (PyPI refuses it anyway). `spartito version --check` compares versions as
+PEP 440 orders them, by their release numbers first, so 0.10.0 is newer than 0.9.1.
+
+What changed in each release is in [CHANGELOG.md](../CHANGELOG.md): a pull request with a
+change users notice adds a line under `## [Unreleased]`, and the release moves those lines
+under its own version.
+
 ## One-time setup
 
 **PyPI** (<https://pypi.org/manage/account/publishing/>), a pending trusted publisher:
@@ -66,7 +78,8 @@ Under Actions › release › Run workflow, choose `master` (or another branch) 
 button appears once `release.yml` is on the default branch. The
 `build` job builds the sdist and the wheel and installs the wheel once to run
 `spartito --help`. The `testpypi` job then uploads both files to TestPyPI. A run started this
-way has no job that publishes to PyPI.
+way has no job that publishes to PyPI or creates a GitHub Release, and it does not check the
+changelog.
 
 Check the result in a temporary tool directory, so nothing replaces your own install:
 
@@ -88,31 +101,46 @@ tag; the same rule applies to PyPI.
 
 ## Cutting a release
 
-1. On a branch from `master`: `uv version <new>` (see [The version](#the-version)), commit
-   `pyproject.toml` and `uv.lock`, and open a pull request. Like every change, it reaches
-   `master` once its CI run is green
-   ([CONTRIBUTING.md](../CONTRIBUTING.md#git-and-pull-requests)). Skip this step when
-   `pyproject.toml` already has the version, as for 0.1.0.
-2. Tag the merged commit of `master` and push the tag:
+1. **The release pull request**, on a branch from `master`:
+   - in [CHANGELOG.md](../CHANGELOG.md), move the lines under `## [Unreleased]` under a new
+     heading `## [<version>] - <date>`, with the date of the release (YYYY-MM-DD), and leave
+     `## [Unreleased]` empty above it;
+   - update the link references at the end of the file: `[Unreleased]` compares
+     `v<version>...HEAD`, and a new `[<version>]` compares the previous tag with `v<version>`;
+   - bump the version with `uv version <new>` ([The version](#the-version));
+   - commit `CHANGELOG.md`, `pyproject.toml` and `uv.lock`, and open the pull request.
+
+   Like every change, it reaches `master` once its CI run is green
+   ([CONTRIBUTING.md](../CONTRIBUTING.md#git-and-pull-requests)). The tests check that
+   `CHANGELOG.md` has a non-empty section for the version in `pyproject.toml`, so a bump
+   without one fails there. If the tag is not pushed on the date written in the changelog,
+   correct the date in the release pull request before it is merged, or in a follow-up pull
+   request before tagging.
+2. **Tag** the merged commit of `master` and push the tag:
 
    ```sh
    git fetch origin
-   git log -1 origin/master          # the merged version commit
+   git log -1 origin/master          # the merged release commit
    git tag -a v0.2.0 -m v0.2.0 origin/master
    git push origin v0.2.0
    ```
 
-3. The tag starts the `release` workflow. `build` checks that the tagged commit is on
-   `master`, builds the sdist and the wheel, and checks that the tag is `v` plus the built
-   version; either failure stops the run before anything is uploaded. It also installs the wheel once. `pypi` then waits for your approval only
-   when the GitHub environment `pypi` has a required reviewer
-   ([One-time setup](#one-time-setup)); without one it does not wait. It uploads both files
-   with [digital attestations](https://docs.pypi.org/attestations/).
-4. Verify on <https://pypi.org/project/spartito/>, and in a temporary tool directory as
+3. **The workflow.** The tag starts the `release` workflow. `build` checks that the tagged
+   commit is on `master`, builds the sdist and the wheel, checks that the tag is `v` plus the
+   built version, and checks that `CHANGELOG.md` has a non-empty section for that version
+   (`scripts/changelog_section.py`); any of these failures stops the run before anything is
+   uploaded. It also installs the wheel once. `pypi` then waits for your approval only when
+   the GitHub environment `pypi` has a required reviewer ([One-time setup](#one-time-setup));
+   without one it does not wait. It uploads both files with
+   [digital attestations](https://docs.pypi.org/attestations/). Once `pypi` has succeeded,
+   `github-release` creates the GitHub Release for the tag, titled `Spartito <version>`, with
+   the changelog's section as its notes and the sdist and the wheel attached. It runs with
+   the workflow's own token and needs no secret.
+4. **Verify** on <https://pypi.org/project/spartito/>, and in a temporary tool directory as
    above, without the TestPyPI options:
    `uv tool install --python 3.14 'spartito[app,menubar]'`. With a temporary
    `ORCH_HOME`, `spartito --version` prints the new version and `spartito version --check`
-   says it is up to date.
+   says it is up to date. The Release is on the repository's Releases page.
 5. At the first release: the project's website shows the install lines too. Change them to
    the PyPI install in the website's own repository, `foszto/spartito.dev`.
 
@@ -121,6 +149,20 @@ Installs get the release when their owners run the command `spartito upgrade` pr
 
 A failed upload can be retried by re-running the failed job. Files already on PyPI that are
 identical are skipped. A wrong version cannot be uploaded again: release the next one.
+
+A failed `github-release` job can be re-run as well. `gh release create` only creates: it
+neither completes nor replaces a Release that exists. If the Releases page already shows a
+Release or a draft for the tag (the files are uploaded to a draft, which is published last),
+delete it before the re-run, or finish it by hand.
+
+`v0.1.0` was released before the `github-release` job existed and has no GitHub Release. One
+can be created by hand from a checkout of `master`, with the notes of the changelog:
+
+```sh
+python3 scripts/changelog_section.py 0.1.0 |
+    gh release create v0.1.0 --repo foszto/spartito --verify-tag \
+        --title "Spartito 0.1.0" --notes-file -
+```
 
 ## Existing installs from a checkout
 
