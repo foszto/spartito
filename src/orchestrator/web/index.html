@@ -65,8 +65,9 @@
       <div class="grid-2">
         <label class="field"><span class="label">Project name</span>
           <input class="input" name="name" placeholder="defaults to the folder name" autocomplete="off"></label>
-        <div class="field"><span class="label">Default agent</span>
-          <div class="segmented" data-segment="provider"></div></div>
+        <div class="field"><span class="label" id="projectProviderLabel">Default provider</span>
+          <div class="segmented" data-segment="provider" role="radiogroup" aria-labelledby="projectProviderLabel" aria-describedby="projectProviderHint"></div>
+          <span class="help provider-hint" id="projectProviderHint" hidden></span></div>
       </div>
     </div>
     <div class="dialog-foot"><span class="error"></span>
@@ -84,11 +85,14 @@
         <textarea class="input" name="task" rows="5" required placeholder="A self-contained brief: goal, relevant files, constraints, what done means."></textarea></label>
       <div class="field"><span class="label">Role</span><div class="cards" data-cards="role"></div></div>
       <div class="grid-2">
-        <div class="field"><span class="label">Agent</span><div class="segmented" data-segment="provider"></div></div>
+        <div class="field"><span class="label" id="agentProviderLabel">Provider</span>
+          <div class="segmented" data-segment="provider" role="radiogroup" aria-labelledby="agentProviderLabel" aria-describedby="agentProviderHint"></div>
+          <span class="help provider-hint" id="agentProviderHint" hidden></span></div>
         <label class="field"><span class="label">Name</span>
           <input class="input" name="name" placeholder="optional, e.g. login-api" autocomplete="off"></label>
         <label class="field"><span class="label">Model</span>
-          <input class="input" name="model" list="agentModels" autocomplete="off"><datalist id="agentModels"></datalist></label>
+          <input class="input" name="model" list="agentModels" autocomplete="off" aria-describedby="agentModelsNote"><datalist id="agentModels"></datalist>
+          <span class="help" id="agentModelsNote" data-models-note hidden></span></label>
         <label class="field"><span class="label">Effort</span><select class="input" name="effort"></select></label>
       </div>
       <label class="field"><span class="label">Workspace</span><select class="input" name="workspace"></select></label>

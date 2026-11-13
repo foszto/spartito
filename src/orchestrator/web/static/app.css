@@ -251,6 +251,14 @@ dialog form { display: flex; flex-direction: column; max-height: calc(100vh - 50
 .segmented span { display: block; padding: 4px 14px; border-radius: 7px; font-weight: 500; color: var(--muted); }
 .segmented input:checked + span { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, .12); }
 .segmented input:focus-visible + span, .cards input:focus-visible + span, .checks input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* a provider that cannot run here: shown, but not choosable; the hint says why and checks again */
+.segmented input:disabled { cursor: not-allowed; }
+.segmented input:disabled + span { opacity: .45; }
+.provider-hint { color: var(--waiting); }
+.provider-hint .btn.again { height: 22px; padding: 0 6px; font-size: 12px; color: var(--accent); vertical-align: baseline; }
+.tier .segmented { margin-bottom: 4px; }
+.tier .provider-status:empty { display: none; }
+.tier-row .who.unusable { opacity: .55; }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; }
 .cards label { position: relative; }
 .cards span { display: block; height: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
