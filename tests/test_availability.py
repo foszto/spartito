@@ -185,24 +185,26 @@ def test_a_helper_that_leaves_the_group_does_not_hold_the_probe(
     bare_path: Path, tmp_path: Path
 ) -> None:
     """The CLI starts a helper in a session of its own that keeps its output open: the
-    group's kill does not reach it, and the probe stops waiting for the output."""
+    group's kill does not reach it, and the probe stops waiting for the output. The CLI
+    hangs only once the helper is on its own (it has written its pid)."""
     pid_file = tmp_path / "helper.pid"
     python = f'"{sys.executable}" -c'
     helper = "import os, sys, time; os.setsid(); open(sys.argv[1], 'w').write(str(os.getpid()))"
     body = f'{python} "{helper}; time.sleep(20)" "{pid_file}" &\n'
+    body += f'while [ ! -s "{pid_file}" ]; do :; done\n'
     script(bare_path, "codex", body + f'exec {python} "import time; time.sleep(20)"')
 
     started = time.monotonic()
     try:
-        found = locate.probe("codex", timeout=0.5)
+        found = locate.probe("codex", timeout=3)
         elapsed = time.monotonic() - started
     finally:
         helper_pid = int(until(lambda: pid_file.exists() and pid_file.read_text()))
         os.kill(helper_pid, signal.SIGKILL)
 
-    assert elapsed < 0.5 + locate.PIPES_SECONDS + 2
+    assert elapsed < 3 + locate.PIPES_SECONDS + 3
     assert found.status == "unknown"
-    assert found.reason == "`codex --version` did not answer within 0.5 s"
+    assert found.reason == "`codex --version` did not answer within 3 s"
 
 
 def test_a_failing_version_command_is_unknown_with_its_last_line(bare_path: Path) -> None:
