@@ -342,6 +342,24 @@ def test_an_unusable_orchestrator_role_provider_falls_back_with_a_note(
     assert infos(orch, ORCHESTRATOR_ID) == [reply["note"]]
 
 
+def test_an_orchestrator_role_provider_not_registered_here_still_shows(
+    orch: Orchestrator, client: TestClient
+) -> None:
+    """A role override may name a plugin this process does not load: the page still shows
+    the orchestrator on it; the first message is where it fails."""
+    config.user_roles_dir().mkdir(parents=True)
+    role = "---\nlead: true\nworktree: false\nprovider: myplugin\n---\nYou orchestrate."
+    (config.user_roles_dir() / "orchestrator.md").write_text(role)
+
+    state = client.get("/api/state")
+
+    assert state.status_code == 200
+    assert state.json()["orchestrator_setup"]["provider"] == "myplugin"
+    assert orch.setup(ORCHESTRATOR_ID)["provider"] == "myplugin"
+    with pytest.raises(OrchestratorError, match="unknown provider 'nope'"):
+        orch.set_provider(ORCHESTRATOR_ID, "nope")
+
+
 def test_the_state_shows_the_orchestrator_draft_without_waiting(
     orch: Orchestrator, monkeypatch, client: TestClient
 ) -> None:

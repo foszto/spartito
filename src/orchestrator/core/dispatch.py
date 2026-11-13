@@ -287,6 +287,10 @@ def _orchestrator_draft(provider: str | None = None, wait: bool = True) -> Agent
         choice = availability.choose(provider, defaults, wait=wait)
     except availability.NoneUsable as exc:  # its first turn fails with the runner's reason
         choice = availability.Choice(role.provider or next(iter(providers.PROVIDERS)), str(exc))
+    except OrchestratorError as exc:  # the role names one not registered in this process
+        if provider or not role.provider:
+            raise
+        choice = availability.Choice(role.provider, str(exc))  # its first turn says so
     return Agent(
         id=ORCHESTRATOR_ID,
         project=None,
