@@ -324,6 +324,21 @@ div.folder > button.folder:hover { background: none; }
 .archived-row .label { flex: 1; min-width: 0; text-align: left; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; padding: 0; }
 .archived-row .name { display: block; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .archived-row .sub { display: block; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+/* cost */
+.avatar.cost svg { width: 16px; height: 16px; }
+.nav-item.cost-entry { margin-top: 4px; }
+.cost-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.cost-tools .input { width: auto; }
+.cost-head { margin: 16px 0 6px; font-size: 13px; color: var(--muted); }
+.budget { display: flex; align-items: center; gap: 10px; padding: 4px 0; overflow-wrap: anywhere; }
+.pill.budget-warning { color: var(--waiting); background: color-mix(in srgb, var(--waiting) 16%, transparent); }
+.pill.budget-reached { color: var(--failed); background: color-mix(in srgb, var(--failed) 14%, transparent); }
+.cost-table { border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; margin: 0 0 8px; }
+.cost-table th { color: var(--muted); font-weight: normal; text-align: left; }
+.cost-table th, .cost-table td { padding: 3px 18px 3px 0; overflow-wrap: anywhere; }
+.cost-table th:not(:first-child), .cost-table .num { text-align: right; }
+.cost-table tr.removed td:first-child { color: var(--muted); font-style: italic; }
+.cost-table tr.total td { font-weight: 600; border-top: 1px solid var(--line); }
 
 /* list dialogs (decisions): a header button with a count, a dialog of items */
 .count-button { position: relative; }

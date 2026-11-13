@@ -8,7 +8,18 @@ from pathlib import Path
 from typing import Any
 
 from . import app_open, board, decisions, desktop, git, providers
-from .core import access, boards, compaction, delivery, dispatch, launcher, lifecycle, reads, views
+from .core import (
+    access,
+    boards,
+    compaction,
+    costs,
+    delivery,
+    dispatch,
+    launcher,
+    lifecycle,
+    reads,
+    views,
+)
 from .core import archive as archiving
 from .core import code_view as code_views
 from .core import notices as notice_reads
@@ -321,6 +332,13 @@ class Orchestrator:
     total_spent = reads.total_spent
     get_event = reads.get_event
     events = reads.events
+
+    # -- cost reports and budgets (core/costs.py) ---------------------------
+
+    cost_report = costs.report
+    budget_list = costs.budget_list
+    set_budget = costs.set_budget
+    remove_budget = costs.remove_budget
 
     # -- notices: pages, Spartito's window and posting process (core/notices.py) --
 

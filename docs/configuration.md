@@ -2,6 +2,7 @@
 
 - [Model and effort](#model-and-effort)
 - [Settings](#settings)
+- [Budgets](#budgets)
 - [Loadout](#loadout)
 - [Roles](#roles)
 - [Providers and permissions](#providers-and-permissions)
@@ -184,6 +185,50 @@ The number of review rounds is not a setting. The packaged `lead` role prompt al
 two review rounds per branch (the review and one re-review of the fixes); after that the lead
 reports the findings still open, with their severity, instead of sending them back. To change
 this, override the `lead` role (see [Roles](#roles)).
+
+## Budgets
+
+A budget limits what the recorded turns may cost: one global budget, counting every agent and
+the orchestrator, and one per project, counting that project's agents. Budgets are kept in a
+table of their own in the database, not among the settings, and are set with
+`spartito budget set` ([usage.md](usage.md#cost-and-budgets)); the dashboard's **Cost** view
+shows them.
+
+| field | values | default |
+|---|---|---|
+| amount | USD, more than 0 | none: a new budget needs one |
+| period | `day`, `month` or `total` | `month` |
+| warning threshold | percent of the amount, 1 to 100 | `80` |
+| hard stop | on or off | off |
+
+- **Periods** are in local time: `day` from local midnight, `month` from the first of the
+  month, `total` all time. A new period starts from zero.
+- **What counts.** Reported cost only: Codex reports no cost, so its turns count nothing
+  towards any budget, and a budget does not hold Codex agents back. Only turns with a usage
+  record count (not those of very old versions).
+  `total` also counts what agents deleted for good had spent; a `day` or `month` does not,
+  because the dates of their turns are not kept.
+- **Warnings.** After each turn whose cost was recorded, every budget that counts it is
+  checked. The first time in a period that the spend reaches the threshold, and once more
+  when it reaches the amount, you get a desktop notification about the agent whose turn did it
+  (`Budget warning, project my-app: $8.10 of $10.00 this month (81 %)`), through the same way
+  as other notifications ([desktop notifications](#desktop-notifications-desktop_notifications));
+  with them off, none is shown. What was announced is stored with the budget, so parallel
+  turns and restarts announce each once; a turn that jumps past both announces only the
+  amount. Changing a budget's amount, period or threshold lets it warn anew.
+- **Soft.** Cost is known only when a turn ends, and turns run in parallel, so the spend can
+  pass the amount: by the cost of every turn that was running when it was reached.
+- **Hard stop** (opt-in). With it on, once the amount is reached in the current period, a new
+  message turn of any agent the budget counts (Maestro, a lead, a worker) is refused before
+  its CLI starts: it ends as failed, with an error that names the budget and says that
+  changing it is the owner's decision. The error reaches the parent agent, so it does not
+  spell out the commands; you raise the budget with `spartito budget set AMOUNT`, turn the
+  stop off with `spartito budget set --no-hard-stop` or remove it with
+  `spartito budget remove`, with `-p PROJECT` for a project's budget. A running turn is never
+  stopped. Notification turns (a parent told that its agents finished) and compactions still
+  run, so no parent is left waiting. With no budget, or the stop off, turns run as without
+  budgets. The hard stop is a spending brake, not a security boundary: an agent with a shell
+  can run the same commands as the owner.
 
 ## Loadout
 
@@ -405,7 +450,7 @@ The main files under `~/.orchestrator/` (or `$ORCH_HOME`):
 
 | path | contents |
 |---|---|
-| `orch.db` | the SQLite database: projects, agents, turns, events, settings, board, decisions, notices |
+| `orch.db` | the SQLite database: projects, agents, turns, events, settings, budgets, board, decisions, notices |
 | `worktrees/<project>/<agent-id>/` | agents' worktrees |
 | `workspace/` | the orchestrator's working directory |
 | `roles/`, `loadout.toml` | your roles and loadout overrides |

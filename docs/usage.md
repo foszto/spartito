@@ -36,6 +36,8 @@ lists as `#12`. *Project lead* or *lead* is the agent with role `lead` of a proj
 | `spartito archive`, `spartito restore`, `spartito rm` | archive, bring back, delete for good |
 | `spartito board …`, `spartito decisions`, `spartito decide` | task board and decisions |
 | `spartito config …` | settings |
+| `spartito cost` | spend of the recorded turns per project, day or agent |
+| `spartito budget …` | budgets: list, set, remove |
 | `spartito state backup/list/restore` | back up the state, list and restore backups |
 | `spartito roles` | available roles |
 
@@ -269,6 +271,36 @@ spartito roles
 
 See [configuration.md](configuration.md).
 
+### Cost and budgets
+
+```sh
+spartito cost [--by project|day|agent] [--since YYYY-MM-DD] [-p PROJECT] [--json]
+spartito budget [list]
+spartito budget set [AMOUNT] [-p PROJECT] [--period day|month|total] [--warn-at PERCENT] [--hard-stop|--no-hard-stop]
+spartito budget remove [-p PROJECT]
+```
+
+- `cost` reports what the recorded turns spent, grouped by project (the default), by day
+  (local time) or by agent, with a total row: turns, prompt tokens (input with cache reads and
+  writes), output tokens and cost. `--since` starts at local midnight of that day; `-p` keeps
+  one project. It is *recorded usage*: turns run by very old versions may have no record, so
+  the total can be slightly below the dashboard's summary. Codex reports no cost: its turns
+  and tokens are listed, a row none of whose turns reported a cost shows `n/a`, and a cost
+  marked `*` leaves such turns out (a footnote counts them). What agents deleted for good had
+  spent has rows of its own: one per project (`my-app: removed agents`), one per agent
+  (`fix-login-3f2a (removed)`), or one undated row by day, because the dates of its turns are
+  not kept; `--since` leaves it out.
+- `budget` (or `budget list`) lists the budgets: the global one and one per project, each
+  with what is spent in its current period, the percentage of its amount, the threshold, the
+  hard stop and the state (`ok`, `warning`, `reached`).
+- `budget set` creates or changes the global budget, or a project's with `-p`. A new budget
+  needs `AMOUNT` (USD) and defaults to `--period month`, `--warn-at 80` and no hard stop; for
+  an existing one, every value not given stays as it was, so `budget set 20` raises the amount
+  only and `budget set --no-hard-stop` turns the stop off.
+- `budget remove` removes the global budget, or a project's with `-p`.
+
+How budgets count, warn and stop: [configuration.md](configuration.md#budgets).
+
 ### State backup and restore
 
 ```sh
@@ -304,7 +336,8 @@ Details, and moving a home to another directory or machine: [state.md](state.md)
 command line, so both can be used side by side.
 
 **Left column.** **Maestro** (the orchestrator) at the top; then each project with its agents
-as a tree, and the **Archive** entry when something is archived. A project's row has buttons
+as a tree, the **Archive** entry when something is archived, and the **Cost** entry. A
+project's row has buttons
 to talk to its lead, start a new agent, open its task board, archive every finished agent
 whose work is safe, and remove the project. **+** next to *Projects* adds a project through a
 folder picker that marks git repositories. The header has the **Decisions** button (with the
@@ -355,6 +388,14 @@ files in the tree, 2,000 lines or 1 MB of one patch, 512 KB of one file, and 4 M
 list git gives. Nothing is edited, and neither the repository's nor a submodule's own diff,
 textconv, filter or fsmonitor commands are run.
 
+**Cost** (the entry at the bottom of the left column): the report of `spartito cost` with the
+same three groupings (by project, by day in local time, by agent), a start day and a project,
+and above it each budget with what is spent in its current period, its amount, the percentage
+and its state (`ok`, `warning` or `reached`). Codex turns show their tokens and `n/a` for the
+cost, with the same footnotes as the command. It is read-only: budgets are set with
+`spartito budget set`. It loads when it is opened, when a choice changes and on **Refresh**,
+never with the page's regular refresh.
+
 **New agent** (**+** in a project's row): task, role, provider, name, model, effort,
 workspace (own worktree, main checkout or another agent's worktree) and *Start after*
 dependencies.
@@ -389,6 +430,8 @@ convenient from scripts:
 - `POST /api/agents/<id>/model` with `{"model": "...", "effort": null}`: `null` clears a value,
   a missing key leaves it unchanged.
 - `POST /api/agents/<id>/compact` with `{"instructions": "..."}`.
+- `GET /api/cost?by=project|day|agent&since=YYYY-MM-DD&project=<name>`: the cost report
+  and the budgets with their state, as the **Cost** view shows them.
 - `GET /api/agents/<id>/code/changes`, `…/code/patch?path=<path>`, `…/code/tree` and
   `…/code/file?path=<path>`: the code view (`web/code_api.py`). Besides the Host check, these
   refuse a request whose `Origin` or `Sec-Fetch-Site` names another site, GET included.

@@ -19,6 +19,7 @@ const ICONS = {
   stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
   trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
   archive: '<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11h14V8M10 12h4"/>',
+  coin: '<circle cx="12" cy="12" r="9"/><path d="M15 9.2c-.5-.8-1.6-1.3-3-1.3-1.7 0-3 .8-3 2s1.3 1.7 3 2.1 3 .9 3 2.1-1.3 2-3 2c-1.4 0-2.5-.5-3-1.3M12 6v1.9M12 16.1V18"/>',
   restore: '<path d="M4 12a8 8 0 1 0 2.5-5.8M4 4v4h4"/>',
   pencil: '<path d="M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4"/>',
   compress: '<path d="M4 9h16M4 15h16M12 3v4M10 5l2 2 2-2M12 21v-4M10 19l2-2 2 2"/>',
@@ -35,6 +36,7 @@ const TIER_INFO = {
   worker: ['Workers', 'Every other role: worker, planner, reviewer, tester.'],
 };
 const ARCHIVE = 'archive:';  // the selection that shows the archive
+const COST = 'cost:';  // the selection that shows the cost report and the budgets
 const DECISION = 'decision:';  // #decision:<id> opens the decisions dialog on that decision
 const SUGGESTIONS = [
   'Which projects and agents exist, and what is each of them doing?',
@@ -92,6 +94,7 @@ function avatar(provider, status) {
   const node = el('span', `avatar ${provider === ORCH ? 'orch' : provider} ${status || ''}`);
   if (provider === ORCH) node.append(icon('logo'));
   else if (provider === 'archive') node.append(icon('archive'));
+  else if (provider === 'cost') node.append(icon('coin'));
   else node.append((provider || '?').slice(0, 2).replace(/^./, c => c.toUpperCase()));
   if (status !== undefined) node.append(el('span', 'dot'));
   return node;
@@ -341,6 +344,9 @@ function renderNav() {
     entry.classList.add('archive-entry');
     nav.append(entry);
   }
+  const costs = navItem(COST, 'cost', '', 'Cost', 'spend and budgets', 0);
+  costs.classList.add('cost-entry');
+  nav.append(costs);
   // Tokens and cost of every run ever recorded (the server's `spent`), archived agents' too.
   const used = tokens(state.spent.tokens) || [0, 0];
   const cost = `$${state.spent.cost_usd.toFixed(2)}`;
@@ -1133,6 +1139,115 @@ async function renderArchive() {
   }
 }
 
+// -- cost --------------------------------------------------------------------
+// The spend of the recorded runs and the budgets (/api/cost): loaded when the view is opened,
+// when one of its choices changes and on Refresh; never with /api/state. Read-only: budgets
+// are set with the command (`budget set`). Every text goes in as textContent.
+const COST_GROUPS = [['project', 'By project'], ['day', 'By day (local time)'], ['agent', 'By agent']];
+const COST_PERIODS = { day: 'today', month: 'this month', total: 'in total' };
+const BUDGET_STATES = { ok: 'ok', warning: 'warning', reached: 'reached' };
+let costChoice = { by: 'project', since: '', project: '' }, costTicket = 0;
+
+function costUrl(choice) {
+  const query = new URLSearchParams({ by: choice.by });
+  if (choice.since) query.set('since', choice.since);
+  if (choice.project) query.set('project', choice.project);
+  return `/api/cost?${query}`;
+}
+// A cost, or n/a when none was reported (Codex reports none): never $0.00 for that.
+function moneyText(value) {
+  return typeof value === 'number' ? `$${value.toFixed(2)}` : 'n/a';
+}
+// A row's cost, with * when some of its turns reported none.
+function costCell(row) {
+  return moneyText(row.cost_usd) + (row.unpriced && typeof row.cost_usd === 'number' ? '*' : '');
+}
+function costNotes(report) {
+  const notes = ['Recorded usage: turns run by very old versions may have no record.'];
+  if (report.unpriced) {
+    notes.push(`* ${plural(report.unpriced, 'turn')} reported no cost (Codex reports none): their tokens are counted, `
+      + 'their cost is not in the figures; n/a: no turn of the row reported one.');
+  }
+  if (report.rows.some(row => row.removed)) notes.push('Removed agents: what agents deleted for good had spent; their turns are not kept.');
+  if (report.removed_left_out) notes.push('What removed agents had spent has no dates: left out when a start day is set.');
+  return notes;
+}
+function costTable(report) {
+  const table = el('table', 'cost-table'), head = el('tr');
+  const first = { project: 'Project', day: 'Day', agent: 'Agent' }[report.by] || '';
+  for (const name of [first, 'Turns', 'Prompt', 'Output', 'Cost']) head.append(el('th', '', name));
+  table.append(head);
+  const total = { ...report.total, label: 'Total' };
+  for (const row of [...report.rows, total]) {
+    const line = el('tr', row === total ? 'total' : row.removed ? 'removed' : '');
+    const prompt = row.tokens.in + row.tokens.cache_read + row.tokens.cache_write;
+    line.append(el('td', '', row.label), el('td', 'num', row.turns === null ? '–' : String(row.turns)),
+      el('td', 'num', count(prompt)), el('td', 'num', count(row.tokens.out)), el('td', 'num', costCell(row)));
+    table.append(line);
+  }
+  return table;
+}
+function budgetText(budget) {
+  const used = typeof budget.percent === 'number' ? ` (${budget.percent} %)` : '';
+  return `${budget.project || 'Global'}: ${moneyText(budget.spent_usd)} of ${moneyText(budget.amount_usd)}`
+    + ` ${COST_PERIODS[budget.period] || budget.period}${used} · warns at ${budget.warn_at} %`
+    + ` · hard stop ${budget.hard_stop ? 'on' : 'off'}`;
+}
+function budgetList(budgets) {
+  const box = el('div', 'budgets');
+  if (!budgets.length) {
+    box.append(el('div', 'empty-note', `No budgets. \`${CLI} budget set AMOUNT [-p PROJECT]\` sets one.`));
+    return box;
+  }
+  for (const budget of budgets) {
+    const known = Object.hasOwn(BUDGET_STATES, budget.state);
+    const row = el('div', 'budget');
+    row.append(el('span', `pill budget-${known ? budget.state : 'ok'}`, known ? BUDGET_STATES[budget.state] : String(budget.state)),
+      el('span', '', budgetText(budget)));
+    box.append(row);
+  }
+  box.append(el('p', 'setup-note', 'Budgets count reported cost only (Codex reports none); day and month in local time; '
+    + "'total' also counts removed agents. Cost is known when a turn ends and turns run in parallel, so a budget can be overshot. "
+    + `Set or remove them with \`${CLI} budget\`.`));
+  return box;
+}
+async function loadCost() {
+  const ticket = ++costTicket;
+  let data;
+  try {
+    data = await call(costUrl(costChoice));
+  } catch (error) {
+    if (ticket === costTicket && $('costBody')) $('costBody').replaceChildren(el('div', 'empty-note', error.message));
+    return;
+  }
+  if (ticket !== costTicket || selected !== COST || !$('costBody')) return;
+  $('costBody').replaceChildren(el('h4', 'cost-head', 'Budgets'), budgetList(data.budgets),
+    el('h4', 'cost-head', 'Spend'), costTable(data.report), ...costNotes(data.report).map(text => el('p', 'setup-note', text)));
+}
+async function renderCost() {
+  if (shown === COST) return;  // built and loaded: Refresh or a choice loads it again
+  const page = el('div', 'archive-view cost-view'), head = el('div', 'top-bar'), who = el('div', 'who');
+  const face = avatar('cost'); face.id = 'face';
+  who.append(el('h2', '', 'Cost'), el('div', 'setup-note', 'What the recorded turns spent, and the budgets. Read-only.'));
+  const by = el('select', 'input'), since = el('input', 'input'), project = el('select', 'input');
+  by.setAttribute('aria-label', 'Group by'); since.setAttribute('aria-label', 'From this day on');
+  project.setAttribute('aria-label', 'Project');
+  options(by, COST_GROUPS, costChoice.by);
+  since.type = 'date'; since.value = costChoice.since;
+  options(project, [['', 'All projects'], ...state.projects.map(p => [p.name, p.name])], costChoice.project);
+  const change = () => { costChoice = { by: by.value, since: since.value, project: project.value }; loadCost(); };
+  by.onchange = change; since.onchange = change; project.onchange = change;
+  const tools = el('div', 'cost-tools');
+  tools.append(by, since, project, button('ghost', 'restore', 'Refresh', loadCost));
+  head.append(face, who, tools);
+  const body = el('div', 'archive-list cost-body'); body.id = 'costBody';
+  body.append(el('div', 'empty-note', 'Loading…'));
+  page.append(head, body);
+  $('view').replaceChildren(page);
+  shown = COST;
+  await loadCost();
+}
+
 // -- list dialogs ------------------------------------------------------------
 // A header button with a count opens a dialog that lists items from `state`; every refresh
 // updates the count and, while the dialog is open, the list. One entry per list:
@@ -1898,6 +2013,7 @@ async function refresh() {
     renderBoard();
     const target = selected;
     if (target === ARCHIVE) { await renderArchive(); return; }
+    if (target === COST) { await renderCost(); return; }
     if (window.BoardView && BoardView.owns(target)) { shown = await BoardView.render($('view'), target, shown); return; }
     const exists = Boolean(findAgent(target)) || isArchived(target);
     const virtual = !exists && (target === ORCH || target.startsWith('lead:'));

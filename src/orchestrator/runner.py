@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config, git, keep_awake, loadout, notify, providers, roles, settings
-from .core import lifecycle
+from .core import costs, lifecycle
 from .models import (
     COMPACT,
     CONTEXT_FIELDS,
@@ -341,6 +341,8 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
         measured = read or measured
     usage = record_usage(store, run, agent, result, reported_model, session_id, measured)
     cost = usage.cost_usd if usage else None
+    if cost is not None:
+        check_budgets(store, agent.id)
     if compact and result and not result.is_error and code == 0 and not measured.compact_trigger:
         # Nothing was compacted, e.g. "/compact isn't available in this environment." (or
         # a Codex model's no-op reply, which must not read as success).
@@ -840,6 +842,11 @@ def take_turn(store: Store, run: Run, kind: str) -> None:
         store.add_event(
             run_id, agent.id, "notification" if kind == NOTIFICATION else "prompt", run.prompt
         )
+        refused = budget_refusal(store, agent) if kind == MESSAGE else None
+        if refused:
+            store.add_event(run_id, agent.id, "error", refused)
+            store.finish_run(run_id, RunStatus.FAILED, error=refused)
+            return
         inhibitor = hold_awake(store, run_id, agent.id)
         execute(store, run, agent, project)
     except notify.Gone:
@@ -881,6 +888,32 @@ def withdraw_auto_queued(store: Store) -> None:
         with contextlib.suppress(ValueError):  # it started (the stop reaches it) or is gone
             store.withdraw_queued(run_id)
     auto_queued.clear()
+
+
+def check_budgets(store: Store, agent_id: str) -> None:
+    """costs.usage_recorded (the budget warnings), which must never fail the turn whose cost
+    it counts; only a stop goes through."""
+    try:
+        costs.usage_recorded(store, agent_id)
+    except Stopped:
+        raise
+    except Exception as exc:
+        print(f"checking the budgets failed: {exc!r}", file=sys.stderr)
+
+
+def budget_refusal(store: Store, agent: Agent) -> str | None:
+    """costs.refusal for a message turn that has just taken its agent's turn: why a budget's
+    opt-in hard stop refuses it, or None. Notification and compaction turns are never
+    refused (they report or tidy up work already paid for; refusing a notification would
+    leave its parent waiting). A check that fails lets the turn run; only a stop goes
+    through."""
+    try:
+        return costs.refusal(store, agent.project)
+    except Stopped:
+        raise
+    except Exception as exc:
+        print(f"checking the budgets' hard stop failed: {exc!r}", file=sys.stderr)
+        return None
 
 
 def hold_awake(store: Store, run_id: int, agent_id: str) -> Any:
