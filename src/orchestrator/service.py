@@ -13,6 +13,7 @@ from .core import archive as archiving
 from .core import code_view as code_views
 from .core import notices as notice_reads
 from .core import setup as agent_setup
+from .core import state as state_backups
 from .core.dispatch import ORCHESTRATOR_ID as ORCHESTRATOR_ID  # old import path
 from .core.dispatch import slug as slug  # old import path
 from .core.setup import cache_effect as cache_effect  # old import path
@@ -364,3 +365,9 @@ class Orchestrator:
     auto_archive = archiving.auto_archive
     tidy = archiving.tidy
     remove = archiving.remove
+
+    # -- state: backup, list, restore (core/state.py) ---------------------
+
+    backup_state = state_backups.backup
+    list_backups = state_backups.listing
+    restore_state = state_backups.restore

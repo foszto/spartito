@@ -331,10 +331,127 @@ LOST_TRIGGER_SECONDS = 120  # an ended run still unchecked this long lost its tr
 
 EVENT_TEXT_LIMIT = 4000
 WAL_WAIT_SECONDS = 3.0
+# The tables every state database has had since the first release (tests/test_store.py:
+# OLD_SCHEMA): a file without them is not one. The newer ones are added when it is opened.
+STATE_TABLES = ("projects", "agents", "settings", "runs", "events")
 
 
 def now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _quoted(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _schema(conn: sqlite3.Connection, db: str = "main") -> dict[str, set[str]]:
+    """The tables of a database (`db`: one attached to `conn`) and their columns."""
+    tables = [
+        row[0]
+        for row in conn.execute(
+            f"SELECT name FROM {db}.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        )
+    ]
+    return {
+        table: {row[1] for row in conn.execute(f"PRAGMA {db}.table_info({_quoted(table)})")}
+        for table in tables
+    }
+
+
+def known_schema() -> dict[str, set[str]]:
+    """The tables and columns this version creates: SCHEMA and the *_ADDED lists."""
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.executescript(SCHEMA)
+        added = (("run_meta", RUN_META_ADDED), ("run_usage", RUN_USAGE_ADDED))
+        for table, columns in (*added, ("notices", NOTICES_ADDED)):
+            present = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            for name, ddl in columns:
+                if name not in present:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+        return _schema(conn)
+    finally:
+        conn.close()
+
+
+def check_database(path: Path) -> list[str]:
+    """Raise ValueError unless the file `path` is an intact state database: readable as
+    SQLite, `PRAGMA integrity_check` ok, with the tables of STATE_TABLES. Else return the
+    tables and `table.column`s it has that this version does not know (a newer version
+    wrote it). Opening it may fold a -wal file beside it into it, as any open does."""
+    if not path.is_file():
+        raise ValueError(f"{path} is not a file")
+    try:
+        conn = sqlite3.connect(path, timeout=30)
+        try:
+            result = [row[0] for row in conn.execute("PRAGMA integrity_check")]
+            schema = _schema(conn)
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as exc:
+        raise ValueError(f"{path} is not a readable SQLite database ({exc})") from None
+    if result != ["ok"]:
+        raise ValueError(f"{path} fails the integrity check: {'; '.join(result[:5])}")
+    if missing := [table for table in STATE_TABLES if table not in schema]:
+        raise ValueError(f"{path} is not a state database (no table {', '.join(missing)})")
+    known = known_schema()
+    unknown: list[str] = []
+    for table, columns in sorted(schema.items()):
+        if table not in known:
+            unknown.append(table)
+        else:
+            unknown += [f"{table}.{column}" for column in sorted(columns - known[table])]
+    return unknown
+
+
+def _commit(conn: sqlite3.Connection) -> None:
+    """The commit of Store.replace_from (a function of its own for the tests)."""
+    conn.execute("COMMIT")
+
+
+def _replace_content(conn: sqlite3.Connection, note: str) -> list[str]:
+    """Inside `conn`'s write transaction (Store.replace_from): make the rows of every table of
+    `main` those of the attached database `restored`. A table it lacks ends up empty, and a
+    column it lacks gets its default (an older version's backup). Its tables and columns that
+    `main` lacks (a newer version's) are not copied: they are returned as `table` and
+    `table.column`. Then the restored turns that were queued or running end as stopped with
+    `note` (their runners are gone) and every run counts as checked, so nothing wakes a parent.
+    Row ids never go back: each AUTOINCREMENT sequence stays at least what it was here and
+    in `restored`, so a new turn never reuses an earlier turn's logs/run-<id>."""
+    live, restored = _schema(conn), _schema(conn, "restored")
+    for table, columns in live.items():
+        conn.execute(f"DELETE FROM main.{_quoted(table)}")
+        if table in restored:
+            names = ", ".join(_quoted(column) for column in sorted(columns & restored[table]))
+            conn.execute(
+                f"INSERT INTO main.{_quoted(table)} ({names})"
+                f" SELECT {names} FROM restored.{_quoted(table)}"
+            )
+    left_out: list[str] = []
+    for table, columns in sorted(restored.items()):
+        if table not in live:
+            left_out.append(table)
+        else:
+            left_out += [f"{table}.{column}" for column in sorted(columns - live[table])]
+    has_sequence = conn.execute(
+        "SELECT 1 FROM restored.sqlite_master WHERE name = 'sqlite_sequence'"
+    ).fetchone()
+    for name, seq in (
+        conn.execute("SELECT name, seq FROM restored.sqlite_sequence").fetchall()
+        if has_sequence
+        else []
+    ):
+        conn.execute(
+            "UPDATE main.sqlite_sequence SET seq = MAX(seq, ?) WHERE name = ?", (seq, name)
+        )
+    conn.execute(
+        f"UPDATE main.runs SET status = ?, error = ?, ended_at = ?"
+        f" WHERE status IN ('{ACTIVE[0]}', '{ACTIVE[1]}')",
+        (RunStatus.STOPPED.value, note, now()),
+    )
+    if "checked" in live.get("run_meta", set()):
+        conn.execute("UPDATE main.run_meta SET checked = 1 WHERE checked = 0")
+    return left_out
 
 
 def _older_than(timestamp: str | None, seconds: float) -> bool:
@@ -538,6 +655,64 @@ class Store:
                 conn.execute("ROLLBACK")
                 raise
             conn.execute("COMMIT")
+        finally:
+            conn.close()
+
+    # -- backup and restore (core/state.py) -------------------------------
+
+    def backup(self, dest: Path) -> None:
+        """Copy the database into the file `dest` (new, or empty) with SQLite's online backup
+        API: one consistent snapshot, taken in one step under a read transaction, so it is
+        safe while other processes write; never a copy of the file. The copy is in
+        rollback-journal mode: a single file, with no -wal beside it."""
+        source = sqlite3.connect(self.path, timeout=30)
+        try:
+            target = sqlite3.connect(dest)
+            try:
+                source.backup(target)
+                target.execute("PRAGMA journal_mode=DELETE")
+            finally:
+                target.close()
+        finally:
+            source.close()
+
+    def replace_from(
+        self,
+        source: Path,
+        snapshot: Path,
+        note: str,
+        check: Callable[[], None],
+        seal: Callable[[], None],
+    ) -> list[str]:
+        """Make this database's content that of the database file `source`, keeping the
+        content it replaces in the new (empty) file `snapshot`, with no commit of another
+        process falling between the two: one connection takes the write lock (BEGIN
+        IMMEDIATE) and holds it while `check` runs (raising there changes nothing), while
+        `snapshot` is taken with the backup API from a second connection (readers still read
+        the committed state; nobody can commit meanwhile) and passes check_database, while
+        `seal` runs (it makes the snapshot's backup complete and findable: whatever happens
+        from then on, the replaced content is kept), and while the rows are replaced from
+        `source`, attached (_replace_content); then it commits. A writer that comes meanwhile waits and commits on top of the restored state.
+        Rows, not pages, are copied: no schema object or file is swapped under the connections
+        other processes hold (they see the restored rows from their next read), and the
+        database keeps its page size and WAL. Returns what of `source` was not copied (a newer
+        version's tables and columns). Raises ValueError when the snapshot is not usable."""
+        conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        try:
+            conn.execute("PRAGMA foreign_keys=OFF")  # rows are copied table by table
+            conn.execute("ATTACH DATABASE ? AS restored", (str(source),))
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                check()
+                self.backup(snapshot)
+                check_database(snapshot)
+                seal()
+                left_out = _replace_content(conn, note)
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            _commit(conn)  # if it fails, closing the connection rolls back
+            return left_out
         finally:
             conn.close()
 
