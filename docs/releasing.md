@@ -14,7 +14,8 @@ stored anywhere.
 ## The version
 
 The version lives in one place, `version` in `pyproject.toml`. The package reads it from the
-installed metadata (`orchestrator.__version__`, which `/api/ping` and the launcher report).
+installed metadata (`orchestrator.__version__`, which `spartito --version`, the dashboard's
+settings, `/api/ping` and the launcher report).
 Bump it with:
 
 ```sh
@@ -99,7 +100,11 @@ tag; the same rule applies to PyPI.
 4. Verify on <https://pypi.org/project/spartito/>, and in a temporary tool directory as
    above, without the TestPyPI options:
    `uv tool install --python 3.14 'spartito[app,menubar]'`. With a temporary
-   `ORCH_HOME`, `spartito web --port 18926` serves `/api/ping` with the new version.
+   `ORCH_HOME`, `spartito --version` prints the new version and `spartito version --check`
+   says it is up to date.
+
+Installs get the release when their owners run the command `spartito upgrade` prints for them
+([upgrading](usage.md#upgrading)); nothing tells them about it on its own.
 
 A failed upload can be retried by re-running the failed job. Files already on PyPI that are
 identical are skipped. A wrong version cannot be uploaded again: release the next one.

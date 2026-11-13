@@ -123,6 +123,9 @@ src/orchestrator/
     state.py         backups of the state: making, listing and restoring them
     costs.py         cost reports from the recorded usage; budgets, their warnings and
                      the opt-in hard stop
+    upgrade.py       the version and the kind of install, the explicit check for a newer
+                     release on PyPI (the only network request, never automatic), and
+                     preparing an upgrade: backup, command, what to restart
   runner.py        one turn in its own detached process
   store.py         SQLite (WAL): the only shared state
   providers/       base.py (protocol), claude.py, codex.py

@@ -122,6 +122,8 @@ not know stay where they are.
 - **A newer version's backup** is restored too, without its tables and columns this version
   does not have: the command names them, and they stay in the backup, for the version that
   knows them. Everything else is restored.
+- **Before an upgrade** `spartito upgrade` makes a backup like `spartito state backup` and
+  prints the command that restores it ([upgrading](usage.md#upgrading)).
 - **An older install** ignores the home's `backups/` directory and has no `spartito state`.
   After a restore it opens the database as it opens any newer one.
 

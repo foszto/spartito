@@ -3,6 +3,7 @@
 - [Commands at a glance](#commands-at-a-glance)
 - [Command reference](#command-reference)
 - [Dashboard](#dashboard)
+- [Upgrading](#upgrading)
 - [Upgrading from `orch`](#upgrading-from-orch)
 - [Upgrading to the distribution name `spartito`](#upgrading-to-the-distribution-name-spartito)
 
@@ -39,6 +40,8 @@ lists as `#12`. *Project lead* or *lead* is the agent with role `lead` of a proj
 | `spartito cost` | spend of the recorded turns per project, day or agent |
 | `spartito budget …` | budgets: list, set, remove |
 | `spartito state backup/list/restore` | back up the state, list and restore backups |
+| `spartito --version`, `spartito version [--check]` | the version, the kind of install, a check for a newer release |
+| `spartito upgrade` | prepare an upgrade: backup, the command for this install, what to restart |
 | `spartito roles` | available roles |
 
 ## Command reference
@@ -330,6 +333,38 @@ spartito state restore BACKUP [--yes|-y] [--logs]
 
 Details, and moving a home to another directory or machine: [state.md](state.md).
 
+### Version and upgrades
+
+```sh
+spartito --version
+spartito version [--check]
+spartito upgrade [--dry-run]
+```
+
+- `--version` prints `spartito <version>` and exits.
+- `version` prints the version and the kind of install: `editable checkout` with the
+  checkout's directory, or `installed package` (with `(uv tool)` for a `uv tool install`).
+  `--check` asks PyPI whether a newer release exists and says one of: up to date, a newer
+  release (which one), this install is newer than the latest release, or that `spartito` is not
+  published on PyPI (the index's 404 is an answer, exit code 0). A network failure or an
+  answer it does not understand is a one-line error with exit code 1. The request is
+  `GET https://pypi.org/pypi/spartito/json` with the header `User-Agent: spartito` and no other
+  header of Spartito's own (no version, platform, path or home), a 10-second timeout, at most
+  512 KB read and no redirect followed. Versions are compared by their release numbers
+  (`0.10.0` is newer than `0.9.1`); with equal numbers a final release is newer than a
+  pre-release or development release (`rc`, `a`, `b`, `dev`).
+- `upgrade` prepares an upgrade and prints how to do it; it runs no package manager and no
+  git. It refuses while any turn is queued or running (as `state restore` does; a turn whose
+  runner is gone does not count), backs the state up into the home's `backups/` (as
+  `state backup`) and prints the backup and the command that restores it, then the kind of
+  install with the command that upgrades it, and what to restart afterwards. `--dry-run`
+  prints the same plan without a backup and lists the active turns instead of refusing.
+  The steps around it: [Upgrading](#upgrading).
+
+**No automatic check.** Spartito makes no network request of its own: nothing checks for
+updates in the background, at start or on a schedule, and the dashboard does not either.
+`spartito version --check` is the one request, and only when you type it.
+
 ## Dashboard
 
 `spartito web` serves a single page on `http://127.0.0.1:8787`. It reads the same database as the
@@ -435,6 +470,60 @@ convenient from scripts:
 - `GET /api/agents/<id>/code/changes`, `…/code/patch?path=<path>`, `…/code/tree` and
   `…/code/file?path=<path>`: the code view (`web/code_api.py`). Besides the Host check, these
   refuse a request whose `Origin` or `Sec-Fetch-Site` names another site, GET included.
+
+## Upgrading
+
+The dashboard's settings show the installed version, and `spartito version` the version and
+the kind of install; `spartito version --check` asks PyPI for a newer release. An upgrade has
+three parts.
+
+**Before.** Run `spartito upgrade` (or `spartito upgrade --dry-run` first, which changes
+nothing). It refuses while any turn is queued or running: wait for them (`spartito ps` shows
+no agent `running` or `waiting`) or `spartito stop` the agents. Then it backs the state up and
+prints where, with the command that brings it back, for example:
+
+```
+backup: /home/dev/.orchestrator/backups/20261113T142530Z
+  to go back: `spartito state restore 20261113T142530Z --yes`
+```
+
+**The upgrade.** `spartito upgrade` prints the command for the kind of install it found:
+
+| install | upgrade |
+|---|---|
+| `uv tool install 'spartito[app,menubar]'` (a package from PyPI) | `uv tool upgrade spartito`: it keeps the extras and the Python of the install |
+| a package installed with pip | `<python> -m pip install --upgrade spartito`, with the extras you installed (`'spartito[app,menubar]'`) |
+| `uv tool install --editable '.[app,menubar]'` from a checkout | in the checkout: `git pull` (or update its branch as you do), then the same `uv tool install --editable` line with the extras the install has |
+| a checkout used with `uv run` | in the checkout: `git pull`, then `uv sync` with the extras you synced with ([CONTRIBUTING.md](../CONTRIBUTING.md#setup)) |
+
+A package installed from a file or URL instead of PyPI is installed again from there. An
+environment without the distribution `spartito` (an install from before it was renamed) takes
+the steps of [Upgrading to the distribution name `spartito`](#upgrading-to-the-distribution-name-spartito).
+
+**After.** Processes that started before the upgrade keep running the old code until they are
+restarted. `spartito upgrade` lists the ones it finds for this home, with how to restart each:
+
+- the background service, if it is installed: `spartito service install` again, with the
+  `--host` and `--port` of its unit, which it prints; this restarts it;
+- an open `spartito app` window (found by the lock it holds): quit it and open it again; its
+  own dashboard server stops with it;
+- the menu-bar item (found the same way): quit it and start `spartito menubar` again;
+- a dashboard server recorded as running that is neither the service's nor the window's: a
+  `spartito web` started by hand, to stop (Ctrl-C) and start again;
+- the launcher, if it is installed: `spartito app install` again, which records the new
+  version and the install's Python.
+
+What it cannot see it names in words: an open `spartito chat` (leave it, and continue with
+`spartito chat --continue`), and a `spartito web` started by hand that is not the last
+dashboard server started (only that one is recorded). Then check the version with
+`spartito version`, and in the dashboard's settings once the page is reloaded.
+
+**Going back.** Install the previous version (for a package, for example
+`uv tool install 'spartito[app,menubar]==0.1.0'`; for a checkout, check out the earlier
+commit and install or sync as above), restart as above, and if the newer version changed the
+state in a way you want undone, restore the backup: `spartito state restore <name> --yes`.
+Schema changes are additive, so an older version opens a database a newer one has used
+([backups and versions](state.md#backups-and-versions)).
 
 ## Upgrading from `orch`
 
