@@ -170,12 +170,21 @@ For a new agent, the first that applies:
 When the provider from 2 or 3 is not available, the agent runs on the first available one in
 registry order. So does the Maestro when nothing names its provider and `claude` is not
 available (the note then calls `claude` "the first supported provider"). Such a fallback is
-reported in the reply (`note: …` on the command line, a `note` in the MCP and JSON replies, a
-message in the dashboard) and in the agent's log. This holds wherever the agent is created: by
-`spartito spawn` or `spartito ask`, by setting the Maestro's model or effort before its first
-message, and for a lead that board dispatch creates. When no provider is available, the agent
-is not created, and the error lists each provider's reason
-([below](#when-no-provider-is-available)).
+reported in the reply: a `note: …` line on the command line (`spartito spawn`, `spartito ask`,
+`spartito model`, `spartito board dispatch`) and a `note` in the MCP and JSON replies. The
+dashboard shows it as a message after a message to an agent (which may create a lead or the
+Maestro), after adding a project and after starting an agent. When the dashboard creates the
+Maestro by setting its model or effort, or a lead by a dispatch from its board, it shows no
+message.
+
+The agent's log has the note when the process that created the agent also sends its first
+message, as for `spartito spawn`, `spartito ask`, the MCP tools, board dispatch and any
+message from the dashboard. A Maestro created by a setting in one process
+(`spartito model orchestrator --effort high`) whose first message comes from another (the
+dashboard) has no such log entry: only that command's `note: …` line reported the fallback.
+
+When no provider is available, the agent is not created, and the error lists each provider's
+reason ([below](#when-no-provider-is-available)).
 
 **The orchestrator (Maestro)** is created by its first message, or by setting its model,
 effort or provider. Its provider is the one chosen before that

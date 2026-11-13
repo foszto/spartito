@@ -505,8 +505,9 @@ whole reason as its tooltip and a **Check again** button that checks once more. 
 **Default provider** in the settings applies at once, apart from **Save**; existing agents keep
 theirs. Changing an agent's `provider` select moves the agent; for an agent with a conversation
 a dialog asks first and says whether the next message continues an earlier conversation on that
-provider or starts a new one. After a project or an agent is created, or a message creates a
-lead or the Maestro, a fallback provider is shown as a message. Details:
+provider or starts a new one. After a project is added, an agent is started or a message
+creates a lead or the Maestro, a fallback provider is shown as a message; a setting that
+creates the Maestro and a dispatch from the board show none. Details:
 [providers.md](providers.md).
 
 **Models and effort** window: the tier settings per provider, the automatic compaction

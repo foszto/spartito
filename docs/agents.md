@@ -55,8 +55,12 @@ not see them, so their descriptions cost them nothing per turn. A provider named
 ones. When the role's or the project's provider is not available, the agent runs on the first
 available one; such a fallback is reported in the reply (`note`) and in the agent's log. The
 same holds for a lead that `dispatch_board` creates. The reply for an existing lead that runs
-on another provider than the one asked for has a `note` too. Without anything to tell, the
-reply has no `note`. Details: [providers.md](providers.md#how-a-provider-is-chosen).
+on another provider than the one asked for has a `note` too. The replies of `spawn_agent`,
+`ask_project_lead` and `dispatch_board` have the `note` key only when there is something to
+tell. Those of `add_project` (a default provider that is not available, a repository without
+commits) and `set_project_provider` (existing agents on another provider) always have it,
+`null` when there is nothing to tell. Details:
+[providers.md](providers.md#how-a-provider-is-chosen).
 
 ## Turns and the queue
 

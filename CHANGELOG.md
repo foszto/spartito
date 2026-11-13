@@ -39,8 +39,9 @@ chosen is in the
   without `--provider` takes the first available one instead of always `claude`, and prints
   it. An explicit provider that is not available is refused, naming the available ones. When
   a role's or a project's provider is not available, the agent runs on the first available one,
-  and the reply (in the dashboard, a message) and the agent's log say so, also when board
-  dispatch creates a lead.
+  and says so in the agent's log and in the reply: a `note:` line on the command line, a `note`
+  in the MCP and JSON replies, and a message in the dashboard after starting an agent or
+  sending a message.
 - Codex can be chosen for the Maestro (in the dashboard, or with
   `spartito model orchestrator --provider codex`) and for project leads (through the project's
   default provider, or `spartito ask --provider`). The Maestro runs on the first available
