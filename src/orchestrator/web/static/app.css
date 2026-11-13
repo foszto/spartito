@@ -391,5 +391,6 @@ div.folder > button.folder:hover { background: none; }
 .code-tree summary { cursor: pointer; padding: 1px 0; word-break: break-all; }
 .code-leaf { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 1px 0 1px 14px;
   color: var(--text); word-break: break-all; }
-.code-leaf:hover { color: var(--accent); }
+.code-leaf:hover:not(:disabled) { color: var(--accent); }
+.code-leaf:disabled { cursor: default; color: var(--muted); }
 .code-content { min-width: 0; }

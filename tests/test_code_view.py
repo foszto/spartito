@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -89,6 +90,7 @@ def test_committed_uncommitted_and_untracked_changes_are_listed_with_counts(
         "binary": False,
         "too_large": False,
         "untracked": False,
+        "submodule": False,
     }
     assert (rows["kept.txt"]["status"], rows["kept.txt"]["added"], rows["kept.txt"]["removed"]) == (
         "M",
@@ -141,7 +143,7 @@ def test_a_patch_is_given_per_file_for_tracked_and_untracked_files(
         "+world",
         "\\ No newline at end of file",
     ]
-    with pytest.raises(OrchestratorError, match="no changes"):
+    with pytest.raises(OrchestratorError, match="not a file in this worktree"):
         orch.code_patch(agent_id, "README-that-is-not-there")
 
 
@@ -429,6 +431,275 @@ def test_reading_writes_nothing_to_the_worktree_or_its_index(
     assert snapshot() == before
 
 
+# -- submodules: never entered ------------------------------------------------------------
+
+SUBMODULE_HOOKS = ("external", "textconv", "clean", "process", "fsmonitor")
+
+
+def armed_submodule(orch: Orchestrator, project: str, repo: Path, tmp_path: Path):
+    """An agent whose worktree has the submodule `sub` (in the base too), moved to a new
+    commit and with a modified file, whose own configuration names an external diff, a
+    textconv driver, a clean filter, a filter process and an fsmonitor hook that each leave
+    a marker; the superproject asks for submodule diffs and never ignores them.
+    (agent id, worktree, markers directory)."""
+    marks = tmp_path / "marks"
+    marks.mkdir()
+    source = tmp_path / "library"
+    source.mkdir()
+    run_git(source, "init", "-q", "-b", "main")
+    (source / "lib.txt").write_text("one\n")
+    commit_all(source, "library")
+    run_git(repo, "-c", "protocol.file.allow=always", "submodule", "-q", "add", str(source), "sub")
+    (repo / "app.txt").write_text("app\n")
+    commit_all(repo, "with the library")
+    agent = orch.create_agent(project, name="sub-user")
+    git.add_worktree(repo, agent.cwd, agent.branch, "main")
+    tree = Path(agent.cwd)
+    run_git(tree, "-c", "protocol.file.allow=always", "submodule", "-q", "update", "--init")
+    run_git(tree, "config", "diff.submodule", "diff")
+    run_git(tree, "config", "diff.ignoreSubmodules", "none")
+    run_git(tree, "config", "submodule.sub.ignore", "none")
+    sub = tree / "sub"
+    hook = lambda name: f"touch '{marks / name}'; cat"  # noqa: E731
+    run_git(sub, "config", "diff.external", f"touch '{marks / 'external'}' #")
+    run_git(sub, "config", "diff.evil.textconv", hook("textconv"))
+    run_git(sub, "config", "filter.evil.clean", hook("clean"))
+    run_git(sub, "config", "filter.other.process", f"touch '{marks / 'process'}'")
+    run_git(sub, "config", "core.fsmonitor", f"touch '{marks / 'fsmonitor'}'; true #")
+    (sub / ".gitattributes").write_text("*.txt diff=evil filter=evil\n*.md filter=other\n")
+    (sub / "lib.txt").write_text("one\ntwo\n")
+    commit_all(sub, "library moves on")
+    (sub / "lib.txt").write_text("one\ntwo\nthree\n")
+    (sub / "notes.md").write_text("x\n")
+    run_git(sub, "add", "notes.md")
+    (sub / "notes.md").write_text("y\n")
+    for name in ("lib.txt", "notes.md"):
+        os.utime(sub / name, (1, 1))
+    (tree / "app.txt").write_text("app\nchanged\n")
+    return agent.id, tree, marks
+
+
+def test_a_submodule_is_compared_by_its_commit_and_runs_nothing_of_its_own(
+    orch: Orchestrator, project: str, repo: Path, tmp_path: Path
+) -> None:
+    agent_id, tree, marks = armed_submodule(orch, project, repo, tmp_path)
+    base = run_git(tree, "merge-base", "main", "HEAD").strip()
+
+    # The control: plain git runs all of them, in the submodule.
+    subprocess.run(["git", "-C", str(tree), "diff", base], capture_output=True)
+    textconv = ("diff", "--no-ext-diff", "--textconv", "HEAD~1")
+    subprocess.run(["git", "-C", str(tree / "sub"), *textconv], capture_output=True)
+    assert {p.name for p in marks.iterdir()} == set(SUBMODULE_HOOKS)
+    shutil.rmtree(marks)
+    marks.mkdir()
+
+    rows = by_path(orch.code_changes(agent_id))
+    module = orch.code_patch(agent_id, "sub")
+    plain = orch.code_patch(agent_id, "app.txt")
+    files = orch.code_tree(agent_id)
+    shown = orch.code_file(agent_id, "app.txt")
+    for path in ("sub", "sub/lib.txt"):
+        with pytest.raises(OrchestratorError):
+            orch.code_file(agent_id, path)
+
+    assert list(marks.iterdir()) == []
+    assert rows["sub"]["submodule"] is True and rows["sub"]["status"] == "M"
+    assert rows["app.txt"]["submodule"] is False
+    assert module["submodule"] is True
+    lines = module["patch"].splitlines()
+    assert [line[:19] for line in lines if "Subproject" in line] == [
+        "-Subproject commit ",
+        "+Subproject commit ",
+    ]
+    assert "lib.txt" not in module["patch"] and "-dirty" not in module["patch"]
+    assert "+changed" in plain["patch"]
+    assert "sub" in files["files"] and files["submodules"] == ["sub"]
+    assert not [path for path in files["files"] if path.startswith("sub/")]
+    assert shown["content"] == "app\nchanged\n"
+
+
+# -- paths only as the file system spells them ---------------------------------------------
+
+
+def case_insensitive(directory: Path) -> bool:
+    probe = directory / "Case-Probe"
+    probe.write_text("")
+    try:
+        return (directory / "case-probe").exists()
+    finally:
+        probe.unlink()
+
+
+def test_an_ignored_file_is_not_served_through_a_case_variant(
+    orch: Orchestrator, agent_id: str, tree: Path
+) -> None:
+    """With core.ignorecase off (an agent can set it), `.gitignore`'s `secrets/` does not
+    match `SECRETS/`, and a case-insensitive file system opens `secrets/` for it."""
+    if not case_insensitive(tree):
+        pytest.skip("the temporary directory's file system is case-sensitive: no case alias")
+    (tree / ".gitignore").write_text("secrets/\n")
+    commit_all(tree)
+    run_git(tree, "config", "core.ignorecase", "false")
+    (tree / "secrets").mkdir()
+    (tree / "secrets" / "key").write_text("PRIVATE-KEY\n")
+    assert (tree / "SECRETS" / "key").read_text() == "PRIVATE-KEY\n"  # the alias opens it
+
+    for path in ("SECRETS/key", "Secrets/key", "secrets/KEY", "secrets/key"):
+        for read in (orch.code_file, orch.code_patch):
+            with pytest.raises(OrchestratorError):
+                read(agent_id, path)
+    for answer in (orch.code_tree(agent_id), orch.code_changes(agent_id)):
+        assert "PRIVATE-KEY" not in json.dumps(answer) and "secrets" not in json.dumps(answer)
+
+
+def test_unicode_variants_are_refused_and_real_names_are_served(
+    orch: Orchestrator, agent_id: str, tree: Path
+) -> None:
+    precomposed = "café.txt"
+    decomposed = "café.txt"
+    (tree / precomposed).write_text("coffee\n")
+
+    assert orch.code_file(agent_id, precomposed)["content"] == "coffee\n"
+    assert "+coffee" in orch.code_patch(agent_id, precomposed)["patch"]
+    assert by_path(orch.code_changes(agent_id))[precomposed]["added"] == 1
+    for read in (orch.code_file, orch.code_patch):
+        with pytest.raises(OrchestratorError):
+            read(agent_id, decomposed)
+
+
+# -- git's output read only up to a cap ------------------------------------------------------
+
+
+@pytest.fixture
+def reads(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int, bool]]:
+    """Every capped git call of the code view: (bytes taken from git, cap, cut)."""
+    noted: list[tuple[int, int, bool]] = []
+    real = git._run_capped
+
+    def spy(*args, **kwargs):
+        code, out, err, cut = real(*args, **kwargs)
+        noted.append((len(out), args[4] if len(args) > 4 else kwargs["cap"], cut))
+        return code, out, err, cut
+
+    monkeypatch.setattr(git, "_run_capped", spy)
+    return noted
+
+
+def test_a_patch_is_read_from_git_only_up_to_its_cap(
+    orch: Orchestrator, agent_id: str, tree: Path, monkeypatch: pytest.MonkeyPatch, reads
+) -> None:
+    monkeypatch.setattr(code_view, "MAX_PATCH_BYTES", 4096)
+    (tree / "huge.txt").write_text("".join(f"line {n:06d} of a long file\n" for n in range(20000)))
+    commit_all(tree)  # about 500 KB of patch
+
+    patch = orch.code_patch(agent_id, "huge.txt")
+
+    assert patch["truncated"] is True and patch["lines"] is None
+    assert patch["max_bytes"] == 4096 and 0 < len(patch["patch"].encode()) <= 4096
+    taken = [(read, cap) for read, cap, cut in reads if cut]
+    assert taken == [(4096, 4096)]
+    assert all(read <= cap for read, cap, _ in reads)
+
+
+def test_long_listings_are_read_from_git_only_up_to_their_cap(
+    orch: Orchestrator, agent_id: str, tree: Path, monkeypatch: pytest.MonkeyPatch, reads
+) -> None:
+    monkeypatch.setattr(code_view, "LIST_BYTES", 2048)
+    (tree / "many").mkdir()
+    for n in range(400):  # about 9 KB of names
+        (tree / "many" / f"file-{n:04d}.txt").write_text("x\n")
+
+    changes = orch.code_changes(agent_id)
+    files = orch.code_tree(agent_id)
+
+    for answer, paths in ((changes, list(by_path(changes))), (files, files["files"])):
+        assert answer["truncated"] is True and answer["total"] is None
+        assert 0 < len(paths) < 400
+        assert all(path.startswith("many/file-") for path in paths)
+    assert all(read <= cap for read, cap, _ in reads)
+    assert any(cut and cap == 2048 for _, cap, cut in reads)
+
+
+def test_the_capped_reader_stops_git_and_reports_the_cut(repo: Path) -> None:
+    for n in range(50):
+        (repo / f"f{n:03d}.txt").write_text("x\n")
+    env = git._own_env()
+
+    code, out, _, cut = git._run_capped(repo, ("ls-files", "-o", "-z"), 20, env, 100)
+    whole = git._run_capped(repo, ("ls-files", "-o", "-z"), 20, env, 1 << 20)
+
+    assert (code, len(out), cut) == (None, 100, True)
+    assert whole[0] == 0 and whole[3] is False and len(whole[1]) == 50 * 9
+    assert whole[1].startswith(out)
+
+
+# -- the base: any revision, else the project's base branch ----------------------------------
+
+
+@pytest.mark.parametrize("kind", ["remote", "tag", "commit", "deleted-branch"])
+def test_the_base_may_be_any_revision_and_falls_back_to_the_project_base(
+    orch: Orchestrator, project: str, repo: Path, kind: str
+) -> None:
+    older = run_git(repo, "rev-parse", "HEAD").strip()
+    names = {"remote": "origin/main", "tag": "v1", "commit": older, "deleted-branch": "feature"}
+    run_git(repo, "update-ref", "refs/remotes/origin/main", older)
+    run_git(repo, "tag", "v1", older)
+    run_git(repo, "branch", "feature", older)
+    (repo / "later.txt").write_text("on main after the base\n")
+    commit_all(repo, "later on main")
+    agent = orch.create_agent(project, name="based", base=names[kind])
+    assert agent.base_ref == names[kind]
+    git.add_worktree(repo, agent.cwd, agent.branch, "main")
+    tree = Path(agent.cwd)
+    (tree / "mine.txt").write_text("mine\n")
+    if kind == "deleted-branch":
+        run_git(repo, "branch", "-D", "feature")
+
+    answer = orch.code_changes(agent.id)
+
+    if kind == "deleted-branch":
+        assert (answer["base"], answer["base_fallback"]) == ("main", True)
+        assert answer["requested_base"] == "feature"
+        assert list(by_path(answer)) == ["mine.txt"]
+    else:
+        assert (answer["base"], answer["base_fallback"]) == (names[kind], False)
+        assert list(by_path(answer)) == ["later.txt", "mine.txt"]
+    assert orch.code_patch(agent.id, "mine.txt")["base"] == answer["base"]
+
+
+def test_without_any_base_the_changes_explain_and_the_files_still_work(
+    orch: Orchestrator, agent_id: str, tree: Path, repo: Path
+) -> None:
+    run_git(repo, "checkout", "-q", "-b", "elsewhere")
+    run_git(repo, "branch", "-D", "main")
+    (tree / "a.txt").write_text("a\n")
+
+    with pytest.raises(OrchestratorError, match="no base to compare with"):
+        orch.code_changes(agent_id)
+    with pytest.raises(OrchestratorError, match="no base to compare with"):
+        orch.code_patch(agent_id, "a.txt")
+    assert orch.code_tree(agent_id)["files"] == ["a.txt"]
+    assert orch.code_file(agent_id, "a.txt")["content"] == "a\n"
+
+
+@pytest.mark.parametrize("base", ["--output=/tmp/x", "-p", "main\nHEAD", "HEAD@{-1}x"])
+def test_a_base_is_never_read_as_an_option(
+    orch: Orchestrator, project: str, repo: Path, base: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A base that names nothing usable falls back to the project's base branch."""
+    agent = orch.create_agent(project, name="odd-base")
+    git.add_worktree(repo, agent.cwd, agent.branch, "main")
+    monkeypatch.setattr(orch, "agent", lambda agent_id: replace(agent, base_ref=base))
+
+    answer = orch.code_changes(agent.id)
+
+    assert (answer["base"], answer["base_fallback"], answer["requested_base"]) == (
+        "main",
+        True,
+        base,
+    )
+
+
 # -- the routes --------------------------------------------------------------------------------
 
 
@@ -575,7 +846,7 @@ def run_node(code: str) -> object:
 
 
 def test_the_page_builds_its_urls_and_notes() -> None:
-    source = page_functions("codeUrl", "sizeText", "codeNote", "countText")
+    source = page_functions("codeUrl", "sizeText", "codeNote", "countText", "changesHead")
     cases = {
         "url": "codeUrl('fix-login-3f2a', 'file', 'a b/<x>&?.txt')",
         "plain": "codeUrl('fix-login-3f2a', 'tree')",
@@ -587,7 +858,13 @@ def test_the_page_builds_its_urls_and_notes() -> None:
         "large": "codeNote({too_large: true})",
         "link": "codeNote({kind: 'symlink', target: '../x'})",
         "counts": "[countText({added: 3, removed: 1}), countText({binary: true}),"
-        " countText({too_large: true}), countText({added: null})]",
+        " countText({too_large: true}), countText({added: null}),"
+        " countText({submodule: true, added: 1, removed: 1})]",
+        "unknown": "codeNote({max_files: 1000, files: [1, 2, 3], total: null, truncated: true})",
+        "bytes": "codeNote({max_lines: 2000, lines: null, truncated: true, max_bytes: 1048576})",
+        "module": "codeNote({max_lines: 2000, lines: 2, truncated: false, submodule: true})",
+        "head": "[changesHead({files: [1, 2], total: 2, base: 'origin/main'}),"
+        " changesHead({files: [1], total: null, base: 'v1'}), changesHead({files: [], base: 'main'})]",
     }
     code = source + "\nprocess.stdout.write(JSON.stringify({"
     code += ", ".join(f"{key}: {expr}" for key, expr in cases.items()) + "}));"
@@ -602,7 +879,15 @@ def test_the_page_builds_its_urls_and_notes() -> None:
         "binary": "Binary file: not shown.",
         "large": "Too large to show.",
         "link": "Symbolic link to ../x (not followed).",
-        "counts": ["+3 −1", "binary", "too large", ""],
+        "counts": ["+3 −1", "binary", "too large", "", "submodule"],
+        "unknown": "Showing 3 files: the list was cut.",
+        "bytes": "Patch cut: showing its first 1.0 MB.",
+        "module": "Submodule: only its commit is compared.",
+        "head": [
+            "2 files changed against origin/main, committed and uncommitted",
+            "1+ files changed against v1, committed and uncommitted",
+            "No changes against main",
+        ],
     }
 
 

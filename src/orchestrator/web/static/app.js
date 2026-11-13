@@ -575,16 +575,29 @@ const codeUrl = (id, what, path) => `/api/agents/${encodeURIComponent(id)}/code/
 const patchClass = line => (line.startsWith('@@') ? 'hunk' : /^(diff |index |new file|deleted file|old mode|new mode|similarity|rename |--- |\+\+\+ )/.test(line)
   ? 'meta' : line.startsWith('+') ? 'add' : line.startsWith('-') ? 'del' : '');
 const sizeText = bytes => (bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`);
-const countText = file => (file.binary ? 'binary' : file.too_large ? 'too large'
+const countText = file => (file.submodule ? 'submodule' : file.binary ? 'binary' : file.too_large ? 'too large'
   : file.added == null ? '' : `+${file.added} −${file.removed ?? 0}`);
+
+// The heading of the list of changes: how many files, against which base.
+function changesHead(data) {
+  if (!data.files.length) return `No changes against ${data.base}`;
+  const count = data.total == null ? `${data.files.length}+` : String(data.total);
+  return `${count} ${data.total === 1 ? 'file' : 'files'} changed against ${data.base}, committed and uncommitted`;
+}
 
 // What was cut or left out of an answer, for the note above it ('' when nothing).
 function codeNote(data) {
-  if (data.max_files !== undefined) return data.truncated ? `Showing ${data.files.length} of ${data.total} files (the first ${data.max_files}).` : '';
+  if (data.max_files !== undefined) {
+    if (!data.truncated) return '';
+    return data.total == null ? `Showing ${data.files.length} files: the list was cut.` : `Showing ${data.files.length} of ${data.total} files (the first ${data.max_files}).`;
+  }
   if (data.binary) return 'Binary file: not shown.';
   if (data.too_large) return 'Too large to show.';
   if (data.kind === 'symlink') return `Symbolic link to ${data.target} (not followed).`;
-  if (data.max_lines !== undefined) return data.truncated ? `Patch cut: showing at most ${data.max_lines} of ${data.lines} lines.` : '';
+  if (data.max_lines !== undefined) {
+    if (!data.truncated) return data.submodule ? 'Submodule: only its commit is compared.' : '';
+    return data.lines == null ? `Patch cut: showing its first ${sizeText(data.max_bytes)}.` : `Patch cut: showing at most ${data.max_lines} of ${data.lines} lines.`;
+  }
   return data.truncated ? `File cut: showing the first ${sizeText(data.max_bytes)} of ${sizeText(data.size)}.` : '';
 }
 
@@ -641,9 +654,8 @@ async function loadChanges(view, body) {
   let data;
   try { data = await call(codeUrl(view.id, 'changes')); } catch (error) { if (codeShown === view) codeMessage(body, error.message, true); return; }
   if (codeShown !== view) return;
-  body.replaceChildren(el('div', 'code-head', data.files.length
-    ? `${data.total} ${data.total === 1 ? 'file' : 'files'} changed against ${data.base}, committed and uncommitted`
-    : `No changes against ${data.base}`));
+  body.replaceChildren(el('div', 'code-head', changesHead(data)));
+  if (data.base_fallback) body.append(el('div', 'code-note', `Its own base ${data.requested_base} names no commit any more: compared with ${data.base}, the project's base branch.`));
   if (codeNote(data)) body.append(el('div', 'code-note', codeNote(data)));
   for (const file of data.files) {
     const row = el('details', 'code-file'), head = el('summary');
@@ -674,22 +686,24 @@ async function loadTree(view, body) {
   body.replaceChildren();
   if (codeNote(data)) body.append(el('div', 'code-note', codeNote(data)));
   const split = el('div', 'code-split'); split.append(list, file); body.append(split);
-  renderCodeFolder(list, fileTree(data.files), view, file);
+  renderCodeFolder(list, fileTree(data.files), view, file, new Set(data.submodules || []));
 }
 
 // One folder's entries; a sub-folder's own entries are built when it is first opened.
-function renderCodeFolder(parent, node, view, target) {
+function renderCodeFolder(parent, node, view, target, submodules) {
   for (const [name, child] of [...node.dirs].sort(([a], [b]) => a.localeCompare(b))) {
     const folder = el('details', 'code-dir'), head = el('summary', '', name);
     folder.append(head);
     folder.addEventListener('toggle', () => {
-      if (folder.open && !folder.dataset.built) { folder.dataset.built = '1'; renderCodeFolder(folder, child, view, target); }
+      if (folder.open && !folder.dataset.built) { folder.dataset.built = '1'; renderCodeFolder(folder, child, view, target, submodules); }
     });
     parent.append(folder);
   }
   for (const entry of node.files) {
     const item = el('button', 'code-leaf', entry.name); item.type = 'button'; item.title = entry.path;
-    item.onclick = () => loadFile(view, target, entry.path);
+    // A submodule is named, never entered: its files belong to another repository.
+    if (submodules.has(entry.path)) { item.disabled = true; item.append(el('span', 'code-count', ' submodule')); }
+    else item.onclick = () => loadFile(view, target, entry.path);
     parent.append(item);
   }
 }

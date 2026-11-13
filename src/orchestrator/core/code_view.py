@@ -4,10 +4,16 @@ their content.
 
 Only an agent of a registered project that owns a worktree is shown, once git verifies the
 worktree to be one of the project's repository. A path is accepted only when it is a plain
-relative path that git lists (tracked, or untracked and not ignored; never `.git/`), and a
-file is opened one directory at a time without following any symbolic link, after its
-resolved path is checked to be inside the resolved worktree. A link is shown as its target.
-Nothing is written or cached; every git call is a read under git.VIEW_FLAGS.
+relative path spelled exactly as the file system has it (no case or Unicode variant) that
+git lists (tracked, or untracked and not ignored; never `.git/`), and a file is opened one
+directory at a time without following any symbolic link, after its resolved path is checked
+to be inside the resolved worktree. A link is shown as its target; a submodule as its commit,
+never entered. Nothing is written or cached; every git call is a read under git.VIEW_FLAGS,
+its output capped in bytes.
+
+The changes are counted from the commit the worktree's HEAD shares with the agent's base (any
+revision: a branch, a remote-tracking branch, a tag, a commit), or, when that names no commit
+any more, with the project's base branch; the answer names the base used.
 
 A failure (unknown agent, no worktree, a path refused, a file gone meanwhile, a git error) is
 an OrchestratorError with a short message.
@@ -18,6 +24,8 @@ from __future__ import annotations
 import functools
 import os
 import stat
+import sys
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,7 +37,8 @@ from ..models import Agent, Project
 
 MAX_FILE_BYTES = 512 * 1024  # of a file's content served (and of an untracked file counted)
 MAX_PATCH_LINES = 2000  # of one file's patch
-MAX_PATCH_CHARS = 1024 * 1024  # of one file's patch, however long its lines
+MAX_PATCH_BYTES = 1024 * 1024  # of one file's patch read from git, however long its lines
+LIST_BYTES = 4 * 1024 * 1024  # of one listing read from git (files, changes)
 MAX_CHANGED = 1000  # files in the list of changes
 MAX_TREE = 5000  # files in the file tree
 BINARY_SNIFF = 8192  # a NUL byte in this many first bytes: a binary file
@@ -46,13 +55,27 @@ class Facade(Protocol):
 
 @dataclass(frozen=True)
 class Worktree:
-    """An agent's verified worktree: its resolved top level, the base branch and the
+    """An agent's verified worktree: its project, its resolved top level and the
     environment of its git calls."""
 
     agent: Agent
+    project: Project
     root: Path
-    base: str
     env: dict[str, str]
+
+
+@dataclass(frozen=True)
+class Base:
+    """What the changes are counted against: `name` (the revision used), `requested` (the
+    agent's own base), `merge_base` (the commit HEAD shares with it)."""
+
+    name: str
+    requested: str
+    merge_base: str
+
+    @property
+    def fallback(self) -> bool:
+        return self.name != self.requested
 
 
 def _worktree(orch: Facade, agent_id: str) -> Worktree:
@@ -63,7 +86,27 @@ def _worktree(orch: Facade, agent_id: str) -> Worktree:
     if not Path(agent.cwd).exists():
         raise OrchestratorError(f"the worktree of {agent.id} does not exist (yet)")
     root = git.verified_worktree(project.path, agent.cwd)
-    return Worktree(agent, root, agent.base_ref or project.base_branch, git.view_env(root))
+    return Worktree(agent, project, root, git.view_env(root))
+
+
+def _base(tree: Worktree) -> Base:
+    """The agent's base, or the project's base branch when the agent's names no commit
+    (or none sharing history with HEAD) any more."""
+    project = tree.project.base_branch
+    requested = tree.agent.base_ref or project
+    candidates = [(requested, requested)]
+    if project != requested and git.valid_branch(project):
+        candidates.append((project, f"refs/heads/{project}"))
+    for name, revision in candidates:
+        commit = git.resolve_commit(tree.root, revision, tree.env)
+        shared = commit and git.merge_base(tree.root, commit, tree.env)
+        if shared:
+            return Base(name, requested, shared)
+    also = f" nor the project's base branch '{project}'" if len(candidates) > 1 else ""
+    raise OrchestratorError(
+        f"no base to compare with: neither its base '{requested}'{also} names a commit"
+        " this branch shares history with"
+    )
 
 
 def _guarded(read: Callable[..., dict[str, Any]]) -> Callable[..., dict[str, Any]]:
@@ -105,6 +148,34 @@ class Entry:
     size: int = 0
     data: bytes = b""
     target: str | None = None
+
+
+DARWIN = sys.platform == "darwin"
+
+
+def spelled(root: Path, path: str) -> None:
+    """Refuse `path` unless each of its components is spelled exactly as its directory's
+    entry is: never a case variant or a Unicode normalisation variant that a case- or
+    normalisation-insensitive file system would also open (git's own matching may treat
+    them as different names, and so as not ignored). On macOS a component may also be the
+    precomposed (NFC) form of the entry, the form git lists there. Directories are entered
+    without following links. Raises OrchestratorError, OSError."""
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+    parts = path.split("/")
+    fd = os.open(root, flags)
+    try:
+        for index, part in enumerate(parts):
+            names = set(os.listdir(fd))
+            if part not in names and not (
+                DARWIN and part in {unicodedata.normalize("NFC", name) for name in names}
+            ):
+                raise OrchestratorError(f"{path} is not a file in this worktree (names are exact)")
+            if index < len(parts) - 1:
+                inner = os.open(part, flags, dir_fd=fd)
+                os.close(fd)
+                fd = inner
+    finally:
+        os.close(fd)
 
 
 def read_entry(root: Path, path: str, limit: int) -> Entry:
@@ -150,7 +221,9 @@ def line_count(text: str) -> int:
 
 
 def _known(tree: Worktree, path: str, untracked: bool = False) -> bool:
-    return path in git.listed_files(tree.root, tree.env, path, untracked)
+    """Whether git lists `path` itself, spelled as the file system has it."""
+    spelled(tree.root, path)
+    return path in git.listed_files(tree.root, tree.env, path, untracked, LIST_BYTES)[0]
 
 
 def _untracked_stat(tree: Worktree, path: str) -> dict[str, Any]:
@@ -172,41 +245,47 @@ def _untracked_stat(tree: Worktree, path: str) -> dict[str, Any]:
 
 @_guarded
 def code_changes(orch: Facade, agent_id: str) -> dict[str, Any]:
-    """The files the agent's worktree changed against its base branch (from the commit its
-    HEAD shares with the base): committed, staged and unstaged changes of tracked files and
+    """The files the agent's worktree changed against its base (from the commit its HEAD
+    shares with it, see _base): committed, staged and unstaged changes of tracked files and
     the untracked files that are not ignored (as new files), sorted by path, at most
-    MAX_CHANGED of them. Each: path, status (A, M, D, T), added and removed lines (null for
-    a binary or too large file), binary, too_large, untracked.
-    {agent_id, base, merge_base, files, total, truncated, max_files}."""
+    MAX_CHANGED of them, from at most LIST_BYTES of each git listing. Each: path, status (A,
+    M, D, T), added and removed lines (null for a binary or too large file), binary,
+    too_large, untracked, submodule (a changed commit; its own files are never looked at).
+    {agent_id, base, requested_base, base_fallback, merge_base, files, total (null when a
+    listing was cut), truncated, max_files}."""
     tree = _worktree(orch, agent_id)
-    commit = git.merge_base(tree.root, tree.base, tree.env)
+    base = _base(tree)
+    changes, cut = git.diff_stat(tree.root, base.merge_base, tree.env, cap=LIST_BYTES)
     rows: dict[str, dict[str, Any]] = {}
-    for path, status, added, removed in git.diff_stat(tree.root, commit, tree.env):
-        binary = added is None
-        rows[path] = {"path": path, "status": status, "added": added, "removed": removed}
-        rows[path].update(binary=binary, too_large=False, untracked=False)
-    untracked = [p for p in git.listed_files(tree.root, tree.env, untracked=True) if p not in rows]
-    paths = sorted([*rows, *untracked])
+    for change in changes:
+        row = {"path": change.path, "status": change.status, "added": change.added}
+        row.update(removed=change.removed, binary=change.added is None, too_large=False)
+        rows[change.path] = {**row, "untracked": False, "submodule": change.submodule}
+    others, others_cut = git.listed_files(tree.root, tree.env, untracked=True, cap=LIST_BYTES)
+    cut = cut or others_cut
+    paths = sorted({*rows, *others})
     shown = paths[:MAX_CHANGED]
     files = [rows[p] if p in rows else _untracked_stat(tree, p) for p in shown]
     return {
         "agent_id": tree.agent.id,
-        "base": tree.base,
-        "merge_base": commit,
+        "base": base.name,
+        "requested_base": base.requested,
+        "base_fallback": base.fallback,
+        "merge_base": base.merge_base,
         "files": files,
-        "total": len(paths),
-        "truncated": len(paths) > len(shown),
+        "total": None if cut else len(paths),
+        "truncated": cut or len(paths) > len(shown),
         "max_files": MAX_CHANGED,
     }
 
 
-def _cut(patch: str) -> tuple[str, int, bool]:
-    """The patch cut to MAX_PATCH_LINES lines and MAX_PATCH_CHARS characters; with its
-    number of lines and whether it was cut."""
+def _cut(patch: str, cut: bool) -> tuple[str, int | None, bool]:
+    """The patch (`cut`: git's output was cut at MAX_PATCH_BYTES) at most MAX_PATCH_LINES
+    lines long; with its number of lines (None when unknown: cut by bytes) and whether
+    it was cut."""
     lines = patch.splitlines(keepends=True)
     kept = "".join(lines[:MAX_PATCH_LINES])
-    cut = len(lines) > MAX_PATCH_LINES or len(kept) > MAX_PATCH_CHARS
-    return kept[:MAX_PATCH_CHARS], len(lines), cut
+    return kept, None if cut else len(lines), cut or len(lines) > MAX_PATCH_LINES
 
 
 def _new_file_patch(path: str, entry: Entry) -> str:
@@ -224,44 +303,57 @@ def _new_file_patch(path: str, entry: Entry) -> str:
 
 @_guarded
 def code_patch(orch: Facade, agent_id: str, path: Any) -> dict[str, Any]:
-    """The patch of one changed file of `code_changes`, cut at MAX_PATCH_LINES lines (and
-    MAX_PATCH_CHARS characters); a binary or too large file has none.
-    {path, patch, binary, too_large, lines, truncated, max_lines}."""
+    """The patch of one changed file of `code_changes`, at most MAX_PATCH_BYTES read from
+    git and cut at MAX_PATCH_LINES lines; a binary or too large file has none, a submodule
+    only its commit change. {path, base, patch, binary, too_large, submodule, lines (null
+    when cut by bytes), truncated, max_lines, max_bytes}."""
     path = checked_path(path)
     tree = _worktree(orch, agent_id)
-    commit = git.merge_base(tree.root, tree.base, tree.env)
-    answer: dict[str, Any] = {"path": path, "patch": None, "binary": False, "too_large": False}
-    answer.update(lines=0, truncated=False, max_lines=MAX_PATCH_LINES)
-    tracked = [row for row in git.diff_stat(tree.root, commit, tree.env, path) if row[0] == path]
+    base = _base(tree)
+    answer: dict[str, Any] = {"path": path, "base": base.name, "patch": None, "binary": False}
+    answer.update(too_large=False, submodule=False, lines=0, truncated=False)
+    answer.update(max_lines=MAX_PATCH_LINES, max_bytes=MAX_PATCH_BYTES)
+    changes = git.diff_stat(tree.root, base.merge_base, tree.env, path, LIST_BYTES)[0]
+    tracked = [change for change in changes if change.path == path]
     if tracked:
-        if tracked[0][2] is None:
+        answer["submodule"] = tracked[0].submodule
+        if tracked[0].added is None:
             return {**answer, "binary": True}
-        text = git.diff_patch(tree.root, commit, path, tree.env)
+        output = git.diff_patch(tree.root, base.merge_base, path, tree.env, MAX_PATCH_BYTES)
+        text, byte_cut = output.text, output.cut
     elif _known(tree, path, untracked=True):
         entry = read_entry(tree.root, path, MAX_FILE_BYTES + 1)
         if entry.kind == "file" and is_binary(entry.data):
             return {**answer, "binary": True}
         if entry.size > MAX_FILE_BYTES:
             return {**answer, "too_large": True}
-        text = _new_file_patch(path, entry)
+        text, byte_cut = _new_file_patch(path, entry), False
     else:
-        raise OrchestratorError(f"{path} has no changes against {tree.base}")
-    patch, lines, cut = _cut(text)
+        raise OrchestratorError(f"{path} has no changes against {base.name}")
+    patch, lines, cut = _cut(text, byte_cut)
     return {**answer, "patch": patch, "lines": lines, "truncated": cut}
 
 
 @_guarded
 def code_tree(orch: Facade, agent_id: str) -> dict[str, Any]:
     """The files of the agent's worktree that git knows or would track (tracked, and
-    untracked but not ignored), sorted, at most MAX_TREE of them.
-    {agent_id, files, total, truncated, max_files}."""
+    untracked but not ignored), sorted, at most MAX_TREE of them, from at most LIST_BYTES
+    of each git listing; `submodules`: those of them that are submodules (not browsable).
+    {agent_id, files, submodules, total (null when a listing was cut), truncated,
+    max_files}."""
     tree = _worktree(orch, agent_id)
-    files = git.listed_files(tree.root, tree.env)
+    tracked, cut = git.tracked_files(tree.root, tree.env, LIST_BYTES)
+    others, others_cut = git.listed_files(tree.root, tree.env, untracked=True, cap=LIST_BYTES)
+    cut = cut or others_cut
+    files = sorted({path for path, _ in tracked} | set(others))
+    shown = files[:MAX_TREE]
+    modules = {path for path, submodule in tracked if submodule}
     return {
         "agent_id": tree.agent.id,
-        "files": files[:MAX_TREE],
-        "total": len(files),
-        "truncated": len(files) > MAX_TREE,
+        "files": shown,
+        "submodules": [path for path in shown if path in modules],
+        "total": None if cut else len(files),
+        "truncated": cut or len(files) > MAX_TREE,
         "max_files": MAX_TREE,
     }
 
