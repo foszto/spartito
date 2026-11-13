@@ -293,6 +293,26 @@ CREATE TABLE IF NOT EXISTS board_blockers (
     PRIMARY KEY (item_id, decision_id)
 );
 CREATE INDEX IF NOT EXISTS board_blockers_decision ON board_blockers(decision_id);
+-- Budgets (core/costs.py): one global (scope '') and one per project (scope: its name). A
+-- table of its own, unknown to older code, and never keys in `settings`: an older dashboard
+-- that saves the settings keeps only the keys it knows. period: 'day' | 'month' | 'total', in
+-- local time; warn_at: the warning threshold in percent of amount_usd; hard_stop: 1 refuses
+-- new message turns once the amount is reached (opt-in). announced_period: the period
+-- ('2026-11-13', '2026-11' or 'total') of the last warning; announced_level: what was
+-- announced in it (1: the threshold, 2: the amount), so that parallel runners and restarts
+-- announce each once (Store.raise_announced).
+CREATE TABLE IF NOT EXISTS budgets (
+    scope TEXT PRIMARY KEY,
+    amount_usd REAL NOT NULL,
+    period TEXT NOT NULL DEFAULT 'month',
+    warn_at INTEGER NOT NULL DEFAULT 80,
+    hard_stop INTEGER NOT NULL DEFAULT 0,
+    announced_period TEXT,
+    announced_level INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+-- The spend of a period (Store.spent_since) reads the usage records from a time on.
+CREATE INDEX IF NOT EXISTS run_usage_created ON run_usage(created_at);
 """
 
 ANYONE = object()  # withdraw_queued/replace_queued: whoever queued the run
@@ -1448,6 +1468,138 @@ class Store:
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM run_usage WHERE run_id = ?", (run_id,)).fetchone()
         return from_row(Usage, row) if row else None
+
+    # -- cost reports and budgets (core/costs.py) ------------------------
+
+    # A usage record with the project of its run's agent (NULL: the orchestrator). Records
+    # whose run is gone (deleted by older code, which does not know run_usage) are left out,
+    # as Store.usage_sums leaves them out.
+    _RECORDS = (
+        " FROM run_usage u JOIN runs r ON r.id = u.run_id LEFT JOIN agents a ON a.id = r.agent_id"
+    )
+
+    def usage_records(self, since: str | None = None, project: str | None = None) -> list[dict]:
+        """The usage records of the runs, oldest first: run_id, agent_id, project, the token
+        counts, cost_usd (NULL: none reported, e.g. Codex) and created_at. `since`: only those
+        written at or after this UTC time (as `now()` writes it); `project`: only that
+        project's agents (None: every agent, the orchestrator too). Runs recorded by code from
+        before usage records have none."""
+        where, args = self._record_filter(since, project)
+        columns = ", ".join(f"u.{key}" for key in (*TOKEN_FIELDS, "cost_usd", "created_at"))
+        with self._read() as conn:
+            rows = conn.execute(
+                f"SELECT u.run_id, r.agent_id, a.project, {columns}{self._RECORDS}{where}"
+                " ORDER BY u.created_at, u.run_id",
+                args,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def _record_filter(since: str | None, project: str | None) -> tuple[str, list[Any]]:
+        conditions, args = [], []
+        if since is not None:
+            conditions.append("u.created_at >= ?")
+            args.append(since)
+        if project is not None:
+            conditions.append("a.project = ?")
+            args.append(project)
+        return (" WHERE " + " AND ".join(conditions) if conditions else ""), args
+
+    def removed_spend(self, project: str | None = None) -> list[dict]:
+        """What the agents deleted for good had spent (spent_removed), one row per deletion:
+        agent_id, project (NULL: the orchestrator, or not known), the token sums, cost_usd and
+        removed_at. When it was spent is not recorded. `project`: only that project's."""
+        query = f"SELECT agent_id, project, {', '.join(TOKEN_FIELDS)}, cost_usd, removed_at"
+        query += " FROM spent_removed"
+        args: tuple[Any, ...] = ()
+        if project is not None:
+            query, args = query + " WHERE project = ?", (project,)
+        with self._read() as conn:
+            return [dict(row) for row in conn.execute(query + " ORDER BY id", args).fetchall()]
+
+    def spent_since(self, since: str | None, project: str | None, removed: bool) -> float:
+        """The reported cost of the usage records written at or after `since` (None: all), of
+        one project's agents (None: every agent), plus with `removed` what deleted agents (of
+        that project) had spent; read together, so a deletion meanwhile counts once."""
+        where, args = self._record_filter(since, project)
+        with self._read() as conn:
+            total = conn.execute(
+                f"SELECT COALESCE(SUM(u.cost_usd), 0){self._RECORDS}{where}", args
+            ).fetchone()[0]
+            if removed:
+                query = "SELECT COALESCE(SUM(cost_usd), 0) FROM spent_removed"
+                one = () if project is None else (project,)
+                query += "" if project is None else " WHERE project = ?"
+                total += conn.execute(query, one).fetchone()[0]
+        return float(total)
+
+    def budgets(self) -> list[dict]:
+        """Every budget (table budgets), the global one ('') first, then by project."""
+        with self._conn() as conn:
+            rows = conn.execute("SELECT * FROM budgets ORDER BY scope").fetchall()
+        return [dict(row) for row in rows]
+
+    def set_budget(
+        self,
+        scope: str,
+        amount_usd: float | None,
+        period: str | None,
+        warn_at: int | None,
+        hard_stop: bool | None,
+        defaults: dict[str, Any],
+    ) -> dict:
+        """Create or change the budget of `scope`; a value left None stays as it was (a new
+        budget: `defaults`, which also holds amount_usd's). What was announced is forgotten
+        when the amount, the period or the threshold changes, so the new figures warn anew.
+        One transaction: two changes at once do not undo each other's fields."""
+        with self.transaction() as conn:
+            row = conn.execute("SELECT * FROM budgets WHERE scope = ?", (scope,)).fetchone()
+            old = dict(row) if row else {**defaults, "announced_period": None, "announced_level": 0}
+            new = {
+                "amount_usd": old["amount_usd"] if amount_usd is None else amount_usd,
+                "period": old["period"] if period is None else period,
+                "warn_at": old["warn_at"] if warn_at is None else warn_at,
+                "hard_stop": int(old["hard_stop"] if hard_stop is None else hard_stop),
+            }
+            if new["amount_usd"] is None:
+                raise ValueError("a new budget needs an amount")
+            changed = any(new[key] != old[key] for key in ("amount_usd", "period", "warn_at"))
+            announced = (None, 0) if changed else (old["announced_period"], old["announced_level"])
+            conn.execute(
+                "INSERT OR REPLACE INTO budgets (scope, amount_usd, period, warn_at, hard_stop,"
+                " announced_period, announced_level, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (scope, *new.values(), *announced, now()),
+            )
+            return dict(conn.execute("SELECT * FROM budgets WHERE scope = ?", (scope,)).fetchone())
+
+    def remove_budget(self, scope: str) -> bool:
+        with self._conn() as conn:
+            return conn.execute("DELETE FROM budgets WHERE scope = ?", (scope,)).rowcount > 0
+
+    def raise_announced(self, budget: dict, period: str, level: int) -> bool:
+        """Record that `level` was announced for `budget` (a row as read) in `period`; True
+        only when nothing as high was announced in that period yet and the budget's amount,
+        period and threshold are still those read. One conditional UPDATE: of several
+        processes raising the same level at once exactly one gets True."""
+        with self._conn() as conn:
+            return (
+                conn.execute(
+                    "UPDATE budgets SET announced_period = ?, announced_level = ?"
+                    " WHERE scope = ? AND amount_usd = ? AND period = ? AND warn_at = ?"
+                    " AND (announced_period IS NOT ? OR announced_level < ?)",
+                    (
+                        period,
+                        level,
+                        budget["scope"],
+                        budget["amount_usd"],
+                        budget["period"],
+                        budget["warn_at"],
+                        period,
+                        level,
+                    ),
+                ).rowcount
+                == 1
+            )
 
     # -- deliveries -------------------------------------------------------
 
