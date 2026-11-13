@@ -134,4 +134,5 @@ wait until `spartito ps` shows no agent `running` or `waiting`, and quit `sparti
 `spartito menubar`. Then `uv tool install --python 3.14 'spartito[app,menubar]'`, with the
 extras you installed, replaces the tool in place (no `--force` needed). If you use them,
 `spartito service install`, with the `--host` and `--port` you used, restarts the dashboard
-on the new code, and `spartito app install` rewrites the launcher.
+on the new code, and `spartito app install` rewrites the launcher. A `spartito web` started by
+hand keeps the old code too: stop it (Ctrl-C) and start it again.

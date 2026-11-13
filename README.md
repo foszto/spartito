@@ -66,8 +66,8 @@ the package needs even when uv's default is older; uv downloads it if it is miss
 
 Alternatives: `uv tool install --python 3.14 spartito` without the extras (`spartito app` then
 opens a browser window, and on macOS notifications do not come from Spartito itself), or
-`pipx install --python python3.14 'spartito[app,menubar]'`. Upgrade with
-`uv tool upgrade spartito` (it keeps the extras), remove with `uv tool uninstall spartito`.
+`pipx install --python python3.14 'spartito[app,menubar]'`. Remove a uv tool install with
+`uv tool uninstall spartito`.
 To run a checkout instead, see [Development](https://github.com/foszto/spartito#development).
 Installed before the command was renamed? See
 [Upgrading from `orch`](https://github.com/foszto/spartito/blob/master/docs/usage.md#upgrading-from-orch). Installed from a checkout
@@ -79,7 +79,8 @@ Spartito keeps its state in `~/.orchestrator/`. Set `ORCH_HOME` to use another d
 **Upgrading.** `spartito version` shows the version and the kind of install,
 `spartito version --check` asks PyPI for a newer release (Spartito makes no network request on
 its own), and `spartito upgrade` prepares an upgrade: it backs the state up, prints the command
-for your install and what to restart afterwards. The steps:
+for your install (for the install above `uv tool upgrade spartito`, which keeps the extras) and
+what to restart afterwards. The steps:
 [docs/usage.md](https://github.com/foszto/spartito/blob/master/docs/usage.md#upgrading).
 
 ## Quick start

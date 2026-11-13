@@ -494,7 +494,7 @@ paths quoted for the shell:
 | install | upgrade |
 |---|---|
 | `uv tool install 'spartito[app,menubar]'` (a package from PyPI) | `uv tool upgrade spartito`: it keeps the extras and the Python of the install |
-| a package installed with pip | `<python> -m pip install --upgrade spartito`, with the extras you installed (`'spartito[app,menubar]'`) |
+| a package installed with pip or pipx | `<python> -m pip install --upgrade spartito`, with the Python of its environment and the extras you installed (`'spartito[app,menubar]'`) |
 | `uv tool install --editable '.[app,menubar]'` from a checkout | in the checkout: `git pull` (or update its branch as you do), then the same `uv tool install --editable` line with the extras the install has |
 | a checkout used with `uv run` (Spartito runs in the checkout's own `.venv`) | in the checkout: `git pull`, then `uv sync` with the extras you synced with ([CONTRIBUTING.md](../CONTRIBUTING.md#setup)) |
 | a checkout installed editable into another environment | in the checkout: `git pull`, then `<python> -m pip install -e .` with that environment's Python and the extras you installed (`uv pip install --python <python> -e .` where it has no pip) |
@@ -522,9 +522,10 @@ dashboard server started (only that one is recorded). Then check the version wit
 `spartito version`, and in the dashboard's settings once the page is reloaded.
 
 **Going back.** Install the previous version (for a package, for example
-`uv tool install 'spartito[app,menubar]==0.1.0'`; for a checkout, check out the earlier
-commit and install or sync as above), restart as above, and if the newer version changed the
-state in a way you want undone, restore the backup: `spartito state restore <name> --yes`.
+`uv tool install --python 3.14 'spartito[app,menubar]==0.1.0'`; for a checkout, check out the
+earlier commit and install or sync as above), restart as above, and if the newer version
+changed the state in a way you want undone, restore the backup:
+`spartito state restore <name> --yes`.
 Schema changes are additive, so an older version opens a database a newer one has used
 ([backups and versions](state.md#backups-and-versions)).
 
