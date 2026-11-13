@@ -12,8 +12,10 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import http.client
+import importlib.util
 import json
 import re
+import shlex
 import sys
 import tomllib
 import urllib.error
@@ -80,6 +82,15 @@ def environment() -> Path:
     return Path(sys.prefix)
 
 
+def python() -> str:
+    """The Python interpreter this runs in."""
+    return sys.executable
+
+
+def has_pip() -> bool:
+    return importlib.util.find_spec("pip") is not None
+
+
 def direct_url(dist: metadata.Distribution) -> dict[str, Any]:
     """The PEP 610 record of an install from a URL or directory ({}: from an index)."""
     try:
@@ -135,11 +146,20 @@ def requirement(extras: tuple[str, ...], base: str = DISTRIBUTION) -> str:
     return f"'{base}[{','.join(extras)}]'" if extras else base
 
 
+def own_environment(checkout: str) -> bool:
+    """Whether this runs in the checkout's own environment, `<checkout>/.venv` (`uv run`)."""
+    try:
+        return environment().resolve() == (Path(checkout) / ".venv").resolve()
+    except OSError:
+        return False
+
+
 def commands(found: Install) -> tuple[list[str], list[str]]:
-    """The commands that upgrade this install, and notes on them."""
+    """The commands that upgrade this install, and notes on them. Paths in a command are
+    quoted for the shell (shlex.quote)."""
     cli = config.CLI_NAME
-    if found.kind == "editable":
-        where = f"cd {found.checkout}"
+    if found.kind == "editable" and found.checkout:
+        where = f"cd {shlex.quote(found.checkout)}"
         update = "git pull    # or update the checkout's branch as you do"
         if found.tool:
             return [
@@ -147,9 +167,19 @@ def commands(found: Install) -> tuple[list[str], list[str]]:
                 update,
                 f"uv tool install --editable {requirement(found.extras, '.')}",
             ], ["the `uv tool install` line reinstalls the checkout with the extras it has now"]
-        return [where, update, "uv sync"], [
-            "add the extras you synced with, for example `uv sync --extra app --extra menubar`"
-            " (CONTRIBUTING.md)"
+        if own_environment(found.checkout):
+            return [where, update, "uv sync"], [
+                "add the extras you synced with, for example `uv sync --extra app --extra"
+                " menubar` (CONTRIBUTING.md)"
+            ]
+        # Another environment: reinstall the checkout into the Python that runs this.
+        install = (
+            f"{shlex.quote(python())} -m pip install -e ."
+            if has_pip()
+            else f"uv pip install --python {shlex.quote(python())} -e ."
+        )
+        return [where, update, install], [
+            f"with the extras you installed, for example `-e '.[{EXTRAS}]'`"
         ]
     if found.kind == "package" and found.source:
         return [], [
@@ -162,7 +192,7 @@ def commands(found: Install) -> tuple[list[str], list[str]]:
             f"`uv tool upgrade` keeps the install's extras and Python{extras}"
         ]
     if found.kind == "package":
-        return [f"{sys.executable} -m pip install --upgrade spartito"], [
+        return [f"{shlex.quote(python())} -m pip install --upgrade spartito"], [
             f"with the extras you installed, for example 'spartito[{EXTRAS}]'"
         ]
     return [], [
@@ -174,21 +204,43 @@ def commands(found: Install) -> tuple[list[str], list[str]]:
 
 # -- the check for a newer release ----------------------------------------------------------------
 
-RELEASE = re.compile(r"v?(\d+(?:\.\d+)*)([A-Za-z0-9.+_!-]*)", re.IGNORECASE)
-PRE = re.compile(r"[-_.]?(a|b|c|rc|alpha|beta|pre|preview|dev)\d*", re.IGNORECASE)
+# The plain forms of PEP 440: release numbers, then optionally a pre-release, a post-release,
+# a development release and a local part (`1.2.0rc1.post2.dev3+abc`), in its spellings.
+RELEASE = re.compile(
+    r"v?(?P<release>\d+(?:\.\d+)*)"
+    r"(?:[-_.]?(?P<pre>alpha|beta|preview|pre|rc|a|b|c)[-_.]?(?P<pre_n>\d*))?"
+    r"(?:-(?P<post_implicit>\d+)|[-_.]?(?:post|rev|r)[-_.]?(?P<post_n>\d*))?"
+    r"(?:[-_.]?dev[-_.]?(?P<dev_n>\d*))?"
+    r"(?:\+[a-z0-9]+(?:[-_.][a-z0-9]+)*)?",
+    re.IGNORECASE,
+)
+PRE_RANK = {"a": 0, "alpha": 0, "b": 1, "beta": 1, "rc": 2, "c": 2, "pre": 2, "preview": 2}
+FINAL = 3  # above every pre-release phase
 
 
-def release_key(version: str) -> tuple[tuple[int, ...], bool] | None:
-    """How versions are compared: their release numbers (`0.10.0` > `0.9.1`, trailing zeros do
-    not count), and with equal numbers a final release (`.postN` and a `+local` part included)
-    above a pre-release or development release (`a`, `b`, `rc`, `dev`). None: no numbers."""
+def release_key(version: str) -> tuple | None:
+    """How versions are compared, as PEP 440 orders the plain cases: by the release numbers
+    (`0.10.0` > `0.9.1`; trailing zeros do not count), then dev < a < b < rc < final < post,
+    each with its number (`rc1` < `rc2`, `post1` < `post2`); a `.devN` of a pre- or
+    post-release comes just before it. A `+local` part is ignored. None: not such a version."""
     match = RELEASE.fullmatch(version.strip())
     if not match:
         return None
-    numbers = [int(n) for n in match.group(1).split(".")]
+    numbers = [int(n) for n in match["release"].split(".")]
     while len(numbers) > 1 and numbers[-1] == 0:
         numbers.pop()
-    return tuple(numbers), not PRE.match(match.group(2))
+    post_n = match["post_implicit"] or match["post_n"]
+    has_post = match["post_implicit"] is not None or match["post_n"] is not None
+    has_dev = match["dev_n"] is not None
+    if match["pre"]:
+        pre = (PRE_RANK[match["pre"].lower()], int(match["pre_n"] or 0))
+    elif has_dev and not has_post:
+        pre = (-1, 0)  # `1.0.dev1` comes before `1.0a1`
+    else:
+        pre = (FINAL, 0)
+    post = int(post_n or 0) if has_post else -1
+    dev = (0, int(match["dev_n"] or 0)) if has_dev else (1, 0)
+    return tuple(numbers), pre, post, dev
 
 
 def fetch(url: str) -> bytes:

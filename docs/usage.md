@@ -350,9 +350,10 @@ spartito upgrade [--dry-run]
   answer it does not understand is a one-line error with exit code 1. The request is
   `GET https://pypi.org/pypi/spartito/json` with the header `User-Agent: spartito` and no other
   header of Spartito's own (no version, platform, path or home), a 10-second timeout, at most
-  512 KB read and no redirect followed. Versions are compared by their release numbers
-  (`0.10.0` is newer than `0.9.1`); with equal numbers a final release is newer than a
-  pre-release or development release (`rc`, `a`, `b`, `dev`).
+  512 KB read and no redirect followed. Versions are compared as PEP 440 orders the plain
+  cases: by their release numbers (`0.10.0` is newer than `0.9.1`), then
+  dev < a < b < rc < final < post, each with its number (`rc1` < `rc2`, `post1` < `post2`);
+  a `+local` part is ignored.
 - `upgrade` prepares an upgrade and prints how to do it; it runs no package manager and no
   git. It refuses while any turn is queued or running (as `state restore` does; a turn whose
   runner is gone does not count), backs the state up into the home's `backups/` (as
@@ -487,14 +488,16 @@ backup: /home/dev/.orchestrator/backups/20261113T142530Z
   to go back: `spartito state restore 20261113T142530Z --yes`
 ```
 
-**The upgrade.** `spartito upgrade` prints the command for the kind of install it found:
+**The upgrade.** `spartito upgrade` prints the command for the kind of install it found, with
+paths quoted for the shell:
 
 | install | upgrade |
 |---|---|
 | `uv tool install 'spartito[app,menubar]'` (a package from PyPI) | `uv tool upgrade spartito`: it keeps the extras and the Python of the install |
 | a package installed with pip | `<python> -m pip install --upgrade spartito`, with the extras you installed (`'spartito[app,menubar]'`) |
 | `uv tool install --editable '.[app,menubar]'` from a checkout | in the checkout: `git pull` (or update its branch as you do), then the same `uv tool install --editable` line with the extras the install has |
-| a checkout used with `uv run` | in the checkout: `git pull`, then `uv sync` with the extras you synced with ([CONTRIBUTING.md](../CONTRIBUTING.md#setup)) |
+| a checkout used with `uv run` (Spartito runs in the checkout's own `.venv`) | in the checkout: `git pull`, then `uv sync` with the extras you synced with ([CONTRIBUTING.md](../CONTRIBUTING.md#setup)) |
+| a checkout installed editable into another environment | in the checkout: `git pull`, then `<python> -m pip install -e .` with that environment's Python and the extras you installed (`uv pip install --python <python> -e .` where it has no pip) |
 
 A package installed from a file or URL instead of PyPI is installed again from there. An
 environment without the distribution `spartito` (an install from before it was renamed) takes

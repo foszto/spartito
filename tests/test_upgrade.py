@@ -1,15 +1,20 @@
 """`spartito --version`, `spartito version [--check]` and `spartito upgrade` (core/upgrade.py).
 
 No test uses the real network: the check asks a fake index on 127.0.0.1, and an autouse
-fixture makes every other request fail the test. The install, the service, the launcher and
-the running window are faked as the other tests fake them (conftest)."""
+fixture records and refuses, at the socket level, every attempt to reach anything but this
+machine; a test that leaves such a record fails, even when the code swallowed the refusal.
+The install, the service, the launcher and the running window are faked as the other tests
+fake them (conftest)."""
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import inspect
+import ipaddress
 import json
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -36,26 +41,59 @@ from orchestrator.web.app import app
 
 CHECKOUT = "/home/dev/src/spartito"
 REAL_OPENER = upgrade.OPENER  # the module's own, before a fixture replaces it
+LOCAL_NAMES = {None, "", "localhost", b"localhost"}
 
 
-class NoNetwork:
-    """Stands in for every opener: a request fails the test."""
-
-    def open(self, *args: Any, **kwargs: Any) -> Any:
-        raise AssertionError(f"a request was made: {args}")
+def is_local(host: Any) -> bool:
+    if host in LOCAL_NAMES:
+        return True
+    try:
+        text = host.decode() if isinstance(host, bytes) else str(host)
+        return ipaddress.ip_address(text.split("%", 1)[0]).is_loopback
+    except ValueError:
+        return False
 
 
 @pytest.fixture(autouse=True)
-def no_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No request leaves a test of this module unless it sets the fake index up: the check's
-    opener, urlopen and every HTTPS connection fail it."""
+def outside(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
+    """Every attempt of this test to reach anything but this machine, at the socket level (a
+    name lookup, a connect: any opener, HTTP or HTTPS), recorded and refused. The record must
+    be empty at the end, so a refusal the code swallowed still fails the test. No proxy is
+    used, so a request cannot pass through one on this machine."""
+    attempts: list[str] = []
+    lookup, connect, connect_ex = (
+        socket.getaddrinfo,
+        socket.socket.connect,
+        socket.socket.connect_ex,
+    )
 
-    def refuse(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError(f"a request was made: {args}")
+    def guarded_lookup(host: Any, *args: Any, **kwargs: Any) -> Any:
+        if not is_local(host):
+            attempts.append(f"lookup {host!r}")
+            raise socket.gaierror(socket.EAI_NONAME, f"refused by the test: {host!r}")
+        return lookup(host, *args, **kwargs)
 
-    monkeypatch.setattr(upgrade, "OPENER", NoNetwork())
-    monkeypatch.setattr(urllib.request, "urlopen", refuse)
-    monkeypatch.setattr("http.client.HTTPSConnection.connect", refuse)
+    def guard(address: Any) -> None:
+        if isinstance(address, tuple) and not is_local(address[0]):
+            attempts.append(f"connect {address!r}")
+            raise ConnectionRefusedError(f"refused by the test: {address!r}")
+
+    def guarded_connect(self: socket.socket, address: Any) -> Any:
+        guard(address)
+        return connect(self, address)
+
+    def guarded_connect_ex(self: socket.socket, address: Any) -> Any:
+        guard(address)
+        return connect_ex(self, address)
+
+    monkeypatch.setattr(socket, "getaddrinfo", guarded_lookup)
+    monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", guarded_connect_ex)
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: {})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), autostart.NoRedirect)
+    monkeypatch.setattr(upgrade, "OPENER", opener)  # the module's, without proxies
+    yield attempts
+    assert attempts == [], f"tried to reach another machine: {attempts}"
 
 
 def invoke(*args: str):
@@ -75,6 +113,11 @@ class FakeDist:
 
 
 EDITABLE = {"url": f"file://{CHECKOUT}", "dir_info": {"editable": True}}
+
+
+def editable(checkout: Path) -> dict:
+    """The direct_url.json of an editable install of `checkout` (a space is %20 in it)."""
+    return {"url": checkout.as_uri(), "dir_info": {"editable": True}}
 
 
 @pytest.fixture
@@ -138,6 +181,7 @@ def test_the_install_of_this_checkout_is_editable() -> None:
     found = upgrade.install()
     assert found.kind == "editable" and not found.tool
     assert Path(found.checkout or "").resolve() == Path(__file__).resolve().parent.parent
+    assert upgrade.commands(found)[0][-1] == "uv sync"  # its own .venv
 
 
 def test_without_the_distribution_the_install_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -163,7 +207,7 @@ def test_the_state_holds_the_version_and_ping_nothing_new(orch: Orchestrator) ->
 
 
 def test_the_settings_show_the_version_as_text() -> None:
-    source = page_functions("el", "versionBox")
+    source = f"const CLI = {json.dumps(config.CLI_NAME)};\n" + page_functions("el", "versionBox")
     code = (
         FAKE_DOM
         + source
@@ -175,7 +219,10 @@ def test_the_settings_show_the_version_as_text() -> None:
     )
     shown, unknown = run_node(code)
     assert shown["children"][0]["text"] == "Version"
-    assert shown["children"][1]["text"].startswith("Spartito 0.2.0<b>. `spartito version --check`")
+    assert shown["children"][1]["text"] == (
+        f"Spartito 0.2.0<b>. `{config.CLI_NAME} version --check` asks PyPI for a newer release;"
+        f" `{config.CLI_NAME} upgrade` prepares an upgrade. Nothing checks on its own."
+    )
     assert unknown["children"][1]["text"].startswith("Spartito unknown.")
 
 
@@ -261,6 +308,9 @@ def test_the_opener_follows_no_redirect() -> None:
          " `spartito upgrade` prepares the upgrade"),
         ("0.1.0", "current", "up to date: 0.1.0 is the latest release on PyPI"),
         ("0.0.9", "ahead", "0.1.0 is newer than the latest release on PyPI (0.0.9)"),
+        ("0.1.0.post1", "newer", "a newer release is on PyPI: 0.1.0.post1 (installed: 0.1.0);"
+         " `spartito upgrade` prepares the upgrade"),
+        ("0.1.0+local.7", "current", "up to date: 0.1.0 is the latest release on PyPI"),
     ],
 )  # fmt: skip
 def test_the_check_compares_with_the_latest_release(
@@ -359,7 +409,20 @@ def test_an_unreachable_index_is_a_one_line_error(
         ("1.0", "1.0.0", 0),
         ("0.2.0", "0.2.0rc1", 1),
         ("0.2.0.dev3", "0.2.0", -1),
-        ("0.2.0.post1", "0.2.0", 0),
+        ("0.2.0.post1", "0.2.0", 1),
+        ("0.2.0.post2", "0.2.0.post1", 1),
+        ("0.2.0-1", "0.2.0.post1", 0),
+        ("0.2.0rc2", "0.2.0rc1", 1),
+        ("0.2.0rc1", "0.2.0b3", 1),
+        ("0.2.0b1", "0.2.0a9", 1),
+        ("0.2.0a1", "0.2.0.dev9", 1),
+        ("0.2.0rc1", "0.2.0rc1.dev2", 1),
+        ("0.2.0.post1", "0.2.0.post1.dev1", 1),
+        ("0.2.0.post1.dev1", "0.2.0", 1),
+        ("0.2.0.RC1", "0.2.0rc1", 0),
+        ("0.2.0-alpha.1", "0.2.0a1", 0),
+        ("0.2.0+abc.1", "0.2.0", 0),
+        ("v0.2.0", "0.2.0", 0),
         ("0.1.1rc1", "0.1.0", 1),
     ],
 )
@@ -367,6 +430,16 @@ def test_versions_compare_by_their_release_numbers(a: str, b: str, order: int) -
     ka, kb = upgrade.release_key(a), upgrade.release_key(b)
     assert ka is not None and kb is not None
     assert (ka > kb) - (ka < kb) == order
+
+
+@pytest.mark.parametrize("version", ["latest", "0.2.0\x1b[31m", "0.2.0 rc1", "0.2.0+"])
+def test_what_is_not_a_plain_version_has_no_key(version: str) -> None:
+    assert upgrade.release_key(version) is None
+
+
+def test_a_later_release_candidate_is_newer(index: FakeIndex) -> None:
+    index.release("0.2.0rc2")
+    assert upgrade.check("0.2.0rc1")["status"] == "newer"
 
 
 def test_an_unknown_installed_version_is_said(index: FakeIndex) -> None:
@@ -377,8 +450,18 @@ def test_an_unknown_installed_version_is_said(index: FakeIndex) -> None:
 # -- no request otherwise ------------------------------------------------------------------------
 
 
+def test_the_guard_records_a_request_whose_error_is_swallowed(outside: list[str]) -> None:
+    """The shape of a "best effort" check: the refusal is swallowed, the record stays."""
+    with contextlib.suppress(Exception):
+        upgrade.check()
+    with contextlib.suppress(Exception):  # another opener, plain HTTP
+        urllib.request.urlopen("http://example.org/", timeout=1)
+    assert outside == ["lookup 'pypi.org'", "lookup 'example.org'"]
+    outside.clear()  # seen: the fixture's own check at the end stays meaningful
+
+
 def test_nothing_else_makes_a_request(
-    orch: Orchestrator, monkeypatch: pytest.MonkeyPatch, env_dir: Path
+    orch: Orchestrator, monkeypatch: pytest.MonkeyPatch, env_dir: Path, outside: list[str]
 ) -> None:
     fake_install(monkeypatch, env_dir, None, ["app"])
     for args in (["--version"], ["version"], ["upgrade", "--dry-run"], ["upgrade"]):
@@ -386,6 +469,23 @@ def test_nothing_else_makes_a_request(
     with TestClient(app, base_url="http://localhost") as client:
         assert client.get("/api/state").status_code == 200
         assert client.get("/api/ping").status_code == 200
+    server = serve.make("127.0.0.1", 0)  # a real server start, asked over the loopback
+    thread = threading.Thread(target=serve.serve, args=(server,), daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not server.ready and thread.is_alive() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    try:
+        assert server.ready
+        base = f"http://127.0.0.1:{server.record['port']}"
+        local = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        for path in ("/api/state", "/api/ping"):
+            with local.open(base + path, timeout=5) as answer:
+                assert answer.status == 200
+    finally:
+        server.should_exit = True
+        thread.join(10)
+    assert outside == []
 
 
 # -- upgrade -------------------------------------------------------------------------------------
@@ -530,8 +630,9 @@ def test_the_plan_of_a_pip_package(
     o: Orchestrator, monkeypatch: pytest.MonkeyPatch, env_dir: Path, platform: str
 ) -> None:
     fake_install(monkeypatch, env_dir, None, None)
+    monkeypatch.setattr(upgrade, "python", lambda: "/opt/my python/bin/python3")
     lines = invoke("upgrade", "--dry-run").stdout.splitlines()
-    assert f"  {sys.executable} -m pip install --upgrade spartito" in lines
+    assert "  '/opt/my python/bin/python3' -m pip install --upgrade spartito" in lines
     assert "  note: with the extras you installed, for example 'spartito[app,menubar]'" in lines
 
 
@@ -578,13 +679,16 @@ def test_the_plan_of_an_editable_uv_tool_with_everything_running(
 
 
 def test_the_plan_of_a_synced_checkout_with_a_hand_started_server(
-    o: Orchestrator, monkeypatch: pytest.MonkeyPatch, env_dir: Path, platform: str
+    o: Orchestrator, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, platform: str
 ) -> None:
-    fake_install(monkeypatch, env_dir, EDITABLE, None)
+    checkout = tmp_path / "my app"  # `uv run` in it: the environment is its own .venv
+    (checkout / ".venv").mkdir(parents=True)
+    fake_install(monkeypatch, checkout / ".venv", editable(checkout), None)
+    monkeypatch.setattr(upgrade, "environment", lambda: checkout / ".venv")
     record_server(18893)
     lines = invoke("upgrade", "--dry-run").stdout.splitlines()
     assert lines[lines.index("upgrade it with:") + 1 :][:4] == [
-        f"  cd {CHECKOUT}",
+        f"  cd '{checkout}'",
         "  git pull    # or update the checkout's branch as you do",
         "  uv sync",
         "  note: add the extras you synced with, for example `uv sync --extra app --extra"
@@ -594,6 +698,37 @@ def test_the_plan_of_a_synced_checkout_with_a_hand_started_server(
         f"  - the dashboard server on port 18893 (pid {os.getpid()}), a `spartito web` started"
         " by hand: stop it (Ctrl-C) and start it again"
     )
+
+
+@pytest.mark.parametrize(
+    ("pip", "install"),
+    [
+        (True, "  '/opt/my python/bin/python3' -m pip install -e ."),
+        (False, "  uv pip install --python '/opt/my python/bin/python3' -e ."),
+    ],
+    ids=["pip", "no-pip"],
+)
+def test_the_plan_of_an_editable_install_into_another_environment(
+    o: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+    env_dir: Path,
+    platform: str,
+    pip: bool,
+    install: str,
+) -> None:
+    """Neither a uv tool nor the checkout's own .venv: `uv sync` would sync the wrong
+    environment, so the checkout is installed again into the Python that runs this."""
+    fake_install(monkeypatch, env_dir, editable(Path("/home/dev/src/my app")), None)
+    monkeypatch.setattr(upgrade, "python", lambda: "/opt/my python/bin/python3")
+    monkeypatch.setattr(upgrade, "has_pip", lambda: pip)
+    lines = invoke("upgrade", "--dry-run").stdout.splitlines()
+    assert lines[lines.index("upgrade it with:") + 1 :][:4] == [
+        "  cd '/home/dev/src/my app'",
+        "  git pull    # or update the checkout's branch as you do",
+        install,
+        "  note: with the extras you installed, for example `-e '.[app,menubar]'`",
+    ]
+    assert "  uv sync" not in lines
 
 
 def test_the_service_server_and_dead_records_are_not_listed_twice(

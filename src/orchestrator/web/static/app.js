@@ -1734,8 +1734,8 @@ function renderSettings() {
 function versionBox({ project_name: name, version }) {
   const box = el('div', 'tier');
   box.append(el('h4', '', 'Version'), el('p', 'about',
-    `${name || 'Spartito'} ${version || 'unknown'}. \`spartito version --check\` asks PyPI for a newer release; `
-    + '`spartito upgrade` prepares an upgrade. Nothing checks on its own.'));
+    `${name || 'Spartito'} ${version || 'unknown'}. \`${CLI} version --check\` asks PyPI for a newer release; `
+    + `\`${CLI} upgrade\` prepares an upgrade. Nothing checks on its own.`));
   return box;
 }
 
