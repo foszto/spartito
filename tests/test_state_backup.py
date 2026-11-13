@@ -17,6 +17,7 @@ import pytest
 from typer.testing import CliRunner
 
 from orchestrator import cli, config
+from orchestrator import store as store_module
 from orchestrator.core import state
 from orchestrator.errors import NeedsConfirmation, OrchestratorError
 from orchestrator.models import Agent, Project, RunStatus
@@ -524,6 +525,86 @@ def test_writers_wait_while_the_state_is_kept_and_replaced_and_commit_after_it(
     assert len(calls) == 2
     assert project_names(kept / "orch.db") == ["my-app"]
     assert project_names() == ["late-app", "my-app"]
+
+
+def fail(*_: object) -> None:
+    raise RuntimeError("the process died here")
+
+
+def commit_then_fail(conn: sqlite3.Connection) -> None:
+    conn.execute("COMMIT")
+    fail()
+
+
+def fail_at_commit(conn: sqlite3.Connection) -> None:
+    raise sqlite3.OperationalError("disk I/O error")
+
+
+# (where it fails, what it patches, whether the live state was replaced, whether the kept
+# backup was named). A failure after the kept backup was named leaves it, as a crash would.
+FAILURES = {
+    "the snapshot's check": (store_module, "check_database", fail, False, False),
+    "a crash before the name": (store_module, "check_database", fail, False, False),
+    "the replace, before the commit": (store_module, "_replace_content", fail, False, True),
+    "the commit itself": (store_module, "_commit", fail_at_commit, False, True),
+    "right after the commit": (store_module, "_commit", commit_then_fail, True, True),
+    "the user files after the commit": (state, "put_back", fail, True, True),
+}
+
+
+@pytest.mark.parametrize("where", FAILURES)
+def test_a_restore_that_fails_at_any_step_leaves_the_replaced_state_restorable(
+    o: Orchestrator, monkeypatch: pytest.MonkeyPatch, where: str
+) -> None:
+    """Live state unchanged, or restored with the kept backup complete, listed and
+    announced; restoring the kept backup brings the replaced state back."""
+    module, name, broken, replaced, named = FAILURES[where]
+    (config.home() / "roles").mkdir()
+    (config.home() / "roles" / "docs-writer.md").write_text("role")
+    finished_run(o, "fix-login-3f2a", "one")
+    first = o.backup_state()["name"]
+    finished_run(o, "fix-login-3f2a", "two")
+    announced: list[str] = []
+
+    with monkeypatch.context() as patch:
+        patch.setattr(module, name, broken)
+        if where == "a crash before the name":
+            patch.setattr(state, "abandon", lambda final, work: None)  # a crash cleans nothing
+        with pytest.raises((OrchestratorError, RuntimeError)):
+            o.restore_state(first, confirm=True, announce=lambda path, _: announced.append(path))
+
+    assert prompts() == (["one"] if replaced else ["one", "two"])
+    listed = [item["name"] for item in o.list_backups()]
+    if not named:
+        assert announced == [] and listed == [first]
+        return
+    kept = Path(announced[0])
+    assert listed == [kept.name, first] and kept.name.endswith("-before-restore")
+    assert not any(p.name.endswith(".incomplete") for p in config.backups_dir().iterdir())
+    assert prompts(kept / "orch.db") == ["one", "two"]
+    assert (kept / "roles" / "docs-writer.md").read_text() == "role"
+    for path in [kept, *kept.rglob("*")]:
+        assert stat.S_IMODE(path.stat().st_mode) == (0o700 if path.is_dir() else 0o600), path
+    o.restore_state(kept.name, confirm=True)
+    assert prompts() == ["one", "two"]
+
+
+def test_the_kept_backup_is_printed_before_a_failure_after_the_commit(
+    o: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = o.backup_state()["name"]
+    with monkeypatch.context() as patch:
+        patch.setattr(store_module, "_commit", commit_then_fail)
+        result = invoke("state", "restore", first, "--yes")
+    assert result.exit_code == 1
+    kept = o.list_backups()[0]["name"]
+    assert result.stdout == (
+        f"the replaced state is kept in {config.backups_dir() / kept}"
+        f" (`{config.CLI_NAME} state restore {kept} --yes` brings it back)\n"
+    )
+    assert "the restore failed: the process died here; the state before it is kept in" in (
+        " ".join(result.stderr.split())
+    )
 
 
 def test_a_turn_queued_while_the_kept_backup_is_made_stops_the_restore(

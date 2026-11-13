@@ -43,8 +43,8 @@ with `--to`; an existing directory is never written into, and neither is a place
 `roles/` (or `logs/` with `--logs`), which the backup copies. It is built in a hidden
 directory next to it, `.<name>.incomplete`, and renamed into place once it is complete: a
 backup that failed leaves nothing behind, and one interrupted by a crash is neither listed nor
-restored by name. The directory and its subdirectories are created with mode 0700, its files with 0600, and
-`backups/` itself with 0700. Inside are `orch.db`, `roles/` and `loadout.toml` (when the home
+restored by name. The directory and its subdirectories are created with mode 0700, its files
+with 0600, and `backups/` itself with 0700. Inside are `orch.db`, `roles/` and `loadout.toml` (when the home
 has them) and, with `--logs`, `logs/`. The command prints where the backup is, what it holds,
 its size, and the warning about secrets.
 
@@ -75,15 +75,19 @@ single database file. In this order, the command:
    running`). Wait for them, or `spartito stop` the agents; a turn whose runner process is
    gone does not count;
 3. without `--yes`, prints what it would do, changes nothing and exits with 1;
-4. keeps the current state as a new backup, `backups/<UTC time>-before-restore/`, and prints
-   its name. Nothing is ever deleted: `spartito state restore <that name> --yes` brings the
-   replaced state back. First the home's `roles/` and `loadout.toml` (with `--logs` also
-   `logs/`) are copied into it; then, holding the database's write lock, the command checks
-   again that no turn is running or queued (else it refuses and changes nothing), copies the
-   current database into the kept backup with the backup API and checks the copy, and
-   replaces the content (step 5) before it lets go of the lock. So nothing another process
-   commits meanwhile is lost: what a dashboard committed before is in the kept backup, and a
-   write that comes during it waits and lands in the restored state;
+4. keeps the current state as a new backup, `backups/<UTC time>-before-restore/`. Nothing is
+   ever deleted: `spartito state restore <that name> --yes` brings the replaced state back.
+   First the home's `roles/` and `loadout.toml` (with `--logs` also `logs/`) are copied into
+   it, still under its hidden name, with its permissions set. Then, holding the database's
+   write lock, the command checks again that no turn is running or queued (else it refuses,
+   removes the unfinished kept backup and changes nothing), copies the current database into
+   the kept backup with the backup API and checks the copy, renames the kept backup into its
+   name and prints where it is, and only then replaces the content (step 5) and commits. So
+   nothing another process commits meanwhile is lost (what a dashboard committed before is in
+   the kept backup; a write that comes during it waits and lands in the restored state), and
+   whatever stops the command, an error or a crash, the live state is either unchanged or
+   restored with the kept backup complete, listed and printed. A kept backup that was named
+   stays even when the replace then fails: it is a valid backup of the unchanged state;
 5. replaces the rows of every table of the live database with the backup's, in one
    transaction: no file is swapped, so processes that have the database open (a dashboard) see
    the restored content with their next read, and a backup with another page size restores

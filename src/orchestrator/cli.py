@@ -1619,8 +1619,16 @@ def state_restore(
     that is not an intact state database. Without `--yes` it only says what it would do. The
     state it replaces is first kept as a new backup, so nothing is lost; the database is
     replaced in place, so a running dashboard keeps working, but restart it."""
+
+    def kept(path: str, name: str) -> None:
+        """Printed before the restore commits: the replaced state is findable whatever follows."""
+        typer.echo(
+            f"the replaced state is kept in {path}"
+            f" (`{CLI} state restore {name} --yes` brings it back)"
+        )
+
     try:
-        result = orch().restore_state(backup, confirm=yes, logs=logs)
+        result = orch().restore_state(backup, confirm=yes, logs=logs, announce=kept)
     except NeedsConfirmation as exc:
         typer.echo(str(exc))
         typer.secho(
@@ -1632,10 +1640,6 @@ def state_restore(
     typer.echo(f"restored {result['restored']}")
     if result["files"]:
         typer.echo(f"  and the backup's {', '.join(result['files'])}")
-    typer.echo(
-        f"the replaced state is kept in {result['kept']}"
-        f" (`{CLI} state restore {result['kept_name']} --yes` brings it back)"
-    )
     for path in result["kept_skipped"]:
         typer.echo(f"  not in the kept backup (a symbolic link): {path}")
     for entry in result["left"]:

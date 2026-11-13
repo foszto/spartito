@@ -404,6 +404,11 @@ def check_database(path: Path) -> list[str]:
     return unknown
 
 
+def _commit(conn: sqlite3.Connection) -> None:
+    """The commit of Store.replace_from (a function of its own for the tests)."""
+    conn.execute("COMMIT")
+
+
 def _replace_content(conn: sqlite3.Connection, note: str) -> list[str]:
     """Inside `conn`'s write transaction (Store.replace_from): make the rows of every table of
     `main` those of the attached database `restored`. A table it lacks ends up empty, and a
@@ -672,16 +677,22 @@ class Store:
             source.close()
 
     def replace_from(
-        self, source: Path, snapshot: Path, note: str, check: Callable[[], None]
+        self,
+        source: Path,
+        snapshot: Path,
+        note: str,
+        check: Callable[[], None],
+        seal: Callable[[], None],
     ) -> list[str]:
         """Make this database's content that of the database file `source`, keeping the
         content it replaces in the new (empty) file `snapshot`, with no commit of another
         process falling between the two: one connection takes the write lock (BEGIN
         IMMEDIATE) and holds it while `check` runs (raising there changes nothing), while
         `snapshot` is taken with the backup API from a second connection (readers still read
-        the committed state; nobody can commit meanwhile) and passes check_database, and
-        while the rows are replaced from `source`, attached (_replace_content); then it
-        commits. A writer that comes meanwhile waits and commits on top of the restored state.
+        the committed state; nobody can commit meanwhile) and passes check_database, while
+        `seal` runs (it makes the snapshot's backup complete and findable: whatever happens
+        from then on, the replaced content is kept), and while the rows are replaced from
+        `source`, attached (_replace_content); then it commits. A writer that comes meanwhile waits and commits on top of the restored state.
         Rows, not pages, are copied: no schema object or file is swapped under the connections
         other processes hold (they see the restored rows from their next read), and the
         database keeps its page size and WAL. Returns what of `source` was not copied (a newer
@@ -695,11 +706,12 @@ class Store:
                 check()
                 self.backup(snapshot)
                 check_database(snapshot)
+                seal()
                 left_out = _replace_content(conn, note)
             except BaseException:
                 conn.execute("ROLLBACK")
                 raise
-            conn.execute("COMMIT")
+            _commit(conn)  # if it fails, closing the connection rolls back
             return left_out
         finally:
             conn.close()

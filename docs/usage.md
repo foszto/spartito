@@ -289,8 +289,9 @@ spartito state restore BACKUP [--yes|-y] [--logs]
 - `restore` takes a name from `list`, or the path of a backup directory or database file. It
   refuses a file that is not an intact state database and any restore while a turn is running
   or queued. Without `--yes` it only says what it would do and exits with 1. It keeps the
-  current state as a new backup (`<time>-before-restore`) and replaces the database's content
-  in place under one write lock, so nothing another process commits is lost, then copies the
+  current state as a new backup (`<time>-before-restore`), complete and printed before the
+  replace commits, and replaces the database's content in place under one write lock, so
+  nothing another process commits is lost, then copies the
   backup's `roles/` and `loadout.toml` (with `--logs` also its `logs/`) over the home's,
   leaving symbolic links as they are. Tables and columns of a newer version's backup that this
   version does not have are not restored. Restart a running dashboard afterwards.

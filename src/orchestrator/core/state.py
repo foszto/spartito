@@ -11,6 +11,7 @@ import contextlib
 import os
 import shutil
 import sqlite3
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -281,15 +282,24 @@ def refuse_busy(orch: Facade) -> None:
         )
 
 
-def restore(orch: Facade, backup: str, confirm: bool = False, logs: bool = False) -> dict[str, Any]:
+def restore(
+    orch: Facade,
+    backup: str,
+    confirm: bool = False,
+    logs: bool = False,
+    announce: Callable[[str, str], None] | None = None,
+) -> dict[str, Any]:
     """Make the state that of a backup (see `find`). Refuses a file that is not an intact
     state database, and while any turn is running or queued. Without `confirm` it changes
     nothing and raises NeedsConfirmation saying what it would do. Else it keeps the current
-    state as a new backup (`<time>-before-restore`): first the user files (with `logs` the
-    logs), then, under one write lock with the busy check repeated and the replace, the
-    database (Store.replace_from). Then it copies the backup's roles/ and loadout.toml (with
-    `logs` also its logs/) over the home's, never through a symbolic link: files the backup
-    lacks stay."""
+    state as a new backup (`<time>-before-restore`): its user files (with `logs` the logs) are
+    copied and locked down first; then, under one write lock (Store.replace_from), the busy
+    check is repeated, the database snapshot is added and checked, the kept backup is renamed
+    into its name and `announce(path, name)` is called, all before the replace commits. So
+    whatever happens afterwards (an error, a crash), the live state is either unchanged or
+    restored with a complete, listed kept backup; a kept backup that was named is never
+    removed. Then it copies the backup's roles/ and loadout.toml (with `logs` also its logs/)
+    over the home's, never through a symbolic link: files the backup lacks stay."""
     database, root = find(backup)
     live = Path(orch.store.path)
     if database.resolve() == live.resolve():
@@ -305,28 +315,52 @@ def restore(orch: Facade, backup: str, confirm: bool = False, logs: bool = False
     if not confirm:
         raise NeedsConfirmation(plan(root or database, live, files, logs, newer_note(unknown)))
     final, work = start(None, logs, BEFORE_RESTORE)
+    sealed: list[Path] = []
+
+    def seal() -> None:
+        """Inside the write lock, before the commit: the kept backup becomes complete."""
+        os.chmod(work / db_name(), 0o600)
+        os.rename(work, final)  # replaces the empty reserved directory
+        sealed.append(final)
+        if announce:
+            announce(str(final), final.name)
+
+    def kept_note() -> str:
+        return (
+            f"; the state before it is kept in {final}"
+            f" (`{config.CLI_NAME} state restore {final.name} --yes` brings it back)"
+        )
+
     try:
         skipped = copy_files(work, logs)
         snapshot = new_file(work / db_name())
+        lock_down(work)
         left_out = orch.store.replace_from(
-            database, snapshot, STOPPED_NOTE, lambda: refuse_busy(orch)
+            database, snapshot, STOPPED_NOTE, lambda: refuse_busy(orch), seal
         )
-    except ValueError as exc:
-        abandon(final, work)
-        raise OrchestratorError(
-            f"not restored: the current state could not be kept: {exc}"
-        ) from None
-    except (OSError, sqlite3.Error) as exc:
-        abandon(final, work)
-        raise OrchestratorError(f"not restored, nothing changed: {exc}") from None
-    except BaseException:
-        abandon(final, work)
+    except BaseException as exc:
+        if sealed:  # the kept backup is complete and named: it stays, whatever happened
+            if isinstance(exc, Exception):
+                raise OrchestratorError(f"the restore failed: {exc}{kept_note()}") from None
+            raise
+        abandon(final, work)  # nothing was replaced: the unfinished kept backup goes
+        if isinstance(exc, ValueError):
+            raise OrchestratorError(
+                f"not restored: the current state could not be kept: {exc}"
+            ) from None
+        if isinstance(exc, OSError | sqlite3.Error):
+            raise OrchestratorError(f"not restored, nothing changed: {exc}") from None
         raise
-    kept = finish(final, work, skipped)
     home, left = config.home(), []
-    for name in files:
-        assert root is not None  # files come only from a backup directory
-        put_back(root / name, home, home / name, left)
+    try:
+        for name in files:
+            assert root is not None  # files come only from a backup directory
+            put_back(root / name, home, home / name, left)
+    except OSError as exc:
+        raise OrchestratorError(
+            f"the database is restored, but copying the backup's files failed: {exc}{kept_note()}"
+        ) from None
+    kept = {"path": str(final), "name": final.name}
     return {
         "restored": str(root or database),
         "kept": kept["path"],
