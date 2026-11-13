@@ -3,9 +3,12 @@
 # moving the publishing job into a reusable workflow, breaks publishing.
 #
 # - a pushed tag `v<version>` on a commit of `master`: build, check the tag against the built
-#   version, publish to PyPI (environment `pypi`)
+#   version and that CHANGELOG.md has a section for it (scripts/changelog_section.py), publish
+#   to PyPI (environment `pypi`), then create the GitHub Release for the tag with that section
+#   as its notes and the built files attached (`github-release`: no environment, the
+#   workflow's own token with `contents: write` in that job only)
 # - run by hand (workflow_dispatch): build and publish to TestPyPI (environment `testpypi`);
-#   this path never publishes to PyPI
+#   this path never publishes to PyPI and creates no GitHub Release
 # Nothing else starts it: no branch push, no pull request.
 name: release
 
@@ -67,6 +70,16 @@ jobs:
             exit 1
           fi
 
+      - name: The changelog has the notes of the version
+        if: github.event_name == 'push'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if ! python3 scripts/changelog_section.py "$VERSION" > /dev/null; then
+            echo "::error::CHANGELOG.md has no non-empty section '## [$VERSION]'; add it in a pull request, then tag again"
+            exit 1
+          fi
+
       - name: The wheel installs and runs
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -101,6 +114,34 @@ jobs:
           path: dist/
 
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+
+  github-release:
+    name: Create the GitHub Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [build, pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the Release and upload its files; nothing else
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+
+      - name: Create the Release with the changelog's notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          notes="$RUNNER_TEMP/release-notes.md"
+          python3 scripts/changelog_section.py "$version" > "$notes"
+          gh release create "$TAG" dist/* --verify-tag --title "Spartito $version" --notes-file "$notes"
 
   testpypi:
     name: Publish to TestPyPI
