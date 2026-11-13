@@ -85,7 +85,9 @@ spartito providers [--json]
   status (`available`, `not_installed`, `not_logged_in`, `unknown`), version and the reason,
   such as `found on PATH; login not checked`. `*` marks the first available one, which a new
   project gets. It runs only each CLI's `--version`: no agent turn, no login check, no network.
-  `--json` adds each provider's description, features, limits and models. The statuses, where
+  When a provider is `not_installed`, a line below the table says to run
+  `spartito service install` or `spartito app install` again after installing a CLI.
+  `--json` adds each provider's description, features, limits and models, without that line. The statuses, where
   the CLIs are looked for and what is not checked: [providers.md](providers.md#availability).
 
 ### Orchestrator
@@ -244,9 +246,11 @@ spartito compact AGENT [INSTRUCTIONS]
   conversation on the provider it left is kept for a move back. The agent's own model and
   effort are cleared, and its worktree, branch, board items and sub-agents stay.
   When the agent has a conversation it asks first; refusing exits with code 1, and `--yes`
-  skips the question. `--model` and `--effort` given with it apply on the new provider. Before
-  its first message, the orchestrator is created on the given provider
-  ([providers.md](providers.md#moving-an-agent-to-another-provider)).
+  skips the question. After the move a `note: …` line says whether the next message continues
+  an earlier conversation or starts a new one. `--model` and `--effort` given with it apply on
+  the new provider. Before its first message, the orchestrator is created on the given
+  provider ([providers.md](providers.md#moving-an-agent-to-another-provider)). When `model`
+  creates the orchestrator on a fallback provider, it prints a `note: …` line too.
 - `compact` queues a compaction of the agent's conversation. See
   [agents.md](agents.md#context-and-compaction).
 
@@ -293,7 +297,10 @@ spartito decide DECISION_ID ANSWER
 
 States: `idea`, `ready`, `in_progress`, `done`. `spartito board` without `-p` lists every
 project's board. In `board edit`, `""` clears `--agent` or `--branch`. `decide` takes an
-option number or free text. `--live`, `show`, `link` and dispatching named items:
+option number or free text. `board dispatch` prints a `note: …` line when it created a
+project's lead on a fallback provider
+([providers.md](providers.md#how-a-provider-is-chosen)). `--live`, `show`, `link` and
+dispatching named items:
 [board.md](board.md#command-line-mcp-and-api). See [agents.md](agents.md#task-board) and
 [agents.md](agents.md#decisions).
 
@@ -486,14 +493,20 @@ never with the page's regular refresh.
 workspace (own worktree, main checkout or another agent's worktree) and *Start after*
 dependencies.
 
-**Providers.** Every provider choice (a new project, a new agent, the settings, an agent's
-model and effort panel, the Maestro's before its first message too) lists every supported
-provider. One that is not available here is shown disabled, with the reason, and the default
-is chosen from the available ones; a control checks again. A fallback or a lead that keeps its
-provider is shown as a note. A project's default provider is changed in the settings for that
-project. An agent's model and effort panel moves it, the Maestro included, to another
-provider after a confirmation: its next message continues its earlier conversation there, if
-it has one, or starts a new one. Details:
+**Providers.** Every provider choice lists every supported provider: **Default provider** in
+the add-project dialog, **Provider** in the new-agent dialog, **Default provider** in the
+**Models and effort** window for one project, and the `provider` select next to an agent's
+model and effort drop-downs (the Maestro's too, before its first message). One that is not
+available here is disabled, with the reason as its tooltip. The choice starts on an available
+provider: the new-agent dialog on the role's provider when the role names one, else on the
+project's default. When the provider that would apply is not available, a short hint says so,
+for example *Codex is not available (not installed). Claude Code is chosen instead.*, with the
+whole reason as its tooltip and a **Check again** button that checks once more. The project's
+**Default provider** in the settings applies at once, apart from **Save**; existing agents keep
+theirs. Changing an agent's `provider` select moves the agent; for an agent with a conversation
+a dialog asks first and says whether the next message continues an earlier conversation on that
+provider or starts a new one. After a project or an agent is created, or a message creates a
+lead or the Maestro, a fallback provider is shown as a message. Details:
 [providers.md](providers.md).
 
 **Models and effort** window: the tier settings per provider, the automatic compaction
@@ -528,7 +541,8 @@ convenient from scripts:
 - `POST /api/agents/<id>/model` with `{"model": "...", "effort": null}`: `null` clears a value,
   a missing key leaves it unchanged. `"provider": "codex"` moves the agent first; for an agent
   with a conversation the reply is `{"confirm": "…"}` and nothing changes, until the request
-  is repeated with `"confirm": true`.
+  is repeated with `"confirm": true`. The reply has a `note` when the call created the
+  orchestrator on a fallback provider.
 - `POST /api/projects/<name>/provider` with `{"provider": "codex"}`: the project's default
   provider; the reply has the project and a `note`.
 - `POST /api/agents/<id>/compact` with `{"instructions": "..."}`.

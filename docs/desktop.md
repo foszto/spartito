@@ -93,8 +93,8 @@ install time and holds only these variables of the shell you install from: `PATH
   (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin` and a few more:
   [providers.md](providers.md#where-the-cli-is-looked-for)). After installing a CLI elsewhere,
   install the service again. `spartito providers` checks with the terminal's `PATH`; the
-  dashboard's provider choices show what the service finds, and their *check again* control
-  checks at once.
+  dashboard's provider choices show what the service finds, and the **Check again** button
+  of their hint checks at once.
 - Other variables, such as an API key exported in your shell, are not carried into the unit;
   the agents the service starts see only what the service sees.
 - Unit files are readable by other users of the machine: keep secrets out of the variables

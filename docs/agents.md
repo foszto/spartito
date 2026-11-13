@@ -49,14 +49,14 @@ Replies are kept short: results and logs are cut to a budget, and say how to rea
 (`result_offset`, `event_id`, the `result_file` path in `get_agent`).
 
 `dispatch_board`, `add_project`, `ask_project_lead` and `set_project_provider` are listed only
-to the top-level orchestrator and the interactive `spartito chat` session; other lead agents
-do not see them, so their descriptions cost them nothing per turn. A provider named in
-`spawn_agent` or `ask_project_lead` that is not available here is refused, naming the
-available ones. When the role's or the project's provider is not available, the agent runs on
-the first available one; such a fallback is reported in the reply (`note`) and in the agent's
-log. The reply for an existing lead that runs on another provider than the one asked for has a
-`note` too. Without anything to tell, the reply has no `note`. Details:
-[providers.md](providers.md#how-a-provider-is-chosen).
+to the top-level orchestrator and the interactive `spartito chat` session; other lead agents do
+not see them, so their descriptions cost them nothing per turn. A provider named in
+`spawn_agent` or `ask_project_lead` that is not available here is refused, naming the available
+ones. When the role's or the project's provider is not available, the agent runs on the first
+available one; such a fallback is reported in the reply (`note`) and in the agent's log. The
+same holds for a lead that `dispatch_board` creates. The reply for an existing lead that runs
+on another provider than the one asked for has a `note` too. Without anything to tell, the
+reply has no `note`. Details: [providers.md](providers.md#how-a-provider-is-chosen).
 
 ## Turns and the queue
 

@@ -76,12 +76,18 @@ default: the first available one, which a new project gets. For example:
 ```
   NAME    STATUS         VERSION     REASON
 * claude  available      2.4.1       found on PATH; login not checked
-  codex   not_installed  -           `codex` was not found on PATH or in the usual install locations; a background service or launcher keeps the PATH of its install: after installing the CLI, run `spartito service install` or `spartito app install` again
+  codex   not_installed  -           `codex` was not found on PATH or in the usual install locations
+
+A background service or launcher keeps the PATH of its install: after installing a CLI, run `spartito service install` or `spartito app install` again.
 ```
 
+The line below the table appears only when a provider is `not_installed`, and not with
+`--json`.
+
 `spartito providers --json` adds each provider's label, description, efforts, features,
-limits and models. The dashboard shows the same in every provider choice; its *check again*
-control checks once more. The JSON API: `GET /api/providers` (`?refresh=1` checks again).
+limits and models. The dashboard shows the same in every provider choice: one that is not
+available is disabled, with the reason as its tooltip, and when the provider that would apply
+is not available a hint says so, with a **Check again** button that checks once more. The JSON API: `GET /api/providers` (`?refresh=1` checks again).
 
 | status | meaning | can be chosen |
 |---|---|---|
@@ -123,7 +129,9 @@ A background service or launcher keeps the `PATH` of the shell it was installed 
 is found anyway. After installing a CLI anywhere else, run `spartito service install` or
 `spartito app install` again, then check with `spartito providers`.
 
-A turn whose CLI is missing fails with that message, and `spartito attach` refuses with it.
+A turn whose CLI is missing fails with that reason, and `spartito attach` and `spartito chat`
+refuse with it; these errors, like the refusal of a provider that is not available, end with
+"`spartito providers` says more".
 
 ### When no provider is available
 
@@ -138,7 +146,7 @@ status and reason. What to do:
    `node`) must be found too.
 3. If the dashboard runs as a background service or from the launcher, run
    `spartito service install` or `spartito app install` again, so that it picks up the new
-   `PATH`. Then use the dashboard's *check again* control, or wait up to 5 minutes for the
+   `PATH`. Then use the dashboard's **Check again** button, or wait up to 5 minutes for the
    next check.
 
 ### What is not checked
@@ -155,14 +163,18 @@ For a new agent, the first that applies:
 1. **Explicit**: `spartito spawn --provider`, `spartito ask --provider` (a new lead), the
    `provider` of the MCP tools, or the dashboard's choice. It must be available, or the request
    is refused with the reason and the available alternatives:
-   `codex is not available: not installed (…). Available: claude`.
+   ``codex is not available: not installed (…). Available: claude. `spartito providers` says more``.
 2. **The role's** `provider` (role frontmatter, [configuration.md](configuration.md#roles)).
 3. **The project's default** ([below](#a-projects-default-provider)).
 
 When the provider from 2 or 3 is not available, the agent runs on the first available one in
-registry order. Such a fallback is reported in the reply (`note: …` on the command line, a
-`note` in the MCP and JSON replies) and in the agent's log. When no provider is available, the
-agent is not created, and the error lists each provider's reason
+registry order. So does the Maestro when nothing names its provider and `claude` is not
+available (the note then calls `claude` "the first supported provider"). Such a fallback is
+reported in the reply (`note: …` on the command line, a `note` in the MCP and JSON replies, a
+message in the dashboard) and in the agent's log. This holds wherever the agent is created: by
+`spartito spawn` or `spartito ask`, by setting the Maestro's model or effort before its first
+message, and for a lead that board dispatch creates. When no provider is available, the agent
+is not created, and the error lists each provider's reason
 ([below](#when-no-provider-is-available)).
 
 **The orchestrator (Maestro)** is created by its first message, or by setting its model,
@@ -173,9 +185,10 @@ else the first available one. With none available it is created anyway, and its 
 fails with the reason. After that it keeps its provider until it is
 [moved](#moving-an-agent-to-another-provider).
 
-**A project lead** is created by its first message too, on `spartito ask --provider`, the
-dashboard's choice or `ask_project_lead`'s `provider`, else as any agent (2 and 3). An
-existing lead keeps its provider; a request that names another one gets a note that says so.
+**A project lead** is created by its first message too, on `spartito ask --provider` or
+`ask_project_lead`'s `provider`, else as any agent (2 and 3); the dashboard's lead
+conversation and board dispatch name none. An existing lead keeps its provider until it is
+moved; a request that names another one gets a note that says so.
 
 A role's `model` applies only to agents of the role's own provider (or to every agent when the
 role names no provider): a Claude model name means nothing to Codex.
@@ -206,8 +219,8 @@ spartito model fix-login-3f2a --provider codex
 spartito model orchestrator --provider codex --yes
 ```
 
-In the dashboard: the provider choice of the agent's model and effort panel, the Maestro's
-included.
+In the dashboard: the `provider` select next to the agent's model and effort drop-downs, the
+Maestro's included.
 
 A conversation does not move from one CLI to another, but Spartito remembers an agent's last
 conversation on each provider. The first move to a provider starts a new conversation there,
@@ -220,13 +233,19 @@ the same way. Nothing is carried over from one provider's conversation to anothe
   last conversation on each provider.
 - **Cleared on every move:** the agent's own model and effort (they named the old provider's
   models; the tier settings of the new provider apply until it gets its own again).
-- **Logged:** the agent's log notes the move.
+- **Logged:** the agent's log notes the move, and whether the next message continues the
+  earlier conversation on the new provider or starts a new one.
+
+If the CLI can no longer resume a remembered conversation (its session files were deleted or
+belong to another machine), the agent's next turn fails with the CLI's error. There is no way
+yet to forget such a conversation: keep the agent on the other provider, or start a new agent.
 
 It is refused while the agent has a running or queued turn (stop it or wait), and when the new
 provider is not available. Moving to the same provider changes nothing. An agent with a
-conversation is moved only after a confirmation: `spartito model` asks (refusing exits with
-code 1, `--yes` skips the question), the dashboard asks, and the JSON API answers
-`{"confirm": "…"}` until the request is repeated with `"confirm": true`. The Maestro before
+conversation is moved only after a confirmation, which says whether the next message
+continues an earlier conversation on the new provider or starts a new one: `spartito model`
+asks (refusing exits with code 1, `--yes` skips the question), the dashboard asks, and the
+JSON API answers `{"confirm": "…"}` until the request is repeated with `"confirm": true`. The Maestro before
 its first message has no conversation: choosing its provider creates it on that one.
 
 There is no MCP tool to move an agent.

@@ -109,6 +109,10 @@ MCP tools: `list_board(project, state, live)` (`live` adds agent and git status)
 only), `request_decision(question, options, recommendation, item)` (`item`: the board item
 the decision blocks, linked at once).
 
+A dispatch that creates a project's lead on a fallback provider says so:
+`spartito board dispatch` prints a `note: …` line, and the replies of `dispatch_board` and the
+HTTP API carry a `note` ([providers.md](providers.md#how-a-provider-is-chosen)).
+
 HTTP API (the dashboard's; writes need the page's own origin and a JSON body):
 
 | route | does |
