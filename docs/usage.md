@@ -279,18 +279,21 @@ spartito state restore BACKUP [--yes|-y] [--logs]
 
 - `backup` copies the database with SQLite's online backup API (safe while agents run),
   checks the copy with `PRAGMA integrity_check`, and adds the home's `roles/` and
-  `loadout.toml`; `--logs` adds `logs/`. It goes into a new directory in the home's
-  `backups/`, named after the UTC time, or into `--to DIR`; directories 0700, files 0600. It
+  `loadout.toml` (symbolic links left out); `--logs` adds `logs/`. It goes into a new directory
+  in the home's `backups/`, named after the UTC time, or into `--to DIR` (not inside a
+  directory it copies); directories 0700, files 0600. It
   prints where the backup is and a warning: a backup holds prompts, answers and tool output,
   which can include secrets.
 - `list` shows the backups in `backups/`, database files put there by hand (`*.db`) included,
   newest first: name, time, size, and whether the logs are in it.
 - `restore` takes a name from `list`, or the path of a backup directory or database file. It
   refuses a file that is not an intact state database and any restore while a turn is running
-  or queued. Without `--yes` it only says what it would do and exits with 1. It first keeps
-  the current state as a new backup (`<time>-before-restore`), then replaces the database's
-  content in place and copies the backup's `roles/` and `loadout.toml` (with `--logs` also its
-  `logs/`) over the home's. Restart a running dashboard afterwards.
+  or queued. Without `--yes` it only says what it would do and exits with 1. It keeps the
+  current state as a new backup (`<time>-before-restore`) and replaces the database's content
+  in place under one write lock, so nothing another process commits is lost, then copies the
+  backup's `roles/` and `loadout.toml` (with `--logs` also its `logs/`) over the home's,
+  leaving symbolic links as they are. Tables and columns of a newer version's backup that this
+  version does not have are not restored. Restart a running dashboard afterwards.
 
 Details, and moving a home to another directory or machine: [state.md](state.md).
 

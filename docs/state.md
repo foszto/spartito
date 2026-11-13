@@ -21,8 +21,8 @@ one. Moving a home to another directory or machine is a procedure, described at 
 | `logs/`, only with `--logs` | the provider CLIs' logins and sessions (`~/.claude`, `$CLAUDE_CONFIG_DIR`, `~/.codex`, `$CODEX_HOME`) |
 | | `workspace/`, `run/`, `hooks-off/`, the background service's definition and the launcher |
 
-Nothing outside the home is read: symbolic links in the home are left out (the command lists
-them). A backup holds prompts, answers and tool output, which can include secrets; the command
+Nothing outside the home is read or written: symbolic links in the home are left out of a
+backup, and a restore leaves them as they are (the commands list them). A backup holds prompts, answers and tool output, which can include secrets; the command
 says so every time. Keep backups private.
 
 ## Backup
@@ -38,8 +38,12 @@ it makes the command fail. The copy is a single file in rollback-journal mode (n
 it), so it can be moved or opened anywhere.
 
 A backup is a new directory, by default `backups/<UTC time>/` in the home (for example
-`backups/20261113T142530Z/`), or `DIR` with `--to`; an existing directory is never written
-into. The directory and its subdirectories are created with mode 0700, its files with 0600, and
+`backups/20261113T142530Z/`; a second one in the same second gets `-2`, and so on), or `DIR`
+with `--to`; an existing directory is never written into, and neither is a place inside
+`roles/` (or `logs/` with `--logs`), which the backup copies. It is built in a hidden
+directory next to it, `.<name>.incomplete`, and renamed into place once it is complete: a
+backup that failed leaves nothing behind, and one interrupted by a crash is neither listed nor
+restored by name. The directory and its subdirectories are created with mode 0700, its files with 0600, and
 `backups/` itself with 0700. Inside are `orch.db`, `roles/` and `loadout.toml` (when the home
 has them) and, with `--logs`, `logs/`. The command prints where the backup is, what it holds,
 its size, and the warning about secrets.
@@ -71,18 +75,27 @@ single database file. In this order, the command:
    running`). Wait for them, or `spartito stop` the agents; a turn whose runner process is
    gone does not count;
 3. without `--yes`, prints what it would do, changes nothing and exits with 1;
-4. keeps the current state as a new backup, `backups/<UTC time>-before-restore/`, made the
-   same way as `spartito state backup` (with `--logs`: with the logs), and prints its name.
-   Nothing is ever deleted: `spartito state restore <that name> --yes` brings the replaced
-   state back;
-5. replaces the content of the live database with the backup's, in place through the backup
-   API: no file is swapped, so processes that have the database open (a dashboard) see the
-   restored content with their next read. Turns that were queued or running in the backup end
-   as `stopped` (their runners are gone), the restore wakes no parent, and new turns get
-   numbers above every earlier one, so no turn reuses the log directory of another;
+4. keeps the current state as a new backup, `backups/<UTC time>-before-restore/`, and prints
+   its name. Nothing is ever deleted: `spartito state restore <that name> --yes` brings the
+   replaced state back. First the home's `roles/` and `loadout.toml` (with `--logs` also
+   `logs/`) are copied into it; then, holding the database's write lock, the command checks
+   again that no turn is running or queued (else it refuses and changes nothing), copies the
+   current database into the kept backup with the backup API and checks the copy, and
+   replaces the content (step 5) before it lets go of the lock. So nothing another process
+   commits meanwhile is lost: what a dashboard committed before is in the kept backup, and a
+   write that comes during it waits and lands in the restored state;
+5. replaces the rows of every table of the live database with the backup's, in one
+   transaction: no file is swapped, so processes that have the database open (a dashboard) see
+   the restored content with their next read, and a backup with another page size restores
+   too. Turns that were queued or running in the backup end as `stopped` (their runners are
+   gone), the restore wakes no parent, and new turns get numbers above every earlier one, so
+   no turn reuses the log directory of another;
 6. copies the backup's `roles/` and `loadout.toml` over the home's, and with `--logs` its
    `logs/`, if it has them. Files the backup lacks stay. A single database file restores the
-   database only.
+   database only. It never writes through a symbolic link: an entry of the home that is one,
+   or lies below one (`loadout.toml` linked to a file elsewhere, a linked `roles/`, one linked
+   role file), is left as it is, and the command lists it as not restored. Such links are not
+   in the kept backup either (it lists them too).
 
 Afterwards, restart a running dashboard: it works on the restored database, but what it shows
 may still be from before. For `spartito web` stop and start it; for the background service run
@@ -99,12 +112,12 @@ not know stay where they are.
 
 ## Backups and versions
 
-- **An older version's backup** is restored as it is; the tables and columns it lacks are
-  added when the database is next opened (the schema only ever grows), right after the
-  restore.
-- **A newer version's backup** is restored too. If it has tables or columns this version does
-  not know, the command says which: this version works with it without reading them, and rows
-  it writes get their defaults there. Going back to the newer version later uses them again.
+- **An older version's backup** is restored as it is: the live database keeps this version's
+  tables and columns, a table the backup lacks ends up empty and a column it lacks gets its
+  default.
+- **A newer version's backup** is restored too, without its tables and columns this version
+  does not have: the command names them, and they stay in the backup, for the version that
+  knows them. Everything else is restored.
 - **An older install** ignores the home's `backups/` directory and has no `spartito state`.
   After a restore it opens the database as it opens any newer one.
 
