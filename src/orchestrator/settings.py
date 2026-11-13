@@ -227,14 +227,17 @@ def clean(data: Any) -> dict[str, Any]:
 
 
 def resolve(store: Store, agent: Agent, role: Role) -> dict[str, str | None]:
-    """The model and effort an agent's next turn runs with."""
+    """The model and effort an agent's next turn runs with. A role's `model` is the last
+    resort, and only for agents of the role's provider (any agent when it names none): a
+    model name means nothing to another provider's CLI."""
     tier = tier_of(agent, role)
     scopes = [store.get_settings(agent.project)] if agent.project else []
     scopes.append(store.get_settings(GLOBAL))
+    role_model = role.model if role.provider in (None, agent.provider) else None
     resolved: dict[str, str | None] = {}
     for key in FIELDS:
         value = getattr(agent, key)
         for scope in scopes:
             value = value or scope.get(tier, {}).get(agent.provider, {}).get(key)
-        resolved[key] = value or (role.model if key == "model" else None)
+        resolved[key] = value or (role_model if key == "model" else None)
     return resolved
