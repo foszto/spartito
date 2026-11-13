@@ -126,13 +126,18 @@ const isArchived = id => (state.archived || []).includes(id);
 const leadOf = project => project.agents.find(a => a.role === 'lead' && (!a.parent_id || a.parent_id === ORCH));
 const provider = name => state.providers.find(p => p.name === name) || { name, models: [], efforts: [] };
 const providerLabel = name => provider(name).label || name;
-const isUsable = name => Boolean(provider(name).usable);
+// Whether a provider can run here; an entry without `usable` (a server older than this page) can.
+const canRun = p => p.usable !== false;
+const isUsable = name => state.providers.some(p => p.name === name && canRun(p));
 // The provider a choice starts on: the preferred one if it can run here, else the first that
 // can (the server marks it `default`); null when none can.
-const pickProvider = preferred => (preferred && isUsable(preferred) ? preferred : state.providers.find(p => p.default)?.name ?? null);
-// Its tooltip: what it is, or why it cannot run here.
-const providerTitle = p => (p.usable ? p.description || p.label || p.name
+const pickProvider = preferred => (preferred && isUsable(preferred) ? preferred
+  : (state.providers.find(p => p.default) || state.providers.find(canRun))?.name ?? null);
+// Its tooltip: what it is, or why it cannot run here (the server's whole reason).
+const providerTitle = p => (canRun(p) ? p.description || p.label || p.name
   : `${p.label || p.name} is not available: ${p.reason || p.status || 'not supported here'}`);
+// The short visible line for one that cannot run: its status, not the whole reason.
+const unavailableText = p => `${p.label || p.name} is not available (${String(p.status || 'unavailable').replace(/_/g, ' ')}).`;
 // The supported providers again, checked now (waits for the check).
 async function checkProviders() {
   state.providers = (await call('/api/providers?refresh=1')).providers;
@@ -785,7 +790,7 @@ function renderSetup(data, fresh = true) {
   if (data.running) notes.push('A change applies from the next turn; the running one is not changed.');
   if (data.session && data.cacheHint) notes.push(data.cacheHint);
   // Rebuilt only when it changed, so a focused "Check again" stays.
-  const noteKey = JSON.stringify([notes, data.provider, providerTitle(provider(data.provider)), state.providers.some(p => p.usable)]);
+  const noteKey = JSON.stringify([notes, data.provider, providerTitle(provider(data.provider)), state.providers.some(canRun)]);
   if (note.dataset.key !== noteKey) {
     note.dataset.key = noteKey;
     const hint = el('span', 'provider-hint');
@@ -826,16 +831,25 @@ function buildProviderControl(data, described) {
   const names = state.providers.map(p => p.name);
   if (!names.includes(data.provider)) names.push(data.provider);
   select.replaceChildren(...names.map(name => {
-    const p = provider(name), option = el('option', '', p.usable ? providerLabel(name) : `${providerLabel(name)} (not available)`);
+    const p = provider(name), option = el('option', '', canRun(p) ? providerLabel(name) : `${providerLabel(name)} (not available)`);
     option.value = name;
-    option.disabled = !p.usable && name !== data.provider;
+    option.disabled = !canRun(p) && name !== data.provider;
     option.title = providerTitle(p);
     return option;
   }));
   select.value = data.provider;
   select.setAttribute('aria-label', `Provider of ${data.id}`);
   select.title = `The agent CLI that the turns of ${data.id} run on`;
-  select.onchange = () => moveAgent(data.id, select.value);
+  // Sent once the choice rests (arrow keys on a closed list change it at every step); a choice
+  // still settling when the view changes is dropped (flushSetup), never sent.
+  select.onchange = () => {
+    const id = data.id, slot = setupSlot(id, 'provider'), value = select.value;
+    clearTimeout(pendingSetup.get(slot)?.timer);
+    pendingSetup.delete(slot);
+    if (value === data.provider) return;
+    const timer = setTimeout(() => { pendingSetup.delete(slot); moveAgent(id, value); }, SETUP_SETTLE_MS);
+    pendingSetup.set(slot, { timer, save: () => pendingSetup.delete(slot) });
+  };
   wrap.append(el('span', 'key', 'provider'), select);
   return wrap;
 }
@@ -845,13 +859,22 @@ function buildProviderControl(data, described) {
 // cancelled, the choice shows the current provider.
 async function moveAgent(id, target) {
   const url = `/api/agents/${encodeURIComponent(id)}/model`;
+  // No second move while one is on its way: the choice is disabled until moved() redraws it.
+  const send = body => {
+    const control = setupData?.id === id && $('setup')?.querySelector('[data-setup=provider]');
+    if (control) control.disabled = true;
+    return setupRequest(id, 'provider', () => call(url, body));
+  };
   let reply = null;
-  try { reply = await setupRequest(id, 'provider', () => call(url, { provider: target })); }
+  try { reply = await send({ provider: target }); }
   catch (error) { toast(error.message, true); }
   if (reply?.confirm) {
     confirmDialog({
       title: `Move ${id} to ${providerLabel(target)}?`, text: `${reply.confirm}.`, ok: 'Move',
-      action: async () => moved(id, await setupRequest(id, 'provider', () => call(url, { provider: target, confirm: true }))),
+      action: async () => {
+        try { moved(id, await send({ provider: target, confirm: true })); }
+        catch (error) { moved(id, null); throw error; }
+      },
     });
     reply = null;
   }
@@ -871,7 +894,7 @@ function moved(id, setup) {
   if (setupData?.id !== id) { refresh(); return; }
   for (const control of $('setup').querySelectorAll('[data-control]')) delete control.dataset.built;
   const select = $('setup').querySelector('[data-setup=provider]');
-  if (select) select.value = setupData.provider;
+  if (select) { select.value = setupData.provider; select.disabled = false; }
   renderSetup(setupData);
   refresh();
 }
@@ -1816,21 +1839,34 @@ function providerChoices(container, name, value, onchange) {
   choices(container, 'radio', name, state.providers.map(p => [p.name, p.label || p.name]), value, onchange);
   for (const label of container.children) {
     const input = label.children[0], p = provider(input.value);
-    input.disabled = !p.usable;
+    input.disabled = !canRun(p);
     label.title = providerTitle(p);
   }
+}
+
+// Open dialogs whose provider parts follow the providers of later polls: dialog -> redraw.
+// A redraw keeps what the user typed or picked (unless a picked provider can no longer run).
+const providerViews = new Map();
+let providersSeen = '';
+function providersChanged() {
+  const key = JSON.stringify(state.providers);
+  if (key === providersSeen) return;
+  providersSeen = key;
+  for (const [dialog, redraw] of providerViews) if (dialog.open) redraw();
 }
 
 // Fills `hint`, the line under a provider choice, when `expected` (the provider one would get
 // there) cannot run here, or when none can; `instead`: the one chosen in its place. With a
 // control that checks the CLIs again and then calls `redraw`. Hidden when there is nothing to say.
 function providerHint(hint, expected, instead, redraw) {
-  const p = expected ? provider(expected) : null;
-  const text = !state.providers.some(q => q.usable) ? 'None of the agent CLIs can run here.'
-    : p && !p.usable ? `${providerTitle(p).replace(/\.$/, '')}.${instead && instead !== expected ? ` ${providerLabel(instead)} is chosen instead.` : ''}`
+  const p = expected ? provider(expected) : null, none = !state.providers.some(canRun);
+  const text = none ? 'None of the agent CLIs can run here.'
+    : p && !canRun(p) ? `${unavailableText(p)}${instead && instead !== expected ? ` ${providerLabel(instead)} is chosen instead.` : ''}`
     : '';
   hint.replaceChildren();
   hint.hidden = !text;
+  // the whole reasons, as the tooltip of the short line
+  hint.title = none ? state.providers.map(providerTitle).join('\n') : text ? providerTitle(p) : '';
   if (!text) return;
   const again = button('ghost again', null, 'Check again', async () => {
     again.disabled = true;
@@ -1923,14 +1959,22 @@ function renderFolder() {
 function openProjectDialog() {
   const dialog = $('projectDialog');
   dialog.querySelector('form').reset();
-  // The first provider that can run here, or the one picked (redrawn by "Check again").
+  // The first provider that can run here, or the one picked while it can (redrawn by "Check
+  // again" and when a poll brings other providers).
   const group = dialog.querySelector('[data-segment=provider]');
+  let picked = null;
   const drawProviders = () => {
-    providerChoices(group, 'provider', pickProvider(dialog.querySelector('[name=provider]:checked')?.value), null);
-    providerHint($('projectProviderHint'), null, null, drawProviders);
+    const chosen = pickProvider(picked);
+    // a pick only updates the hint: rebuilding the radios would take the keyboard focus away
+    providerChoices(group, 'provider', chosen, event => {
+      picked = event.target.value;
+      providerHint($('projectProviderHint'), picked, picked, drawProviders);
+    });
+    providerHint($('projectProviderHint'), picked, chosen, drawProviders);
   };
   group.replaceChildren();
   drawProviders();
+  providerViews.set(dialog, drawProviders);
   $('pickerUp').onclick = () => folder?.parent && loadFolder(folder.parent);
   $('pickerHome').onclick = () => loadFolder(folder?.home || '');
   $('pickerUseHere').onclick = () => chooseRepository(folder.path);
@@ -1968,20 +2012,27 @@ function openAgentDialog(project) {
     field('model').placeholder = model ? `${model} (from settings)` : 'default';
     const note = dialog.querySelector('[data-models-note]');
     note.textContent = chosen.models_note || ''; note.hidden = !chosen.models_note;
-    options(field('effort'), [['', effort ? `${effort} (from settings)` : 'default'], ...chosen.efforts.map(e => [e, e])], '');
+    const kept = field('effort').value;  // an effort picked stays while the provider offers it
+    options(field('effort'), [['', effort ? `${effort} (from settings)` : 'default'], ...chosen.efforts.map(e => [e, e])],
+      chosen.efforts.includes(kept) ? kept : '');
+    providerHint($('agentProviderHint'), wanted(), chosen.name, drawProviders);
   };
-  choices(dialog.querySelector('[data-cards=role]'), 'radio', 'role',
-    state.roles.map(r => [r.name, r.name, r.description]), 'worker', sync);
-  // The project's default if it can run here, else the first that can; a pick that can stay.
+  // The provider: the one the user picked, else the role's (a server older than this page names
+  // none), else the project's default; the first of these that can run here, else any that can.
+  let picked = null;
+  const roleProvider = () => state.roles.find(r => r.name === current('role'))?.provider || null;
+  const wanted = () => picked || roleProvider() || project.default_provider;
   const group = dialog.querySelector('[data-segment=provider]');
   const drawProviders = () => {
-    const kept = current('provider'), chosen = pickProvider(kept && isUsable(kept) ? kept : project.default_provider);
-    providerChoices(group, 'provider', chosen, sync);
-    providerHint($('agentProviderHint'), project.default_provider, chosen, drawProviders);
+    const chosen = [wanted(), roleProvider(), project.default_provider].find(name => name && isUsable(name)) ?? pickProvider(null);
+    providerChoices(group, 'provider', chosen, event => { picked = event.target.value; sync(); });
     sync();
   };
+  choices(dialog.querySelector('[data-cards=role]'), 'radio', 'role',
+    state.roles.map(r => [r.name, r.name, r.description]), 'worker', drawProviders);
   group.replaceChildren();
   drawProviders();
+  providerViews.set(dialog, drawProviders);
   options(field('workspace'), [['', 'Default for the role'], ['own', 'Own worktree and branch'], ['main', 'Main checkout of the project'],
     ...project.agents.filter(a => a.branch).map(a => [`share:${a.id}`, `Share the worktree of ${a.id}`])]);
   dialog.querySelector('[data-after-field]').hidden = !project.agents.length;
@@ -2011,16 +2062,16 @@ function renderSettings() {
     : 'Defaults for every project. An agent started with an explicit model or effort keeps its own.';
   const rows = $('settingsRows');
   rows.replaceChildren();
-  const project = scope && state.projects.find(p => p.name === scope);
-  if (project) rows.append(defaultProviderBox(project));
+  const project = scope && state.projects.find(p => p.name === scope), redraws = [];
+  providerViews.set(dialog, () => { for (const redraw of redraws) redraw(); });
+  if (project) rows.append(defaultProviderBox(project, redraws));
   for (const tier of state.tiers) {
     if (scope && tier === 'orchestrator') continue;
     const box = el('div', 'tier'), [title, about] = TIER_INFO[tier] || [tier, ''];
     box.append(el('h4', '', title), el('p', 'about', typeof about === 'function' ? about() : about));
     for (const p of state.providers) {
-      const row = el('div', 'tier-row'), who = el('span', `who${p.usable ? '' : ' unusable'}`);
+      const row = el('div', 'tier-row'), who = el('span', 'who');
       who.append(avatar(p.name), p.label || p.name);
-      who.title = providerTitle(p);
       const model = el('input', 'input'), effort = el('select', 'input'), list = el('datalist');
       const base = scope ? state.settings.global?.[tier]?.[p.name] || {} : {};
       list.id = `models-${tier}-${p.name}`;
@@ -2036,6 +2087,16 @@ function renderSettings() {
         data?.[tier]?.[p.name]?.effort || '');
       row.append(who, model, effort, list);
       box.append(row);
+      // A later poll's providers: their models, notes and whether they can run.
+      const update = () => {
+        const now = provider(p.name);
+        who.classList.toggle('unusable', !canRun(now));
+        who.title = providerTitle(now);
+        model.title = now.models_note || '';
+        list.replaceChildren(...modelOptions(now));
+      };
+      update();
+      redraws.push(update);
     }
     rows.append(box);
   }
@@ -2057,32 +2118,46 @@ function renderSettings() {
 }
 
 // A project's default provider, the one its new agents run on: set at once, apart from Save.
-function defaultProviderBox(project) {
+// A choice is sent once it rests (arrow keys move through the radios), and the choice is
+// disabled while it is on its way, so the last choice is the one stored.
+function defaultProviderBox(project, redraws) {
   const box = el('div', 'tier'), group = el('div', 'segmented'), hint = el('p', 'about provider-hint');
   const status = el('p', 'about provider-status');
-  let current = project.default_provider;
+  let current = project.default_provider, chosen = current, timer = null, busy = false;
   hint.id = 'settingsProviderHint';
   status.setAttribute('role', 'status');
   group.setAttribute('role', 'radiogroup');
   group.setAttribute('aria-label', `Default provider of ${project.name}`);
   group.setAttribute('aria-describedby', hint.id);
-  const draw = () => {
-    providerChoices(group, 'default_provider', current, change);
-    providerHint(hint, current, null, draw);
+  const draw = (refocus = group.contains(document.activeElement)) => {
+    providerChoices(group, 'default_provider', chosen, change);
+    if (busy) for (const input of group.querySelectorAll('input')) input.disabled = true;
+    providerHint(hint, chosen, null, draw);
+    if (refocus) group.querySelector(':checked')?.focus();
   };
-  const change = async event => {
-    const name = event.target.value;
+  const save = async () => {
+    if (chosen === current) return;
+    const focused = group.contains(document.activeElement);
+    busy = true;
+    for (const input of group.querySelectorAll('input')) input.disabled = true;
     status.textContent = '';
     try {
-      const result = await call(`/api/projects/${encodeURIComponent(project.name)}/provider`, { provider: name });
+      const result = await call(`/api/projects/${encodeURIComponent(project.name)}/provider`, { provider: chosen });
       current = result.project.default_provider;
       status.textContent = result.note || `New agents of ${project.name} run on ${providerLabel(current)}.`;
       refresh();
     } catch (error) {
       status.textContent = error.message;
     }
-    draw();
+    busy = false; chosen = current;
+    draw(focused);  // the focus goes back to the choice it was on
   };
+  const change = event => {
+    chosen = event.target.value;
+    clearTimeout(timer);
+    timer = setTimeout(save, SETUP_SETTLE_MS);
+  };
+  redraws.push(draw);
   box.append(el('h4', '', 'Default provider'), el('p', 'about',
     'The agent CLI that new agents of this project run on, unless their role names another. '
     + 'Agents that exist keep theirs. Applies at once.'), group, hint, status);
@@ -2371,6 +2446,7 @@ async function refresh() {
   const ticket = setupTicket();  // answers older than a save do not touch the model controls
   try {
     state = await call('/api/state');
+    providersChanged();
     applyAppRequest(state.app_open);
     if (selected.startsWith('lead:')) {
       const project = state.projects.find(p => p.name === selected.slice(5));

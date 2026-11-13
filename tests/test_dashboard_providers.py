@@ -16,7 +16,8 @@ STATIC = Path(__file__).resolve().parent.parent / "src" / "orchestrator" / "web"
 # The page's own code under test; everything else it touches is a stub of the harness below.
 NAMES = (
     "TIER_INFO", "el", "button", "avatar", "choices", "options", "confirmDialog",
-    "provider", "providerLabel", "isUsable", "pickProvider", "providerTitle", "checkProviders",
+    "provider", "providerLabel", "canRun", "isUsable", "pickProvider", "providerTitle",
+    "unavailableText", "checkProviders", "providerViews", "providersChanged",
     "modelLabel", "modelOptions", "providerChoices", "providerHint", "shownProvider",
     "openProjectDialog", "inherited", "openAgentDialog", "renderSettings", "defaultProviderBox",
     "setupSlot", "setupBusy", "bumpSetup", "inherits", "settingLabel", "renderSetup",
@@ -119,7 +120,7 @@ const labelled = group => group.children.map(l => ({ text: l.textContent, value:
 // Stubs of the page's other parts.
 const ORCH = 'orchestrator', CLI = 'spartito', OTHER = '\u0000other', SETUP_SETTLE_MS = 0;
 const pendingSetup = new Map(), savingSetup = new Map(), setupEpochs = new Map();
-let setupData = null, selected = ORCH, folder = null, shown = null;
+let setupData = null, selected = ORCH, folder = null, shown = null, providersSeen = '';
 const location = { hash: '' };
 const SWITCHES = [];
 function compactAtBox() { return new Node('div'); }
@@ -128,17 +129,21 @@ function switchBox() { return new Node('div'); }
 const posted = [], replies = [], toasts = [], opened = [];
 async function call(path, body) {
   posted.push(body === undefined ? { path } : { path, body });
-  const reply = replies.shift();
+  const reply = await replies.shift();  // a promise: an answer still on its way
   if (reply instanceof Error) throw reply;
   return reply || {};
 }
 function toast(message) { toasts.push(message); }
 async function refresh() {}
-function openDialog(dialog, submit) { opened.push({ dialog, submit }); }
+function openDialog(dialog, submit) { dialog.open = true; opened.push({ dialog, submit }); }
 function select(id) { selected = id; }
 function loadFolder() {} function renderFolder() {} function chooseRepository() {}
 const stored = (key, fallback) => fallback;
 const tick = () => new Promise(resolve => setTimeout(resolve));
+// Lets the settle timers (SETUP_SETTLE_MS is 0 here) and the requests behind them run.
+const settle = async () => { for (let i = 0; i < 10; i++) await tick(); };
+// An answer that comes when the test says so.
+const later = () => { let answer; const promise = new Promise(resolve => { answer = resolve; }); return { promise, answer }; };
 
 const CLAUDE = { name: 'claude', label: 'Claude', description: 'Anthropic coding agent CLI', executable: 'claude',
   efforts: ['low', 'medium', 'high'], models: [{ value: 'opus', label: 'opus' }], models_note: null,
@@ -268,13 +273,13 @@ const usable = { checked: labelled(group).filter(r => r.checked).map(r => r.valu
 state.providers = [CLAUDE, MISSING];
 openAgentDialog(project);
 const fallback = { checked: labelled(group).filter(r => r.checked).map(r => r.value), hint: hint.hidden,
-  text: hint.textContent, button: hint.querySelector('button').textContent,
+  text: hint.textContent, title: hint.title, button: hint.querySelector('button').textContent,
   efforts: agentDialog.querySelector('[name=effort]').options.map(o => o.value) };
 // "Check again" asks for a fresh check and redraws the choice with its answer.
 replies.push({ providers: [CLAUDE, CODEX] });
 await hint.querySelector('button').onclick();
 const again = { asked: posted.at(-1), hint: hint.hidden, disabled: labelled(group).map(r => r.disabled) };
-// The submitted request names the chosen provider; its note is shown.
+// The submitted request names the chosen provider (the project's again); its note is shown.
 replies.push({ agent_id: 'fix-login-3f2a', run_id: 1, note: 'codex is not available: started on claude' });
 await opened.at(-1).submit(formData(agentDialog));
 out({ usable, fallback, again, request: posted.at(-1), toast: toasts.at(-1), selected });
@@ -291,7 +296,8 @@ out({ usable, fallback, again, request: posted.at(-1), toast: toasts.at(-1), sel
     assert result["fallback"] == {
         "checked": ["claude"],
         "hint": False,
-        "text": "Codex is not available: not found on PATH. Claude is chosen instead. Check again",
+        "text": "Codex is not available (not installed). Claude is chosen instead. Check again",
+        "title": "Codex is not available: not found on PATH",
         "button": "Check again",
         "efforts": ["", "low", "medium", "high"],
     }
@@ -301,7 +307,8 @@ out({ usable, fallback, again, request: posted.at(-1), toast: toasts.at(-1), sel
         "disabled": [False, False],
     }
     assert result["request"]["path"] == "/api/agents"
-    assert result["request"]["body"]["provider"] == "claude"
+    # nothing picked by the user: the project's default, which can run again
+    assert result["request"]["body"]["provider"] == "codex"
     assert result["toast"] == "Agent started. codex is not available: started on claude"
     assert result["selected"] == "fix-login-3f2a"
 
@@ -339,12 +346,14 @@ const radios = box.querySelectorAll('[name=default_provider]');
 const before = radios.map(r => [r.value, r.checked]);
 replies.push({ project: { name: 'my-app', default_provider: 'codex' },
   note: '1 existing agent(s) keep their provider (fix-login-3f2a); new agents run on codex' });
-await radios[1].onchange({ target: radios[1] });
+radios[1].onchange({ target: radios[1] });
+await settle();
 const after = box.querySelectorAll('[name=default_provider]').map(r => [r.value, r.checked]);
 const note = box.querySelector('.provider-status').textContent;
 replies.push(new Error('codex is not available: not found on PATH'));
 const now = box.querySelectorAll('[name=default_provider]');
-await now[0].onchange({ target: now[0] });
+now[0].onchange({ target: now[0] });
+await settle();
 out({ title: box.children[0].textContent, before, request: posted[0], after, note,
   refused: box.querySelector('.provider-status').textContent,
   kept: box.querySelectorAll('[name=default_provider]').map(r => [r.value, r.checked]),
@@ -372,19 +381,30 @@ def test_moving_an_agent_is_confirmed_and_shows_the_new_providers_settings() -> 
         + """
 renderSetup(agentSetup('claude'));
 const choice = () => $('setup').querySelector('[data-setup=provider]');
+const confirm = { confirm: 'fix-login-3f2a has a conversation on claude; on codex it starts a new conversation' };
 choice().value = 'codex';
-replies.push({ confirm: 'fix-login-3f2a has a conversation on claude; on codex it starts a new conversation' });
-await choice().onchange();
-const asked = { request: posted.at(-1), value: choice().value, provider: setupData.provider,
+replies.push(confirm);
+choice().onchange();
+await settle();
+const asked = { request: posted.at(-1), value: choice().value, disabled: choice().disabled, provider: setupData.provider,
   title: confirmBox.querySelector('[data-title]').textContent, text: confirmBox.querySelector('[data-text]').textContent,
   ok: confirmBox.querySelector('[data-ok]').textContent };
-// Cancelling closes the dialog without its action: nothing more is sent.
+// Cancel: the dialog closes without its action; nothing more is sent, nothing changes.
+opened.pop(); confirmBox.open = false;
+await settle();
+renderSetup(setupData);
+const cancelled = { sent: posted.length, value: choice().value, provider: setupData.provider };
+// Again, and this time confirmed.
+choice().value = 'codex';
+replies.push(confirm);
+choice().onchange();
+await settle();
 const sentBeforeConfirm = posted.length;
 replies.push({ agent_id: 'fix-login-3f2a', provider: 'codex', effective: { model: null, effort: null },
   inherited: { model: null, effort: null }, model_override: null, effort_override: null, session_id: null,
   cache_hint: 'Switching the model starts a fresh prompt cache.' });
 await opened.at(-1).submit(formData(confirmBox));
-out({ asked, sentBeforeConfirm, confirmed: posted.at(-1), value: choice().value, provider: setupData.provider,
+out({ asked, cancelled, sentBeforeConfirm, confirmed: posted.at(-1), value: choice().value, provider: setupData.provider,
   session: setupData.session, toast: toasts.at(-1),
   efforts: $('setup').querySelector('[data-control=effort]').querySelector('select').options.map(o => o.value),
   modelsNote: $('setup').querySelector('.models-note')?.textContent ?? null });
@@ -393,12 +413,14 @@ out({ asked, sentBeforeConfirm, confirmed: posted.at(-1), value: choice().value,
     assert result["asked"] == {
         "request": {"path": "/api/agents/fix-login-3f2a/model", "body": {"provider": "codex"}},
         "value": "claude",
+        "disabled": False,
         "provider": "claude",
         "title": "Move fix-login-3f2a to Codex?",
         "text": "fix-login-3f2a has a conversation on claude; on codex it starts a new conversation.",
         "ok": "Move",
     }
-    assert result["sentBeforeConfirm"] == 1
+    assert result["cancelled"] == {"sent": 1, "value": "claude", "provider": "claude"}
+    assert result["sentBeforeConfirm"] == 2
     assert result["confirmed"] == {
         "path": "/api/agents/fix-login-3f2a/model",
         "body": {"provider": "codex", "confirm": True},
@@ -421,7 +443,8 @@ replies.push({ agent_id: ORCH, provider: 'codex', effective: {}, inherited: {}, 
   effort_override: null, session_id: null, cache_hint: null });
 const choice = $('setup').querySelector('[data-setup=provider]');
 choice.value = 'codex';
-await choice.onchange();
+choice.onchange();
+await settle();
 out({ posted, opened: opened.length, provider: setupData.provider });
 """
     )
@@ -439,14 +462,15 @@ def test_the_setup_says_when_the_agents_provider_cannot_run() -> None:
 state.providers = [CLAUDE, MISSING];
 renderSetup(agentSetup('codex'));
 const note = $('setupNote');
-out({ hidden: note.hidden, text: note.textContent,
+out({ hidden: note.hidden, text: note.textContent, title: note.querySelector('.provider-hint').title,
   described: $('setup').querySelector('[data-setup=provider]').getAttribute('aria-describedby'),
   value: $('setup').querySelector('[data-setup=provider]').value });
 """
     )
     assert result == {
         "hidden": False,
-        "text": "Codex is not available: not found on PATH. Check again",
+        "text": "Codex is not available (not installed). Check again",
+        "title": "Codex is not available: not found on PATH",
         "described": "setupNote",
         "value": "codex",
     }
@@ -507,3 +531,325 @@ def test_nothing_in_the_page_assumes_a_provider() -> None:
     page = (STATIC / "app.js").read_text() + (STATIC.parent / "index.html").read_text()
     assert "'claude'" not in page
     assert "'codex'" not in page
+
+
+PICK = """
+// What a click on a radio does: it is checked, the others of its group not, and it says so.
+const pick = (container, value) => {
+  for (const label of container.children) label.children[0].checked = label.children[0].value === value;
+  const input = container.children.find(label => label.children[0].value === value).children[0];
+  input.onchange({ target: input });
+};
+const checkedIn = container => labelled(container).filter(r => r.checked).map(r => r.value);
+"""
+
+MOVED = """
+const movedTo = provider => ({ agent_id: 'fix-login-3f2a', provider, effective: {}, inherited: {},
+  model_override: null, effort_override: null, session_id: null, cache_hint: null });
+"""
+
+
+def test_a_provider_choice_is_sent_once_it_rests_and_not_again_while_on_its_way() -> None:
+    result = run_page(
+        AGENT
+        + MOVED
+        + """
+renderSetup(agentSetup('claude'));
+const choice = () => $('setup').querySelector('[data-setup=provider]');
+// Arrow keys through a closed list: a change at every step, one request for where it rests.
+for (const value of ['codex', 'claude', 'codex']) { choice().value = value; choice().onchange(); }
+const settling = posted.length;
+const answer = later();
+replies.push(answer.promise);
+await settle();
+const control = choice();
+const inFlight = { posted: posted.map(p => p.body), disabled: control.disabled };
+// A poll meanwhile leaves the control alone.
+renderSetup(agentSetup('claude'));
+const kept = { same: choice() === control, disabled: choice().disabled, value: choice().value };
+answer.answer(movedTo('codex'));
+await settle();
+const after = { value: choice().value, disabled: choice().disabled, provider: setupData.provider };
+// Back to the provider it is on before the choice rests: nothing is sent.
+choice().value = 'claude'; choice().onchange(); choice().value = 'codex'; choice().onchange();
+await settle();
+out({ settling, inFlight, kept, after, total: posted.length });
+"""
+    )
+    assert result == {
+        "settling": 0,
+        "inFlight": {"posted": [{"provider": "codex"}], "disabled": True},
+        "kept": {"same": True, "disabled": True, "value": "codex"},
+        "after": {"value": "codex", "disabled": False, "provider": "codex"},
+        "total": 1,
+    }
+
+
+def test_a_failed_move_puts_the_choice_back() -> None:
+    result = run_page(
+        AGENT
+        + """
+renderSetup(agentSetup('claude'));
+const choice = () => $('setup').querySelector('[data-setup=provider]');
+choice().value = 'codex';
+replies.push(new Error('fix-login-3f2a has a running or queued turn: stop it or wait, then move it'));
+choice().onchange();
+await settle();
+out({ value: choice().value, disabled: choice().disabled, provider: setupData.provider, toast: toasts.at(-1),
+  opened: opened.length });
+"""
+    )
+    assert result == {
+        "value": "claude",
+        "disabled": False,
+        "provider": "claude",
+        "toast": "fix-login-3f2a has a running or queued turn: stop it or wait, then move it",
+        "opened": 0,
+    }
+
+
+def test_a_refresh_leaves_a_focused_provider_choice_alone() -> None:
+    result = run_page(
+        AGENT
+        + """
+renderSetup(agentSetup('claude'));
+const choice = () => $('setup').querySelector('[data-setup=provider]');
+const focused = choice();
+document.activeElement = focused;
+state.providers = [CLAUDE, MISSING];
+renderSetup(agentSetup('claude'));
+const kept = choice() === focused;
+document.activeElement = null;
+renderSetup(agentSetup('claude'));
+out({ kept, rebuilt: choice() !== focused, options: choice().options.map(o => [o.value, o.disabled]) });
+"""
+    )
+    assert result == {
+        "kept": True,
+        "rebuilt": True,
+        "options": [["claude", False], ["codex", True]],
+    }
+
+
+def test_the_dialogs_say_when_no_provider_can_run() -> None:
+    result = run_page(
+        """
+state.providers = [{ ...CLAUDE, usable: false, status: 'not_logged_in', reason: 'not logged in', default: false }, MISSING];
+openProjectDialog();
+const projectGroup = projectDialog.querySelector('[data-segment=provider]'), projectHint = $('projectProviderHint');
+const project = { radios: labelled(projectGroup).map(r => [r.value, r.checked, r.disabled]),
+  hint: projectHint.textContent, title: projectHint.title };
+openAgentDialog({ name: 'my-app', default_provider: 'claude', agents: [] });
+const agentGroup = agentDialog.querySelector('[data-segment=provider]');
+const agent = { radios: labelled(agentGroup).map(r => [r.value, r.checked, r.disabled]), hint: $('agentProviderHint').textContent };
+await opened.at(-1).submit(formData(agentDialog));
+out({ project, agent, sent: posted.at(-1).body.provider });
+"""
+    )
+    none = [["claude", False, True], ["codex", False, True]]
+    assert result["project"] == {
+        "radios": none,
+        "hint": "None of the agent CLIs can run here. Check again",
+        "title": "Claude is not available: not logged in\nCodex is not available: not found on PATH",
+    }
+    assert result["agent"] == {
+        "radios": none,
+        "hint": "None of the agent CLIs can run here. Check again",
+    }
+    assert result["sent"] is None
+
+
+def test_providers_of_an_older_server_count_as_usable() -> None:
+    result = run_page(
+        AGENT
+        + PICK
+        + """
+state.providers = [{ name: 'claude', models: [], efforts: [] }, { name: 'codex', models: [], efforts: [] }];
+const group = new Node('div');
+providerChoices(group, 'provider', pickProvider(undefined), null);
+openAgentDialog({ name: 'my-app', default_provider: 'codex', agents: [] });
+renderSetup(agentSetup('claude'));
+out({ radios: labelled(group).map(r => [r.text, r.checked, r.disabled]), usable: isUsable('codex'),
+  agent: checkedIn(agentDialog.querySelector('[data-segment=provider]')), hint: $('agentProviderHint').hidden,
+  options: $('setup').querySelector('[data-setup=provider]').options.map(o => [o.textContent, o.disabled]),
+  note: $('setupNote').hidden });
+"""
+    )
+    assert result == {
+        "radios": [["claude", True, False], ["codex", False, False]],
+        "usable": True,
+        "agent": ["codex"],
+        "hint": True,
+        "options": [["claude", False], ["codex", False]],
+        "note": True,
+    }
+
+
+def test_an_open_dialog_takes_in_later_provider_results() -> None:
+    result = run_page(
+        PICK
+        + """
+const CHECKED = { ...CODEX, status: 'available', reason: 'found on PATH; login not checked',
+  models: [{ value: 'gpt-x', label: 'gpt-x' }], models_note: null };
+openAgentDialog({ name: 'docs-site', default_provider: 'codex', agents: [] });
+const group = agentDialog.querySelector('[data-segment=provider]'), field = name => agentDialog.querySelector(`[name=${name}]`);
+const note = agentDialog.querySelector('[data-models-note]');
+const before = { models: $('agentModels').children.length, note: note.hidden ? null : note.textContent };
+field('model').value = 'my-model'; field('name').value = 'write-guide'; field('effort').value = 'xhigh';
+state.providers = [CLAUDE, CHECKED];
+providersChanged();
+const checked = { chosen: checkedIn(group), models: $('agentModels').children.map(o => o.value),
+  note: note.hidden ? null : note.textContent, model: field('model').value, name: field('name').value,
+  effort: field('effort').value };
+// The provider one would get turns out to be missing: the choice moves, the hint says so.
+state.providers = [CLAUDE, MISSING];
+providersChanged();
+const missing = { chosen: checkedIn(group), hint: $('agentProviderHint').textContent, effort: field('effort').value,
+  model: field('model').value };
+// A closed dialog is left alone.
+agentDialog.open = false;
+state.providers = [CLAUDE, CHECKED];
+providersChanged();
+const closed = checkedIn(group);
+// The new-project dialog: a picked provider that can no longer run is the one exception.
+openProjectDialog();
+const projectGroup = projectDialog.querySelector('[data-segment=provider]');
+pick(projectGroup, 'codex');
+const picked = checkedIn(projectGroup);
+state.providers = [CLAUDE, MISSING];
+providersChanged();
+const project = { chosen: checkedIn(projectGroup), hint: $('projectProviderHint').textContent };
+// The settings: the model lists and whether a provider can run.
+projectDialog.open = false;
+renderSettings();
+settingsDialog.open = true;
+state.providers = [CLAUDE, CHECKED];
+providersChanged();
+const settings = { models: $('settingsRows').querySelector('[name=orchestrator\\.codex\\.model]').parentNode
+  .querySelector('datalist').children.map(o => o.value),
+  unusable: $('settingsRows').querySelectorAll('.who').filter(w => w.classList.contains('unusable')).length };
+out({ before, checked, missing, closed, picked, project, settings });
+"""
+    )
+    assert result["before"] == {"models": 0, "note": "model list loading"}
+    assert result["checked"] == {
+        "chosen": ["codex"],
+        "models": ["gpt-x"],
+        "note": None,
+        "model": "my-model",
+        "name": "write-guide",
+        "effort": "xhigh",
+    }
+    assert result["missing"] == {
+        "chosen": ["claude"],
+        "hint": "Codex is not available (not installed). Claude is chosen instead. Check again",
+        "effort": "",  # Claude offers no xhigh
+        "model": "my-model",
+    }
+    assert result["closed"] == ["claude"]
+    assert result["picked"] == ["codex"]
+    assert result["project"] == {
+        "chosen": ["claude"],
+        "hint": "Codex is not available (not installed). Claude is chosen instead. Check again",
+    }
+    assert result["settings"] == {"models": ["gpt-x"], "unusable": 0}
+
+
+def test_the_new_agent_dialog_follows_the_roles_provider() -> None:
+    result = run_page(
+        PICK
+        + """
+const project = { name: 'my-app', default_provider: 'claude', agents: [] };
+const roles = agentDialog.querySelector('[data-cards=role]'), group = agentDialog.querySelector('[data-segment=provider]');
+const hint = $('agentProviderHint');
+const walk = () => {
+  openAgentDialog(project);
+  const seen = [checkedIn(group)[0]];
+  pick(roles, 'reviewer'); seen.push(checkedIn(group)[0]);
+  pick(roles, 'worker'); seen.push(checkedIn(group)[0]);
+  return seen;
+};
+state.roles = [{ name: 'worker', description: 'Does one task.', lead: false, provider: null },
+  { name: 'reviewer', description: 'Reviews a branch.', lead: false, provider: 'codex' }];
+const withField = walk();
+// A provider the user picked stays when the role changes.
+openAgentDialog(project);
+pick(group, 'codex'); pick(roles, 'reviewer'); pick(roles, 'worker');
+const userPick = checkedIn(group)[0];
+// The role's provider cannot run: the project's default, with the hint.
+state.providers = [CLAUDE, MISSING];
+openAgentDialog(project);
+pick(roles, 'reviewer');
+const missing = { chosen: checkedIn(group)[0], hint: hint.textContent };
+// A server older than this page: no `provider` on the roles.
+state.providers = [CLAUDE, CODEX];
+state.roles = state.roles.map(({ provider, ...role }) => role);
+const withoutField = walk();
+out({ withField, userPick, missing, withoutField });
+"""
+    )
+    assert result == {
+        "withField": ["claude", "codex", "claude"],
+        "userPick": "codex",
+        "missing": {
+            "chosen": "claude",
+            "hint": "Codex is not available (not installed). Claude is chosen instead. Check again",
+        },
+        "withoutField": ["claude", "claude", "claude"],
+    }
+
+
+def test_a_projects_default_provider_is_sent_once_it_rests_and_one_at_a_time() -> None:
+    result = run_page(
+        """
+state.settings.projects['my-app'] = {};
+settingsDialog.querySelector('[name=scope]').value = 'my-app';
+renderSettings();
+const box = $('settingsRows').children[0];
+const radios = () => box.querySelectorAll('[name=default_provider]');
+for (const index of [1, 0, 1]) radios()[index].onchange({ target: radios()[index] });
+const answer = later();
+replies.push(answer.promise);
+await settle();
+const inFlight = { posted: posted.map(p => p.body), disabled: radios().map(r => r.disabled) };
+answer.answer({ project: { name: 'my-app', default_provider: 'codex' }, note: null });
+await settle();
+out({ inFlight, after: radios().map(r => [r.value, r.checked, r.disabled]), total: posted.length,
+  status: box.querySelector('.provider-status').textContent });
+"""
+    )
+    assert result == {
+        "inFlight": {"posted": [{"provider": "codex"}], "disabled": [True, True]},
+        "after": [["claude", False, False], ["codex", True, False]],
+        "total": 1,
+        "status": "New agents of my-app run on Codex.",
+    }
+
+
+def test_a_pick_keeps_the_keyboard_on_the_provider_choice() -> None:
+    result = run_page(
+        PICK
+        + """
+let focusedOn = null;
+Node.prototype.focus = function () { focusedOn = this; document.activeElement = this; };
+// The new-project dialog: a pick does not rebuild the radios the keyboard is on.
+openProjectDialog();
+const group = projectDialog.querySelector('[data-segment=provider]');
+const before = group.children[1].children[0];
+pick(group, 'codex');
+const same = group.children[1].children[0] === before;
+await settle();  // the dialog's own focus on its folder filter comes first
+// The project's default provider: after the save the focus is back on the chosen radio.
+state.settings.projects['my-app'] = {};
+settingsDialog.querySelector('[name=scope]').value = 'my-app';
+renderSettings();
+const box = $('settingsRows').children[0];
+const radio = box.querySelectorAll('[name=default_provider]')[1];
+radio.focus();
+replies.push({ project: { name: 'my-app', default_provider: 'codex' }, note: null });
+radio.onchange({ target: radio });
+await settle();
+out({ same, focused: focusedOn !== radio && focusedOn.value === 'codex' && focusedOn.checked && box.contains(focusedOn) });
+"""
+    )
+    assert result == {"same": True, "focused": True}
