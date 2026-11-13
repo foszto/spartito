@@ -2,7 +2,7 @@
 name = "spartito"
 # The one place of the version: `uv version <new>` bumps it; the package reads it from the
 # installed metadata (orchestrator.__version__). A release tag is `v<version>` (docs/releasing.md).
-version = "0.1.0"
+version = "0.2.0"
 description = "Run Claude Code and Codex agents in parallel, each in its own git worktree, steered through one orchestrator agent"
 readme = "README.md"
 license = "MIT"
@@ -56,6 +56,7 @@ Homepage = "https://github.com/foszto/spartito"
 Repository = "https://github.com/foszto/spartito"
 Issues = "https://github.com/foszto/spartito/issues"
 Documentation = "https://github.com/foszto/spartito/tree/master/docs"
+Changelog = "https://github.com/foszto/spartito/blob/master/CHANGELOG.md"
 
 [project.scripts]
 spartito = "orchestrator.cli:main"

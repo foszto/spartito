@@ -82,6 +82,7 @@ its own), and `spartito upgrade` prepares an upgrade: it backs the state up, pri
 for your install (for the install above `uv tool upgrade spartito`, which keeps the extras) and
 what to restart afterwards. The steps:
 [docs/usage.md](https://github.com/foszto/spartito/blob/master/docs/usage.md#upgrading).
+What each release changed: [CHANGELOG.md](https://github.com/foszto/spartito/blob/master/CHANGELOG.md).
 
 ## Quick start
 
