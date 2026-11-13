@@ -11,6 +11,13 @@ from pathlib import Path
 
 import pytest
 from fakeprovider import FakeProvider
+from home_guard import (  # noqa: F401  (no test reaches a real home: its hooks and fixture)
+    home_guard_temp_dirs,
+    pytest_configure,
+    pytest_runtest_call,
+    pytest_runtest_teardown,
+    pytest_unconfigure,
+)
 
 from orchestrator import providers
 from orchestrator.core import views

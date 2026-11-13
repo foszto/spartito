@@ -61,9 +61,11 @@ linters, the scripts and the link and command-name tests once on Linux.
 
 The suite runs on a fake provider (`tests/fakeprovider.py`) with real git repositories and
 worktrees in temporary directories. It never calls `claude` or `codex` and needs no network.
-`tests/conftest.py` sets a temporary `ORCH_HOME` for every test. In parallel
-(`pytest-xdist`) it takes about one minute on a recent Mac without the extras (1215 passed,
-3 skipped). The skips:
+`tests/conftest.py` sets a temporary `ORCH_HOME` for every test. The suite also replaces an
+inherited `ORCH_HOME` with a temporary one for the whole run and fails a test that reaches a
+real home (`tests/home_guard.py`), so tests must not undo the suite's environment patches.
+In parallel (`pytest-xdist`) it takes about one minute on a recent Mac without the extras
+(1215 passed, 3 skipped). The skips:
 
 - `tests/test_autostart.py`, two cases: skipped on macOS (`systemd only on Linux`), and on
   Linux without `systemd-analyze`;
