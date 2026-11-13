@@ -39,7 +39,7 @@ from .models import (
     RunStatus,
     Usage,
 )
-from .providers import McpServer, RunContext
+from .providers import McpServer, RunContext, locate
 from .providers.base import NOTIFICATION_RESULT, Invocation
 from .store import Store, now
 from .textfmt import kilo, one_line
@@ -149,13 +149,25 @@ def system_prompt(
     return f"{prompt}\n\n## Context\n" + "\n".join(context)
 
 
+# Passed on to the orchestrator's MCP server when set: what the runners it starts need to
+# find and run the providers as this runner does (their config homes, plugin providers).
+MCP_PASSED_ENV = ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "ORCH_PROVIDERS", "PYTHONPATH")
+
+
 def mcp_server(agent: Agent) -> McpServer:
+    passed = {name: os.environ[name] for name in MCP_PASSED_ENV if os.environ.get(name)}
     return McpServer(
         command=sys.executable,
         args=["-m", "orchestrator.mcp_server"],
         # The turn's variables are given here, not only inherited: Codex starts MCP servers
         # with a few variables only.
-        env={"ORCH_HOME": str(config.home()), "ORCH_AGENT_ID": agent.id, **config.turn_env()},
+        env={
+            "ORCH_HOME": str(config.home()),
+            "ORCH_AGENT_ID": agent.id,
+            "PATH": locate.search_path(),
+            **passed,
+            **config.turn_env(),
+        },
     )
 
 
@@ -431,24 +443,40 @@ def note_hooks(store: Store, run_id: int, agent_id: str, off: bool) -> None:
         store.add_event(run_id, agent_id, "info", MEMORY_OFF if off else MEMORY_ON)
 
 
+class CliNotFound(RuntimeError):
+    """The provider's CLI is not there; its text is the run's error as it is."""
+
+
 def _start(invocation: Invocation, cwd: str, token: str, stderr: Any) -> subprocess.Popen[str]:
     env = {k: v for k, v in os.environ.items() if k not in invocation.unset_env}
     env.update(invocation.env)
+    # A runner started by a service or launcher may have a thin PATH: the usual install
+    # directories after it, where the CLI (and the `node` of its `#!/usr/bin/env node`) is.
+    env["PATH"] = locate.search_path(env.get("PATH"))
     env[TURN_ENV] = token
     env[config.TURN_HOME_ENV] = config.turn_home()
     if invocation.canary is not None:
         invocation.canary.unlink(missing_ok=True)
     # In the runner's process group (the runner leads its own session and group, see
     # Orchestrator._launch), so a stop that kills the group ends the CLI as well.
-    return subprocess.Popen(
-        invocation.argv,
-        cwd=cwd,
-        env=env,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=stderr,
-        text=True,
-    )
+    try:
+        return subprocess.Popen(
+            invocation.argv,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=stderr,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        if exc.filename != invocation.argv[0]:  # e.g. the working directory
+            raise
+        raise CliNotFound(
+            f"the `{invocation.argv[0]}` CLI was not found, so the turn could not start: "
+            f"{locate.not_found(invocation.argv[0])}; `{config.CLI_NAME} providers` shows "
+            "which CLIs this machine has"
+        ) from None
 
 
 def wait_for_canary(
@@ -858,7 +886,7 @@ def take_turn(store: Store, run: Run, kind: str) -> None:
             store.finish_run(run_id, RunStatus.STOPPED, error="stopped")
     except Exception as exc:  # the run must never stay 'running' after its runner is gone
         if not _drop_unstarted(store, run_id, kind):
-            message = f"{type(exc).__name__}: {exc}"
+            message = str(exc) if isinstance(exc, CliNotFound) else f"{type(exc).__name__}: {exc}"
             store.add_event(run_id, run.agent_id, "error", message)
             store.finish_run(run_id, RunStatus.FAILED, error=message)
     finally:

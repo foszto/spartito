@@ -1,6 +1,6 @@
 """The supported harnesses and their availability: providers.locate (finding and probing a
 CLI), core/availability (the per-process check), the facade, `/api/state`, `/api/providers`,
-`spartito providers`.
+`spartito providers` and the runner's start of a CLI.
 
 No real `claude` or `codex` runs: the probe tests use `#!/bin/sh` fakes in a temporary
 directory used as PATH, and everything else gets conftest's faked check."""
@@ -22,8 +22,9 @@ from fakeprovider import FakeProvider
 from starlette.testclient import TestClient
 from typer.testing import CliRunner
 
-from orchestrator import cli, config, providers
+from orchestrator import cli, config, providers, runner
 from orchestrator.core import availability
+from orchestrator.models import Agent, RunStatus
 from orchestrator.providers import codex, locate
 from orchestrator.service import Orchestrator
 from orchestrator.web.app import app
@@ -468,3 +469,72 @@ def test_the_providers_command_prints_json(orch: Orchestrator) -> None:
     assert [e["name"] for e in listed][:2] == ["claude", "codex"]
     assert all(set(entry) == CONTRACT for entry in listed)
     assert listed[1]["models"][0] == {"value": "gpt-test-codex", "label": "gpt-test-codex"}
+
+
+# -- starting a CLI ---------------------------------------------------------------------------
+
+
+def test_a_missing_cli_fails_the_turn_with_a_clear_error(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_MISSING_CLI", "orch-test-missing-cli")
+
+    agent, run = orch.spawn(project, "hello", worktree=False)
+    until(lambda: not orch.store.get_run(run.id).status.active)
+
+    ended = orch.store.get_run(run.id)
+    assert ended.status is RunStatus.FAILED
+    assert ended.error.startswith("the `orch-test-missing-cli` CLI was not found")
+    assert f"`{config.CLI_NAME} providers`" in ended.error
+    assert "FileNotFoundError" not in ended.error and "Traceback" not in ended.error
+
+
+def test_the_cli_gets_the_usual_install_dirs_after_its_path(orch: Orchestrator, project: str):
+    """The runner is a process of its own: it searches the usual directories (conftest
+    empties the list only in this process); ~ is the tests' temporary home."""
+    usual = Path.home() / ".local" / "bin"
+    usual.mkdir(parents=True)
+
+    agent, _ = orch.spawn(project, "ENVCHILD", worktree=False)
+    found = Path(orch.store.get_agent(agent.id).cwd) / ".fake-env.json"
+    until(found.exists)
+
+    path = json.loads(found.read_text())["PATH"].split(os.pathsep)
+    assert str(usual) in path
+    assert path[: len(os.environ["PATH"].split(os.pathsep))] == os.environ["PATH"].split(os.pathsep)
+
+
+def test_the_mcp_server_gets_what_its_runners_need(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CODEX_HOME", "/tmp/codex-home")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/tmp/claude-config")
+    monkeypatch.setenv("ORCH_PROVIDERS", "fake=fakeprovider:FakeProvider")
+    monkeypatch.setenv("PYTHONPATH", "/tmp/plugins")
+    agent = Agent(id="a-1", project="p", name="a", role="lead", provider="codex", cwd="/tmp")
+
+    env = runner.mcp_server(agent).env
+
+    assert env["CODEX_HOME"] == "/tmp/codex-home"
+    assert env["CLAUDE_CONFIG_DIR"] == "/tmp/claude-config"
+    assert env["ORCH_PROVIDERS"] == "fake=fakeprovider:FakeProvider"
+    assert env["PYTHONPATH"] == "/tmp/plugins"
+    assert env["PATH"] == locate.search_path()
+    monkeypatch.delenv("CODEX_HOME")
+    assert "CODEX_HOME" not in runner.mcp_server(agent).env
+
+
+def test_attach_names_a_missing_cli_instead_of_a_traceback(
+    orch: Orchestrator, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent, run = orch.spawn(project, "hello", worktree=False)
+    until(lambda: not orch.store.get_run(run.id).status.active)
+    orch.store.set_session(agent.id, "session-1")
+    (tmp_path / "empty").mkdir()
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))  # no `codex` anywhere
+    monkeypatch.setitem(providers.PROVIDERS, "fake", codex.CodexProvider())  # runs `codex`
+    monkeypatch.setattr(cli.os, "execvpe", lambda *a: pytest.fail("started a CLI"))
+
+    result = CliRunner().invoke(cli.app, ["attach", agent.id])
+
+    assert result.exit_code == 1
+    output = " ".join(click.unstyle(result.output).split())
+    assert "the `codex` CLI is not available: `codex` was not found" in output

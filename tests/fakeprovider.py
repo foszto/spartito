@@ -26,6 +26,9 @@ runner passed it (prompt, system_prompt, slash_commands, output_schema, compact_
 `ENVCHILD` has a child process (like a command the agent runs) write its environment to
 `.fake-env.json` in the working directory, complete when it appears.
 
+FAKE_MISSING_CLI=<name> makes the command line start with <name> instead of Python, like a
+provider whose CLI is not installed.
+
 `AWAKE` first waits (up to 10 s) until the fake sleep inhibitor of its runner (conftest.py)
 has logged its start, so the turn cannot end before the inhibitor is up: a new script may
 take longer to start than a short turn lasts.
@@ -198,7 +201,8 @@ class FakeProvider:
         config = f"{ctx.model}/{ctx.effort}"
         canary = ctx.scratch / "canary" if ctx.loadout.memory else None
         mode = ["memory", str(canary)] if canary else ["plain"]
-        argv = [sys.executable, "-c", SCRIPT, resumed, config, *mode]
+        argv = [os.environ.get("FAKE_MISSING_CLI") or sys.executable, "-c", SCRIPT, resumed]
+        argv += [config, *mode]
         stdin = stream_json_prompt(ctx.prompt) if canary else ctx.prompt
         seen = {
             "prompt": ctx.prompt,

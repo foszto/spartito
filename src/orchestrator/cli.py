@@ -15,6 +15,7 @@ import typer
 
 from . import __version__, autostart, config, loadout, providers, roles
 from .models import Agent
+from .providers import locate
 from .providers.claude import loadout_flags
 from .service import (
     ORCHESTRATOR_ID,
@@ -270,8 +271,8 @@ def chat(
     ] = None,
 ) -> None:
     """Open the orchestrator: an interactive Claude Code session that steers all agents."""
-    if not shutil.which("claude"):
-        raise fail("the `claude` CLI is not on PATH")
+    if not shutil.which("claude", path=locate.search_path()):
+        raise fail(f"the `claude` CLI is not available: {locate.not_found('claude')}")
     data = orch().settings()
     tier = data.get("orchestrator", {}).get("claude", {})
     bot_coauthor = data.get(BOT_COAUTHOR, True) is not False
@@ -311,7 +312,7 @@ def chat(
         argv += ["--effort", effort]
     if not here:
         os.chdir(config.workspace_dir())
-    os.execvp("claude", argv)
+    os.execvpe("claude", argv, {**os.environ, "PATH": locate.search_path()})
 
 
 @app.command()
@@ -1548,8 +1549,14 @@ def attach(agent_id: str) -> None:
     if o.active_runs(agent.id):
         raise fail(f"the agent is busy; `{CLI} stop` it first or wait")
     argv = providers.get(agent.provider).attach_command(agent)
+    env = {**os.environ, "PATH": locate.search_path()}
+    if not shutil.which(argv[0], path=env["PATH"]):
+        raise fail(
+            f"the `{argv[0]}` CLI is not available: {locate.not_found(argv[0])}"
+            f" (`{CLI} providers` checks every provider)"
+        )
     os.chdir(agent.cwd)
-    os.execvp(argv[0], argv)
+    os.execvpe(argv[0], argv, env)
 
 
 @app.command("providers")

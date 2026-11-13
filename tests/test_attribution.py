@@ -159,8 +159,8 @@ def test_the_project_url_is_the_homepage() -> None:
 
 def chat_prompt(monkeypatch: pytest.MonkeyPatch) -> str:
     calls: list[list[str]] = []
-    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/bin/{name}")
-    monkeypatch.setattr(cli.os, "execvp", lambda file, argv: calls.append(argv))
+    monkeypatch.setattr(cli.shutil, "which", lambda name, path=None: f"/bin/{name}")
+    monkeypatch.setattr(cli.os, "execvpe", lambda file, argv, env: calls.append(argv))
 
     result = CliRunner().invoke(cli.app, ["chat", "--here"])
 

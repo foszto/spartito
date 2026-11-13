@@ -121,8 +121,8 @@ def test_the_orchestrator_prompt_names_itself_and_the_tool() -> None:
 @pytest.fixture
 def exec_argv(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     calls: list[list[str]] = []
-    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/bin/{name}")
-    monkeypatch.setattr(cli.os, "execvp", lambda file, argv: calls.append(argv))
+    monkeypatch.setattr(cli.shutil, "which", lambda name, path=None: f"/bin/{name}")
+    monkeypatch.setattr(cli.os, "execvpe", lambda file, argv, env: calls.append(argv))
     return calls
 
 
