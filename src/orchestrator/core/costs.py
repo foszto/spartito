@@ -1,13 +1,14 @@
 """Cost reports and budgets, from the recorded usage (table run_usage, one row per run that
 reported usage) and what deleted agents had spent (spent_removed).
 
-The report groups the recorded usage by local-time day, by project or by agent. Runs recorded
+The report groups the recorded usage by local-time day, by project, agent, model or role, and
+gives the spend per day and group over its range for the dashboard's chart. Runs recorded
 by code from before usage records have no record, so the report can be slightly below the
 total the dashboard shows: it is "recorded usage". Codex reports no cost: its turns count with
 their tokens, and a row none of whose turns reported a cost has no cost (None, shown as n/a),
 never $0.00. What deleted agents had spent is kept per agent and project, without the dates of
 its turns: it has its own rows (per project, per agent, or one undated row by day) and is left
-out when only spend since a day is asked for.
+out when a start or end day is asked for.
 
 A budget is global or for one project, over a local-time day, month or all time ('total'). It
 counts reported cost only; 'total' includes deleted agents' spend, a day or month does not
@@ -22,7 +23,7 @@ runner); a running turn is never stopped, and notification and compaction turns 
 from __future__ import annotations
 
 import math
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Protocol
 
 from .. import config, desktop
@@ -30,14 +31,17 @@ from ..errors import OrchestratorError
 from ..models import TOKEN_FIELDS
 from ..store import Store
 
-GROUPS = ("project", "day", "agent")  # `--by`; the first is the default
+GROUPS = ("project", "day", "agent", "model", "role")  # `--by`; the first is the default
 PERIODS = ("day", "month", "total")
 DEFAULT_PERIOD = "month"
 DEFAULT_WARN_AT = 80  # percent
 GLOBAL = ""  # the scope of the global budget
 WARNED, REACHED = 1, 2  # announced levels
 REMOVED_LABEL = "removed agents"
+UNKNOWN_MODEL = "unknown"  # a usage record without a model
+REMOVED_ROLE = "removed"  # a role not recorded: a deleted agent's
 PERIOD_TEXT = {"day": "today", "month": "this month", "total": "in total"}
+MAX_RANGE_DAYS = 3660  # the longest range a report covers (about ten years): one chart bar a day
 
 
 class Facade(Protocol):
@@ -68,6 +72,17 @@ def parse_day(text: str) -> date:
         return date.fromisoformat(text.strip())
     except ValueError:
         raise OrchestratorError(f"not a date: {text!r} (expected YYYY-MM-DD)") from None
+
+
+def _bound(day: date, next_day: bool = False) -> str:
+    """utc_start of `day` (or of the day after it) for a report's range; a day too close to
+    the edge of the calendar to convert is an error."""
+    try:
+        return utc_start(day + timedelta(days=1) if next_day else day)
+    except OverflowError, ValueError, OSError:
+        raise OrchestratorError(
+            f"out of range: {day} (too close to the edge of the calendar)"
+        ) from None
 
 
 def current_period(period: str, today: date | None = None) -> tuple[str, date | None]:
@@ -116,40 +131,90 @@ def _project_label(project: str | None) -> str:
     return project if project is not None else f"{config.ORCHESTRATOR_NAME} (orchestrator)"
 
 
+def _cell() -> dict[str, Any]:
+    """One day's spend of one group in the series."""
+    return {
+        "turns": 0,
+        "unpriced": 0,
+        "tokens": dict.fromkeys(("in", "out", "cache_read", "cache_write"), 0),
+        "cost_usd": None,
+    }
+
+
+def _group(by: str, record: dict[str, Any]) -> tuple[Any, str]:
+    """The key and label of a usage record's row when grouped `by`."""
+    if by == "day":
+        day = local_day(record["created_at"])
+        return day, day
+    if by == "project":
+        return record["project"], _project_label(record["project"])
+    if by == "model":
+        return record["model"], record["model"] or UNKNOWN_MODEL
+    if by == "role":
+        return record["role"], record["role"] or REMOVED_ROLE
+    return record["agent_id"], record["agent_id"]
+
+
+def _removed_group(by: str, spend: dict[str, Any]) -> tuple[Any, str]:
+    """The key and label of a deleted agent's row when grouped `by` (its model and role are
+    not recorded)."""
+    if by == "day":
+        return None, f"{REMOVED_LABEL} (not dated)"
+    if by == "project":
+        return spend["project"], f"{_project_label(spend['project'])}: {REMOVED_LABEL}"
+    if by == "model":
+        return None, f"{REMOVED_LABEL} (model not recorded)"
+    if by == "role":
+        return None, REMOVED_ROLE
+    return spend["agent_id"], f"{spend['agent_id']} (removed)"
+
+
+def _days(first: date, last: date) -> list[str]:
+    return [date.fromordinal(n).isoformat() for n in range(first.toordinal(), last.toordinal() + 1)]
+
+
 def report(
-    orch: Facade, by: str = GROUPS[0], since: str | None = None, project: str | None = None
+    orch: Facade,
+    by: str = GROUPS[0],
+    since: str | None = None,
+    project: str | None = None,
+    until: str | None = None,
 ) -> dict[str, Any]:
-    """The recorded spend grouped `by` 'project', 'day' (local time) or 'agent', from the
-    local day `since` (YYYY-MM-DD) on, of one `project` (None: everything, the orchestrator
-    too). Returns {by, since, project, rows, total, removed_left_out, unpriced}: each row (and
-    the total) as {key, label, project, removed, turns (None: not known), unpriced, tokens
-    {in, out, cache_read, cache_write}, cost_usd (None: none reported)}, rounded to cents
-    only when shown. Deleted agents' spend has rows of their own (removed: true); with
-    `since` it is left out (removed_left_out: true), as it has no dates."""
+    """The recorded spend grouped `by` 'project', 'day' (local time), 'agent', 'model' (as
+    the usage record names it; 'unknown': none) or 'role' (the agent's), from the local day
+    `since` (YYYY-MM-DD) on and up to the local day `until` included, of one `project`
+    (None: everything, the orchestrator too). Returns {by, since, until, project, rows,
+    total, removed_left_out, unpriced, days, series}: each row (and the total) as {key,
+    label, project, removed, turns (None: not known), unpriced, tokens {in, out, cache_read,
+    cache_write}, cost_usd (None: none reported)}, rounded to cents only when shown. Deleted
+    agents' spend has rows of their own (removed: true); with `since` or `until` it is left
+    out (removed_left_out: true), as it has no dates. `days` is every local day of the range
+    (without `since`: from the first record; without `until`: to today or the last record),
+    and `series` the dated spend per day and row label: {day: {label: {turns, unpriced,
+    tokens, cost_usd}}}, only the days and groups with records. A range of more than
+    MAX_RANGE_DAYS days, or with a day too close to the edge of the calendar, is refused."""
     if by not in GROUPS:
         raise OrchestratorError(f"unknown grouping {by!r} (choose from {', '.join(GROUPS)})")
     start = parse_day(since) if since else None
-    records = orch.store.usage_records(utc_start(start) if start else None, project)
+    end = parse_day(until) if until else None
+    if start and end and end < start:
+        raise OrchestratorError(f"the end day {end} is before the start day {start}")
+    records = orch.store.usage_records(
+        _bound(start) if start else None, project, _bound(end, next_day=True) if end else None
+    )
     rows: dict[Any, dict[str, Any]] = {}
+    series: dict[str, dict[str, dict[str, Any]]] = {}
     for record in records:
-        if by == "day":
-            key: Any = local_day(record["created_at"])
-            label = key
-        elif by == "project":
-            key, label = record["project"], _project_label(record["project"])
-        else:
-            key = label = record["agent_id"]
+        key, label = _group(by, record)
         row = rows.setdefault(("", key), _row(key, label))
         row["project"] = record["project"]
         _add(row, record, 1)
-    removed = [] if start else orch.store.removed_spend(project)
+        day = local_day(record["created_at"])
+        _add(series.setdefault(day, {}).setdefault(label, _cell()), record, 1)
+    dated = bool(start or end)
+    removed = [] if dated else orch.store.removed_spend(project)
     for spend in removed:
-        if by == "day":
-            key, label = None, f"{REMOVED_LABEL} (not dated)"
-        elif by == "project":
-            key, label = spend["project"], f"{_project_label(spend['project'])}: {REMOVED_LABEL}"
-        else:
-            key, label = spend["agent_id"], f"{spend['agent_id']} (removed)"
+        key, label = _removed_group(by, spend)
         row = rows.setdefault(("removed", key), _row(key, label, removed=True))
         row["project"] = spend["project"]
         _add(row, spend, None)
@@ -171,14 +236,27 @@ def report(
         total["unpriced"] += row["unpriced"]
         if row["cost_usd"] is not None:
             total["cost_usd"] = (total["cost_usd"] or 0) + row["cost_usd"]
+    first = start or (date.fromisoformat(min(series)) if series else None)
+    last = end or max(
+        [datetime.now().astimezone().date(), *(date.fromisoformat(day) for day in series)]
+    )
+    if first and (last - first).days + 1 > MAX_RANGE_DAYS:
+        raise OrchestratorError(
+            f"the range from {first} to {last} has {(last - first).days + 1:,} days, more than"
+            f" {MAX_RANGE_DAYS:,} (about ten years): narrow the range with a later start"
+            " day or an earlier end day"
+        )
     return {
         "by": by,
         "since": start.isoformat() if start else None,
+        "until": end.isoformat() if end else None,
         "project": project,
         "rows": listed,
         "total": total,
-        "removed_left_out": bool(start),
+        "removed_left_out": dated,
         "unpriced": total["unpriced"],
+        "days": _days(first, last) if first else [],
+        "series": series,
     }
 
 

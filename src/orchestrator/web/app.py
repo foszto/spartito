@@ -441,12 +441,16 @@ def update_board_item(orch: Orchestrator, request: Request, body: dict) -> dict[
 
 
 def cost(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
-    """The cost report of the recorded runs (`?by=project|day|agent`, `?since=YYYY-MM-DD`,
-    `?project=`) and every budget with what is spent in its current period. Read-only (GET),
-    and only asked for when the page's cost view is opened: never part of /api/state."""
+    """The cost report of the recorded runs (`?by=project|day|agent|model|role`,
+    `?since=YYYY-MM-DD`, `?until=YYYY-MM-DD`, `?project=`), with its spend per day and group,
+    and every budget with what is spent in its current period. Read-only (GET), and only asked
+    for when the page's cost view is opened: never part of /api/state."""
     query = request.query_params
     report = orch.cost_report(
-        query.get("by") or "project", query.get("since") or None, query.get("project") or None
+        query.get("by") or "project",
+        query.get("since") or None,
+        query.get("project") or None,
+        query.get("until") or None,
     )
     return {"report": report, "budgets": orch.budget_list()}
 

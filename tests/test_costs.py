@@ -10,7 +10,7 @@ import os
 import sqlite3
 import threading
 import time
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -539,6 +539,161 @@ def test_backup_and_restore_carry_the_budgets(o: Orchestrator) -> None:
 # -- the dashboard -----------------------------------------------------------------------------
 
 
+def models_and_roles(orch: Orchestrator) -> None:
+    """The seeded turns' models (the orchestrator's names none) and the agents' roles."""
+    with orch.store.connection() as conn:
+        for agent_id, model in (
+            ("fix-login-3f2a", "claude-opus-5-5"),
+            ("write-guide-7b2e", "gpt-5"),
+        ):
+            conn.execute("UPDATE run_usage SET model = ? WHERE agent_id = ?", (model, agent_id))
+        for agent_id, role in (("orchestrator", "orchestrator"), ("fix-login-3f2a", "lead")):
+            conn.execute("UPDATE agents SET role = ? WHERE id = ?", (role, agent_id))
+
+
+def test_the_report_groups_by_model_and_by_role(o: Orchestrator, zone: None) -> None:
+    seed(o)
+    models_and_roles(o)
+
+    by_model = by_label(o.cost_report("model"))
+    assert list(by_model) == [
+        "unknown",
+        "claude-opus-5-5",
+        "gpt-5",
+        "removed agents (model not recorded)",
+    ]
+    assert by_model["unknown"]["cost_usd"] == 0.25 and by_model["unknown"]["key"] is None
+    assert (
+        by_model["claude-opus-5-5"]["turns"] == 2 and by_model["claude-opus-5-5"]["cost_usd"] == 3.0
+    )
+    assert by_model["gpt-5"]["cost_usd"] is None and by_model["gpt-5"]["unpriced"] == 2
+    assert by_model["removed agents (model not recorded)"]["removed"]
+
+    by_role = by_label(o.cost_report("role"))
+    assert list(by_role) == ["lead", "orchestrator", "worker", "removed"]
+    assert by_role["lead"]["cost_usd"] == 3.0 and by_role["worker"]["cost_usd"] is None
+    assert by_role["removed"]["removed"] and by_role["removed"]["cost_usd"] == 0.5
+    assert "removed" not in by_label(o.cost_report("role", since="2026-11-11"))
+
+
+def test_until_ends_with_its_local_day_and_leaves_the_removed_spend_out(
+    o: Orchestrator, zone: None
+) -> None:
+    seed(o)
+
+    report = o.cost_report("agent", until="2026-11-11")
+
+    rows = by_label(report)
+    assert set(rows) == {"orchestrator", "fix-login-3f2a"}
+    assert rows["fix-login-3f2a"]["cost_usd"] == 1.0  # 22:59:59 UTC is still the 11th here
+    assert report["until"] == "2026-11-11" and report["since"] is None
+    assert report["removed_left_out"] is True and report["days"] == ["2026-11-11"]
+    one = o.cost_report("project", "2026-11-12", None, "2026-11-12")
+    assert one["total"]["turns"] == 2 and one["total"]["cost_usd"] == 2.0
+    assert one["days"] == ["2026-11-12"]
+
+
+def test_the_report_refuses_an_inverted_range_or_a_bad_end_day(o: Orchestrator) -> None:
+    with pytest.raises(OrchestratorError, match="before the start day"):
+        o.cost_report(since="2026-11-12", until="2026-11-11")
+    with pytest.raises(OrchestratorError, match="not a date"):
+        o.cost_report(until="tomorrow")
+
+
+@pytest.mark.parametrize(
+    ("option", "day"),
+    [("until", "9999-12-31"), ("until", "9999-12-30"), ("since", "0001-01-01")],
+)
+def test_a_day_at_the_edge_of_the_calendar_is_refused(
+    o: Orchestrator, client: TestClient, zone: None, option: str, day: str
+) -> None:
+    seed(o)
+
+    with pytest.raises(OrchestratorError, match=f"out of range: {day} .*edge of the calendar"):
+        o.cost_report(**{option: day})
+
+    answer = client.get(f"/api/cost?{option}={day}")
+    assert answer.status_code == 400 and "out of range" in answer.json()["error"]
+    result = invoke("cost", f"--{option}", day)
+    assert result.exit_code == 1, result.output
+    assert result.stderr == f"error: out of range: {day} (too close to the edge of the calendar)\n"
+
+
+def test_a_range_of_more_than_ten_years_is_refused(
+    o: Orchestrator, client: TestClient, zone: None
+) -> None:
+    seed(o)
+    first = date(2016, 1, 1)
+    limit = costs.MAX_RANGE_DAYS
+
+    at_limit = o.cost_report(since="2016-01-01", until=str(first + timedelta(days=limit - 1)))
+
+    assert len(at_limit["days"]) == limit and at_limit["days"][0] == "2016-01-01"
+    beyond = str(first + timedelta(days=limit))
+    with pytest.raises(OrchestratorError, match="has 3,661 days, more than 3,660 .*narrow"):
+        o.cost_report(since="2016-01-01", until=beyond)
+    assert client.get("/api/cost?since=0002-01-01").status_code == 400
+    turn(o, "orchestrator", "2000-01-01T12:00:00+00:00", 0.25, 1000)  # all time: from here
+    with pytest.raises(OrchestratorError, match="the range from 2000-01-01 to "):
+        o.cost_report()
+
+
+def test_the_series_has_every_day_of_the_range_and_the_dated_spend_per_group(
+    o: Orchestrator, zone: None
+) -> None:
+    seed(o)
+    models_and_roles(o)
+
+    report = o.cost_report("model", since="2026-11-10", until="2026-11-14")
+
+    assert report["days"] == [f"2026-11-{day}" for day in range(10, 15)]
+    series = report["series"]
+    assert set(series) == {"2026-11-11", "2026-11-12", "2026-11-13"}  # days with records
+    assert series["2026-11-11"]["unknown"]["cost_usd"] == 0.25
+    assert series["2026-11-11"]["claude-opus-5-5"]["cost_usd"] == 1.0
+    codex = series["2026-11-12"]["gpt-5"]
+    assert codex["cost_usd"] is None and codex["unpriced"] == 1 and codex["turns"] == 1
+    assert codex["tokens"] == {"in": 4000, "out": 400, "cache_read": 8000, "cache_write": 2000}
+
+    every = o.cost_report("project")
+    assert every["days"][0] == "2026-11-11" and every["days"][-1] >= "2026-11-13"
+    assert every["series"]["2026-11-12"]["my-app"]["cost_usd"] == 2.0  # removed spend: undated
+    assert sum(len(groups) for groups in every["series"].values()) == 5
+    assert o.cost_report("project", project="nothing-here")["days"] == []
+
+
+def test_the_series_of_a_dated_range_adds_up_to_its_totals(o: Orchestrator, zone: None) -> None:
+    seed(o)
+    models_and_roles(o)
+
+    report = o.cost_report("model", since="2026-11-10", until="2026-11-14")
+
+    cells = [cell for groups in report["series"].values() for cell in groups.values()]
+    total = report["total"]
+    assert total["unpriced"] == 2  # the Codex turns
+    assert sum(cell["cost_usd"] or 0 for cell in cells) == pytest.approx(total["cost_usd"])
+    for short in total["tokens"]:
+        assert sum(cell["tokens"][short] for cell in cells) == total["tokens"][short], short
+    assert sum(cell["turns"] for cell in cells) == total["turns"]
+    assert sum(cell["unpriced"] for cell in cells) == total["unpriced"]
+
+
+def test_until_keeps_the_whole_of_a_25_hour_local_day(o: Orchestrator, zone: None) -> None:
+    # Europe/Berlin leaves summer time on 2026-10-25: the local day runs from 22:00 UTC on the
+    # 24th to 23:00 UTC on the 25th.
+    turn(o, "fix-login-3f2a", "2026-10-24T22:00:00+00:00", 1.0, 1000)  # 00:00:00 local
+    turn(o, "fix-login-3f2a", "2026-10-25T22:59:59+00:00", 2.0, 1000)  # 23:59:59 local
+    turn(o, "fix-login-3f2a", "2026-10-25T23:00:00+00:00", 4.0, 1000)  # 00:00:00 on the 26th
+
+    report = o.cost_report("day", until="2026-10-25")
+
+    assert [row["label"] for row in report["rows"]] == ["2026-10-25"]
+    assert report["total"]["turns"] == 2 and report["total"]["cost_usd"] == 3.0
+    assert report["days"] == ["2026-10-25"]
+    next_day = o.cost_report("day", since="2026-10-26", until="2026-10-26")
+    assert next_day["total"]["cost_usd"] == 4.0
+
+
 @pytest.fixture
 def client(o: Orchestrator) -> TestClient:
     return TestClient(app, base_url="http://localhost")
@@ -560,6 +715,38 @@ def test_the_endpoint_serves_the_report_and_the_budgets(
     assert bad.status_code == 400 and "unknown grouping" in bad.json()["error"]
     state = client.get("/api/state").json()
     assert "budgets" not in state and "report" not in state  # loaded only by the cost view
+
+
+def test_the_endpoint_takes_the_end_day_and_the_new_groupings(
+    client: TestClient, o: Orchestrator, zone: None
+) -> None:
+    seed(o)
+    models_and_roles(o)
+
+    data = client.get("/api/cost?by=role&since=2026-11-11&until=2026-11-11").json()["report"]
+
+    assert [row["label"] for row in data["rows"]] == ["lead", "orchestrator"]
+    assert data["until"] == "2026-11-11" and data["days"] == ["2026-11-11"]
+    assert set(data["series"]["2026-11-11"]) == {"lead", "orchestrator"}
+    model = client.get("/api/cost?by=model&until=2026-11-12").json()["report"]
+    assert {row["label"] for row in model["rows"]} == {"unknown", "claude-opus-5-5", "gpt-5"}
+    inverted = client.get("/api/cost?since=2026-11-12&until=2026-11-11")
+    assert inverted.status_code == 400 and "before the start day" in inverted.json()["error"]
+    assert client.get("/api/cost?until=soon").status_code == 400
+
+
+def test_the_command_takes_the_end_day_and_the_new_groupings(o: Orchestrator, zone: None) -> None:
+    seed(o)
+    models_and_roles(o)
+
+    result = invoke("cost", "--by", "role", "--until", "2026-11-11")
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.startswith("recorded usage by role, from the start to 2026-11-11")
+    assert "ROLE" in result.stdout and "lead" in result.stdout
+    assert "left out with --since or --until" in result.stdout
+    assert "unknown" in invoke("cost", "--by", "model").stdout
+    assert invoke("cost", "--since", "2026-11-12", "--until", "2026-11-11").exit_code == 1
 
 
 def test_the_endpoint_is_get_only_behind_the_hosts_and_origins_guards(client: TestClient) -> None:
@@ -663,6 +850,107 @@ def test_the_page_renders_the_report_and_budgets_as_text_never_as_markup() -> No
     assert pill["cls"] == "pill budget-ok" and pill["text"] == "<i>odd</i>"
     assert any("<b>my-app</b>: $1.00 of $1.00 today (100 %)" in t for t in texts(result["budgets"]))
     assert "`spartito budget set AMOUNT [-p PROJECT]`" in texts(result["none"])[1]
+
+
+def test_the_page_builds_the_range_and_the_chart_data() -> None:
+    source = page_functions(
+        "plural", "count", "COST_SERIES_MAX", "costUrl", "localDayText", "costRange",
+        "moneyText", "allTokens", "costChartData", "costPartTitle",
+    )  # fmt: skip
+    tokens = "{in: 100, out: 10, cache_read: 0, cache_write: 0}"
+    many = ", ".join(
+        f"'g{i}': {{turns: 1, unpriced: 0, tokens: {tokens}, cost_usd: {i + 1}}}" for i in range(10)
+    )
+    report = (
+        "{days: ['2026-11-12', '2026-11-13'], series: {'2026-11-12': {" + many + ","
+        " 'codex': {turns: 2, unpriced: 2, tokens: {in: 5000, out: 0, cache_read: 0,"
+        " cache_write: 0}, cost_usd: null}}}}"
+    )
+    cases = {
+        "until": "costUrl({by: 'model', since: '2026-11-01', until: '2026-11-13', project: ''})",
+        "week": "costRange('7', new Date(2026, 10, 13, 15))",
+        "month": "costRange('30', new Date(2026, 0, 5))",
+        "all": "costRange('all', new Date(2026, 10, 13))",
+        "data": f"costChartData({report}, 'cost')",
+        "tokens": f"costChartData({report}, 'tokens').names.slice(0, 1)",
+    }
+    code = source + "\nprocess.stdout.write(JSON.stringify({"
+    code += ", ".join(f"{key}: {expr}" for key, expr in cases.items()) + "}));"
+    code = code.replace(
+        "JSON.stringify({",
+        "JSON.stringify({title: costPartTitle('2026-11-12',"
+        " {name: 'gpt-5', cost: null, tokens: 1200, turns: 2, unpriced: 2}), ",
+        1,
+    )
+
+    result = run_node(code)
+
+    assert result["until"] == "/api/cost?by=model&since=2026-11-01&until=2026-11-13"
+    assert result["week"] == {"since": "2026-11-07", "until": "2026-11-13"}
+    assert result["month"] == {"since": "2025-12-07", "until": "2026-01-05"}
+    assert result["all"] == {"since": "", "until": ""}
+    data = result["data"]
+    assert data["names"][:2] == ["g9", "g8"] and data["names"][-1] == "other (3 more)"
+    assert len(data["names"]) == 9
+    first, second = data["days"]
+    assert second == {"day": "2026-11-13", "parts": [], "value": 0, "unpriced": 0}
+    assert first["value"] == 55 and data["max"] == 55 and first["unpriced"] == 2
+    other = first["parts"][-1]
+    assert other["series"] == 8 and other["cost"] == 3 and other["unpriced"] == 2
+    assert other["turns"] == 4  # g1, g0 and the two Codex turns
+    assert result["tokens"] == ["codex"]  # by tokens: the Codex group has the most
+    assert result["title"] == "2026-11-12 · gpt-5: cost n/a · 1.2k tokens · 2 turns"
+
+
+def test_the_page_draws_the_chart_as_text_never_as_markup() -> None:
+    svg = (
+        "Node.prototype.setAttribute = function (name, value) {"
+        " (this.attrs ||= {})[name] = value; };\n"
+        "document.createElementNS = (ns, tag) => new Node(tag);\n"
+    )
+    source = FAKE_DOM + svg + page_functions(
+        "el", "plural", "count", "COST_SERIES_MAX", "moneyText", "allTokens", "costChartData",
+        "costPartTitle", "svgNode", "costChart",
+    )  # fmt: skip
+    tokens = "{in: 100, out: 10, cache_read: 0, cache_write: 0}"
+    report = (
+        "{days: ['2026-11-12', '2026-11-13'], series: {'2026-11-12': {"
+        f"'<b>my-app</b>': {{turns: 1, unpriced: 0, tokens: {tokens}, cost_usd: 1.5}},"
+        f" 'docs-site': {{turns: 1, unpriced: 1, tokens: {tokens}, cost_usd: null}}}}}}}}"
+    )
+    code = source + (
+        f"\nprocess.stdout.write(JSON.stringify({{cost: dump(costChart({report}, 'cost')),"
+        f" tokens: dump(costChart({report}, 'tokens')),"
+        " none: dump(costChart({days: [], series: {}}, 'cost')),"
+        " unused: dump(costChart({days: ['2025-01-01', '2025-01-02'], series: {}}, 'cost'))}));"
+    )
+
+    result = run_node(code)
+
+    def walk(node: dict) -> list[dict]:
+        return [node, *(n for child in node["children"] for n in walk(child))]
+
+    nodes = walk(result["cost"])
+    texts = [node["text"] for node in nodes]
+    assert "2026-11-12 · <b>my-app</b>: $1.50 · 110 tokens · 1 turn" in texts
+    assert any(
+        t.startswith("2026-11-12: 1 turn reported no cost (Codex reports none)") for t in texts
+    )
+    assert "2026-11-12: $1.50*" in texts  # the day's total: marked as partly unpriced
+    assert "2026-11-13: nothing recorded" in texts
+    assert "<b>my-app</b>" in texts and "turns without a reported cost" in texts  # the legend
+    assert [n["tag"] for n in nodes].count("circle") == 1
+    bars = [n for n in nodes if n["tag"] == "rect" and n["children"][0]["text"].count("·") == 3]
+    assert len(bars) == 1  # the Codex part has no cost: no bar, never $0
+    assert "11-12" in texts and "11-13" in texts and "$1.50" in texts  # axis labels
+    tokens_nodes = walk(result["tokens"])
+    assert [n["tag"] for n in tokens_nodes].count("circle") == 0
+    assert (
+        sum(1 for n in tokens_nodes if n["tag"] == "rect" and "·" in n["children"][0]["text"]) == 2
+    )
+    assert result["none"]["children"][0]["text"] == "No dated spend in this range."
+    unused = result["unused"]["children"]  # days, but no usage: the note, never an empty axis
+    assert [(n["tag"], n["text"]) for n in unused] == [("div", "No dated spend in this range.")]
 
 
 def test_utc_start_and_local_day_agree_on_the_boundary(zone: None) -> None:
