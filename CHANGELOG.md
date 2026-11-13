@@ -7,6 +7,40 @@ chosen is in the
 
 ## [Unreleased]
 
+### Added
+
+- `spartito providers` checks which of the supported harnesses, Claude Code and Codex, this
+  machine can run: each CLI is looked for on `PATH` and in the usual install directories and
+  asked its version, without a network request, an agent turn or a login check. `--json` adds
+  each provider's features, limits and models. The dashboard shows the same in every provider
+  choice, with a control that checks again.
+- `spartito project provider` changes the provider of a project's new agents; existing agents
+  keep theirs. The dashboard's project settings and the MCP tool `set_project_provider` do the
+  same.
+- `spartito model AGENT --provider` moves an agent, the Maestro included, to another provider.
+  Its next message starts a new conversation there; its worktree, branch, board items and
+  sub-agents stay. It asks first when the agent has a conversation (`--yes` skips the
+  question); the dashboard's model and effort panel asks too.
+- `spartito ask --provider` (and `provider` in the MCP tool `ask_project_lead`) chooses the
+  provider of a new project lead.
+
+### Changed
+
+- New projects and agents get a provider that is available here. `spartito project add`
+  without `--provider` takes the first available one instead of always `claude`, and prints
+  it. An explicit provider that is not available is refused, naming the available ones. When
+  a role's or a project's provider is not available, the agent runs on the first available one,
+  and the reply and the agent's log say so.
+- Codex can be chosen for the Maestro and the project leads, in the dashboard and on the
+  command line. The Maestro runs on the first available provider unless another is chosen.
+- A role's `model` applies only to agents of the role's own provider.
+
+### Fixed
+
+- A turn whose CLI is missing fails with a clear message that says where it was looked for,
+  and the CLIs are also found in the usual install directories when a background service or
+  launcher has a shorter `PATH`.
+
 ## [0.2.0] - 2026-11-13
 
 ### Added
