@@ -331,6 +331,7 @@ class Orchestrator:
     inherited = agent_setup.inherited
     setup = agent_setup.setup
     set_overrides = agent_setup.set_overrides
+    set_provider = agent_setup.set_provider
     _agent_or_orchestrator_draft = agent_setup._agent_or_orchestrator_draft
 
     # -- observation (core/views.py) --------------------------------------

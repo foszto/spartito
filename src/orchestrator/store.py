@@ -834,6 +834,18 @@ class Store:
         with self._conn() as conn:
             conn.execute("UPDATE agents SET session_id = ? WHERE id = ?", (session_id, agent_id))
 
+    def move_provider(self, agent_id: str, provider: str) -> bool:
+        """Set the agent's provider and clear its session and own model and effort, unless
+        it has a queued or running turn. False: it had one, nothing changed."""
+        with self._conn() as conn:
+            cursor = conn.execute(
+                "UPDATE agents SET provider = ?, session_id = NULL, model = NULL, effort = NULL"
+                f" WHERE id = ? AND NOT EXISTS (SELECT 1 FROM runs WHERE agent_id = ?"
+                f" AND status IN ('{ACTIVE[0]}', '{ACTIVE[1]}'))",
+                (provider, agent_id, agent_id),
+            )
+        return cursor.rowcount == 1
+
     def set_overrides(self, agent_id: str, changes: dict[str, str | None]) -> None:
         """Set the agent's own `model` and/or `effort` (None: inherit from the settings).
         Only the given columns are written, so two changes at once do not undo each other."""

@@ -7,9 +7,10 @@ from dataclasses import replace
 from typing import Any, Protocol
 
 from .. import providers, roles, settings
-from ..errors import OrchestratorError
+from ..errors import NeedsConfirmation, OrchestratorError
 from ..models import Agent, Project
 from ..store import Store
+from . import availability
 from .dispatch import ORCHESTRATOR_ID
 
 
@@ -30,7 +31,7 @@ class Facade(Protocol):
 
     def _agent_or_orchestrator_draft(self, agent_id: str, wait: bool = True) -> Agent: ...
 
-    def orchestrator(self) -> Agent: ...
+    def orchestrator(self, provider: str | None = None) -> Agent: ...
 
     @staticmethod
     def _orchestrator_draft(provider: str | None = None, wait: bool = True) -> Agent: ...
@@ -178,3 +179,57 @@ def _agent_or_orchestrator_draft(orch: Facade, agent_id: str, wait: bool = True)
     if agent_id == ORCHESTRATOR_ID:
         return orch.store.get_agent(ORCHESTRATOR_ID) or orch._orchestrator_draft(wait=wait)
     return orch.agent(agent_id)
+
+
+def set_provider(
+    orch: Facade, agent_id: str, provider: str, confirm: bool = False
+) -> dict[str, Any]:
+    """Move an agent to another provider; returns its `setup`.
+
+    The orchestrator before its first use is created on it. An existing agent: the provider
+    must be usable here (the same one changes nothing); refused while the agent has a
+    running or queued turn. A conversation cannot move between providers, so the next
+    message starts a new one: with a session that needs `confirm` (else NeedsConfirmation
+    says what happens). The agent's own model and effort are cleared (they were the old
+    provider's); its worktree, branch, board items and sub-agents stay."""
+    if agent_id == ORCHESTRATOR_ID and orch.store.get_agent(ORCHESTRATOR_ID) is None:
+        orch.orchestrator(provider)
+        return orch.setup(ORCHESTRATOR_ID)
+    agent = orch.agent(agent_id)
+    if provider == agent.provider:
+        return orch.setup(agent.id)
+    availability.choose(provider)  # registered and usable, or OrchestratorError
+    if orch.store.active_runs(agent.id):
+        raise OrchestratorError(busy(agent))
+    if agent.session_id and not confirm:
+        raise NeedsConfirmation(
+            f"{agent.id} has a conversation on {agent.provider}; on {provider} it starts a new "
+            "conversation that does not know the earlier one (its worktree, branch, board "
+            "items and sub-agents stay)"
+        )
+    _move(orch, agent, provider)
+    return orch.setup(agent.id)
+
+
+def busy(agent: Agent) -> str:
+    return f"{agent.id} has a running or queued turn: stop it or wait, then move it"
+
+
+def _move(orch: Facade, agent: Agent, provider: str) -> None:
+    """The one place an agent changes provider: the session and the own model and effort go,
+    and the log notes it on the latest run. (Remembering the last session per provider, to
+    resume it when the agent moves back, would be kept and restored here.)"""
+    if not orch.store.move_provider(agent.id, provider):
+        raise OrchestratorError(busy(agent))
+    last = orch.store.last_run(agent.id)
+    if last is None:
+        return
+    text = (
+        f"moved from {agent.provider} to {provider}: the next message starts a new "
+        f"conversation on {provider}"
+    )
+    if agent.model or agent.effort:
+        text += "; the agent's own model and effort were cleared"
+    if agent.session_id:
+        text += f"; the earlier {agent.provider} session was {agent.session_id}"
+    orch.store.add_event(last.id, agent.id, "info", text)

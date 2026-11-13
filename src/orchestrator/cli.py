@@ -1420,14 +1420,26 @@ def model_command(
     effort: Annotated[
         str | None, typer.Option(help='The agent\'s own effort; "" clears it (inherit).')
     ] = None,
+    provider: Annotated[
+        str | None,
+        typer.Option(help="Move the agent to this provider: its next message starts anew."),
+    ] = None,
+    yes: Annotated[
+        bool, typer.Option("--yes", "-y", help="Move without asking about the conversation.")
+    ] = False,
 ) -> None:
-    """Show, set or clear an agent's own model and effort.
+    """Show, set or clear an agent's own model and effort, or move it to another provider.
 
     Without options it shows them. A cleared value falls back to the tier default
     (`{cli} config`). A change applies from the agent's next turn; a running one keeps its
     model. In an existing session a model switch starts a fresh prompt cache (the next
     turn re-reads the whole conversation at full price); an effort switch keeps the cache
     with Codex and may start a fresh one with Claude.
+
+    `--provider` moves an idle agent (the orchestrator too) to another available provider. A
+    conversation cannot move: the next message starts a new one there, which does not know
+    the earlier one; the agent's own model and effort are cleared; its worktree, branch,
+    board items and sub-agents stay. It asks first when the agent has a conversation.
     """
     changes = {
         key: value or None
@@ -1435,7 +1447,16 @@ def model_command(
         if value is not None
     }
     o = orch()
+    moved_from = None
     try:
+        if provider:
+            moved_from = o.setup(agent_id)["provider"]
+            try:
+                setup = o.set_provider(agent_id, provider, confirm=yes)
+            except NeedsConfirmation as exc:
+                if not typer.confirm(f"{exc}. Move anyway?"):
+                    raise typer.Exit(1) from None
+                setup = o.set_provider(agent_id, provider, confirm=True)
         setup = o.set_overrides(agent_id, changes) if changes else o.setup(agent_id)
     except OrchestratorError as exc:
         raise fail(exc) from None
@@ -1445,6 +1466,11 @@ def model_command(
         own, inherited = setup[f"{key}_override"], setup["inherited"][key] or "default"
         source = f"own (inherited: {inherited})" if own else "inherited"
         typer.echo(f"  {key:<7} {value:<20} {source}")
+    if moved_from and moved_from != setup["provider"]:
+        typer.echo(
+            f"note: moved from {moved_from} to {setup['provider']}: the next message starts a"
+            " new conversation"
+        )
     if not changes:
         return
     notes = []

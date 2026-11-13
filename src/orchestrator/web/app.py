@@ -309,8 +309,21 @@ def message_lead(orch: Orchestrator, request: Request, body: dict) -> dict[str, 
 
 def set_agent_model(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
     """Set (a string) or clear (null) the agent's own `model` and/or `effort`; a missing
-    key keeps the value. Creates the orchestrator on first use, like a message does."""
-    return orch.set_overrides(request.path_params["agent_id"], body)
+    key keeps the value. Creates the orchestrator on first use, like a message does.
+    `provider` moves the agent to that provider first (set_provider); a move that would
+    start its conversation anew answers `confirm` (what happens) instead, until the
+    request is repeated with `confirm: true`. Returns the agent's setup."""
+    agent_id = request.path_params["agent_id"]
+    changes = {key: value for key, value in body.items() if key not in ("provider", "confirm")}
+    setup = None
+    if provider := optional(body, "provider"):
+        try:
+            setup = orch.set_provider(agent_id, provider, bool(body.get("confirm")))
+        except NeedsConfirmation as exc:
+            return {"confirm": str(exc)}
+    if changes or setup is None:
+        setup = orch.set_overrides(agent_id, changes)
+    return setup
 
 
 def save_settings(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:

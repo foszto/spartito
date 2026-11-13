@@ -8,5 +8,6 @@ class OrchestratorError(Exception):
 
 
 class NeedsConfirmation(OrchestratorError):
-    """Archiving would hide work that is not merged: the message says what; repeat the
-    request with confirmation to archive anyway."""
+    """The request would lose or hide something (archiving unmerged work, moving an agent's
+    conversation to another provider): the message says what; repeat the request with
+    confirmation to go ahead anyway."""
