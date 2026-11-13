@@ -28,7 +28,8 @@ the same database, so they can be used side by side.
 
 State lives under `~/.orchestrator/` (or `$ORCH_HOME`):
 
-- `orch.db`: projects, agents, turns, events, usage, settings, board, decisions, notices;
+- `orch.db`: projects, agents, turns, events, usage, settings, budgets, board, decisions,
+  notices;
 - `worktrees/<project>/<agent-id>/`: the agents' worktrees;
 - `workspace/`: the orchestrator's working directory;
 - `run/`: files about live processes: the running dashboard server's `web.json`, locks and
@@ -120,6 +121,8 @@ src/orchestrator/
     board_git.py     the cached git state of the board items' branches
     code_view.py     an agent's worktree, read-only: changed files, patches, files, contents
     state.py         backups of the state: making, listing and restoring them
+    costs.py         cost reports from the recorded usage; budgets, their warnings and
+                     the opt-in hard stop
   runner.py        one turn in its own detached process
   store.py         SQLite (WAL): the only shared state
   providers/       base.py (protocol), claude.py, codex.py
