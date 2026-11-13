@@ -58,27 +58,56 @@ class Orchestrator:
     # -- projects ---------------------------------------------------------
 
     def add_project(
-        self, path: str, name: str | None = None, default_provider: str = "claude"
+        self, path: str, name: str | None = None, default_provider: str | None = None
     ) -> Project:
+        """Register a repository. `default_provider` must be usable here; None: the first
+        usable one (with none usable, the first supported one; project_note says so)."""
         try:
             root = git.repo_root(Path(path).expanduser().resolve())
         except git.GitError, FileNotFoundError, NotADirectoryError:
             raise OrchestratorError(f"{path} is not inside a git repository") from None
-        providers.get(default_provider)
         name = slug(name or root.name)
         if self.store.get_project(name):
             raise OrchestratorError(f"project '{name}' already exists")
-        project = Project(name, str(root), git.current_branch(root), default_provider)
+        try:
+            chosen = availability.choose(default_provider).provider
+        except availability.NoneUsable:  # registering needs no CLI; its agents do
+            chosen = next(iter(providers.PROVIDERS))
+        project = Project(name, str(root), git.current_branch(root), chosen)
         return self.store.add_project(project)
 
     def project_note(self, project: Project) -> str | None:
         """What a person should know about a project right after registering it."""
-        if git.has_commits(project.path):
+        notes = [availability.default_note(project.default_provider)]
+        if not git.has_commits(project.path):
+            notes.append(
+                "This repository has no commits yet. The first agent that needs its own "
+                "worktree creates an empty initial commit; worktree agents only see committed "
+                "files, so commit existing work first, or let the project lead work in the "
+                "main checkout."
+            )
+        return " ".join(note for note in notes if note) or None
+
+    def set_default_provider(self, project: str, provider: str) -> Project:
+        """Change the provider a project's new agents get; it must be usable here. Existing
+        agents keep theirs (`set_provider` moves one)."""
+        found = self.project(project)
+        chosen = availability.choose(provider).provider
+        self.store.set_default_provider(found.name, chosen)
+        return self.project(found.name)
+
+    def default_provider_note(self, project: Project) -> str | None:
+        """After a change of the default: which agents keep another provider."""
+        others = [
+            agent.id
+            for agent in self.store.list_agents(project.name)
+            if agent.provider != project.default_provider
+        ]
+        if not others:
             return None
         return (
-            "This repository has no commits yet. The first agent that needs its own worktree "
-            "creates an empty initial commit; worktree agents only see committed files, so "
-            "commit existing work first, or let the project lead work in the main checkout."
+            f"{len(others)} existing agent(s) keep their provider ({', '.join(others)}); "
+            f"new agents run on {project.default_provider}"
         )
 
     def project(self, name: str) -> Project:

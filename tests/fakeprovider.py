@@ -29,6 +29,9 @@ runner passed it (prompt, system_prompt, slash_commands, output_schema, compact_
 FAKE_MISSING_CLI=<name> makes the command line start with <name> instead of Python, like a
 provider whose CLI is not installed.
 
+FirstTurnFake (`fake-codex`) is the same fake, but like Codex it has no system prompt: the
+role prompt opens the prompt of a session's first turn, so the answer echoes it.
+
 `AWAKE` first waits (up to 10 s) until the fake sleep inhibitor of its runner (conftest.py)
 has logged its start, so the turn cannot end before the inhibitor is up: a new script may
 take longer to start than a short turn lasts.
@@ -50,6 +53,7 @@ that keeps the script's stdout open for an hour and kills the script before it a
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import sys
@@ -247,3 +251,13 @@ class FakeProvider:
 
     def attach_command(self, agent: Agent) -> list[str]:
         return ["true"]
+
+
+class FirstTurnFake(FakeProvider):
+    name = "fake-codex"
+
+    def invocation(self, ctx: RunContext) -> Invocation:
+        if ctx.system_prompt and not ctx.agent.session_id:
+            prompt = f"{ctx.system_prompt}\n\n---\n\n{ctx.prompt}"
+            ctx = dataclasses.replace(ctx, prompt=prompt)
+        return super().invocation(ctx)

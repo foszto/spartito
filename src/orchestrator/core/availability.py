@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import threading
 import time
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .. import providers, roles
+from ..errors import OrchestratorError
 from ..providers import locate
 from ..providers.base import Provider, model_choices
 from ..store import now
@@ -23,6 +25,7 @@ NO_EXECUTABLE = "declares no executable; not checked"
 MODELS_LOADING = "model list loading"
 MODELS_UNAVAILABLE = "the CLI is not available"
 USABLE = (locate.AVAILABLE, locate.UNKNOWN)
+DOCS = "docs/providers.md"
 
 
 class Facade(Protocol):
@@ -201,3 +204,72 @@ def provider_list(
 ) -> list[dict[str, Any]]:
     """The supported harnesses with their availability (listing), for the facade."""
     return listing(refresh, wait, models)
+
+
+@dataclass(frozen=True)
+class Choice:
+    """The provider chosen for something new, and what to tell about it (a fallback)."""
+
+    provider: str
+    note: str | None = None
+
+
+class NoneUsable(OrchestratorError):
+    """No registered provider can be started here; the message lists each one's reason."""
+
+
+def _state(entry: dict[str, Any]) -> str:
+    """`not installed (<reason>)`: an entry's status and reason in words."""
+    return f"{entry['status'].replace('_', ' ')} ({entry['reason']})"
+
+
+def choose(
+    requested: str | None, defaults: list[tuple[str | None, str]] = (), wait: bool = True
+) -> Choice:
+    """The provider for a new agent or project.
+
+    `requested` (explicit) must be registered and usable: otherwise OrchestratorError, with
+    the reason and the usable alternatives. Else the first named of `defaults` ((name, what
+    it is: "the project's default")) is the intended one; when it is not usable, the first
+    usable provider in registry order is chosen, with a note that says so. Without
+    defaults: the first usable one. `unknown` counts as usable. Nothing usable: NoneUsable.
+    `wait=False` never waits for a check (what is not checked yet counts as usable)."""
+    entries = {entry["name"]: entry for entry in listing(wait=wait, models=False)}
+    usable_names = [name for name, entry in entries.items() if entry["usable"]]
+    intended = requested or next((name for name, _ in defaults if name), None)
+    if intended is not None and intended not in entries:
+        raise OrchestratorError(f"unknown provider '{intended}' (available: {', '.join(entries)})")
+    if intended is not None and entries[intended]["usable"]:
+        return Choice(intended)
+    if requested:
+        others = ", ".join(usable_names) or "none"
+        raise OrchestratorError(
+            f"{requested} is not available: {_state(entries[requested])}. Available: {others}"
+        )
+    if not usable_names:
+        each = "; ".join(f"{name}: {_state(entry)}" for name, entry in entries.items())
+        raise NoneUsable(f"no provider is available here: {each}. See {DOCS}")
+    chosen = usable_names[0]
+    if intended is None:
+        return Choice(chosen)
+    what = next(what for name, what in defaults if name)
+    note = (
+        f"{intended} ({what}) is not available: {_state(entries[intended])}; "
+        f"this agent runs on {chosen}"
+    )
+    return Choice(chosen, note)
+
+
+def default_note(provider: str) -> str | None:
+    """A project's default `provider` when it is not usable here: what its new agents get."""
+    entries = {entry["name"]: entry for entry in listing(models=False)}
+    entry = entries.get(provider)
+    if entry is None or entry["usable"]:
+        return None
+    usable_names = [name for name, other in entries.items() if other["usable"]]
+    then = (
+        f"new agents run on {usable_names[0]} until it is"
+        if usable_names
+        else f"no other provider is available here either (see {DOCS})"
+    )
+    return f"The default provider {provider} is not available: {_state(entry)}; {then}."

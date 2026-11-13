@@ -583,8 +583,12 @@ def project_add(
         str | None, typer.Option(help="Defaults to the repository directory name.")
     ] = None,
     provider: Annotated[
-        str, typer.Option(help="Default agent provider for the project.")
-    ] = "claude",
+        str | None,
+        typer.Option(
+            help="Default agent provider for the project; default: the first available one"
+            f" (`{CLI} providers`)."
+        ),
+    ] = None,
 ) -> None:
     """Register a git repository as a project."""
     try:
@@ -592,8 +596,28 @@ def project_add(
         project = o.add_project(path, name, provider)
     except (OrchestratorError, KeyError) as exc:
         raise fail(exc) from None
-    typer.echo(f"added {project.name}  {project.path}  (base branch: {project.base_branch})")
+    typer.echo(
+        f"added {project.name}  {project.path}  (base branch: {project.base_branch},"
+        f" provider: {project.default_provider})"
+    )
     if note := o.project_note(project):
+        typer.secho(f"note: {note}", fg=typer.colors.YELLOW)
+
+
+@project_app.command("provider")
+def project_provider(
+    project: str,
+    provider: Annotated[str, typer.Argument(help="The provider of the project's new agents.")],
+) -> None:
+    """Set the provider a project's new agents get (it must be available here). Existing
+    agents keep theirs; `{cli} model AGENT --provider NAME` moves one."""
+    o = orch()
+    try:
+        found = o.set_default_provider(project, provider)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    typer.echo(f"{found.name}: new agents run on {found.default_provider}")
+    if note := o.default_provider_note(found):
         typer.secho(f"note: {note}", fg=typer.colors.YELLOW)
 
 
@@ -1149,18 +1173,32 @@ def spawn(
     except OrchestratorError as exc:
         raise fail(exc) from None
     typer.echo(f"{agent.id}  run {run.id}  {agent.cwd}")
+    print_note(agent.provider_note)
+
+
+def print_note(note: str | None) -> None:
+    if note:
+        typer.secho(f"note: {note}", fg=typer.colors.YELLOW)
 
 
 @app.command()
-def ask(project: str, message: str) -> None:
+def ask(
+    project: str,
+    message: str,
+    provider: Annotated[
+        str | None,
+        typer.Option(help="The lead's provider when it is created now; default: the project's."),
+    ] = None,
+) -> None:
     """Send a message to a project's lead agent (created on first use)."""
     o = orch()
     try:
-        lead = o.lead(project)
+        lead = o.lead(project, provider=provider)
         run = o.send(lead.id, message)
     except OrchestratorError as exc:
         raise fail(exc) from None
     typer.echo(f"{lead.id}  run {run.id}")
+    print_note(lead.provider_note)
 
 
 @app.command()

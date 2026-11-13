@@ -26,14 +26,14 @@ class Facade(Protocol):
 
     def inherited(self, agent: Agent) -> dict[str, str | None]: ...
 
-    def setup(self, agent_id: str) -> dict[str, Any]: ...
+    def setup(self, agent_id: str, wait: bool = True) -> dict[str, Any]: ...
 
-    def _agent_or_orchestrator_draft(self, agent_id: str) -> Agent: ...
+    def _agent_or_orchestrator_draft(self, agent_id: str, wait: bool = True) -> Agent: ...
 
     def orchestrator(self) -> Agent: ...
 
     @staticmethod
-    def _orchestrator_draft() -> Agent: ...
+    def _orchestrator_draft(provider: str | None = None, wait: bool = True) -> Agent: ...
 
 
 # What a model or effort switch in a resumed session does to the prompt cache. Measured
@@ -109,15 +109,19 @@ def inherited(orch: Facade, agent: Agent) -> dict[str, str | None]:
     return orch.effective(replace(agent, model=None, effort=None))
 
 
-def setup(orch: Facade, agent_id: str) -> dict[str, Any]:
+def setup(orch: Facade, agent_id: str, wait: bool = True) -> dict[str, Any]:
     """An agent's model and effort: what its next turn uses (`effective`), the values
     set on the agent itself (`model_override`/`effort_override`; null: inherited) and
     what applies without them (`inherited`); `running`: a turn is running (a change
     applies from the next one); `cache_effect`: per setting, what switching it in an
     existing session does to the prompt cache (`restarts`, `may restart`, `keeps`) and
     `cache_hint` says it in words. The orchestrator is shown before its first use too
-    (`exists` false), without creating anything."""
-    agent = orch._agent_or_orchestrator_draft(agent_id)
+    (`exists` false), without creating anything; `wait=False` shows it on the provider it
+    would get without waiting for an availability check."""
+    if wait:
+        agent = orch._agent_or_orchestrator_draft(agent_id)
+    else:
+        agent = orch._agent_or_orchestrator_draft(agent_id, wait=False)
     return {
         "agent_id": agent.id,
         "provider": agent.provider,
@@ -170,7 +174,7 @@ def set_overrides(orch: Facade, agent_id: str, changes: dict[str, Any]) -> dict[
     return orch.setup(agent.id)
 
 
-def _agent_or_orchestrator_draft(orch: Facade, agent_id: str) -> Agent:
+def _agent_or_orchestrator_draft(orch: Facade, agent_id: str, wait: bool = True) -> Agent:
     if agent_id == ORCHESTRATOR_ID:
-        return orch.store.get_agent(ORCHESTRATOR_ID) or orch._orchestrator_draft()
+        return orch.store.get_agent(ORCHESTRATOR_ID) or orch._orchestrator_draft(wait=wait)
     return orch.agent(agent_id)

@@ -55,6 +55,9 @@ class Agent:
     permission: str | None = None
     created_at: str = ""
     effort: str | None = None  # explicit override; otherwise from settings
+    # Not stored: what choosing the provider had to tell (a fallback, a lead that already
+    # runs on another one), for the reply to the request that created or found the agent.
+    provider_note: str | None = field(default=None, repr=False, compare=False)
 
     @property
     def owns_worktree(self) -> bool:

@@ -18,16 +18,21 @@ from orchestrator.service import ORCHESTRATOR_ID, Orchestrator, OrchestratorErro
 # Measured on master before the batch: the JSON of every tool in the listing (name,
 # description, inputSchema, outputSchema), summed.
 MASTER_LISTING_CHARS = 15342
-# What the orchestrator (and the interactive session) sees beyond a lead: dispatch_board,
-# 355 chars as listed, of which 292 are its description and input schema.
-ORCHESTRATOR_EXTRA_CHARS = 355
-ORCHESTRATOR_TEXT_CHARS = 330
+# What the orchestrator (and the interactive session) sees beyond a lead, as listed:
+# dispatch_board (355), and since the provider choice add_project (634), ask_project_lead
+# (889) and set_project_provider (317); 1727 of them are descriptions and input schemas.
+ORCHESTRATOR_EXTRA_CHARS = 355 + 634 + 889 + 317
+ORCHESTRATOR_TEXT_CHARS = 1730
 # What every agent, a lead too, pays beyond master's listing: per tool, the new optional
 # parameters (without title and default) and their words in the description.
 LEAD_EXTRA_CHARS: dict[str, int] = {}
 LEAD_EXTRA_CHARS["list_board"] = 64  # P3: `live`
 LEAD_EXTRA_BUDGET = 140
 LEAD_EXTRA_CHARS["request_decision"] = 64  # P5: `item`
+LEAD_EXTRA_CHARS["spawn_agent"] = 106  # provider choice: the role's default, availability
+# Master's add_project and ask_project_lead as listed (560 + 712): only the orchestrator gets
+# them since the provider choice (they always refused other agents), so a lead pays less.
+LEAD_DROPPED_CHARS = 560 + 712
 
 
 def seed(orch: Orchestrator, project: str) -> None:
@@ -103,7 +108,7 @@ def test_the_tool_listing_costs_a_lead_only_its_budget(
 ) -> None:
     removed = removed_for(caller, monkeypatch)
     seen = [tool for tool in listing() if tool["name"] not in removed]
-    lead_extra = sum(LEAD_EXTRA_CHARS.values())
+    lead_extra = sum(LEAD_EXTRA_CHARS.values()) - LEAD_DROPPED_CHARS
     assert lead_extra <= LEAD_EXTRA_BUDGET
     assert chars(seen) <= MASTER_LISTING_CHARS + lead_extra + extra
     if not extra:
@@ -113,7 +118,8 @@ def test_the_tool_listing_costs_a_lead_only_its_budget(
         assert removed == []
         only = [tool for tool in seen if tool["name"] in mcp_server.ORCHESTRATOR_TOOLS]
         text = sum(len(t["description"]) + len(json.dumps(t["inputSchema"])) for t in only)
-        assert text <= ORCHESTRATOR_TEXT_CHARS and "outputSchema" not in only[0]
+        board_tool = next(tool for tool in only if tool["name"] == "dispatch_board")
+        assert text <= ORCHESTRATOR_TEXT_CHARS and "outputSchema" not in board_tool
 
 
 def test_the_interactive_session_sees_what_the_orchestrator_sees(

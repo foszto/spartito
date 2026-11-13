@@ -753,6 +753,12 @@ class Store:
             )
         return project
 
+    def set_default_provider(self, name: str, provider: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE projects SET default_provider = ? WHERE name = ?", (provider, name)
+            )
+
     def get_project(self, name: str) -> Project | None:
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM projects WHERE name = ?", (name,)).fetchone()

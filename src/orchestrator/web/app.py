@@ -86,8 +86,9 @@ def optional(body: dict[str, Any], key: str) -> Any:
     return value.strip() or None if isinstance(value, str) else value
 
 
-def queued(agent_id: str, run_id: int) -> dict[str, Any]:
-    return {"agent_id": agent_id, "run_id": run_id}
+def queued(agent_id: str, run_id: int, note: str | None = None) -> dict[str, Any]:
+    """A dispatch's reply; `note`: what choosing the agent's provider had to tell, or null."""
+    return {"agent_id": agent_id, "run_id": run_id, "note": note}
 
 
 def index(request: Request) -> HTMLResponse:
@@ -147,7 +148,8 @@ def state(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
         "version": __version__,
         "orchestrator": top,
         # Its model and effort before the first message, so they can be chosen up front.
-        "orchestrator_setup": None if top else orch.setup(ORCHESTRATOR_ID),
+        # Its provider is the one it would get now, without waiting for a check.
+        "orchestrator_setup": None if top else orch.setup(ORCHESTRATOR_ID, wait=False),
         "projects": [
             {**asdict(project), "agents": [a for a in agents if a["project"] == project.name]}
             for project in orch.projects()
@@ -252,10 +254,17 @@ def browse(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
 
 
 def add_project(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """`provider`: the project's default; missing or null: the first available one."""
     project = orch.add_project(
-        required(body, "path"), optional(body, "name"), optional(body, "provider") or "claude"
+        required(body, "path"), optional(body, "name"), optional(body, "provider")
     )
     return {**asdict(project), "note": orch.project_note(project)}
+
+
+def set_project_provider(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """The provider of the project's new agents; it must be available."""
+    project = orch.set_default_provider(request.path_params["name"], required(body, "provider"))
+    return {"project": asdict(project), "note": orch.default_provider_note(project)}
 
 
 def remove_project(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
@@ -277,7 +286,7 @@ def spawn_agent(orch: Orchestrator, request: Request, body: dict) -> dict[str, A
         base=optional(body, "base"),
         after=optional(body, "after"),
     )
-    return queued(agent.id, run.id)
+    return queued(agent.id, run.id, agent.provider_note)
 
 
 def message_agent(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
@@ -287,12 +296,15 @@ def message_agent(orch: Orchestrator, request: Request, body: dict) -> dict[str,
 
 def message_orchestrator(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
     agent = orch.orchestrator()
-    return queued(agent.id, orch.send(agent.id, required(body, "message")).id)
+    run = orch.send(agent.id, required(body, "message"))
+    return queued(agent.id, run.id, agent.provider_note)
 
 
 def message_lead(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
-    lead = orch.lead(request.path_params["name"])
-    return queued(lead.id, orch.send(lead.id, required(body, "message")).id)
+    """`provider`: the lead's when it is created now (default: the project's)."""
+    lead = orch.lead(request.path_params["name"], provider=optional(body, "provider"))
+    run = orch.send(lead.id, required(body, "message"))
+    return queued(lead.id, run.id, lead.provider_note)
 
 
 def set_agent_model(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
@@ -495,6 +507,7 @@ app = Starlette(
         Route("/api/projects", api(add_project), methods=["POST"]),
         Route("/api/projects/{name}/remove", api(remove_project), methods=["POST"]),
         Route("/api/projects/{name}/lead", api(message_lead), methods=["POST"]),
+        Route("/api/projects/{name}/provider", api(set_project_provider), methods=["POST"]),
         Route("/api/projects/{name}/archive", api(archive_safe), methods=["POST"]),
         Route("/api/orchestrator", api(message_orchestrator), methods=["POST"]),
         Route("/api/settings", api(save_settings), methods=["POST"]),
