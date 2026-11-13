@@ -288,7 +288,9 @@ spartito budget remove [-p PROJECT]
   none) or by the agent's role, with a total row: turns, prompt tokens (input with cache reads
   and writes), output tokens and cost. `--since` starts at local midnight of that day, `--until`
   ends at the end of that local day (included; earlier than `--since` is an error); `-p` keeps
-  one project. It is *recorded usage*: turns run by very old versions may have no record, so
+  one project. A range covers at most 3,660 days (about ten years), and all time runs from the
+  first recorded day to today, so a longer range is refused, as is a day at the very edge of
+  the calendar. It is *recorded usage*: turns run by very old versions may have no record, so
   the total can be slightly below the dashboard's summary. Codex reports no cost: its turns
   and tokens are listed, a row none of whose turns reported a cost shows `n/a`, and a cost
   marked `*` leaves such turns out (a footnote counts them). What agents deleted for good had

@@ -10,7 +10,7 @@ import os
 import sqlite3
 import threading
 import time
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -600,6 +600,44 @@ def test_the_report_refuses_an_inverted_range_or_a_bad_end_day(o: Orchestrator) 
         o.cost_report(until="tomorrow")
 
 
+@pytest.mark.parametrize(
+    ("option", "day"),
+    [("until", "9999-12-31"), ("until", "9999-12-30"), ("since", "0001-01-01")],
+)
+def test_a_day_at_the_edge_of_the_calendar_is_refused(
+    o: Orchestrator, client: TestClient, zone: None, option: str, day: str
+) -> None:
+    seed(o)
+
+    with pytest.raises(OrchestratorError, match=f"out of range: {day} .*edge of the calendar"):
+        o.cost_report(**{option: day})
+
+    answer = client.get(f"/api/cost?{option}={day}")
+    assert answer.status_code == 400 and "out of range" in answer.json()["error"]
+    result = invoke("cost", f"--{option}", day)
+    assert result.exit_code == 1, result.output
+    assert result.stderr == f"error: out of range: {day} (too close to the edge of the calendar)\n"
+
+
+def test_a_range_of_more_than_ten_years_is_refused(
+    o: Orchestrator, client: TestClient, zone: None
+) -> None:
+    seed(o)
+    first = date(2016, 1, 1)
+    limit = costs.MAX_RANGE_DAYS
+
+    at_limit = o.cost_report(since="2016-01-01", until=str(first + timedelta(days=limit - 1)))
+
+    assert len(at_limit["days"]) == limit and at_limit["days"][0] == "2016-01-01"
+    beyond = str(first + timedelta(days=limit))
+    with pytest.raises(OrchestratorError, match="has 3,661 days, more than 3,660 .*narrow"):
+        o.cost_report(since="2016-01-01", until=beyond)
+    assert client.get("/api/cost?since=0002-01-01").status_code == 400
+    turn(o, "orchestrator", "2000-01-01T12:00:00+00:00", 0.25, 1000)  # all time: from here
+    with pytest.raises(OrchestratorError, match="the range from 2000-01-01 to "):
+        o.cost_report()
+
+
 def test_the_series_has_every_day_of_the_range_and_the_dated_spend_per_group(
     o: Orchestrator, zone: None
 ) -> None:
@@ -622,6 +660,38 @@ def test_the_series_has_every_day_of_the_range_and_the_dated_spend_per_group(
     assert every["series"]["2026-11-12"]["my-app"]["cost_usd"] == 2.0  # removed spend: undated
     assert sum(len(groups) for groups in every["series"].values()) == 5
     assert o.cost_report("project", project="nothing-here")["days"] == []
+
+
+def test_the_series_of_a_dated_range_adds_up_to_its_totals(o: Orchestrator, zone: None) -> None:
+    seed(o)
+    models_and_roles(o)
+
+    report = o.cost_report("model", since="2026-11-10", until="2026-11-14")
+
+    cells = [cell for groups in report["series"].values() for cell in groups.values()]
+    total = report["total"]
+    assert total["unpriced"] == 2  # the Codex turns
+    assert sum(cell["cost_usd"] or 0 for cell in cells) == pytest.approx(total["cost_usd"])
+    for short in total["tokens"]:
+        assert sum(cell["tokens"][short] for cell in cells) == total["tokens"][short], short
+    assert sum(cell["turns"] for cell in cells) == total["turns"]
+    assert sum(cell["unpriced"] for cell in cells) == total["unpriced"]
+
+
+def test_until_keeps_the_whole_of_a_25_hour_local_day(o: Orchestrator, zone: None) -> None:
+    # Europe/Berlin leaves summer time on 2026-10-25: the local day runs from 22:00 UTC on the
+    # 24th to 23:00 UTC on the 25th.
+    turn(o, "fix-login-3f2a", "2026-10-24T22:00:00+00:00", 1.0, 1000)  # 00:00:00 local
+    turn(o, "fix-login-3f2a", "2026-10-25T22:59:59+00:00", 2.0, 1000)  # 23:59:59 local
+    turn(o, "fix-login-3f2a", "2026-10-25T23:00:00+00:00", 4.0, 1000)  # 00:00:00 on the 26th
+
+    report = o.cost_report("day", until="2026-10-25")
+
+    assert [row["label"] for row in report["rows"]] == ["2026-10-25"]
+    assert report["total"]["turns"] == 2 and report["total"]["cost_usd"] == 3.0
+    assert report["days"] == ["2026-10-25"]
+    next_day = o.cost_report("day", since="2026-10-26", until="2026-10-26")
+    assert next_day["total"]["cost_usd"] == 4.0
 
 
 @pytest.fixture

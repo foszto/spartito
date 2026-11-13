@@ -41,6 +41,7 @@ REMOVED_LABEL = "removed agents"
 UNKNOWN_MODEL = "unknown"  # a usage record without a model
 REMOVED_ROLE = "removed"  # a role not recorded: a deleted agent's
 PERIOD_TEXT = {"day": "today", "month": "this month", "total": "in total"}
+MAX_RANGE_DAYS = 3660  # the longest range a report covers (about ten years): one chart bar a day
 
 
 class Facade(Protocol):
@@ -71,6 +72,17 @@ def parse_day(text: str) -> date:
         return date.fromisoformat(text.strip())
     except ValueError:
         raise OrchestratorError(f"not a date: {text!r} (expected YYYY-MM-DD)") from None
+
+
+def _bound(day: date, next_day: bool = False) -> str:
+    """utc_start of `day` (or of the day after it) for a report's range; a day too close to
+    the edge of the calendar to convert is an error."""
+    try:
+        return utc_start(day + timedelta(days=1) if next_day else day)
+    except OverflowError, ValueError, OSError:
+        raise OrchestratorError(
+            f"out of range: {day} (too close to the edge of the calendar)"
+        ) from None
 
 
 def current_period(period: str, today: date | None = None) -> tuple[str, date | None]:
@@ -179,7 +191,8 @@ def report(
     out (removed_left_out: true), as it has no dates. `days` is every local day of the range
     (without `since`: from the first record; without `until`: to today or the last record),
     and `series` the dated spend per day and row label: {day: {label: {turns, unpriced,
-    tokens, cost_usd}}}, only the days and groups with records."""
+    tokens, cost_usd}}}, only the days and groups with records. A range of more than
+    MAX_RANGE_DAYS days, or with a day too close to the edge of the calendar, is refused."""
     if by not in GROUPS:
         raise OrchestratorError(f"unknown grouping {by!r} (choose from {', '.join(GROUPS)})")
     start = parse_day(since) if since else None
@@ -187,9 +200,7 @@ def report(
     if start and end and end < start:
         raise OrchestratorError(f"the end day {end} is before the start day {start}")
     records = orch.store.usage_records(
-        utc_start(start) if start else None,
-        project,
-        utc_start(end + timedelta(days=1)) if end else None,
+        _bound(start) if start else None, project, _bound(end, next_day=True) if end else None
     )
     rows: dict[Any, dict[str, Any]] = {}
     series: dict[str, dict[str, dict[str, Any]]] = {}
@@ -229,6 +240,12 @@ def report(
     last = end or max(
         [datetime.now().astimezone().date(), *(date.fromisoformat(day) for day in series)]
     )
+    if first and (last - first).days + 1 > MAX_RANGE_DAYS:
+        raise OrchestratorError(
+            f"the range from {first} to {last} has {(last - first).days + 1:,} days, more than"
+            f" {MAX_RANGE_DAYS:,} (about ten years): narrow the range with a later start"
+            " day or an earlier end day"
+        )
     return {
         "by": by,
         "since": start.isoformat() if start else None,
