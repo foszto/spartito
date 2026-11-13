@@ -420,8 +420,9 @@ agent's log say so. The orchestrator agent uses the provider chosen before its f
 (`spartito model orchestrator --provider`), else the `provider` of the `orchestrator` role (an
 override in `~/.orchestrator/roles/orchestrator.md`), else the first available one; it is fixed
 when the agent is first created (by its first message, or by setting its model, effort or
-provider), until it is moved with `spartito model orchestrator --provider`. Moving an agent
-starts a new conversation. `spartito chat` always runs Claude Code. All of it, with the
+provider), until it is moved with `spartito model orchestrator --provider`. A moved agent
+continues its last conversation on the new provider, or starts one there; nothing is carried
+over between providers. `spartito chat` always runs Claude Code. All of it, with the
 availability check: [providers.md](providers.md).
 
 Claude agents run with `--permission-mode auto`, Codex agents in the `workspace-write`

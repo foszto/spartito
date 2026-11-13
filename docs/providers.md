@@ -209,15 +209,18 @@ spartito model orchestrator --provider codex --yes
 In the dashboard: the provider choice of the agent's model and effort panel, the Maestro's
 included.
 
-A conversation cannot move from one CLI to another. After the move the agent's next message
-starts a new conversation on the other provider, which knows nothing of the earlier one:
-give it what it needs in that message.
+A conversation does not move from one CLI to another, but Spartito remembers an agent's last
+conversation on each provider. The first move to a provider starts a new conversation there,
+which knows nothing of the agent's conversations elsewhere: give it what it needs in the next
+message. The conversation on the provider it left is kept, and moving back continues it; a
+later move to a provider the agent has run on before continues that provider's conversation
+the same way. Nothing is carried over from one provider's conversation to another's.
 
-- **Stays:** the agent's id, role, worktree, branch, board items, sub-agents and its log.
-- **Goes:** the session id, and the agent's own model and effort (they named the old
-  provider's models; the tier settings of the new provider apply).
-- **Logged:** an info event on the agent's latest turn names both providers and the earlier
-  session id. The earlier session is not deleted from the old CLI's own storage.
+- **Stays:** the agent's id, role, worktree, branch, board items, sub-agents, its log and its
+  last conversation on each provider.
+- **Cleared on every move:** the agent's own model and effort (they named the old provider's
+  models; the tier settings of the new provider apply until it gets its own again).
+- **Logged:** the agent's log notes the move.
 
 It is refused while the agent has a running or queued turn (stop it or wait), and when the new
 provider is not available. Moving to the same provider changes nothing. An agent with a

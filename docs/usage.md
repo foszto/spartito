@@ -239,8 +239,10 @@ spartito compact AGENT [INSTRUCTIONS]
   at full price); an effort change keeps the cache with Codex and may start a new one with
   Claude. The orchestrator can be set too (`spartito model orchestrator --effort high`).
 - `model --provider` moves an idle agent, the orchestrator included, to another available
-  provider. A conversation cannot move: the next message starts a new one there, the agent's
-  own model and effort are cleared, and its worktree, branch, board items and sub-agents stay.
+  provider. Nothing of a conversation is carried over: the next message continues the agent's
+  last conversation on that provider, or starts a new one if it has none there; its
+  conversation on the provider it left is kept for a move back. The agent's own model and
+  effort are cleared, and its worktree, branch, board items and sub-agents stay.
   When the agent has a conversation it asks first; refusing exits with code 1, and `--yes`
   skips the question. `--model` and `--effort` given with it apply on the new provider. Before
   its first message, the orchestrator is created on the given provider
@@ -490,7 +492,8 @@ provider. One that is not available here is shown disabled, with the reason, and
 is chosen from the available ones; a control checks again. A fallback or a lead that keeps its
 provider is shown as a note. A project's default provider is changed in the settings for that
 project. An agent's model and effort panel moves it, the Maestro included, to another
-provider after a confirmation: its next message starts a new conversation there. Details:
+provider after a confirmation: its next message continues its earlier conversation there, if
+it has one, or starts a new one. Details:
 [providers.md](providers.md).
 
 **Models and effort** window: the tier settings per provider, the automatic compaction

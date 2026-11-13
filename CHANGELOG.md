@@ -18,9 +18,11 @@ chosen is in the
   keep theirs. The dashboard's project settings and the MCP tool `set_project_provider` do the
   same.
 - `spartito model AGENT --provider` moves an agent, the Maestro included, to another provider.
-  Its next message starts a new conversation there; its worktree, branch, board items and
-  sub-agents stay. It asks first when the agent has a conversation (`--yes` skips the
-  question); the dashboard's model and effort panel asks too.
+  Spartito keeps the agent's last conversation on each provider: the first move to a provider
+  starts a new conversation there, and moving back continues the earlier one. Nothing is
+  carried over between providers. The agent's own model and effort are cleared; its worktree,
+  branch, board items and sub-agents stay. It asks first when the agent has a conversation
+  (`--yes` skips the question); the dashboard's model and effort panel asks too.
 - `spartito ask --provider` (and `provider` in the MCP tool `ask_project_lead`) chooses the
   provider of a new project lead.
 
