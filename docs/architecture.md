@@ -54,6 +54,12 @@ Providers implement a small protocol (`providers/base.py`); further providers ca
 registered with `ORCH_PROVIDERS="name=package.module:Class"`. Details:
 [configuration.md](configuration.md#providers-and-permissions).
 
+Which providers can run is checked per process (`core/availability.py`): each CLI is looked
+for on `PATH` and in the usual install directories and asked `--version`
+(`providers/locate.py`), and the result is kept for 5 minutes, not in the database, because
+the command line, the service and the MCP servers can each see another `PATH`. New agents and
+projects get an available provider. Details: [providers.md](providers.md).
+
 ## Platform support and limitations
 
 - **Platforms.** Developed and used on macOS. On Linux, the sleep inhibitor
@@ -61,7 +67,9 @@ registered with `ORCH_PROVIDERS="name=package.module:Class"`. Details:
   real machine, nor have the launcher and `notify-send` notifications. Windows is not
   supported: process handling relies on POSIX process groups and sessions. The desktop
   features per platform: [desktop.md](desktop.md#platform-support).
-- **Codex.** Codex reports no cost. The context size is known only from the session's rollout
+- **Codex.** Its limits are listed in its `limits` attribute (`providers/codex.py`), shown by
+  `spartito providers --json` and in [providers.md](providers.md#codex-codex). Codex reports
+  no cost. The context size is known only from the session's rollout
   file under `$CODEX_HOME/sessions/`. `/compact` does not work in `codex exec resume`, so a
   compaction is a turn with a lowered `model_auto_compact_token_limit`; it takes no
   instructions and needs a known context size. Codex reports token counts per session, so
@@ -110,7 +118,10 @@ src/orchestrator/
     lifecycle.py     the steps after a turn ends (compaction check, notifications)
     compaction.py    compacting a conversation, by hand and automatically
     archive.py       archiving, restoring and deleting agents; the automatic archive check
-    setup.py         model and effort: settings, overrides, what the next turn uses
+    setup.py         model and effort: settings, overrides, what the next turn uses; moving
+                     an agent to another provider
+    availability.py  the supported providers, which of them can run here, and choosing one
+                     for a new agent or project
     views.py         agent views, listings, run history and context, waiting until settled
     delivery.py      waiting for agents and delivering each result once per caller
     access.py        who calls through the MCP server and in which project it may act
@@ -128,7 +139,8 @@ src/orchestrator/
                      preparing an upgrade: backup, command, what to restart
   runner.py        one turn in its own detached process
   store.py         SQLite (WAL): the only shared state
-  providers/       base.py (protocol), claude.py, codex.py
+  providers/       __init__.py (the registry, `BUILTIN`), base.py (protocol), claude.py,
+                   codex.py, locate.py (finding a CLI, the `--version` check)
   notify.py        notification turns to parents
   replies.py       results cut to a size budget for agents
   models.py        Project, Agent, Run (one turn), Event

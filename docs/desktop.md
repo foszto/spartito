@@ -89,6 +89,12 @@ install time and holds only these variables of the shell you install from: `PATH
 - Run `spartito service install` again after changing `PATH` (for example a new location of
   `claude` or `codex`), a setting in these variables, or after moving or reinstalling the
   Python environment.
+- A provider CLI is looked for on that `PATH`, then in the usual install directories
+  (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin` and a few more:
+  [providers.md](providers.md#where-the-cli-is-looked-for)). After installing a CLI elsewhere,
+  install the service again. `spartito providers` checks with the terminal's `PATH`; the
+  dashboard's provider choices show what the service finds, and their *check again* control
+  checks at once.
 - Other variables, such as an API key exported in your shell, are not carried into the unit;
   the agents the service starts see only what the service sees.
 - Unit files are readable by other users of the machine: keep secrets out of the variables
@@ -623,7 +629,9 @@ at the same place is replaced, never removed.
 **Environment.** The launcher sets the variables `spartito service` captures (`PATH`, `LANG`,
 `LC_*`, `ORCH_*`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, as in the shell you install from); names
 that are not valid shell names are left out. Run `spartito app install` again after changing them
-or after moving or reinstalling the Python environment.
+or after moving or reinstalling the Python environment, and after installing a provider CLI
+outside the usual install directories (then check with `spartito providers`;
+[providers.md](providers.md#where-the-cli-is-looked-for)).
 
 **macOS:** `~/Applications/Spartito.app`, a minimal bundle:
 

@@ -46,7 +46,9 @@ For each turn, the first value found applies:
    `spartito model`, the agent header in the dashboard);
 2. the project's setting for the agent's tier and provider;
 3. the global setting;
-4. the role's `model` frontmatter field (model only);
+4. the role's `model` frontmatter field (model only), and only for agents of the role's
+   `provider` (any agent when the role names none): a model name means nothing to another
+   provider's CLI;
 5. nothing: the CLI's own default.
 
 Values are resolved when a turn starts, so a changed setting applies to existing agents from
@@ -387,8 +389,8 @@ You are a documentation agent. ...
 | `description` | one line shown in listings | empty |
 | `lead` | `true` gives the agent the `orch` MCP tools so it can start agents | `false` |
 | `worktree` | `false` makes the agent work in the main checkout by default | `true` |
-| `provider` | default provider for the role | the project's |
-| `model` | default model, below the tier settings in precedence | none |
+| `provider` | default provider for the role (falls back when not available, [providers.md](providers.md#how-a-provider-is-chosen)) | the project's |
+| `model` | default model, below the tier settings in precedence; only for agents of the role's `provider` | none |
 | `output_schema` | file name of a JSON Schema for the final answer; `none` = free text | `none` |
 | loadout keys | see [Loadout](#loadout) | see there |
 
@@ -408,20 +410,27 @@ optional value expressed as nullable or as an empty list.
 
 ## Providers and permissions
 
-A new agent's provider is, first hit wins: `--provider` (or `provider` in `spawn_agent`, or
-the dashboard's form), the role's `provider`, the project's default (`spartito project add
---provider`, default `claude`). The orchestrator agent uses the `provider` of the
-`orchestrator` role (an override in `~/.orchestrator/roles/orchestrator.md`), otherwise
-`claude`; its provider is fixed when it is first created (by its first message, or by setting its model or
-effort). `spartito chat` always
-runs Claude Code.
+A new agent's provider is, first hit wins: `--provider` (or `provider` in `spawn_agent` and
+`ask_project_lead`, or the dashboard's choice), the role's `provider`, the project's default
+(`spartito project add --provider`, default: the first available provider; changed with
+`spartito project provider`). An explicit provider must be available here
+(`spartito providers`). When the role's or the project's is not, the agent runs on the first available one
+in the order `claude`, `codex`, then the providers of `ORCH_PROVIDERS`; the reply and the
+agent's log say so. The orchestrator agent uses the provider chosen before its first message
+(`spartito model orchestrator --provider`), else the `provider` of the `orchestrator` role (an
+override in `~/.orchestrator/roles/orchestrator.md`), else the first available one; it is fixed
+when the agent is first created (by its first message, or by setting its model, effort or
+provider), until it is moved with `spartito model orchestrator --provider`. Moving an agent
+starts a new conversation. `spartito chat` always runs Claude Code. All of it, with the
+availability check: [providers.md](providers.md).
 
 Claude agents run with `--permission-mode auto`, Codex agents in the `workspace-write`
 sandbox. `spartito spawn --permission <mode>` sets another mode for one agent.
 
 A new agent CLI can be added by implementing the `Provider` protocol
 (`src/orchestrator/providers/base.py`) and registering it in `providers/__init__.py`, or from
-outside with `ORCH_PROVIDERS="name=package.module:Class"`.
+outside with `ORCH_PROVIDERS="name=package.module:Class"`; its optional attributes:
+[providers.md](providers.md#other-providers).
 
 The building blocks for multi-step pipelines (planning, breakdown, implementation, review,
 test) are `--after`, `{{result:…}}`, `--base`, shared worktrees and output schemas; there is

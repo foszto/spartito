@@ -25,10 +25,11 @@ can act on every project.
 | tool | purpose |
 |---|---|
 | `list_projects()` | projects with their number of agents |
-| `add_project(path, name, default_provider)` | register a repository (orchestrator only) |
+| `add_project(path, name, default_provider)` | register a repository; `default_provider` must be available (default: the first available one) (orchestrator only) |
+| `set_project_provider(project, provider)` | the provider of a project's new agents; it must be available, existing agents keep theirs (orchestrator only) |
 | `list_roles(project)` | roles available, with `lead` and `worktree` flags |
 | `spawn_agent(task, project, name, role, provider, model, effort, worktree, share_worktree_with, base, after, output_schema, freeform, notify)` | start an agent; returns at once |
-| `ask_project_lead(project, message, notify)` | message a project's lead, creating it (orchestrator only) |
+| `ask_project_lead(project, message, notify, provider)` | message a project's lead, creating it; `provider` applies to a new lead only (orchestrator only) |
 | `send_message(agent_id, message, after, output_schema, freeform, notify)` | follow-up to an agent; queued if busy |
 | `withdraw_message(run_id, replacement)` | withdraw a message you sent that has not started, or replace its text |
 | `wait_for_agents(agent_ids, timeout_seconds, result_chars)` | block until the agents and their sub-agents are idle (default 120 s, at most 1800 s) |
@@ -46,6 +47,16 @@ can act on every project.
 
 Replies are kept short: results and logs are cut to a budget, and say how to read the rest
 (`result_offset`, `event_id`, the `result_file` path in `get_agent`).
+
+`dispatch_board`, `add_project`, `ask_project_lead` and `set_project_provider` are listed only
+to the top-level orchestrator and the interactive `spartito chat` session; other lead agents
+do not see them, so their descriptions cost them nothing per turn. A provider named in
+`spawn_agent` or `ask_project_lead` that is not available here is refused, naming the
+available ones. When the role's or the project's provider is not available, the agent runs on
+the first available one; such a fallback is reported in the reply (`note`) and in the agent's
+log. The reply for an existing lead that runs on another provider than the one asked for has a
+`note` too. Without anything to tell, the reply has no `note`. Details:
+[providers.md](providers.md#how-a-provider-is-chosen).
 
 ## Turns and the queue
 
