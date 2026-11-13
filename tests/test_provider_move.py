@@ -66,6 +66,7 @@ def test_the_model_endpoint_tells_of_the_orchestrators_fallback(
     assert reply["note"].endswith("this agent runs on codex")
     assert "note" not in client.post(url, json={"effort": "low"}, headers=ORIGIN).json()
 
+
 def test_an_agent_without_a_session_moves_at_once(
     orch: Orchestrator, project: str, two_fakes, no_launch: list[int]
 ) -> None:

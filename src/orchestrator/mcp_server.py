@@ -619,7 +619,8 @@ def dispatch_board(project: str, items: tuple[int, ...] = ()) -> dict[str, Any]:
     reply: dict[str, Any] = {"sent": [item["id"] for item in sent["items"]]}
     if skipped:
         reply["skipped"] = {str(s["id"]): s["reason"] for s in skipped}
-    return {**reply, "lead": sent["agent_id"], "run_id": run_id}
+    reply |= {"lead": sent["agent_id"], "run_id": run_id}
+    return reply | ({"note": sent["note"]} if sent.get("note") else {})
 
 
 def _without_titles(name: str) -> None:

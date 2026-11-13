@@ -1121,6 +1121,7 @@ def board_dispatch(
         return
     ids = ", ".join(f"#{item['id']}" for item in result["items"])
     typer.echo(f"{ids} -> {result['agent_id']}  run {result['run_id']}")
+    print_note(result.get("note"))
 
 
 def board_dispatch_items(ids: list[int], project: str | None) -> None:
@@ -1128,6 +1129,7 @@ def board_dispatch_items(ids: list[int], project: str | None) -> None:
     for sent in result["results"]:
         names = ", ".join(f"#{item['id']}" for item in sent["items"])
         typer.echo(f"{names} -> {sent['agent_id']}  run {sent['run_id']}")
+        print_note(sent.get("note"))
     for skipped in result["skipped"]:
         typer.echo(f"#{skipped['id']} not sent: {skipped['reason']}")
     if not result["results"]:

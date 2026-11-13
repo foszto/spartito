@@ -295,6 +295,28 @@ def test_a_new_lead_gets_the_provider_asked_for_and_an_existing_one_keeps_its_ow
     assert reply.json()["note"] == note and reply.json()["agent_id"] == lead.id
 
 
+def test_a_board_dispatch_tells_of_the_new_leads_fallback(
+    orch: Orchestrator, repo, monkeypatch, no_launch: list[int], client: TestClient
+) -> None:
+    names = [orch.add_project(str(repo), name, "claude").name for name in ("one", "two", "three")]
+    ids = [orch.add_board_item(name, "Fix CI", state="ready").id for name in names]
+    statuses(monkeypatch, claude="not_installed")
+    note = (
+        "claude (the project's default) is not available: not installed (not_installed here);"
+        " this agent runs on codex"
+    )
+
+    result = CliRunner().invoke(cli.app, ["board", "dispatch", "--project", "one"])
+    assert result.exit_code == 0, result.output
+    assert f"note: {note}" in output(result)
+    reply = client.post("/api/board/dispatch", json={"project": "two"}, headers=ORIGIN).json()
+    assert reply["note"] == note
+    assert mcp_server.dispatch_board("three", (ids[2],))["note"] == note
+    assert [orch.lead(name).provider for name in names] == ["codex"] * 3
+    item = orch.add_board_item("one", "Docs", state="ready")
+    assert "note" not in mcp_server.dispatch_board("one", (item.id,))
+
+
 def test_the_orchestrator_draft_takes_the_first_usable_provider(
     orch: Orchestrator, monkeypatch, client: TestClient
 ) -> None:

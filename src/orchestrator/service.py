@@ -304,7 +304,8 @@ class Orchestrator:
     ) -> dict[str, Any]:
         """Send the project's ready items (with `ids`: only those of them that are still
         ready) to its lead as one user message (none: nothing is sent); they become
-        in_progress and linked to the lead. An agent `actor` sends it as itself."""
+        in_progress and linked to the lead. An agent `actor` sends it as itself. `note` (only
+        when there is one): the lead was created now on a fallback provider."""
         name = self.project(project).name
         if ids is not None and (not isinstance(ids, list) or not all(type(i) is int for i in ids)):
             raise OrchestratorError("ids must be a list of board item ids")
@@ -312,7 +313,8 @@ class Orchestrator:
         if not [i for i in ready if ids is None or i in ids]:
             return {"items": [], "agent_id": None, "run_id": None}
         items, lead, run_id = boards.to_lead(self, name, ids, actor or board.OWNER)
-        return {"items": [item.to_dict() for item in items], "agent_id": lead.id, "run_id": run_id}
+        sent = {"items": [item.to_dict() for item in items], "agent_id": lead.id, "run_id": run_id}
+        return boards.noted(sent, lead)
 
     dispatch_items = boards.dispatch_items  # named items, any projects
 

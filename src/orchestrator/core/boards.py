@@ -67,6 +67,11 @@ def to_lead(
     return items, lead, run_id
 
 
+def noted(sent: dict[str, Any], lead: Agent) -> dict[str, Any]:
+    """A dispatch's reply with `note` when the lead was just created on a fallback provider."""
+    return {**sent, "note": lead.provider_note} if lead.provider_note else sent
+
+
 # -- the board across projects ---------------------------------------------------------
 
 
@@ -128,8 +133,9 @@ def dispatch_items(
 ) -> dict[str, Any]:
     """Send the named items (idea or ready, in any project; `project`: only that one's) to
     their project's lead, one message per project; they become in_progress and linked to
-    the lead. {results: [{project, agent_id, run_id, items}] per lead sent to, skipped:
-    [{id, reason}] for the others (one project's failed send skips its items)}."""
+    the lead. {results: [{project, agent_id, run_id, items, note (only when the lead was
+    created now on a fallback provider)}] per lead sent to, skipped: [{id, reason}] for the
+    others (one project's failed send skips its items)}."""
     if not isinstance(ids, list) or not ids or not all(type(i) is int for i in ids):
         raise OrchestratorError("ids must be a non-empty list of board item ids")
     project = project and orch.project(project).name
@@ -162,14 +168,9 @@ def dispatch_items(
             if item_id not in sent
         ]
         if items:
-            results.append(
-                {
-                    "project": name,
-                    "agent_id": lead.id,
-                    "run_id": run_id,
-                    "items": [item.to_dict() for item in items],
-                }
-            )
+            sent_items = [item.to_dict() for item in items]
+            sent_to = {"project": name, "agent_id": lead.id, "run_id": run_id, "items": sent_items}
+            results.append(noted(sent_to, lead))
     return {"results": results, "skipped": skipped}
 
 
