@@ -9,8 +9,12 @@ from __future__ import annotations
 
 import json
 import os
+import socket
+import subprocess
+import sys
 import threading
 import time
+import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -438,6 +442,74 @@ def test_the_server_starts_checking_at_once(
 
     with TestClient(app, base_url="http://localhost"):
         until(lambda: len(calls) == len(providers.PROVIDERS))
+
+
+# Runs `python -m orchestrator <args>` noting each program it starts through subprocess (an
+# audit hook), one line per start: its arguments, each followed by \x1f.
+RECORDING_MAIN = r"""
+import os, runpy, sys
+log = open(sys.argv.pop(1), "a", buffering=1)
+def record(event, args):
+    if event == "subprocess.Popen":
+        argv = args[1]
+        argv = [argv] if isinstance(argv, (str, bytes, os.PathLike)) else argv
+        log.write("".join(f"{os.fsdecode(arg)}\x1f" for arg in argv) + "\n")
+sys.addaudithook(record)
+sys.argv[0] = "orchestrator"
+runpy.run_module("orchestrator", run_name="__main__", alter_sys=True)
+"""
+
+
+def calls_of(log: Path) -> list[list[str]]:
+    text = log.read_text() if log.exists() else ""
+    return [line.split("\x1f")[:-1] for line in text.splitlines()]
+
+
+def test_a_child_of_the_suite_runs_only_the_fake_clis(
+    tmp_path: Path, fake_provider_clis: Path
+) -> None:
+    """A dashboard a test starts is a process of its own, without this one's patches: its
+    check at start and the model lists it asks for reach the suite's fakes, never a real
+    `claude` or `codex` (conftest.fake_provider_clis)."""
+    started, answered = tmp_path / "started.log", tmp_path / "answered.log"
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    proc = subprocess.Popen(
+        [sys.executable, "-c", RECORDING_MAIN, str(started), "web", "--port", str(port)],
+        env={**os.environ, "FAKE_CLI_LOG": str(answered)},
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    def listed() -> list[dict[str, Any]] | None:
+        assert proc.poll() is None, proc.stderr.read()
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/providers") as reply:
+                return json.load(reply)["providers"]
+        except OSError:
+            return None
+
+    try:
+        entries = until(listed)
+    finally:
+        proc.terminate()
+        proc.communicate(timeout=30)
+    by_name = {entry["name"]: entry for entry in entries}
+    assert by_name["claude"]["version"] == by_name["codex"]["version"] == "0.0.0"
+    clis = [call for call in calls_of(started) if Path(call[0]).name in ("claude", "codex")]
+    fakes = calls_of(answered)
+    assert {Path(call[0]).parent for call in fakes} == {fake_provider_clis}
+    assert sorted([Path(c[0]).name, *c[1:]] for c in clis) == sorted(
+        [Path(c[0]).name, *c[1:]] for c in fakes
+    )
+    assert {(Path(c[0]).name, c[1]) for c in fakes} >= {
+        ("claude", "--version"),
+        ("codex", "--version"),
+        ("claude", "-p"),  # the model lists: asked, and refused by the fakes
+        ("codex", "debug"),
+    }
 
 
 # -- spartito providers -----------------------------------------------------------------------

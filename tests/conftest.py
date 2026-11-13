@@ -364,12 +364,50 @@ def faked_probe(provider) -> locate.Probe:
     return REAL_PROBE(provider)
 
 
+# Stands in for `claude` and `codex` in every process of the suite, children included (a
+# runner, an MCP server, a `spartito web` a test starts: none of them has this process's
+# patches). `--version` answers; anything else fails at once. Appends one line per call to
+# $FAKE_CLI_LOG when set: its path and arguments, each followed by \x1f.
+FAKE_PROVIDER_CLI = r"""#!/bin/sh
+if [ -n "$FAKE_CLI_LOG" ]; then  # one write per line: checks may run at the same time
+    sep=$(printf '\037')
+    line="$0$sep"
+    for arg in "$@"; do line="$line$arg$sep"; done
+    printf '%s\n' "$line" >> "$FAKE_CLI_LOG"
+fi
+[ "$1" = "--version" ] && { echo "$(basename "$0") 0.0.0 (a fake of the test suite)"; exit 0; }
+echo "$(basename "$0"): a fake of the test suite, it answers only --version" >&2
+exit 1
+"""
+PROVIDER_CLIS = ("claude", "codex")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def fake_provider_clis(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Fake `claude` and `codex` first on PATH for the whole session (each xdist worker its
+    own); returns their directory. Set in os.environ, outside `monkeypatch`, as home_guard
+    sets the home: no test's undo removes it, and it is not undone at the end (a thread a
+    test left behind keeps it). Every child that inherits or keeps PATH finds these first,
+    so its search never reaches a real CLI further on PATH or in the usual install
+    directories (locate.search_path appends them after PATH; the ones under `~` are in the
+    temporary HOME of fake_system anyway). A test that sets a PATH of its own puts its own
+    fakes there (test_providers) or starts nothing that looks for these."""
+    bin_dir = tmp_path_factory.mktemp("fake-provider-clis")
+    for name in PROVIDER_CLIS:
+        path = bin_dir / name
+        path.write_text(FAKE_PROVIDER_CLI)
+        path.chmod(0o755)
+    os.environ["PATH"] = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+    return bin_dir
+
+
 @pytest.fixture(autouse=True)
-def no_real_provider_clis(monkeypatch: pytest.MonkeyPatch):
-    """No test runs a real `claude` or `codex`: the availability check reports both as
-    available (version "test"), Codex's model list is a recorded one (Claude's:
-    recorded_claude_models), no usual install directory is searched, and no check of an
-    earlier test is kept. Tests of the real check call locate.probe with a PATH of fakes."""
+def no_real_provider_clis(monkeypatch: pytest.MonkeyPatch, fake_provider_clis: Path):
+    """No test runs a real `claude` or `codex`: in this process the availability check
+    reports both as available (version "test") without running anything, Codex's model list
+    is a recorded one (Claude's: recorded_claude_models), no usual install directory is
+    searched, and no check of an earlier test is kept; children find fake_provider_clis.
+    Tests of the real check call locate.probe with a PATH of fakes."""
     monkeypatch.setattr(locate, "EXTRA_DIRS", ())
     monkeypatch.setattr(availability, "probe", faked_probe)
     monkeypatch.setattr(codex, "request_model_list", CODEX_MODELS.read_text)
