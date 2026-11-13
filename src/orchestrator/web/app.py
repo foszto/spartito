@@ -142,6 +142,8 @@ def state(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
         # Display names; the ids, roles and API paths stay "orchestrator".
         "project_name": config.PROJECT_NAME,
         "orchestrator_name": config.ORCHESTRATOR_NAME,
+        # The installed version, shown in the settings (the same /api/ping reports).
+        "version": __version__,
         "orchestrator": top,
         # Its model and effort before the first message, so they can be chosen up front.
         "orchestrator_setup": None if top else orch.setup(ORCHESTRATOR_ID),

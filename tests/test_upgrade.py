@@ -23,6 +23,7 @@ from typing import Any
 
 import pytest
 from starlette.testclient import TestClient
+from test_code_view import FAKE_DOM, page_functions, run_node
 from typer.testing import CliRunner
 
 from orchestrator import __version__, autostart, cli, config
@@ -147,6 +148,35 @@ def test_without_the_distribution_the_install_is_unknown(monkeypatch: pytest.Mon
     assert upgrade.install().label == "not installed as the distribution spartito"
     lines, notes = upgrade.commands(upgrade.install())
     assert lines == [] and "upgrading-to-the-distribution-name-spartito" in notes[0]
+
+
+# -- the dashboard -------------------------------------------------------------------------------
+
+
+def test_the_state_holds_the_version_and_ping_nothing_new(orch: Orchestrator) -> None:
+    with TestClient(app, base_url="http://localhost") as client:  # with the app's startup
+        state = client.get("/api/state").json()
+        ping = client.get("/api/ping").json()
+    assert state["version"] == __version__
+    assert set(ping) == {"tool", "version", "home"}
+    assert str(Path(__file__).resolve().parent.parent) not in json.dumps(state)
+
+
+def test_the_settings_show_the_version_as_text() -> None:
+    source = page_functions("el", "versionBox")
+    code = (
+        FAKE_DOM
+        + source
+        + (
+            "\nprocess.stdout.write(JSON.stringify(["
+            "dump(versionBox({project_name: 'Spartito', version: '0.2.0<b>'})),"
+            " dump(versionBox({}))]));"
+        )
+    )
+    shown, unknown = run_node(code)
+    assert shown["children"][0]["text"] == "Version"
+    assert shown["children"][1]["text"].startswith("Spartito 0.2.0<b>. `spartito version --check`")
+    assert unknown["children"][1]["text"].startswith("Spartito unknown.")
 
 
 # -- the check -----------------------------------------------------------------------------------
