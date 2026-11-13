@@ -254,7 +254,7 @@ dialog form { display: flex; flex-direction: column; max-height: calc(100vh - 50
 /* a provider that cannot run here: shown, but not choosable; the hint says why and checks again */
 .segmented input:disabled { cursor: not-allowed; }
 .segmented input:disabled + span { opacity: .45; }
-.provider-hint { color: var(--waiting); }
+.provider-hint, .field > .help.provider-hint, .tier .about.provider-hint { color: var(--waiting); }
 .provider-hint .btn.again { height: 22px; padding: 0 6px; font-size: 12px; color: var(--accent); vertical-align: baseline; }
 .tier .segmented { margin-bottom: 4px; }
 .tier .provider-status:empty { display: none; }
@@ -310,7 +310,7 @@ dialog form { display: flex; flex-direction: column; max-height: calc(100vh - 50
 .tier { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
 .tier h4 { margin: 0; font-size: 13.5px; }
 .tier .about { color: var(--muted); font-size: 12px; margin: 0 0 8px; }
-.tier-row { display: grid; grid-template-columns: 64px 1fr 130px; gap: 8px; align-items: center; margin-top: 6px; }
+.tier-row { display: grid; grid-template-columns: 104px 1fr 130px; gap: 8px; align-items: center; margin-top: 6px; }
 .tier-row .who { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; }
 .switch-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .tier-row .avatar { width: 20px; height: 20px; font-size: 10px; border-radius: 6px; }

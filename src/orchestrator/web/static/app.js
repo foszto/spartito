@@ -1827,7 +1827,7 @@ function providerChoices(container, name, value, onchange) {
 function providerHint(hint, expected, instead, redraw) {
   const p = expected ? provider(expected) : null;
   const text = !state.providers.some(q => q.usable) ? 'None of the agent CLIs can run here.'
-    : p && !p.usable ? `${providerTitle(p)}.${instead && instead !== expected ? ` ${providerLabel(instead)} is chosen instead.` : ''}`
+    : p && !p.usable ? `${providerTitle(p).replace(/\.$/, '')}.${instead && instead !== expected ? ` ${providerLabel(instead)} is chosen instead.` : ''}`
     : '';
   hint.replaceChildren();
   hint.hidden = !text;
