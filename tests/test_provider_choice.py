@@ -95,7 +95,8 @@ def test_an_explicit_provider_must_be_usable(orch: Orchestrator, monkeypatch) ->
     with pytest.raises(OrchestratorError) as raised:
         availability.choose("codex", [("claude", "the project's default")])
     assert str(raised.value) == (
-        "codex is not available: not installed (not_installed here). Available: claude, fake"
+        "codex is not available: not installed (not_installed here). Available: claude, fake."
+        f" `{config.CLI_NAME} providers` says more"
     )
     with pytest.raises(OrchestratorError, match="unknown provider 'nope'"):
         availability.choose("nope")

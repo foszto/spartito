@@ -128,12 +128,11 @@ def test_the_search_path_appends_existing_usual_dirs_after_path(
     )
 
 
-def test_a_missing_cli_is_not_installed_with_the_reinstall_hint(bare_path: Path) -> None:
+def test_a_missing_cli_is_not_installed_with_a_short_reason(bare_path: Path) -> None:
     found = locate.probe("codex")
 
     assert (found.status, found.version, found.path) == ("not_installed", None, None)
-    assert "`codex` was not found on PATH or in the usual install locations" in found.reason
-    assert f"`{config.CLI_NAME} service install`" in found.reason
+    assert found.reason == "`codex` was not found on PATH or in the usual install locations"
 
 
 def test_a_script_whose_env_interpreter_is_missing_is_not_installed(
@@ -553,18 +552,34 @@ def test_the_providers_command_prints_a_table(
     assert result.exit_code == 0, result.output
     lines = click.unstyle(result.output).splitlines()
     assert lines[0].split() == ["NAME", "STATUS", "VERSION", "REASON"]
-    rows = {line[2:].split()[0]: line for line in lines[1:]}
+    rows = {line[2:].split()[0]: line for line in lines[1:-2]}
     assert rows["claude"].startswith("  claude ") and "not_installed in this test" in rows["claude"]
     assert rows["codex"].startswith("* codex ") and " available " in rows["codex"]
     assert rows["fake"].split()[1:3] == ["available", "1.0"]
     assert calls.count("claude") == 2  # checked again, not taken from the cache
+    # What to do after installing a CLI: once, below the table.
+    assert lines[-2:] == ["", locate.install_advice()]
+    assert f"`{config.CLI_NAME} service install`" in lines[-1]
 
 
-def test_the_providers_command_prints_json(orch: Orchestrator) -> None:
+def test_the_providers_command_gives_no_advice_when_all_are_installed(
+    orch: Orchestrator,
+) -> None:
+    result = CliRunner().invoke(cli.app, ["providers"])
+
+    assert result.exit_code == 0, result.output
+    assert locate.install_advice() not in result.output
+
+
+def test_the_providers_command_prints_json(
+    orch: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    counting_probe(monkeypatch, {"claude": "not_installed"})
+
     result = CliRunner().invoke(cli.app, ["providers", "--json"])
 
     assert result.exit_code == 0, result.output
-    listed = json.loads(result.output)
+    listed = json.loads(result.output)  # the whole output: no advice line
     assert [e["name"] for e in listed][:2] == ["claude", "codex"]
     assert all(set(entry) == CONTRACT for entry in listed)
     assert listed[1]["models"][0] == {"value": "gpt-test-codex", "label": "gpt-test-codex"}
@@ -584,7 +599,7 @@ def test_a_missing_cli_fails_the_turn_with_a_clear_error(
     ended = orch.store.get_run(run.id)
     assert ended.status is RunStatus.FAILED
     assert ended.error.startswith("the `orch-test-missing-cli` CLI was not found")
-    assert f"`{config.CLI_NAME} providers`" in ended.error
+    assert ended.error.endswith(f"; `{config.CLI_NAME} providers` says more")
     assert "FileNotFoundError" not in ended.error and "Traceback" not in ended.error
 
 

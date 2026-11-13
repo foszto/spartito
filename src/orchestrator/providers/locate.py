@@ -113,12 +113,22 @@ def interpreter_problem(path: Path) -> str | None:
 
 
 def not_found(executable: str) -> str:
+    """Why `executable` is not installed, in one short clause (the reason of a probe)."""
+    return f"`{executable}` was not found on PATH or in the usual install locations"
+
+
+def install_advice() -> str:
+    """What to do after installing a CLI that a background service or launcher does not
+    find (`{cli} providers` prints it below the table)."""
     cli = config.CLI_NAME
     return (
-        f"`{executable}` was not found on PATH or in the usual install locations; a "
-        f"background service or launcher keeps the PATH of its install: after installing "
-        f"the CLI, run `{cli} service install` or `{cli} app install` again"
+        "A background service or launcher keeps the PATH of its install: after installing a"
+        f" CLI, run `{cli} service install` or `{cli} app install` again."
     )
+
+
+def says_more() -> str:
+    return f"`{config.CLI_NAME} providers` says more"
 
 
 def _run(argv: list[str], timeout: float) -> tuple[int, str, str]:

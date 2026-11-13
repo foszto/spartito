@@ -273,7 +273,9 @@ def chat(
 ) -> None:
     """Open the orchestrator: an interactive Claude Code session that steers all agents."""
     if not shutil.which("claude", path=locate.search_path()):
-        raise fail(f"the `claude` CLI is not available: {locate.not_found('claude')}")
+        raise fail(
+            f"the `claude` CLI is not available: {locate.not_found('claude')}; {locate.says_more()}"
+        )
     data = orch().settings()
     tier = data.get("orchestrator", {}).get("claude", {})
     bot_coauthor = data.get(BOT_COAUTHOR, True) is not False
@@ -1623,8 +1625,8 @@ def attach(agent_id: str) -> None:
     env = {**os.environ, "PATH": locate.search_path()}
     if not shutil.which(argv[0], path=env["PATH"]):
         raise fail(
-            f"the `{argv[0]}` CLI is not available: {locate.not_found(argv[0])}"
-            f" (`{CLI} providers` checks every provider)"
+            f"the `{argv[0]}` CLI is not available: {locate.not_found(argv[0])};"
+            f" {locate.says_more()}"
         )
     os.chdir(agent.cwd)
     os.execvpe(argv[0], argv, env)
@@ -1641,8 +1643,8 @@ def list_providers(
     Each one is looked for on PATH and in the usual install locations, and asked its
     version (with `--json` also its models, as the dashboard lists them): no agent turn is
     run and no login is checked. `*` marks the provider a new project gets: the first
-    available one. A background service or launcher keeps the PATH of its install: after
-    installing a CLI, `{cli} service install` or `{cli} app install` again."""
+    available one. When one is not installed, a line below the table says what to do after
+    installing it (not with `--json`)."""
     found = orch().provider_list(refresh=True, models=as_json)
     if as_json:
         typer.echo(json.dumps(found, indent=2))
@@ -1656,6 +1658,8 @@ def list_providers(
             f"{entry['version'] or '-':<12}{entry['reason']}"
         )
         typer.secho(line, fg=None if entry["usable"] else typer.colors.YELLOW)
+    if any(entry["status"] == locate.NOT_INSTALLED for entry in found):
+        typer.echo(f"\n{locate.install_advice()}")
 
 
 @app.command("roles")

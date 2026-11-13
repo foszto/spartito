@@ -245,7 +245,8 @@ def choose(
     if requested:
         others = ", ".join(usable_names) or "none"
         raise OrchestratorError(
-            f"{requested} is not available: {_state(entries[requested])}. Available: {others}"
+            f"{requested} is not available: {_state(entries[requested])}. Available: {others}."
+            f" {locate.says_more()}"
         )
     if not usable_names:
         each = "; ".join(f"{name}: {_state(entry)}" for name, entry in entries.items())

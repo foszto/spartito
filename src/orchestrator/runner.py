@@ -474,8 +474,7 @@ def _start(invocation: Invocation, cwd: str, token: str, stderr: Any) -> subproc
             raise
         raise CliNotFound(
             f"the `{invocation.argv[0]}` CLI was not found, so the turn could not start: "
-            f"{locate.not_found(invocation.argv[0])}; `{config.CLI_NAME} providers` shows "
-            "which CLIs this machine has"
+            f"{locate.not_found(invocation.argv[0])}; {locate.says_more()}"
         ) from None
 
 
