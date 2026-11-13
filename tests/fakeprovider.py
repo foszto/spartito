@@ -142,8 +142,8 @@ if "STALE" in words:
 print(json.dumps({"text": "working"}), flush=True)
 if "ENVCHILD" in words:  # a command of the turn, as an agent's shell runs one
     dump = (  # complete when it appears: written aside, then renamed into place
-        "import json, os; open('.fake-env.json.tmp', 'w').write(json.dumps(dict(os.environ))); "
-        "os.replace('.fake-env.json.tmp', '.fake-env.json')"
+        "import json, os; aside = f'.fake-env.json.{os.getpid()}.tmp'; "
+        "open(aside, 'w').write(json.dumps(dict(os.environ))); os.replace(aside, '.fake-env.json')"
     )
     subprocess.run([sys.executable, "-c", dump], check=True)
 if "DIE" in words:
