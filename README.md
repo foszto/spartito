@@ -44,11 +44,11 @@ were: the `orch` MCP server and its tools, the `ORCH_*` variables, `orch.db` and
 - macOS or Linux (see [Platform support](https://github.com/foszto/spartito#platform-support)).
 - Python 3.14 and [uv](https://docs.astral.sh/uv/).
 - `git`.
-- The `claude` (Claude Code) CLI, installed and logged in, and optionally the `codex` CLI.
-  The defaults use Claude Code: the orchestrator agent, `spartito chat`, and every project
-  registered without `--provider`, so the quick start below needs `claude`. A Codex-only or
-  mixed setup is configured per project and per agent:
-  [docs/configuration.md](https://github.com/foszto/spartito/blob/master/docs/configuration.md#providers-and-permissions).
+- At least one of the two supported CLIs, installed and logged in: `claude` (Claude Code) or
+  `codex` (Codex). `spartito providers` shows which of them this machine can run; new projects
+  and agents, the orchestrator agent included, get an available one, and a provider can be
+  chosen per project and per agent. `spartito chat` needs `claude`. Details:
+  [docs/providers.md](https://github.com/foszto/spartito/blob/master/docs/providers.md).
 
 ## Installation
 
@@ -87,11 +87,12 @@ What each release changed: [CHANGELOG.md](https://github.com/foszto/spartito/blo
 ## Quick start
 
 Register a git repository as a project. Its currently checked-out branch becomes the
-project's base branch, from which agent branches start:
+project's base branch, from which agent branches start, and the first available provider its
+default (`--provider codex` chooses one):
 
 ```sh
 spartito project add ~/src/my-app
-# added my-app  /home/dev/src/my-app  (base branch: main)
+# added my-app  /home/dev/src/my-app  (base branch: main, provider: claude)
 ```
 
 **Through the orchestrator.** The recommended way: the dashboard as a background service, and
@@ -162,6 +163,7 @@ MCP tools are views on the same database. More: [docs/concepts.md](https://githu
 - [docs/usage.md](https://github.com/foszto/spartito/blob/master/docs/usage.md): every command and option, and the dashboard.
 - [docs/agents.md](https://github.com/foszto/spartito/blob/master/docs/agents.md): MCP tools, queue, dependencies, notifications, decisions, archiving, compaction, cost.
 - [docs/configuration.md](https://github.com/foszto/spartito/blob/master/docs/configuration.md): model and effort, settings, loadout, roles, providers, files.
+- [docs/providers.md](https://github.com/foszto/spartito/blob/master/docs/providers.md): the supported harnesses, which are available, how a provider is chosen, moving an agent.
 - [docs/board.md](https://github.com/foszto/spartito/blob/master/docs/board.md): the task board across projects.
 - [docs/desktop.md](https://github.com/foszto/spartito/blob/master/docs/desktop.md): background service, installable page, notifications, `spartito app`, menu bar.
 - [docs/desktop-checklist.md](https://github.com/foszto/spartito/blob/master/docs/desktop-checklist.md): manual checks of the desktop app.
