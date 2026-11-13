@@ -194,10 +194,12 @@ def set_provider(
 
     The orchestrator before its first use is created on it. An existing agent: the provider
     must be usable here (the same one changes nothing); refused while the agent has a
-    running or queued turn. A conversation cannot move between providers, so the next
-    message starts a new one: with a session that needs `confirm` (else NeedsConfirmation
-    says what happens). The agent's own model and effort are cleared (they were the old
-    provider's); its worktree, branch, board items and sub-agents stay."""
+    running or queued turn. A conversation cannot move between providers: the agent's
+    session is kept for the provider it leaves, and the next message continues the one
+    kept for the new provider (from an earlier move away from it) or starts a new one.
+    With a session that needs `confirm` (else NeedsConfirmation says what happens). The
+    agent's own model and effort are cleared (they were the old provider's); its worktree,
+    branch, board items and sub-agents stay."""
     if agent_id == ORCHESTRATOR_ID and orch.store.get_agent(ORCHESTRATOR_ID) is None:
         note = orch.orchestrator(provider).provider_note
         return _noting(orch.setup(ORCHESTRATOR_ID), note)
@@ -208,10 +210,10 @@ def set_provider(
     if orch.store.active_runs(agent.id):
         raise OrchestratorError(busy(agent))
     if agent.session_id and not confirm:
+        then = next_message(provider, orch.store.provider_sessions(agent.id).get(provider))
         raise NeedsConfirmation(
-            f"{agent.id} has a conversation on {agent.provider}; on {provider} it starts a new "
-            "conversation that does not know the earlier one (its worktree, branch, board "
-            "items and sub-agents stay)"
+            f"{agent.id} has a conversation on {agent.provider}: {then}; the one on"
+            f" {agent.provider} is kept and resumed when it moves back"
         )
     _move(orch, agent, provider)
     return orch.setup(agent.id)
@@ -221,21 +223,30 @@ def busy(agent: Agent) -> str:
     return f"{agent.id} has a running or queued turn: stop it or wait, then move it"
 
 
+def next_message(provider: str, session_id: str | None) -> str:
+    """What the next message does after a move to `provider`, where `session_id` (None:
+    nothing) is the conversation kept for it."""
+    if session_id:
+        return f"the next message continues the earlier conversation on {provider} (session {session_id})"
+    return f"the next message starts a new conversation on {provider}"
+
+
 def _move(orch: Facade, agent: Agent, provider: str) -> None:
-    """The one place an agent changes provider: the session and the own model and effort go,
-    and the log notes it on the latest run. (Remembering the last session per provider, to
-    resume it when the agent moves back, would be kept and restored here.)"""
-    if not orch.store.move_provider(agent.id, provider):
+    """The one place an agent changes provider (Store.move_provider, one transaction): its
+    session is kept for the provider it leaves, the one kept for `provider` (if any) becomes
+    its session, its own model and effort go; the log notes it on the latest run."""
+    moved, resumed = orch.store.move_provider(agent.id, provider)
+    if not moved:
         raise OrchestratorError(busy(agent))
     last = orch.store.last_run(agent.id)
     if last is None:
         return
-    text = (
-        f"moved from {agent.provider} to {provider}: the next message starts a new "
-        f"conversation on {provider}"
-    )
+    text = f"moved from {agent.provider} to {provider}: {next_message(provider, resumed)}"
     if agent.model or agent.effort:
         text += "; the agent's own model and effort were cleared"
     if agent.session_id:
-        text += f"; the earlier {agent.provider} session was {agent.session_id}"
+        text += (
+            f"; the conversation on {agent.provider} (session {agent.session_id}) is kept and"
+            " resumed when it moves back"
+        )
     orch.store.add_event(last.id, agent.id, "info", text)

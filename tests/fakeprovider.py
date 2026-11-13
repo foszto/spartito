@@ -11,7 +11,7 @@ resumed an existing session.
 
 `TOKENS <n>` makes the result report usage for the turn (n input tokens, n // 10 output,
 2n cache reads, n // 2 cache writes, n / 100000 USD). With `CUMULATIVE` it reports the
-running total of the session instead, like `codex exec resume` does.
+running total of its session instead, like `codex exec resume` does.
 
 `CONTEXT <n>` reports a model request with an n-token prompt (the context size) and a
 1000-token window for the model; `AUTOCOMPACT` reports an automatic compaction before it.
@@ -28,6 +28,9 @@ runner passed it (prompt, system_prompt, slash_commands, output_schema, compact_
 
 FAKE_MISSING_CLI=<name> makes the command line start with <name> instead of Python, like a
 provider whose CLI is not installed.
+
+Every turn reports the session `fake-session` (FirstTurnFake: `fake-codex-session`), and
+`ctx.json` notes the session it was asked to resume (`session_id`, null: a new one).
 
 FirstTurnFake (`fake-codex`) is the same fake, but like Codex it has no system prompt: the
 role prompt opens the prompt of a session's first turn, so the answer echoes it.
@@ -101,7 +104,7 @@ if sys.argv[3] == "memory":  # like Claude with --input-format stream-json
         sys.exit(1)
 else:
     prompt = sys.stdin.read()
-print(json.dumps({"session": "fake-session", "model": "fake-model-1"}), flush=True)
+print(json.dumps({"session": os.environ.get("FAKE_SESSION", "fake-session"), "model": "fake-model-1"}), flush=True)
 words = prompt.split()
 if "AWAKE" in words:  # this runner's inhibitor: "<pid> start <name> <mark> ... <runner pid>"
     inhibit_log = pathlib.Path(os.environ["FAKE_INHIBIT_LOG"])
@@ -123,7 +126,7 @@ for flag, value in zip(words, words[1:]):
                  "cache_creation_tokens": n // 2, "cost_usd": n / 100000}
 cumulative = usage is not None and "CUMULATIVE" in words
 if cumulative:
-    totals = pathlib.Path(".fake-session-usage.json")
+    totals = pathlib.Path(f".fake-usage-{os.environ.get('FAKE_SESSION', 'fake-session')}.json")
     before = json.loads(totals.read_text()) if totals.exists() else {}
     usage = {key: before.get(key, 0) + value for key, value in usage.items()}
     totals.write_text(json.dumps(usage))
@@ -192,6 +195,7 @@ if server:
 class FakeProvider:
     name = "fake"
     efforts = ("low", "high")
+    session = "fake-session"  # the session id every turn reports
 
     @property
     def compact_needs_size(self) -> bool:
@@ -214,9 +218,11 @@ class FakeProvider:
             "slash_commands": ctx.loadout.slash_commands,
             "output_schema": ctx.output_schema,
             "compact_below": ctx.compact_below,
+            "session_id": ctx.agent.session_id,
         }
         (ctx.scratch / "ctx.json").write_text(json.dumps(seen))
-        return Invocation(argv=argv, stdin=stdin, canary=canary)
+        env = {"FAKE_SESSION": self.session}
+        return Invocation(argv=argv, stdin=stdin, env=env, canary=canary)
 
     @staticmethod
     def compact_prompt(instructions: str | None) -> str:
@@ -255,6 +261,7 @@ class FakeProvider:
 
 class FirstTurnFake(FakeProvider):
     name = "fake-codex"
+    session = "fake-codex-session"
 
     def invocation(self, ctx: RunContext) -> Invocation:
         if ctx.system_prompt and not ctx.agent.session_id:

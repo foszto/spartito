@@ -250,9 +250,9 @@ def lead(
                 agent.parent_id = ORCHESTRATOR_ID
             if provider and provider != agent.provider:
                 agent.provider_note = (
-                    f"the lead already runs on {agent.provider}, not {provider}: its "
-                    "conversation cannot move to another provider (moving the lead starts "
-                    "a new conversation)"
+                    f"the lead already runs on {agent.provider}, not {provider}: a "
+                    "conversation cannot move to another provider (moved, the lead goes on "
+                    "in a new conversation there, or in its earlier one)"
                 )
             return agent
     parent = ORCHESTRATOR_ID if orch.store.get_agent(ORCHESTRATOR_ID) else None

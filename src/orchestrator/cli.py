@@ -23,6 +23,7 @@ from .service import (
     Orchestrator,
     OrchestratorError,
     cache_hint,
+    next_message,
 )
 from .settings import (
     ARCHIVE_AFTER,
@@ -1424,7 +1425,7 @@ def model_command(
     ] = None,
     provider: Annotated[
         str | None,
-        typer.Option(help="Move the agent to this provider: its next message starts anew."),
+        typer.Option(help="Move the agent to this provider (its conversation there: below)."),
     ] = None,
     yes: Annotated[
         bool, typer.Option("--yes", "-y", help="Move without asking about the conversation.")
@@ -1439,9 +1440,11 @@ def model_command(
     with Codex and may start a fresh one with Claude.
 
     `--provider` moves an idle agent (the orchestrator too) to another available provider. A
-    conversation cannot move: the next message starts a new one there, which does not know
-    the earlier one; the agent's own model and effort are cleared; its worktree, branch,
-    board items and sub-agents stay. It asks first when the agent has a conversation.
+    conversation cannot move: the one on the old provider is kept for when the agent moves
+    back, and the next message continues the agent's earlier conversation on the new one,
+    if it had one there, or starts a new one; the agent's own model and effort are
+    cleared; its worktree, branch, board items and sub-agents stay. It asks first when the
+    agent has a conversation.
     """
     changes = {
         key: value or None
@@ -1472,10 +1475,8 @@ def model_command(
         source = f"own (inherited: {inherited})" if own else "inherited"
         typer.echo(f"  {key:<7} {value:<20} {source}")
     if moved_from and moved_from != setup["provider"]:
-        typer.echo(
-            f"note: moved from {moved_from} to {setup['provider']}: the next message starts a"
-            " new conversation"
-        )
+        then = next_message(setup["provider"], setup["session_id"])
+        typer.echo(f"note: moved from {moved_from} to {setup['provider']}: {then}")
     print_note(setup.get("note"))
     if not changes:
         return

@@ -31,6 +31,7 @@ from .core.dispatch import ORCHESTRATOR_ID as ORCHESTRATOR_ID  # old import path
 from .core.dispatch import slug as slug  # old import path
 from .core.setup import cache_effect as cache_effect  # old import path
 from .core.setup import cache_hint as cache_hint  # old import path
+from .core.setup import next_message as next_message  # the move's words, for the CLI
 from .core.views import context_view as context_view  # old import path
 from .core.views import result_file as result_file  # old import path
 from .core.views import run_usage as run_usage  # old import path

@@ -316,9 +316,9 @@ def message_lead(orch: Orchestrator, request: Request, body: dict) -> dict[str, 
 def set_agent_model(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
     """Set (a string) or clear (null) the agent's own `model` and/or `effort`; a missing
     key keeps the value. Creates the orchestrator on first use, like a message does.
-    `provider` moves the agent to that provider first (set_provider); a move that would
-    start its conversation anew answers `confirm` (what happens) instead, until the
-    request is repeated with `confirm: true`. Returns the agent's setup, with `note` when
+    `provider` moves the agent to that provider first (set_provider); a move of an agent
+    with a conversation answers `confirm` (what happens) instead, until the request is
+    repeated with `confirm: true`. Returns the agent's setup, with `note` when
     this created the orchestrator on a fallback provider."""
     agent_id = request.path_params["agent_id"]
     changes = {key: value for key, value in body.items() if key not in ("provider", "confirm")}

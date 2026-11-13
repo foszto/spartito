@@ -279,8 +279,8 @@ def test_a_new_lead_gets_the_provider_asked_for_and_an_existing_one_keeps_its_ow
     again = orch.lead(project, provider="fake")
     assert again.id == lead.id and again.provider == "fake-codex"
     note = (
-        "the lead already runs on fake-codex, not fake: its conversation cannot move to another"
-        " provider (moving the lead starts a new conversation)"
+        "the lead already runs on fake-codex, not fake: a conversation cannot move to another"
+        " provider (moved, the lead goes on in a new conversation there, or in its earlier one)"
     )
     assert again.provider_note == note
     assert orch.lead(project, provider="fake-codex").provider_note is None

@@ -70,9 +70,50 @@ def test_an_old_database_gets_usage_without_changing_the_existing_tables(old_db:
     assert [store.get_usage(run.id) for run in old_runs] == [None, None]
     assert store.get_usage(new_run.id) == Usage(10, 2, 30, 4, cost_usd=0.5, model="m")
     assert list(store.usage_of("a-1")) == [new_run.id]
-    # Processes still running the old code build Run(**row) from SELECT *.
+    # Processes still running the old code build Run(**row) from SELECT *. Agents are read
+    # with from_row since before the first release, which ignores a column it does not know.
     assert columns(old_db, "runs") == OLD_RUN_COLUMNS
-    assert columns(old_db, "agents") == agent_columns
+    assert columns(old_db, "agents") == [*agent_columns, "provider_sessions"]
+
+
+def test_an_old_database_has_no_session_kept_and_keeps_them_from_now_on(old_db: Path) -> None:
+    store = Store(old_db)
+    assert store.provider_sessions("a-1") == {}
+    store.set_session("a-1", "s-claude")
+
+    assert store.move_provider("a-1", "codex") == (True, None)
+    assert store.provider_sessions("a-1") == {"claude": "s-claude"}
+    store.set_session("a-1", "s-codex")
+    assert store.move_provider("a-1", "claude") == (True, "s-claude")
+
+    agent = store.get_agent("a-1")
+    assert (agent.provider, agent.session_id) == ("claude", "s-claude")
+    assert store.provider_sessions("a-1") == {"codex": "s-codex"}
+
+
+@pytest.mark.parametrize("stored", [None, "", "not json", "[1]", '{"codex": 5}', '{"codex": ""}'])
+def test_a_null_or_unreadable_kept_session_is_none(old_db: Path, stored: str | None) -> None:
+    """NULL is what older code leaves (it never writes the column); anything else that is
+    not a JSON object of session ids counts as nothing kept as well."""
+    store = Store(old_db)
+    with sqlite3.connect(old_db) as conn:
+        conn.execute("UPDATE agents SET provider_sessions = ?", (stored,))
+    conn.close()
+
+    assert store.provider_sessions("a-1") == {}
+    assert store.move_provider("a-1", "codex") == (True, None)
+    assert store.get_agent("a-1").session_id is None
+
+
+def test_a_busy_agent_is_not_moved_and_keeps_its_session(old_db: Path) -> None:
+    store = Store(old_db)
+    store.set_session("a-1", "s-claude")
+    store.add_run("a-1", "queued")
+
+    assert store.move_provider("a-1", "codex") == (False, None)
+    agent = store.get_agent("a-1")
+    assert (agent.provider, agent.session_id) == ("claude", "s-claude")
+    assert store.provider_sessions("a-1") == {}
 
 
 def test_legacy_runs_count_their_session_running_total_once(old_db: Path) -> None:
@@ -169,6 +210,8 @@ def test_a_master_era_database_gets_every_new_table_and_column(tmp_path: Path) -
     assert {"decisions", "board_items"} <= tables
     assert {"auto", "stopping"} <= set(columns(path, "run_meta"))
     assert "first_context_tokens" in columns(path, "run_usage")
+    assert "provider_sessions" in columns(path, "agents")
+    assert store.provider_sessions("a-1") == {}
     assert store.meta(1).auto == 0  # an old manual compaction stays manual
     assert store.meta(1).stopping == 0
     assert store.get_usage(1).first_context_tokens is None

@@ -62,7 +62,10 @@ CREATE TABLE IF NOT EXISTS agents (
     session_id TEXT,
     permission TEXT,
     created_at TEXT NOT NULL,
-    effort TEXT
+    effort TEXT,
+    -- The agent's last session on each provider it has left, as a JSON object
+    -- {"<provider>": "<session id>"}; NULL: none (and in rows of older code).
+    provider_sessions TEXT
 );
 CREATE TABLE IF NOT EXISTS settings (
     scope TEXT PRIMARY KEY,  -- '' is global, otherwise a project name
@@ -326,6 +329,9 @@ RUN_META_ADDED = (
     ("auto", "INTEGER NOT NULL DEFAULT 0"),
     ("stopping", "INTEGER NOT NULL DEFAULT 0"),
 )
+# agents columns added after its first version, in the order of SCHEMA's CREATE TABLE (a
+# rebuild copies the rows with SELECT *): effort, and provider_sessions (Store.move_provider).
+AGENTS_ADDED = (("effort", "TEXT"), ("provider_sessions", "TEXT"))
 # notices columns added after its first version (desktop.py). route: whom the notice is left
 # to ('window', 'helper', 'page', 'banner', 'waiting'; 'osascript' or 'linux' when shown at
 # once, 'quiet' when the environment says nothing is shown; both claimed at once; NULL:
@@ -384,7 +390,7 @@ def known_schema() -> dict[str, set[str]]:
     try:
         conn.executescript(SCHEMA)
         added = (("run_meta", RUN_META_ADDED), ("run_usage", RUN_USAGE_ADDED))
-        for table, columns in (*added, ("notices", NOTICES_ADDED)):
+        for table, columns in (*added, ("notices", NOTICES_ADDED), ("agents", AGENTS_ADDED)):
             present = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
             for name, ddl in columns:
                 if name not in present:
@@ -531,6 +537,17 @@ class RunMeta:
         return cls(known=False)
 
 
+def _sessions(stored: str | None) -> dict[str, str]:
+    """agents.provider_sessions read: NULL or anything but a JSON object of strings is none."""
+    try:
+        found = json.loads(stored) if stored else {}
+    except ValueError:
+        return {}
+    if not isinstance(found, dict):
+        return {}
+    return {k: v for k, v in found.items() if isinstance(k, str) and isinstance(v, str) and v}
+
+
 def subtree_sql(column: str = "?") -> str:
     """A recursive CTE `tree(id)`: the agent `column` and all its descendants."""
     return (
@@ -553,9 +570,11 @@ class Store:
         with self._conn() as conn:
             conn.executescript(SCHEMA)
             columns = conn.execute("PRAGMA table_info(agents)").fetchall()
-            if not any(column["name"] == "effort" for column in columns):
-                conn.execute("ALTER TABLE agents ADD COLUMN effort TEXT")
-            for table, added in (("run_usage", RUN_USAGE_ADDED), ("notices", NOTICES_ADDED)):
+            for table, added in (
+                ("agents", AGENTS_ADDED),
+                ("run_usage", RUN_USAGE_ADDED),
+                ("notices", NOTICES_ADDED),
+            ):
                 present = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
                 for name, ddl in added:
                     if name in present:
@@ -834,17 +853,40 @@ class Store:
         with self._conn() as conn:
             conn.execute("UPDATE agents SET session_id = ? WHERE id = ?", (session_id, agent_id))
 
-    def move_provider(self, agent_id: str, provider: str) -> bool:
-        """Set the agent's provider and clear its session and own model and effort, unless
-        it has a queued or running turn. False: it had one, nothing changed."""
-        with self._conn() as conn:
-            cursor = conn.execute(
-                "UPDATE agents SET provider = ?, session_id = NULL, model = NULL, effort = NULL"
-                f" WHERE id = ? AND NOT EXISTS (SELECT 1 FROM runs WHERE agent_id = ?"
-                f" AND status IN ('{ACTIVE[0]}', '{ACTIVE[1]}'))",
-                (provider, agent_id, agent_id),
+    def move_provider(self, agent_id: str, provider: str) -> tuple[bool, str | None]:
+        """Move the agent to `provider`, unless it has a queued or running turn: (False,
+        None), nothing changed. Its session is remembered under the provider it leaves; the
+        one remembered under `provider`, if any, becomes its session (returned), else it has
+        none. Its own model and effort are cleared. One transaction."""
+        with self.transaction() as conn:
+            busy = conn.execute(
+                f"SELECT 1 FROM runs WHERE agent_id = ? AND status IN ('{ACTIVE[0]}', '{ACTIVE[1]}')",
+                (agent_id,),
+            ).fetchone()
+            row = conn.execute(
+                "SELECT provider, session_id, provider_sessions FROM agents WHERE id = ?",
+                (agent_id,),
+            ).fetchone()
+            if busy or row is None:
+                return False, None
+            sessions = _sessions(row["provider_sessions"])
+            if row["session_id"]:
+                sessions[row["provider"]] = row["session_id"]
+            resumed = sessions.pop(provider, None)
+            conn.execute(
+                "UPDATE agents SET provider = ?, session_id = ?, model = NULL, effort = NULL,"
+                " provider_sessions = ? WHERE id = ?",
+                (provider, resumed, json.dumps(sessions) if sessions else None, agent_id),
             )
-        return cursor.rowcount == 1
+        return True, resumed
+
+    def provider_sessions(self, agent_id: str) -> dict[str, str]:
+        """The agent's last session on each provider it has left: {provider: session id}."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT provider_sessions FROM agents WHERE id = ?", (agent_id,)
+            ).fetchone()
+        return _sessions(row["provider_sessions"]) if row else {}
 
     def set_overrides(self, agent_id: str, changes: dict[str, str | None]) -> None:
         """Set the agent's own `model` and/or `effort` (None: inherit from the settings).
