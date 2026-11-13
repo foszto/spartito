@@ -364,3 +364,33 @@ div.folder > button.folder:hover { background: none; }
 .tier .page-notify { margin: 8px 0 0; }
 .tier .page-notify .btn { height: 26px; padding: 0 8px; color: var(--accent); }
 .list-item.marked { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+/* The code view of a worktree (read-only): in place of the conversation while open. */
+.btn.active { color: var(--accent); background: var(--accent-soft); }
+.code-view { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--surface); }
+.code-tabs { display: flex; align-items: center; gap: 4px; padding: 8px 24px; border-bottom: 1px solid var(--line); }
+.code-tabs .grow { flex: 1; }
+.code-body { flex: 1; min-height: 0; overflow: auto; padding: 12px 24px; }
+.code-head { font-weight: 600; margin-bottom: 6px; word-break: break-all; }
+.code-note { color: var(--muted); font-size: 12.5px; margin: 4px 0 8px; }
+.code-note.error { color: var(--failed); }
+.code-file { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 6px; background: var(--raised); }
+.code-file > summary { display: flex; gap: 10px; align-items: baseline; padding: 5px 10px; cursor: pointer; }
+.code-status { min-width: 28px; font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; }
+.code-status.s-A { color: var(--done); } .code-status.s-D { color: var(--failed); } .code-status.s-M { color: var(--waiting); }
+.code-path { flex: 1; min-width: 0; word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+.code-count { color: var(--muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.code-patch { padding: 0 10px 10px; }
+.code-text { margin: 0; padding: 10px 12px; background: var(--code); border-radius: 8px; overflow: auto; white-space: pre; tab-size: 4; }
+.code-text.patch span { display: block; }
+.code-text.patch .add { color: var(--done); } .code-text.patch .del { color: var(--failed); }
+.code-text.patch .hunk { color: var(--other); } .code-text.patch .meta { color: var(--muted); }
+.code-split { display: grid; grid-template-columns: minmax(180px, 280px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.code-tree { font-size: 13px; overflow: auto; }
+.code-tree details > :not(summary) { margin-left: 14px; }
+.code-tree summary { cursor: pointer; padding: 1px 0; word-break: break-all; }
+.code-leaf { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 1px 0 1px 14px;
+  color: var(--text); word-break: break-all; }
+.code-leaf:hover:not(:disabled) { color: var(--accent); }
+.code-leaf:disabled { cursor: default; color: var(--muted); }
+.code-content { min-width: 0; }

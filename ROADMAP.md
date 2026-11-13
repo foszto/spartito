@@ -61,15 +61,20 @@ Which actions are allowed remotely: everything, or only reading and answering de
 files of its worktree and the diff against the base branch, next to its conversation. The
 working assumption is read-only browsing and diffs.
 
-**Today.** Every agent works in its own
-[git worktree](docs/concepts.md#worktrees-and-branches). The agent view and `spartito status`
-show its commits since the base branch and its uncommitted files, and the
-[task board](docs/board.md) shows a branch as ahead, behind, dirty or merged. File contents
-and diffs are not shown anywhere.
+**Today.** Read-only browsing is done. **Code** in the agent view of an agent with its own
+[git worktree](docs/concepts.md#worktrees-and-branches) shows the files it changed against the
+base branch, committed and uncommitted together, with each file's patch, and the worktree's
+files with their content ([usage.md](docs/usage.md#dashboard)). Only files git tracks or would
+track are served, symbolic links are never followed, binary files are not shown, and large
+lists, patches and files are cut. `spartito status` still shows only the commits and the
+uncommitted files.
 
-**Open questions.** Read-only, or with comments sent back to the agent, or editing? Limits for
-large diffs and binary files. Serving file contents widens what the dashboard exposes, which
-ties this item to authentication.
+**What remains.** Review comments sent back to the agent, editing, and the code view on the
+command line. Serving file contents widens what the dashboard exposes (it already refuses
+other hosts and other sites), which ties this item to authentication.
+
+**Open questions.** Whether an agent that shares another agent's worktree, and a lead in the
+main checkout, should get the code view too.
 
 ### Operations
 

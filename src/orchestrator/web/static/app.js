@@ -23,6 +23,7 @@ const ICONS = {
   pencil: '<path d="M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4"/>',
   compress: '<path d="M4 9h16M4 15h16M12 3v4M10 5l2 2 2-2M12 21v-4M10 19l2-2 2 2"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
+  code: '<path d="m8 7-5 5 5 5M16 7l5 5-5 5"/>',
   sliders: '<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>',
   moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
   ask: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.4 2.3c-.6.3-.9.8-.9 1.4v.6M12 16.8v.4"/>',
@@ -378,6 +379,9 @@ function buildView() {
   chips.append(lead, setup, tail);
   who.append(title, chips, note);
   const detailsButton = button('ghost', 'info', 'Details', () => { $('details').hidden = !$('details').hidden; });
+  const codeButton = button('ghost', 'code', 'Code', () => toggleCode());
+  codeButton.id = 'codeButton'; codeButton.hidden = true;
+  codeButton.title = 'The files of its worktree and its changes against the base branch (read-only)';
   const stop = button('danger', 'stop', 'Stop', stopAgent);
   const compact = button('ghost', 'compress', 'Compact', () => compactAgent(selected));
   compact.id = 'compact';
@@ -386,7 +390,7 @@ function buildView() {
   const remove = button('ghost icon', 'trash', '', () => removeAgent(selected), 'Delete agent for good');
   detailsButton.id = 'detailsButton'; stop.id = 'stop'; archive.id = 'archive'; restore.id = 'restore'; remove.id = 'remove';
   archive.title = 'Hide it from the lists; everything is kept and it can be restored';
-  top.append(face, who, compact, detailsButton, stop, archive, restore, remove);
+  top.append(face, who, compact, codeButton, detailsButton, stop, archive, restore, remove);
 
   const details = el('div'); details.id = 'details'; details.hidden = true;
   const facts = el('dl'); facts.id = 'facts';
@@ -398,6 +402,7 @@ function buildView() {
   const thread = el('div', 'thread'); thread.id = 'thread';
   const welcome = el('div', 'welcome'); welcome.id = 'welcome';
   log.append(welcome, thread);
+  const code = el('div', 'code-view'); code.id = 'code'; code.hidden = true;
   const busy = el('div'); busy.id = 'busy';
   const queue = el('div', 'queue'); queue.id = 'queue'; queue.hidden = true;
 
@@ -423,8 +428,8 @@ function buildView() {
     catch (error) { toast(error.message, true); }
     finally { send.disabled = false; input.focus(); }
   };
-  view.append(top, details, log, queue, busy, form);
-  shown = selected; lastEvent = 0; toolGroup = null; setupData = null;
+  view.append(top, details, code, log, queue, busy, form);
+  shown = selected; lastEvent = 0; toolGroup = null; setupData = null; codeShown = null;
   input.focus();
 }
 
@@ -472,6 +477,9 @@ function renderHeader(agent, setupFreshness = true) {
   $('restore').hidden = !agent?.archived;
   $('remove').hidden = !agent?.archived;  // only archived agents are deleted
   $('detailsButton').hidden = !agent;
+  // The code view: only for an agent with a worktree of its own (a branch).
+  $('codeButton').hidden = !agent?.branch;
+  if (!agent?.branch && codeShown) toggleCode(false);
   renderWelcome(agent, leadProject);
 
   const busy = $('busy');
@@ -553,6 +561,162 @@ function renderHeader(agent, setupFreshness = true) {
   }
   $('changes').textContent = agent.changes || '';
   $('changes').hidden = !agent.changes;
+}
+
+// -- the code view of a worktree (read-only) ---------------------------------
+//
+// Loaded only when opened (and on Refresh): the changed files against the base branch, each
+// file's patch when its row is opened; the file tree, a file when it is clicked. Every name and
+// every line goes into the page as text (el), never as markup.
+
+let codeShown = null;  // {id, tab} while the code view is open
+const codeUrl = (id, what, path) => `/api/agents/${encodeURIComponent(id)}/code/${what}`
+  + (path === undefined ? '' : `?path=${encodeURIComponent(path)}`);
+const patchClass = line => (line.startsWith('@@') ? 'hunk' : /^(diff |index |new file|deleted file|old mode|new mode|similarity|rename |--- |\+\+\+ )/.test(line)
+  ? 'meta' : line.startsWith('+') ? 'add' : line.startsWith('-') ? 'del' : '');
+const sizeText = bytes => (bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`);
+const countText = file => (file.submodule ? 'submodule' : file.binary ? 'binary' : file.too_large ? 'too large'
+  : file.added == null ? '' : `+${file.added} −${file.removed ?? 0}`);
+
+// The heading of the list of changes: how many files, against which base.
+function changesHead(data) {
+  if (!data.files.length) return `No changes against ${data.base}`;
+  const count = data.total == null ? `${data.files.length}+` : String(data.total);
+  return `${count} ${data.total === 1 ? 'file' : 'files'} changed against ${data.base}, committed and uncommitted`;
+}
+
+// What was cut or left out of an answer, for the note above it ('' when nothing).
+function codeNote(data) {
+  if (data.max_files !== undefined) {
+    if (!data.truncated) return '';
+    return data.total == null ? `Showing ${data.files.length} files: the list was cut.` : `Showing ${data.files.length} of ${data.total} files (the first ${data.max_files}).`;
+  }
+  if (data.binary) return 'Binary file: not shown.';
+  if (data.too_large) return 'Too large to show.';
+  if (data.kind === 'symlink') return `Symbolic link to ${data.target} (not followed).`;
+  if (data.max_lines !== undefined) {
+    if (!data.truncated) return data.submodule ? 'Submodule: only its commit is compared.' : '';
+    return data.lines == null ? `Patch cut: showing its first ${sizeText(data.max_bytes)}.` : `Patch cut: showing at most ${data.max_lines} of ${data.lines} lines.`;
+  }
+  return data.truncated ? `File cut: showing the first ${sizeText(data.max_bytes)} of ${sizeText(data.size)}.` : '';
+}
+
+// The paths as nested folders: {dirs: Map(name -> node), files: [{name, path}]}.
+function fileTree(paths) {
+  const root = { dirs: new Map(), files: [] };
+  for (const path of paths) {
+    const parts = path.split('/');
+    let node = root;
+    for (const part of parts.slice(0, -1)) {
+      if (!node.dirs.has(part)) node.dirs.set(part, { dirs: new Map(), files: [] });
+      node = node.dirs.get(part);
+    }
+    node.files.push({ name: parts[parts.length - 1], path });
+  }
+  return root;
+}
+
+// A patch as one line per element, coloured by its kind.
+function renderPatch(text) {
+  const pre = el('pre', 'code-text patch');
+  for (const line of text.replace(/\n$/, '').split('\n')) pre.append(el('span', patchClass(line), `${line}\n`));
+  return pre;
+}
+
+function codeMessage(box, text, isError) {
+  box.replaceChildren(el('div', `code-note${isError ? ' error' : ''}`, text));
+}
+
+function toggleCode(open = !codeShown) {
+  const box = $('code');
+  codeShown = open ? { id: selected, tab: 'changes' } : null;
+  box.hidden = !open; $('log').hidden = open;
+  $('codeButton').classList.toggle('active', open);
+  if (open) renderCode(); else box.replaceChildren();
+}
+
+function renderCode() {
+  const box = $('code'), view = codeShown;
+  if (!view) return;
+  const tabs = el('div', 'code-tabs');
+  for (const [tab, label] of [['changes', 'Changes'], ['tree', 'Files']]) {
+    const node = button(`ghost${view.tab === tab ? ' active' : ''}`, null, label, () => { view.tab = tab; renderCode(); });
+    tabs.append(node);
+  }
+  tabs.append(el('span', 'grow'), button('ghost', 'restore', 'Refresh', renderCode), button('ghost', 'x', 'Close', () => toggleCode(false)));
+  const body = el('div', 'code-body');
+  box.replaceChildren(tabs, body);
+  codeMessage(body, 'Loading…');
+  (view.tab === 'changes' ? loadChanges : loadTree)(view, body);
+}
+
+async function loadChanges(view, body) {
+  let data;
+  try { data = await call(codeUrl(view.id, 'changes')); } catch (error) { if (codeShown === view) codeMessage(body, error.message, true); return; }
+  if (codeShown !== view) return;
+  body.replaceChildren(el('div', 'code-head', changesHead(data)));
+  if (data.base_fallback) body.append(el('div', 'code-note', `Its own base ${data.requested_base} names no commit any more: compared with ${data.base}, the project's base branch.`));
+  if (codeNote(data)) body.append(el('div', 'code-note', codeNote(data)));
+  for (const file of data.files) {
+    const row = el('details', 'code-file'), head = el('summary');
+    head.append(el('span', `code-status s-${file.status}`, file.untracked ? 'new' : file.status),
+      el('span', 'code-path', file.path), el('span', 'code-count', countText(file)));
+    row.append(head);
+    row.addEventListener('toggle', () => { if (row.open && !row.dataset.loaded) { row.dataset.loaded = '1'; loadPatch(view, row, file.path); } });
+    body.append(row);
+  }
+}
+
+async function loadPatch(view, row, path) {
+  const box = el('div', 'code-patch'); row.append(box);
+  codeMessage(box, 'Loading…');
+  let data;
+  try { data = await call(codeUrl(view.id, 'patch', path)); } catch (error) { codeMessage(box, error.message, true); return; }
+  box.replaceChildren();
+  if (codeNote(data)) box.append(el('div', 'code-note', codeNote(data)));
+  if (data.patch) box.append(renderPatch(data.patch));
+}
+
+async function loadTree(view, body) {
+  let data;
+  try { data = await call(codeUrl(view.id, 'tree')); } catch (error) { if (codeShown === view) codeMessage(body, error.message, true); return; }
+  if (codeShown !== view) return;
+  const list = el('div', 'code-tree'), file = el('div', 'code-content');
+  codeMessage(file, data.files.length ? 'Choose a file.' : 'No files.');
+  body.replaceChildren();
+  if (codeNote(data)) body.append(el('div', 'code-note', codeNote(data)));
+  const split = el('div', 'code-split'); split.append(list, file); body.append(split);
+  renderCodeFolder(list, fileTree(data.files), view, file, new Set(data.submodules || []));
+}
+
+// One folder's entries; a sub-folder's own entries are built when it is first opened.
+function renderCodeFolder(parent, node, view, target, submodules) {
+  for (const [name, child] of [...node.dirs].sort(([a], [b]) => a.localeCompare(b))) {
+    const folder = el('details', 'code-dir'), head = el('summary', '', name);
+    folder.append(head);
+    folder.addEventListener('toggle', () => {
+      if (folder.open && !folder.dataset.built) { folder.dataset.built = '1'; renderCodeFolder(folder, child, view, target, submodules); }
+    });
+    parent.append(folder);
+  }
+  for (const entry of node.files) {
+    const item = el('button', 'code-leaf', entry.name); item.type = 'button'; item.title = entry.path;
+    // A submodule is named, never entered: its files belong to another repository.
+    if (submodules.has(entry.path)) { item.disabled = true; item.append(el('span', 'code-count', ' submodule')); }
+    else item.onclick = () => loadFile(view, target, entry.path);
+    parent.append(item);
+  }
+}
+
+async function loadFile(view, target, path) {
+  target.replaceChildren(el('div', 'code-head', path));
+  target.dataset.path = path;  // a later click wins over an earlier answer
+  let data;
+  try { data = await call(codeUrl(view.id, 'file', path)); } catch (error) { data = { error: error.message }; }
+  if (target.dataset.path !== path) return;
+  if (data.error) { target.append(el('div', 'code-note error', data.error)); return; }
+  if (codeNote(data)) target.append(el('div', 'code-note', codeNote(data)));
+  if (data.content != null) target.append(el('pre', 'code-text', data.content));
 }
 
 // -- model and effort of the selected agent ---------------------------------

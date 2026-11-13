@@ -10,6 +10,7 @@ from typing import Any
 from . import app_open, board, decisions, desktop, git, providers
 from .core import access, boards, compaction, delivery, dispatch, launcher, lifecycle, reads, views
 from .core import archive as archiving
+from .core import code_view as code_views
 from .core import notices as notice_reads
 from .core import setup as agent_setup
 from .core.dispatch import ORCHESTRATOR_ID as ORCHESTRATOR_ID  # old import path
@@ -295,6 +296,13 @@ class Orchestrator:
     settled = views.settled
     wait = views.wait
     changes = views.changes
+
+    # -- the code view of a worktree, read-only (core/code_view.py) -------
+
+    code_changes = code_views.code_changes
+    code_patch = code_views.code_patch
+    code_tree = code_views.code_tree
+    code_file = code_views.code_file
 
     # -- plain reads (core/reads.py) --------------------------------------
 
