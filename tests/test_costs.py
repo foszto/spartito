@@ -1,6 +1,6 @@
 """Cost reports and budgets (core/costs.py): the report from the recorded usage and what
 deleted agents had spent, local-time days, Codex turns without a cost, budgets with their
-warnings, the opt-in hard stop, older databases, backups.
+warnings, the opt-in hard stop, the dashboard's endpoint and view, older databases, backups.
 Every test works in conftest's temporary home, with invented data."""
 
 from __future__ import annotations
@@ -14,6 +14,8 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+from starlette.testclient import TestClient
+from test_code_view import FAKE_DOM, page_functions, run_node
 from test_store import OLD_SCHEMA
 from typer.testing import CliRunner
 
@@ -23,6 +25,7 @@ from orchestrator.errors import OrchestratorError
 from orchestrator.models import Agent, Project, RunStatus, Usage
 from orchestrator.service import Orchestrator
 from orchestrator.store import Store
+from orchestrator.web.app import app
 
 ZONE = "Europe/Berlin"  # UTC+1 in November: local midnight is 23:00 UTC the day before
 
@@ -505,6 +508,135 @@ def test_backup_and_restore_carry_the_budgets(o: Orchestrator) -> None:
     (budget,) = o.budget_list()
     assert (budget["project"], budget["amount_usd"], budget["period"]) == ("my-app", 5.0, "day")
     assert budget["warn_at"] == 60 and budget["hard_stop"] is True
+
+
+# -- the dashboard -----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def client(o: Orchestrator) -> TestClient:
+    return TestClient(app, base_url="http://localhost")
+
+
+def test_the_endpoint_serves_the_report_and_the_budgets(
+    client: TestClient, o: Orchestrator, zone: None
+) -> None:
+    seed(o)
+    o.set_budget(10.0, period="total")
+
+    data = client.get("/api/cost?by=day&since=2026-11-12&project=my-app").json()
+
+    assert data["report"]["by"] == "day" and data["report"]["project"] == "my-app"
+    assert [row["label"] for row in data["report"]["rows"]] == ["2026-11-12"]
+    assert data["budgets"][0]["spent_usd"] == pytest.approx(3.75)
+    assert client.get("/api/cost").json()["report"]["by"] == "project"
+    bad = client.get("/api/cost?by=week")
+    assert bad.status_code == 400 and "unknown grouping" in bad.json()["error"]
+    state = client.get("/api/state").json()
+    assert "budgets" not in state and "report" not in state  # loaded only by the cost view
+
+
+def test_the_endpoint_is_get_only_behind_the_hosts_and_origins_guards(client: TestClient) -> None:
+    assert client.get("/api/cost", headers={"host": "evil.example"}).status_code == 403
+    foreign = client.post("/api/cost", json={}, headers={"origin": "http://evil.example"})
+    assert foreign.status_code == 403
+    own = client.post("/api/cost", json={}, headers={"origin": "http://localhost"})
+    assert own.status_code == 405
+    for method in ("put", "delete", "patch"):
+        answer = getattr(client, method)("/api/cost", headers={"origin": "http://localhost"})
+        assert answer.status_code in (405, 415), method
+
+
+def test_the_page_builds_the_cost_url_and_texts() -> None:
+    source = "const CLI = 'spartito';\n" + page_functions(
+        "plural", "COST_PERIODS", "costUrl", "moneyText", "costCell", "costNotes", "budgetText"
+    )
+    cases = {
+        "plain": "costUrl({by: 'project', since: '', project: ''})",
+        "full": "costUrl({by: 'day', since: '2026-11-12', project: 'my app&x'})",
+        "money": "[moneyText(1.234), moneyText(0), moneyText(null), moneyText(undefined)]",
+        "cells": "[costCell({cost_usd: 2, unpriced: 1}), costCell({cost_usd: null, unpriced: 2}),"
+        " costCell({cost_usd: 2, unpriced: 0})]",
+        "notes": "costNotes({unpriced: 1, removed_left_out: true, rows: [{removed: true}]})",
+        "budget": "budgetText({project: null, spent_usd: 8.5, amount_usd: 10, period: 'month',"
+        " percent: 85, warn_at: 80, hard_stop: true})",
+    }
+    code = source + "\nprocess.stdout.write(JSON.stringify({"
+    code += ", ".join(f"{key}: {expr}" for key, expr in cases.items()) + "}));"
+
+    result = run_node(code)
+
+    assert result["plain"] == "/api/cost?by=project"
+    assert result["full"] == "/api/cost?by=day&since=2026-11-12&project=my+app%26x"
+    assert result["money"] == ["$1.23", "$0.00", "n/a", "n/a"]
+    assert result["cells"] == ["$2.00*", "n/a", "$2.00"]
+    assert result["notes"][1].startswith("* 1 turn reported no cost (Codex reports none)")
+    assert len(result["notes"]) == 4
+    assert result["budget"] == (
+        "Global: $8.50 of $10.00 this month (85 %) · warns at 80 % · hard stop on"
+    )
+
+
+def test_the_page_renders_the_report_and_budgets_as_text_never_as_markup() -> None:
+    source = (
+        "const CLI = 'spartito';\n"
+        + FAKE_DOM
+        + page_functions(
+            "el",
+            "count",
+            "COST_PERIODS",
+            "BUDGET_STATES",
+            "moneyText",
+            "costCell",
+            "costTable",
+            "budgetText",
+            "budgetList",
+        )
+    )
+    tokens = "{in: 1000, out: 20, cache_read: 500, cache_write: 0}"
+    row = (
+        "{label: '<img src=x onerror=alert(1)>', removed: false, turns: 2, unpriced: 1,"
+        f" tokens: {tokens}, cost_usd: 1.5}}"
+    )
+    removed = f"{{label: 'my-app: removed agents', removed: true, turns: null, unpriced: 0, tokens: {tokens}, cost_usd: null}}"  # fmt: skip
+    report = f"{{by: 'agent', rows: [{row}, {removed}], total: {row}}}"
+    budget = (
+        "{project: '<b>my-app</b>', spent_usd: 1, amount_usd: 1, period: 'day', percent: 100,"
+        " warn_at: 80, hard_stop: false, state: '<i>odd</i>'}"
+    )
+    code = source + (
+        f"\nprocess.stdout.write(JSON.stringify({{table: dump(costTable({report})),"
+        f" budgets: dump(budgetList([{budget}])), none: dump(budgetList([]))}}));"
+    )
+
+    result = run_node(code)
+
+    def texts(node: dict) -> list[str]:
+        return [node["text"], *(t for child in node["children"] for t in texts(child))]
+
+    table = result["table"]
+    rows = table["children"]
+    assert [cell["text"] for cell in rows[0]["children"]] == [
+        "Agent",
+        "Turns",
+        "Prompt",
+        "Output",
+        "Cost",
+    ]
+    assert [cell["text"] for cell in rows[1]["children"]] == [
+        "<img src=x onerror=alert(1)>",
+        "2",
+        "1.5k",
+        "20",
+        "$1.50*",
+    ]
+    assert rows[2]["cls"] == "removed" and rows[2]["children"][1]["text"] == "–"
+    assert rows[2]["children"][4]["text"] == "n/a"
+    assert rows[3]["cls"] == "total" and rows[3]["children"][0]["text"] == "Total"
+    pill = result["budgets"]["children"][0]["children"][0]
+    assert pill["cls"] == "pill budget-ok" and pill["text"] == "<i>odd</i>"
+    assert any("<b>my-app</b>: $1.00 of $1.00 today (100 %)" in t for t in texts(result["budgets"]))
+    assert "`spartito budget set AMOUNT [-p PROJECT]`" in texts(result["none"])[1]
 
 
 def test_utc_start_and_local_day_agree_on_the_boundary(zone: None) -> None:
