@@ -10,6 +10,7 @@ from typing import Any
 from . import app_open, board, decisions, desktop, git, providers
 from .core import (
     access,
+    availability,
     boards,
     compaction,
     costs,
@@ -288,6 +289,10 @@ class Orchestrator:
 
     board_sync = boards.board_sync  # the throttled git pass; a merged item moves to done
     board_live = boards.board_live  # the items' agent and branch state, from the database
+
+    # -- the supported harnesses and their availability (core/availability.py)
+
+    provider_list = availability.provider_list
 
     # -- settings (core/setup.py) ----------------------------------------
 

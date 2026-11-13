@@ -84,7 +84,22 @@ class Provider(Protocol):
         """Interactive command a person can run to take over the agent's conversation."""
         ...
 
-    # Optional, looked up with getattr:
+    # Optional self-description, looked up with getattr (a plugin may leave all of it out):
+    #   label: str                      the name people read ("Claude Code"); default: name
+    #   description: str                one line on what it is and how it is run; default ""
+    #   executable: str | None          the CLI's command name, checked by the `providers` command;
+    #                                   None (default): not checked, its status is unknown
+    #   version_args: tuple[str, ...]   what the check runs; default ("--version",)
+    #   login_args: tuple[str, ...] | None
+    #                                   a command that exits non-zero when not logged in; it
+    #                                   must be offline and never prompt. None (default): the
+    #                                   login is not checked
+    #   reports_cost: bool | None       whether its turns report a cost; None: not said
+    #   role_prompt: str | None         "every_turn" or "first_turn": when it gets the role
+    #                                   prompt; None: not said
+    #   limits: tuple[str, ...]         what it does not support, one phrase each
+    #
+    # Optional behaviour, looked up with getattr:
     #   compact_prompt(instructions: str | None) -> str
     #       The prompt of a turn that compacts the conversation (Orchestrator.compact); the
     #       runner passes it as is. Raises ValueError for instructions it cannot take.

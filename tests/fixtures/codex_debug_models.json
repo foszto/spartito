@@ -1,0 +1,5 @@
+{"models": [
+  {"slug": "gpt-test-codex", "visibility": "list"},
+  {"slug": "gpt-test-mini", "visibility": "list"},
+  {"slug": "gpt-test-hidden", "visibility": "hide"}
+]}

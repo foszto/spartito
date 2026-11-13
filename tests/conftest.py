@@ -20,8 +20,8 @@ from home_guard import (  # noqa: F401  (no test reaches a real home: its hooks 
 )
 
 from orchestrator import providers
-from orchestrator.core import views
-from orchestrator.providers import claude
+from orchestrator.core import availability, views
+from orchestrator.providers import claude, codex, locate
 from orchestrator.service import Orchestrator
 
 
@@ -349,6 +349,37 @@ def recorded_claude_models(monkeypatch: pytest.MonkeyPatch) -> None:
     """The Claude model list comes from a recorded answer, not the installed CLI."""
     monkeypatch.setattr(claude, "request_model_list", CLAUDE_INITIALIZE.read_text)
     monkeypatch.setitem(providers.PROVIDERS, "claude", claude.ClaudeProvider())
+
+
+CODEX_MODELS = Path(__file__).parent / "fixtures" / "codex_debug_models.json"
+FAKED_PROBE = "faked in tests"
+REAL_PROBE = availability.probe
+
+
+def faked_probe(provider) -> locate.Probe:
+    """claude and codex as available without running them; any other provider (fake, a
+    plugin) through the real check, which finds nothing to run for one without an executable."""
+    if getattr(provider, "executable", None) in ("claude", "codex"):
+        return locate.Probe(locate.AVAILABLE, "test", None, FAKED_PROBE)
+    return REAL_PROBE(provider)
+
+
+@pytest.fixture(autouse=True)
+def no_real_provider_clis(monkeypatch: pytest.MonkeyPatch):
+    """No test runs a real `claude` or `codex`: the availability check reports both as
+    available (version "test"), Codex's model list is a recorded one (Claude's:
+    recorded_claude_models), no usual install directory is searched, and no check of an
+    earlier test is kept. Tests of the real check call locate.probe with a PATH of fakes."""
+    monkeypatch.setattr(locate, "EXTRA_DIRS", ())
+    monkeypatch.setattr(availability, "probe", faked_probe)
+    monkeypatch.setattr(codex, "request_model_list", CODEX_MODELS.read_text)
+    monkeypatch.setitem(providers.PROVIDERS, "codex", codex.CodexProvider())
+    availability.reset()
+    yield
+    # A background check still running must end before the fakes above are undone.
+    availability.reset()
+    if availability._refresher is not None:
+        availability._refresher.join(timeout=30)
 
 
 @pytest.fixture

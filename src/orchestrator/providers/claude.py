@@ -18,6 +18,7 @@ from pathlib import Path
 from .. import memory_guard
 from ..loadout import Loadout
 from ..models import Agent, Event, Usage
+from . import locate
 from .base import NOTIFICATION_RESULT, Invocation, RunContext, brief
 
 # Set by a parent Claude Code session; a child must not believe it is that session.
@@ -67,6 +68,7 @@ def request_model_list() -> str:
     argv += ["--verbose", "--strict-mcp-config", "--setting-sources", "project,local"]
     argv += ["--no-session-persistence"]
     env = {k: v for k, v in os.environ.items() if k not in PARENT_SESSION_ENV}
+    env["PATH"] = locate.search_path(env.get("PATH"))
     with tempfile.TemporaryDirectory(prefix="orch-models-") as cwd:
         proc = subprocess.Popen(
             argv,
@@ -231,6 +233,14 @@ def loadout_flags(loadout: Loadout, canary: Path | None = None) -> list[str]:
 class ClaudeProvider:
     name = "claude"
     efforts = ("low", "medium", "high", "xhigh", "max")
+    label = "Claude Code"
+    description = "Anthropic's coding agent CLI, run as claude -p --output-format stream-json"
+    executable = "claude"
+    version_args = ("--version",)
+    login_args = None  # not checked: no check known to be offline and free of prompts
+    reports_cost = True
+    role_prompt = "every_turn"
+    limits: tuple[str, ...] = ()
 
     models_note: str | None = None  # set when the list is the fallback or looks generic
     _models: list[tuple[str, str]] | list[str] | None = None

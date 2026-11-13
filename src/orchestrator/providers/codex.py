@@ -6,14 +6,16 @@ Options go through `-c key=value` overrides rather than flags because
 
 from __future__ import annotations
 
-import functools
 import json
 import os
 import subprocess
+import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
 from ..models import Agent, Event, Usage
+from . import locate
 from .base import Invocation, RunContext, brief
 
 DEFAULT_SANDBOX = "workspace-write"
@@ -24,6 +26,24 @@ COMPACT_PROMPT = (
     "[orch] This turn only compacts the conversation; there is nothing to do."
     " Reply with the single word: compacted"
 )
+MODEL_LIST_TIMEOUT = 15
+# An empty model list (the CLI missing or failing) is asked for again after this long.
+MODEL_LIST_RETRY_SECONDS = 600
+
+
+def request_model_list() -> str:
+    """The output of `codex debug models`: the models the installed Codex offers for this
+    account, as JSON. Raises OSError or subprocess.SubprocessError."""
+    env = {**os.environ, "PATH": locate.search_path()}
+    proc = subprocess.run(
+        ["codex", "debug", "models"],
+        capture_output=True,
+        text=True,
+        timeout=MODEL_LIST_TIMEOUT,
+        env=env,
+        stdin=subprocess.DEVNULL,
+    )
+    return proc.stdout
 
 
 def _toml(value: object) -> str:
@@ -33,23 +53,57 @@ def _toml(value: object) -> str:
     return json.dumps(value)
 
 
+def parse_model_list(output: str) -> list[str]:
+    """The listed model slugs of `codex debug models`; [] for anything unexpected."""
+    try:
+        catalog = json.loads(output)
+    except json.JSONDecodeError:
+        return []
+    entries = catalog.get("models", []) if isinstance(catalog, dict) else catalog
+    if not isinstance(entries, list):
+        return []
+    return [
+        m["slug"]
+        for m in entries
+        if isinstance(m, dict) and m.get("slug") and m.get("visibility") == "list"
+    ]
+
+
 class CodexProvider:
     name = "codex"
     efforts = ("low", "medium", "high", "xhigh")
     compact_needs_size = True  # compaction lowers model_auto_compact_token_limit below it
+    label = "Codex"
+    description = "OpenAI's coding agent CLI, run as codex exec --json"
+    executable = "codex"
+    version_args = ("--version",)
+    login_args = None  # not checked: no check known to be offline and free of prompts
+    reports_cost = False
+    role_prompt = "first_turn"
+    limits = (
+        "reports no cost: budgets do not count its turns",
+        "gets its role prompt and attribution only in the first turn",
+        "compacts without instructions, once its context size is known",
+        "of the loadout only `codex_user_config` applies: `tools` and `memory` do not restrict it",
+    )
 
-    @functools.cache  # noqa: B019 - one provider instance per process
+    def __init__(self) -> None:
+        self._models: list[str] | None = None
+        self._models_at = 0.0  # time.monotonic() of the lookup
+        self._models_lock = threading.Lock()
+
     def models(self) -> list[str]:
-        """The models the installed Codex offers for this account."""
-        try:
-            proc = subprocess.run(
-                ["codex", "debug", "models"], capture_output=True, text=True, timeout=15
-            )
-            catalog = json.loads(proc.stdout)
-        except OSError, subprocess.SubprocessError, json.JSONDecodeError:
-            return []
-        entries = catalog.get("models", []) if isinstance(catalog, dict) else catalog
-        return [m["slug"] for m in entries if m.get("slug") and m.get("visibility") == "list"]
+        """The models the installed Codex offers for this account. Asked once per process;
+        an empty answer is asked for again once it is MODEL_LIST_RETRY_SECONDS old."""
+        with self._models_lock:
+            age = time.monotonic() - self._models_at
+            if self._models is None or (not self._models and age >= MODEL_LIST_RETRY_SECONDS):
+                self._models_at = time.monotonic()
+                try:
+                    self._models = parse_model_list(request_model_list())
+                except OSError, subprocess.SubprocessError:
+                    self._models = []
+            return self._models
 
     def invocation(self, ctx: RunContext) -> Invocation:
         agent = ctx.agent

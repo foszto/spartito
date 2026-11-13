@@ -1552,6 +1552,34 @@ def attach(agent_id: str) -> None:
     os.execvp(argv[0], argv)
 
 
+@app.command("providers")
+def list_providers(
+    as_json: Annotated[
+        bool, typer.Option("--json", help="As JSON, with models and limits.")
+    ] = False,
+) -> None:
+    """Check which coding-agent CLIs (providers) this machine can run, now.
+
+    Each one is looked for on PATH and in the usual install locations, and asked its
+    version (with `--json` also its models, as the dashboard lists them): no agent turn is
+    run and no login is checked. `*` marks the provider a new project gets: the first
+    available one. A background service or launcher keeps the PATH of its install: after
+    installing a CLI, `{cli} service install` or `{cli} app install` again."""
+    found = orch().provider_list(refresh=True, models=as_json)
+    if as_json:
+        typer.echo(json.dumps(found, indent=2))
+        return
+    width = max(len(entry["name"]) for entry in [*found, {"name": "NAME"}]) + 2
+    typer.echo(f"  {'NAME':<{width}}{'STATUS':<15}{'VERSION':<12}REASON")
+    for entry in found:
+        mark = "* " if entry["default"] else "  "
+        line = (
+            f"{mark}{entry['name']:<{width}}{entry['status']:<15}"
+            f"{entry['version'] or '-':<12}{entry['reason']}"
+        )
+        typer.secho(line, fg=None if entry["usable"] else typer.colors.YELLOW)
+
+
 @app.command("roles")
 def list_roles() -> None:
     """List available roles."""

@@ -9,10 +9,9 @@ from .base import Invocation, McpServer, Provider, RunContext
 from .claude import ClaudeProvider
 from .codex import CodexProvider
 
-PROVIDERS: dict[str, Provider] = {
-    ClaudeProvider.name: ClaudeProvider(),
-    CodexProvider.name: CodexProvider(),
-}
+# The supported harnesses, in the order "the first available one" goes by.
+BUILTIN = (ClaudeProvider, CodexProvider)
+PROVIDERS: dict[str, Provider] = {cls.name: cls() for cls in BUILTIN}
 
 
 def _load_plugins() -> None:
@@ -33,4 +32,4 @@ def get(name: str) -> Provider:
         raise KeyError(f"unknown provider '{name}' (available: {', '.join(PROVIDERS)})") from None
 
 
-__all__ = ["PROVIDERS", "Invocation", "McpServer", "Provider", "RunContext", "get"]
+__all__ = ["BUILTIN", "PROVIDERS", "Invocation", "McpServer", "Provider", "RunContext", "get"]

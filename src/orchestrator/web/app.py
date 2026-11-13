@@ -8,7 +8,9 @@ form cannot send).
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+from collections.abc import AsyncIterator
 from dataclasses import asdict
 from html import escape
 from importlib import resources
@@ -25,8 +27,7 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from .. import __version__, config, providers, roles
-from ..providers.base import model_choices
+from .. import __version__, config, roles
 from ..service import ORCHESTRATOR_ID, NeedsConfirmation, Orchestrator, OrchestratorError
 from ..settings import ARCHIVE_AFTER, ARCHIVE_AFTER_DEFAULT, COMPACT_AT, COMPACT_AT_DEFAULT, TIERS
 from . import board_api, code_api
@@ -151,10 +152,9 @@ def state(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
             {**asdict(project), "agents": [a for a in agents if a["project"] == project.name]}
             for project in orch.projects()
         ],
-        "providers": [
-            {"name": name, **model_choices(provider), "efforts": list(provider.efforts)}
-            for name, provider in providers.PROVIDERS.items()
-        ],
+        # The supported harnesses and which can run here; never waits for a CLI: what is
+        # not checked yet is `unknown` with its models loading, and a later poll has it.
+        "providers": orch.provider_list(wait=False),
         "tiers": list(TIERS),
         # Ids only: the archive view loads the agents themselves (/api/archive).
         "archived": orch.archived_ids(),
@@ -179,6 +179,13 @@ def state(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
         # {id, target} while the request is fresh, else null.
         "app_open": orch.app_open_request(),
     }
+
+
+def list_providers(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """The supported harnesses with their availability, checked now when `?refresh=1` (or
+    when the last check is old); waits for the check."""
+    refresh = request.query_params.get("refresh") in ("1", "true")
+    return {"providers": orch.provider_list(refresh=refresh)}
 
 
 def events(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
@@ -465,12 +472,22 @@ def dispatch_board(orch: Orchestrator, request: Request, body: dict) -> dict[str
     return orch.dispatch_board(required(body, "project"), body.get("ids"))
 
 
+@contextlib.asynccontextmanager
+async def lifespan(app: Starlette) -> AsyncIterator[None]:
+    """Start checking the providers at once, in the background: the first page load then
+    finds them checked, and the server's start does not wait for any CLI."""
+    Orchestrator().provider_list(wait=False)
+    yield
+
+
 app = Starlette(
+    lifespan=lifespan,
     routes=[
         Route("/", index),
         Route("/manifest.webmanifest", manifest),
         Route("/api/ping", ping),
         Route("/api/state", api(state)),
+        Route("/api/providers", api(list_providers)),
         Route("/api/browse", api(browse)),
         Mount("/static", NoCacheStatic(directory=Path(__file__).parent / "static")),
         Route("/api/agents/{agent_id}/events", api(events)),
