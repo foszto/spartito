@@ -30,6 +30,7 @@ EXTRA_DIRS: tuple[str, ...] = (
     "~/.bun/bin",
 )
 PROBE_SECONDS = 5.0
+PIPES_SECONDS = 1.0  # after a timeout's kill: how long the output may still take to close
 SHEBANG_BYTES = 256
 VERSION = re.compile(r"\d+(?:\.\d+)+")
 
@@ -122,7 +123,8 @@ def not_found(executable: str) -> str:
 
 def _run(argv: list[str], timeout: float) -> tuple[int, str, str]:
     """Exit code, stdout and stderr of `argv` (no shell, no input), with PATH searched; the
-    whole process group is killed on a timeout (subprocess.TimeoutExpired)."""
+    whole process group is killed on a timeout (subprocess.TimeoutExpired). A child that left
+    the group may keep the output open: it is waited for PIPES_SECONDS at most."""
     env = {**os.environ, "PATH": search_path()}
     proc = subprocess.Popen(
         argv,
@@ -140,7 +142,13 @@ def _run(argv: list[str], timeout: float) -> tuple[int, str, str]:
         # macOS answers EPERM for a group that has just exited but is not reaped yet.
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(proc.pid, signal.SIGKILL)
-        proc.communicate()
+        try:
+            proc.communicate(timeout=PIPES_SECONDS)
+        except subprocess.TimeoutExpired:  # held open by a child outside the group
+            for pipe in (proc.stdout, proc.stderr):
+                if pipe is not None:
+                    pipe.close()
+            proc.wait()  # the CLI itself was killed with its group
         raise
     return proc.returncode, out, err
 

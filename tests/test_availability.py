@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -177,6 +178,30 @@ def test_a_cli_that_does_not_answer_is_unknown(bare_path: Path) -> None:
 
     assert time.monotonic() - started < 5
     assert found.status == "unknown" and found.version is None
+    assert found.reason == "`codex --version` did not answer within 0.5 s"
+
+
+def test_a_helper_that_leaves_the_group_does_not_hold_the_probe(
+    bare_path: Path, tmp_path: Path
+) -> None:
+    """The CLI starts a helper in a session of its own that keeps its output open: the
+    group's kill does not reach it, and the probe stops waiting for the output."""
+    pid_file = tmp_path / "helper.pid"
+    python = f'"{sys.executable}" -c'
+    helper = "import os, sys, time; os.setsid(); open(sys.argv[1], 'w').write(str(os.getpid()))"
+    body = f'{python} "{helper}; time.sleep(20)" "{pid_file}" &\n'
+    script(bare_path, "codex", body + f'exec {python} "import time; time.sleep(20)"')
+
+    started = time.monotonic()
+    try:
+        found = locate.probe("codex", timeout=0.5)
+        elapsed = time.monotonic() - started
+    finally:
+        helper_pid = int(until(lambda: pid_file.exists() and pid_file.read_text()))
+        os.kill(helper_pid, signal.SIGKILL)
+
+    assert elapsed < 0.5 + locate.PIPES_SECONDS + 2
+    assert found.status == "unknown"
     assert found.reason == "`codex --version` did not answer within 0.5 s"
 
 
