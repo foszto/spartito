@@ -853,3 +853,65 @@ out({ same, focused: focusedOn !== radio && focusedOn.value === 'codex' && focus
 """
     )
     assert result == {"same": True, "focused": True}
+
+
+def test_a_focused_provider_choice_moves_back_after_a_move() -> None:
+    """The choice compares with the provider the agent is on now, not the one it was built
+    with: a focused control is not rebuilt after a move."""
+    result = run_page(
+        AGENT
+        + MOVED
+        + """
+renderSetup({ ...agentSetup('claude'), session: false });
+const control = $('setup').querySelector('[data-setup=provider]');
+document.activeElement = control;
+control.value = 'codex';
+replies.push(movedTo('codex'));
+control.onchange();
+await settle();
+const first = { same: $('setup').querySelector('[data-setup=provider]') === control, provider: setupData.provider };
+control.value = 'claude';
+replies.push(movedTo('claude'));
+control.onchange();
+await settle();
+out({ first, posted: posted.map(p => p.body), same: $('setup').querySelector('[data-setup=provider]') === control,
+  value: control.value, provider: setupData.provider });
+"""
+    )
+    assert result == {
+        "first": {"same": True, "provider": "codex"},
+        "posted": [{"provider": "codex"}, {"provider": "claude"}],
+        "same": True,
+        "value": "claude",
+        "provider": "claude",
+    }
+
+
+def test_a_recheck_with_the_same_result_leaves_an_open_dialog_alone() -> None:
+    result = run_page(
+        PICK
+        + """
+const at = when => state.providers.map(p => ({ ...p, checked_at: when, version: '1.0.0', path: '/opt/cli' }));
+state.providers = at('2026-11-13T10:00:00+00:00');
+providersChanged();
+openAgentDialog({ name: 'docs-site', default_provider: 'codex', agents: [] });
+const group = agentDialog.querySelector('[data-segment=provider]'), effort = agentDialog.querySelector('[name=effort]');
+const nodes = () => [group.children[1].children[0], effort.options[0], $('agentModels')];
+const radio = group.children[1].children[0], before = nodes(), models = $('agentModels').children.slice();
+document.activeElement = radio;
+// The re-check five minutes later: only checked_at differs.
+state.providers = at('2026-11-13T10:05:00+00:00');
+providersChanged();
+const recheck = { same: nodes().every((node, i) => node === before[i]), datalist: $('agentModels').children.every((o, i) => o === models[i]),
+  focus: document.activeElement === radio && group.contains(radio) };
+// Codex turns out to be missing: redrawn.
+state.providers = [CLAUDE, MISSING];
+providersChanged();
+out({ recheck, redrawn: group.children[1].children[0] !== radio, chosen: checkedIn(group) });
+"""
+    )
+    assert result == {
+        "recheck": {"same": True, "datalist": True, "focus": True},
+        "redrawn": True,
+        "chosen": ["claude"],
+    }

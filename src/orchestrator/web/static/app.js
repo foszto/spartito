@@ -846,7 +846,8 @@ function buildProviderControl(data, described) {
     const id = data.id, slot = setupSlot(id, 'provider'), value = select.value;
     clearTimeout(pendingSetup.get(slot)?.timer);
     pendingSetup.delete(slot);
-    if (value === data.provider) return;
+    // the provider it is on now: a focused control is not rebuilt after a move
+    if (value === (setupData?.id === id ? setupData.provider : data.provider)) return;
     const timer = setTimeout(() => { pendingSetup.delete(slot); moveAgent(id, value); }, SETUP_SETTLE_MS);
     pendingSetup.set(slot, { timer, save: () => pendingSetup.delete(slot) });
   };
@@ -1849,7 +1850,9 @@ function providerChoices(container, name, value, onchange) {
 const providerViews = new Map();
 let providersSeen = '';
 function providersChanged() {
-  const key = JSON.stringify(state.providers);
+  // only what the dialogs show: a re-check with the same result (a new checked_at) redraws nothing
+  const key = JSON.stringify(state.providers.map(p => [p.name, p.label, p.usable, p.status, p.reason, p.models,
+    p.models_note, p.efforts]));
   if (key === providersSeen) return;
   providersSeen = key;
   for (const [dialog, redraw] of providerViews) if (dialog.open) redraw();
