@@ -921,7 +921,8 @@ def test_the_page_draws_the_chart_as_text_never_as_markup() -> None:
     code = source + (
         f"\nprocess.stdout.write(JSON.stringify({{cost: dump(costChart({report}, 'cost')),"
         f" tokens: dump(costChart({report}, 'tokens')),"
-        " none: dump(costChart({days: [], series: {}}, 'cost'))}));"
+        " none: dump(costChart({days: [], series: {}}, 'cost')),"
+        " unused: dump(costChart({days: ['2025-01-01', '2025-01-02'], series: {}}, 'cost'))}));"
     )
 
     result = run_node(code)
@@ -935,6 +936,8 @@ def test_the_page_draws_the_chart_as_text_never_as_markup() -> None:
     assert any(
         t.startswith("2026-11-12: 1 turn reported no cost (Codex reports none)") for t in texts
     )
+    assert "2026-11-12: $1.50*" in texts  # the day's total: marked as partly unpriced
+    assert "2026-11-13: nothing recorded" in texts
     assert "<b>my-app</b>" in texts and "turns without a reported cost" in texts  # the legend
     assert [n["tag"] for n in nodes].count("circle") == 1
     bars = [n for n in nodes if n["tag"] == "rect" and n["children"][0]["text"].count("·") == 3]
@@ -946,6 +949,8 @@ def test_the_page_draws_the_chart_as_text_never_as_markup() -> None:
         sum(1 for n in tokens_nodes if n["tag"] == "rect" and "·" in n["children"][0]["text"]) == 2
     )
     assert result["none"]["children"][0]["text"] == "No dated spend in this range."
+    unused = result["unused"]["children"]  # days, but no usage: the note, never an empty axis
+    assert [(n["tag"], n["text"]) for n in unused] == [("div", "No dated spend in this range.")]
 
 
 def test_utc_start_and_local_day_agree_on_the_boundary(zone: None) -> None:

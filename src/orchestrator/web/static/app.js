@@ -1243,7 +1243,9 @@ function svgNode(tag, attrs, text) {
 function costChart(report, measure) {
   const box = el('div', 'cost-chart');
   const data = costChartData(report, measure);
-  if (!data.days.length) { box.append(el('div', 'empty-note', 'No dated spend in this range.')); return box; }
+  // nothing to draw: no day of the range has dated usage (priced, or turns without a cost)
+  const used = day => day.value > 0 || (measure !== 'tokens' && day.unpriced > 0);
+  if (!data.days.some(used)) { box.append(el('div', 'empty-note', 'No dated spend in this range.')); return box; }
   const width = 720, height = 200, left = 52, right = 8, top = 10, bottom = 22;
   const plotW = width - left - right, plotH = height - top - bottom, base = top + plotH;
   const max = data.max || (measure === 'tokens' ? 1000 : 1);
@@ -1260,7 +1262,8 @@ function costChart(report, measure) {
     const x = left + i * slot + (slot - barW) / 2;
     const hit = svgNode('rect', { x: left + i * slot, y: top, width: slot, height: plotH, class: 'cost-hit' });
     const priced = parts.some(part => part.cost !== null);
-    const sum = !parts.length ? 'nothing recorded' : measure === 'tokens' ? `${count(value)} tokens` : priced ? moneyText(value) : 'no reported cost';
+    const sum = !parts.length ? 'nothing recorded' : measure === 'tokens' ? `${count(value)} tokens`
+      : priced ? moneyText(value) + (unpriced ? '*' : '') : 'no reported cost';  // *: as in the table
     hit.append(svgNode('title', {}, `${day}: ${sum}`));
     svg.append(hit);
     let y = base;
@@ -1291,7 +1294,9 @@ function costChart(report, measure) {
     item.append(el('span', 'cost-swatch cost-unpriced'), 'turns without a reported cost');
     legend.append(item);
   }
-  box.append(svg, legend);
+  const plot = el('div', 'cost-plot');  // scrolls sideways when the page is narrower than the chart
+  plot.append(svg);
+  box.append(plot, legend);
   return box;
 }
 function costTable(report) {

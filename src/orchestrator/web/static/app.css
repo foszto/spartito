@@ -328,13 +328,20 @@ div.folder > button.folder:hover { background: none; }
 .avatar.cost svg { width: 16px; height: 16px; }
 .nav-item.cost-entry { margin-top: 4px; }
 .cost-tools { display: flex; gap: 6px 12px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+/* the toolbar takes a row of its own below the title and the description */
+.cost-view .top-bar { flex-wrap: wrap; row-gap: 8px; }
+.cost-view .top-bar .cost-tools { flex: 1 0 100%; justify-content: flex-start; }
+.cost-tools select.input.compact { max-width: 220px; }
 .cost-tools input.input.compact { width: auto; background: var(--sunken); color: var(--muted); }
 .cost-tools .btn { height: 26px; font-size: 12px; }
 .cost-chart { margin: 0 0 8px; }
-.cost-svg { display: block; width: 100%; height: auto; }
+.cost-plot { overflow-x: auto; }
+.cost-svg { display: block; width: 100%; min-width: 720px; height: auto; }
+/* not the icons' outline style (the global svg rule): bars, hover areas and labels unstroked */
+.cost-svg rect, .cost-svg text { stroke: none; }
 .cost-svg text { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
 .cost-svg .cost-grid { stroke: var(--line); stroke-width: 1; }
-.cost-svg .cost-hit { fill: transparent; }
+.cost-svg .cost-hit { fill: transparent; pointer-events: all; }
 .cost-svg .cost-hit:hover { fill: var(--sunken); }
 .cost-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); margin-top: 4px; }
 .cost-key { display: inline-flex; align-items: center; gap: 5px; overflow-wrap: anywhere; }
