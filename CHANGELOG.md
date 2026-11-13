@@ -39,9 +39,10 @@ chosen is in the
   then the spend over a range of local days: the last 7, 30 or 90 days with today, all time,
   or any from–to, the last 30 days by default. A chart stacks each day's spend by group (the
   top eight, the rest as one `other`) and shows cost or tokens; a day with turns that
-  reported no cost (Codex) gets a hollow mark and is never drawn as $0. A table gives each
-  group's totals over the range. It groups by project, model, role or agent, keeps one
-  project or all, and is read-only: budgets are set with `spartito budget set`.
+  reported no cost (Codex) gets a hollow mark and is never drawn as $0. A legend names the
+  groups and the mark. A table gives each group's totals over the range. It groups by
+  project, model, role or agent, keeps one project or all, and is read-only: budgets are set
+  with `spartito budget set`.
 - `GET /api/cost` gives the report (`by`, `since`, `until`, `project`), with every day of the
   range and the spend per day and group, and the budgets with their state.
 - `spartito --version` prints the version; the dashboard's settings show it too.
