@@ -73,6 +73,12 @@ to `spartito`? See
 
 Spartito keeps its state in `~/.orchestrator/`. Set `ORCH_HOME` to use another directory.
 
+**Upgrading.** `spartito version` shows the version and the kind of install,
+`spartito version --check` asks PyPI for a newer release (Spartito makes no network request on
+its own), and `spartito upgrade` prepares an upgrade: it backs the state up, prints the command
+for your install and what to restart afterwards. The steps:
+[docs/usage.md](https://github.com/foszto/spartito/blob/master/docs/usage.md#upgrading).
+
 ## Quick start
 
 Register a git repository as a project. Its currently checked-out branch becomes the

@@ -1727,6 +1727,16 @@ function renderSettings() {
   rows.append(box);
   rows.append(compactAtBox(scope, data));
   if (!scope) rows.append(...SWITCHES.map(switchBox));
+  if (!scope) rows.append(versionBox(state));
+}
+
+// The installed version (from /api/state); checking for a newer one is a command, never the page.
+function versionBox({ project_name: name, version }) {
+  const box = el('div', 'tier');
+  box.append(el('h4', '', 'Version'), el('p', 'about',
+    `${name || 'Spartito'} ${version || 'unknown'}. \`${CLI} version --check\` asks PyPI for a newer release; `
+    + `\`${CLI} upgrade\` prepares an upgrade. Nothing checks on its own.`));
+  return box;
 }
 
 function compactAtBox(scope, data) {
