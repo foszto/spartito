@@ -493,8 +493,8 @@ paths quoted for the shell:
 
 | install | upgrade |
 |---|---|
-| `uv tool install 'spartito[app,menubar]'` (a package from PyPI) | `uv tool upgrade spartito`: it keeps the extras and the Python of the install |
-| a package installed with pip or pipx | `<python> -m pip install --upgrade spartito`, with the Python of its environment and the extras you installed (`'spartito[app,menubar]'`) |
+| `uv tool install --python 3.14 'spartito[app,menubar]'` (a package from PyPI) | `uv tool upgrade spartito`: it keeps the extras and the Python of the install |
+| a package installed with pip | `<python> -m pip install --upgrade spartito`, with the extras you installed (`'spartito[app,menubar]'`) |
 | `uv tool install --editable '.[app,menubar]'` from a checkout | in the checkout: `git pull` (or update its branch as you do), then the same `uv tool install --editable` line with the extras the install has |
 | a checkout used with `uv run` (Spartito runs in the checkout's own `.venv`) | in the checkout: `git pull`, then `uv sync` with the extras you synced with ([CONTRIBUTING.md](../CONTRIBUTING.md#setup)) |
 | a checkout installed editable into another environment | in the checkout: `git pull`, then `<python> -m pip install -e .` with that environment's Python and the extras you installed (`uv pip install --python <python> -e .` where it has no pip) |

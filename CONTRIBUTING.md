@@ -150,8 +150,8 @@ contribution is licensed under the same terms. There is no contributor licence a
 
 Open an issue with:
 
-- the version and the kind of install (`spartito version`), and for a checkout the commit
-  you run (`git rev-parse --short HEAD`);
+- the version (`spartito --version`), and for a checkout the commit you run
+  (`git rev-parse --short HEAD`);
 - the platform and its version (macOS or the Linux distribution) and the Python version;
 - the provider CLI versions (`claude --version`, `codex --version`);
 - the steps that reproduce it, and what you expected instead;
