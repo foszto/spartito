@@ -24,7 +24,7 @@ runner passed it (prompt, system_prompt, slash_commands, output_schema, compact_
 `ctx.json` in the run's scratch directory.
 
 `ENVCHILD` has a child process (like a command the agent runs) write its environment to
-`.fake-env.json` in the working directory.
+`.fake-env.json` in the working directory, complete when it appears.
 
 `AWAKE` first waits (up to 10 s) until the fake sleep inhibitor of its runner (conftest.py)
 has logged its start, so the turn cannot end before the inhibitor is up: a new script may
@@ -141,7 +141,10 @@ if "STALE" in words:
     print(json.dumps({"result": "", "notification": True, **extra}), flush=True)
 print(json.dumps({"text": "working"}), flush=True)
 if "ENVCHILD" in words:  # a command of the turn, as an agent's shell runs one
-    dump = "import json, os; open('.fake-env.json', 'w').write(json.dumps(dict(os.environ)))"
+    dump = (  # complete when it appears: written aside, then renamed into place
+        "import json, os; open('.fake-env.json.tmp', 'w').write(json.dumps(dict(os.environ))); "
+        "os.replace('.fake-env.json.tmp', '.fake-env.json')"
+    )
     subprocess.run([sys.executable, "-c", dump], check=True)
 if "DIE" in words:
     note(subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3600)"]).pid)
