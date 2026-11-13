@@ -251,9 +251,9 @@ mismatch between the page and the server after an update.
 show the version; `spartito version --check` asks PyPI for a newer release, only when typed
 (there is no automatic check). `spartito upgrade` prepares an upgrade: it refuses while turns
 run, backs the state up, prints the command for the kind of install and lists what must be
-restarted ([upgrading](docs/usage.md#upgrading)). Spartito is installed from a checkout
-(version 0.1.0, no changelog). The package is prepared for PyPI as `spartito`, to be published
-from a version tag by GitHub Actions ([docs/releasing.md](docs/releasing.md)). Schema changes
+restarted ([upgrading](docs/usage.md#upgrading)). Spartito is published on PyPI as `spartito`
+from a version tag by GitHub Actions ([docs/releasing.md](docs/releasing.md)), without a
+changelog. Schema changes
 are additive and applied when the database opens. After an update, a running dashboard keeps
 its old code while the page is new, so it has to be restarted. The launcher's copy of Python is
 signed ad hoc only.

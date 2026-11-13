@@ -493,7 +493,7 @@ paths quoted for the shell:
 
 | install | upgrade |
 |---|---|
-| `uv tool install 'spartito[app,menubar]'` (a package from PyPI) | `uv tool upgrade spartito`: it keeps the extras and the Python of the install |
+| `uv tool install --python 3.14 'spartito[app,menubar]'` (a package from PyPI) | `uv tool upgrade spartito`: it keeps the extras and the Python of the install |
 | a package installed with pip | `<python> -m pip install --upgrade spartito`, with the extras you installed (`'spartito[app,menubar]'`) |
 | `uv tool install --editable '.[app,menubar]'` from a checkout | in the checkout: `git pull` (or update its branch as you do), then the same `uv tool install --editable` line with the extras the install has |
 | a checkout used with `uv run` (Spartito runs in the checkout's own `.venv`) | in the checkout: `git pull`, then `uv sync` with the extras you synced with ([CONTRIBUTING.md](../CONTRIBUTING.md#setup)) |
@@ -522,9 +522,10 @@ dashboard server started (only that one is recorded). Then check the version wit
 `spartito version`, and in the dashboard's settings once the page is reloaded.
 
 **Going back.** Install the previous version (for a package, for example
-`uv tool install 'spartito[app,menubar]==0.1.0'`; for a checkout, check out the earlier
-commit and install or sync as above), restart as above, and if the newer version changed the
-state in a way you want undone, restore the backup: `spartito state restore <name> --yes`.
+`uv tool install --python 3.14 'spartito[app,menubar]==0.1.0'`; for a checkout, check out the
+earlier commit and install or sync as above), restart as above, and if the newer version
+changed the state in a way you want undone, restore the backup:
+`spartito state restore <name> --yes`.
 Schema changes are additive, so an older version opens a database a newer one has used
 ([backups and versions](state.md#backups-and-versions)).
 
@@ -553,7 +554,7 @@ the service and the launcher on the old environment.
 ## Upgrading to the distribution name `spartito`
 
 The checkout used to install itself as the Python distribution `orchestrator`; it is now
-`spartito`, the name prepared for PyPI ([releasing.md](releasing.md)). The command, the import
+`spartito`, the name it has on PyPI ([releasing.md](releasing.md)). The command, the import
 package `orchestrator`, `-m orchestrator`, the home and every internal name stay. uv names a
 tool after its distribution, so `uv tool install --editable` now installs into a new tool
 directory, `<tool dir>/spartito` (`uv tool dir` shows the tool directory), next to the old
@@ -568,6 +569,7 @@ the version `0+unknown`. Then, from the checkout:
    `spartito chat` sessions, and quit `spartito app` and `spartito menubar`.
 2. `uv tool uninstall orchestrator`
 3. `uv tool install --editable '.[app,menubar]'`, with the extras you installed before.
+   To move to the package from PyPI instead: `uv tool install --python 3.14 'spartito[app,menubar]'`.
 4. `spartito service install`, with the `--host` and `--port` you used: it rewrites the unit
    with the new environment's Python and restarts the dashboard.
 5. `spartito app install`: a new copy of Python for the launcher, and its record.

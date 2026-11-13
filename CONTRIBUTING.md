@@ -124,6 +124,10 @@ agent `fix-login-3f2a`.
 
 ## Git and pull requests
 
+Every change reaches `master` through a pull request from a branch, the maintainers' own
+changes included. Its CI run must be green before it is merged. Nobody pushes to `master`
+directly, and the branch of a pull request is never force-pushed.
+
 - Branch from `master`; keep each pull request small and focused on one change.
 - The description says what changed, why, and how you tested it.
 - Commit subjects follow the history: a short lowercase area, a colon, then what is now true,
@@ -146,8 +150,8 @@ contribution is licensed under the same terms. There is no contributor licence a
 
 Open an issue with:
 
-- the commit you run (`git rev-parse --short HEAD` in your checkout) or the version in
-  `pyproject.toml`;
+- the version (`spartito --version`), and for a checkout the commit you run
+  (`git rev-parse --short HEAD`);
 - the platform and its version (macOS or the Linux distribution) and the Python version;
 - the provider CLI versions (`claude --version`, `codex --version`);
 - the steps that reproduce it, and what you expected instead;
