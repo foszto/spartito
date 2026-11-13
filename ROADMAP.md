@@ -281,11 +281,11 @@ private data.
 per board item.
 
 **Today.** Done in part. `spartito cost` and the dashboard's **Cost** view report the recorded
-spend per project, local day or agent, deleted agents' spend included. Budgets, global and
-per project, per day, month or all time, warn once at a threshold and once at the amount;
-an opt-in hard stop refuses new message turns once the amount is reached and never stops a
-running one ([budgets](docs/configuration.md#budgets)). Codex reports no cost, so its turns
-count no money. There are no budgets per agent and no cost per board item.
+spend per project, local day, agent, model or role, deleted agents' spend included. Budgets,
+global and per project, per day, month or all time, warn once at a threshold and once at the
+amount; an opt-in hard stop refuses new message turns once the amount is reached and never
+stops a running one ([budgets](docs/configuration.md#budgets)). Codex reports no cost, so its
+turns count no money. There are no budgets per agent and no cost per board item.
 
 **Open questions.** Budgets per agent, cost per board item, and how to budget a provider that
 reports no cost (by tokens?).
