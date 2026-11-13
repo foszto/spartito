@@ -1478,17 +1478,24 @@ class Store:
         " FROM run_usage u JOIN runs r ON r.id = u.run_id LEFT JOIN agents a ON a.id = r.agent_id"
     )
 
-    def usage_records(self, since: str | None = None, project: str | None = None) -> list[dict]:
-        """The usage records of the runs, oldest first: run_id, agent_id, project, the token
-        counts, cost_usd (NULL: none reported, e.g. Codex) and created_at. `since`: only those
-        written at or after this UTC time (as `now()` writes it); `project`: only that
-        project's agents (None: every agent, the orchestrator too). Runs recorded by code from
-        before usage records have none."""
+    def usage_records(
+        self, since: str | None = None, project: str | None = None, until: str | None = None
+    ) -> list[dict]:
+        """The usage records of the runs, oldest first: run_id, agent_id, project, role (the
+        agent's; NULL: not known), the token counts, cost_usd (NULL: none reported, e.g.
+        Codex), model (NULL: not reported) and created_at. `since`: only those written at or
+        after this UTC time (as `now()` writes it); `until`: only those written before it;
+        `project`: only that project's agents (None: every agent, the orchestrator too). Runs
+        recorded by code from before usage records have none."""
         where, args = self._record_filter(since, project)
-        columns = ", ".join(f"u.{key}" for key in (*TOKEN_FIELDS, "cost_usd", "created_at"))
+        if until is not None:
+            where += (" AND " if where else " WHERE ") + "u.created_at < ?"
+            args.append(until)
+        keys = (*TOKEN_FIELDS, "cost_usd", "model", "created_at")
+        columns = ", ".join(f"u.{key}" for key in keys)
         with self._read() as conn:
             rows = conn.execute(
-                f"SELECT u.run_id, r.agent_id, a.project, {columns}{self._RECORDS}{where}"
+                f"SELECT u.run_id, r.agent_id, a.project, a.role, {columns}{self._RECORDS}{where}"
                 " ORDER BY u.created_at, u.run_id",
                 args,
             ).fetchall()

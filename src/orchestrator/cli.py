@@ -1580,34 +1580,45 @@ def prompt_tokens(counts: dict) -> int:
 @app.command()
 def cost(
     by: Annotated[
-        str, typer.Option("--by", help="Group by project (default), day (local time) or agent.")
+        str,
+        typer.Option(
+            "--by", help="Group by project (default), day (local time), agent, model or role."
+        ),
     ] = "project",
     since: Annotated[
         str | None,
         typer.Option("--since", help="Only from this local day on (YYYY-MM-DD)."),
+    ] = None,
+    until: Annotated[
+        str | None,
+        typer.Option("--until", help="Only up to this local day, included (YYYY-MM-DD)."),
     ] = None,
     project: Annotated[
         str | None, typer.Option("--project", "-p", help="Only this project's agents.")
     ] = None,
     as_json: Annotated[bool, typer.Option("--json", help="As JSON.")] = False,
 ) -> None:
-    """Report the spend of the recorded runs per project, day or agent, with a total.
+    """Report the spend of the recorded runs per project, day, agent, model or role, with a
+    total.
 
     Recorded usage only: turns run by very old versions may have no record. Codex reports no
     cost: its turns and tokens are listed, its cost is `n/a`. What agents deleted for good had
-    spent is listed in rows of its own; it has no dates, so `--since` leaves it out. Budgets:
-    `{cli} budget`."""
+    spent is listed in rows of its own; it has no dates, so `--since` and `--until` leave it
+    out. Budgets: `{cli} budget`."""
     try:
-        data = orch().cost_report(by, since, project)
+        data = orch().cost_report(by, since, project, until)
     except OrchestratorError as exc:
         raise fail(exc) from None
     if as_json:
         typer.echo(json.dumps(data, indent=2))
         return
     scope = f" of {project}" if project else ""
-    when = f"since {data['since']}" if data["since"] else "all time"
+    if data["since"] or data["until"]:
+        when = f"from {data['since'] or 'the start'} to {data['until'] or 'today'}"
+    else:
+        when = "all time"
     typer.echo(f"recorded usage{scope} by {by}, {when}")
-    heading = {"project": "PROJECT", "day": "DAY", "agent": "AGENT"}[by]
+    heading = by.upper()
     labels = [row["label"] for row in data["rows"]] + ["TOTAL"]
     width = max(len(label) for label in [*labels, heading]) + 2
     typer.echo(f"{heading:<{width}}{'TURNS':>7}{'PROMPT':>10}{'OUTPUT':>10}{'COST':>12}")
@@ -1627,7 +1638,9 @@ def cost(
     if any(row["removed"] for row in data["rows"]):
         typer.echo("Removed agents: what agents deleted for good had spent; turns not kept.")
     if data["removed_left_out"]:
-        typer.echo("What removed agents had spent has no dates and is left out with --since.")
+        typer.echo(
+            "What removed agents had spent has no dates and is left out with --since or --until."
+        )
 
 
 budget_app = typer.Typer(

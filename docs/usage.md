@@ -37,7 +37,7 @@ lists as `#12`. *Project lead* or *lead* is the agent with role `lead` of a proj
 | `spartito archive`, `spartito restore`, `spartito rm` | archive, bring back, delete for good |
 | `spartito board …`, `spartito decisions`, `spartito decide` | task board and decisions |
 | `spartito config …` | settings |
-| `spartito cost` | spend of the recorded turns per project, day or agent |
+| `spartito cost` | spend of the recorded turns per project, day, agent, model or role |
 | `spartito budget …` | budgets: list, set, remove |
 | `spartito state backup/list/restore` | back up the state, list and restore backups |
 | `spartito --version`, `spartito version [--check]` | the version, the kind of install, a check for a newer release |
@@ -277,22 +277,25 @@ See [configuration.md](configuration.md).
 ### Cost and budgets
 
 ```sh
-spartito cost [--by project|day|agent] [--since YYYY-MM-DD] [-p PROJECT] [--json]
+spartito cost [--by project|day|agent|model|role] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [-p PROJECT] [--json]
 spartito budget [list]
 spartito budget set [AMOUNT] [-p PROJECT] [--period day|month|total] [--warn-at PERCENT] [--hard-stop|--no-hard-stop]
 spartito budget remove [-p PROJECT]
 ```
 
 - `cost` reports what the recorded turns spent, grouped by project (the default), by day
-  (local time) or by agent, with a total row: turns, prompt tokens (input with cache reads and
-  writes), output tokens and cost. `--since` starts at local midnight of that day; `-p` keeps
+  (local time), by agent, by model (as the turn's usage names it; `unknown` when it names
+  none) or by the agent's role, with a total row: turns, prompt tokens (input with cache reads
+  and writes), output tokens and cost. `--since` starts at local midnight of that day, `--until`
+  ends at the end of that local day (included; earlier than `--since` is an error); `-p` keeps
   one project. It is *recorded usage*: turns run by very old versions may have no record, so
   the total can be slightly below the dashboard's summary. Codex reports no cost: its turns
   and tokens are listed, a row none of whose turns reported a cost shows `n/a`, and a cost
   marked `*` leaves such turns out (a footnote counts them). What agents deleted for good had
   spent has rows of its own: one per project (`my-app: removed agents`), one per agent
-  (`fix-login-3f2a (removed)`), or one undated row by day, because the dates of its turns are
-  not kept; `--since` leaves it out.
+  (`fix-login-3f2a (removed)`), one undated row by day, one `removed agents (model not
+  recorded)` row by model or one `removed` row by role, because the dates, models and roles of
+  its turns are not kept; `--since` and `--until` leave it out.
 - `budget` (or `budget list`) lists the budgets: the global one and one per project, each
   with what is spent in its current period, the percentage of its amount, the threshold, the
   hard stop and the state (`ok`, `warning`, `reached`).
@@ -424,11 +427,18 @@ files in the tree, 2,000 lines or 1 MB of one patch, 512 KB of one file, and 4 M
 list git gives. Nothing is edited, and neither the repository's nor a submodule's own diff,
 textconv, filter or fsmonitor commands are run.
 
-**Cost** (the entry at the bottom of the left column): the report of `spartito cost` with the
-same three groupings (by project, by day in local time, by agent), a start day and a project,
-and above it each budget with what is spent in its current period, its amount, the percentage
-and its state (`ok`, `warning` or `reached`). Codex turns show their tokens and `n/a` for the
-cost, with the same footnotes as the command. It is read-only: budgets are set with
+**Cost** (the entry at the bottom of the left column): the report of `spartito cost`. Its
+toolbar chooses the grouping (project, model, role or agent), a range of local days (the last
+7, 30 or 90 days, today included, all time, or any from–to; the last 30 days by default), a
+project, and whether the chart shows cost or tokens. Each budget comes first, with what is
+spent in its current period, its amount, the percentage and its state (`ok`, `warning` or
+`reached`); budgets keep their own periods. Below them, a chart stacks the spend of every day
+of the range by group (the top eight, the rest as one `other`; hovering a bar names the day,
+the group, the cost and the tokens), and a table gives each group's totals over the range:
+turns, prompt tokens, output tokens and cost. Codex turns show their tokens and `n/a` for the
+cost, never `$0.00`: in the chart a day with such turns has a hollow mark. The footnotes are
+the command's. What removed agents had spent has no dates, so the chart never shows it, and
+the table shows it only for all time. It is read-only: budgets are set with
 `spartito budget set`. It loads when it is opened, when a choice changes and on **Refresh**,
 never with the page's regular refresh.
 
@@ -466,8 +476,9 @@ convenient from scripts:
 - `POST /api/agents/<id>/model` with `{"model": "...", "effort": null}`: `null` clears a value,
   a missing key leaves it unchanged.
 - `POST /api/agents/<id>/compact` with `{"instructions": "..."}`.
-- `GET /api/cost?by=project|day|agent&since=YYYY-MM-DD&project=<name>`: the cost report
-  and the budgets with their state, as the **Cost** view shows them.
+- `GET /api/cost?by=project|day|agent|model|role&since=YYYY-MM-DD&until=YYYY-MM-DD&project=<name>`:
+  the cost report (with `days`, every local day of the range, and `series`, the spend per day
+  and group) and the budgets with their state, as the **Cost** view shows them.
 - `GET /api/agents/<id>/code/changes`, `…/code/patch?path=<path>`, `…/code/tree` and
   `…/code/file?path=<path>`: the code view (`web/code_api.py`). Besides the Host check, these
   refuse a request whose `Origin` or `Sec-Fetch-Site` names another site, GET included.

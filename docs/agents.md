@@ -280,8 +280,8 @@ will use; the agent's own values appear in the detailed views as
 `model_override`/`effort_override`. The lists give per agent only `cost_usd` and a short
 `tokens` object (`in`, `out`, `cache_read`, `cache_write`).
 
-Spend over time (per project, day or agent) and budgets: `spartito cost`, `spartito budget`
-and the dashboard's **Cost** view ([usage.md](usage.md#cost-and-budgets),
+Spend over time (per project, day, agent, model or role) and budgets: `spartito cost`,
+`spartito budget` and the dashboard's **Cost** view ([usage.md](usage.md#cost-and-budgets),
 [configuration.md](configuration.md#budgets)).
 
 Per-turn files are in `~/.orchestrator/logs/run-<id>/`: the raw output stream, stderr,

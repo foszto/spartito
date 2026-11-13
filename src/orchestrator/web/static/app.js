@@ -1142,17 +1142,33 @@ async function renderArchive() {
 // -- cost --------------------------------------------------------------------
 // The spend of the recorded runs and the budgets (/api/cost): loaded when the view is opened,
 // when one of its choices changes and on Refresh; never with /api/state. Read-only: budgets
-// are set with the command (`budget set`). Every text goes in as textContent.
-const COST_GROUPS = [['project', 'By project'], ['day', 'By day (local time)'], ['agent', 'By agent']];
+// are set with the command (`budget set`). Every text goes in as textContent, the chart's too.
+// The page groups by project, model, role or agent (the chart stands for "by day") over a
+// range of local days, the last 30 by default; the chart stacks each day's spend by group.
+const COST_GROUPS = [['project', 'Project'], ['model', 'Model'], ['role', 'Role'], ['agent', 'Agent']];
+const COST_RANGES = [['7', 'Last 7 days'], ['30', 'Last 30 days'], ['90', 'Last 90 days'], ['all', 'All time'], ['custom', 'Custom']];
+const COST_MEASURES = [['cost', 'Cost'], ['tokens', 'Tokens']];
+const COST_SERIES_MAX = 8;  // the chart's groups; the rest are stacked as one 'other'
 const COST_PERIODS = { day: 'today', month: 'this month', total: 'in total' };
 const BUDGET_STATES = { ok: 'ok', warning: 'warning', reached: 'reached' };
-let costChoice = { by: 'project', since: '', project: '' }, costTicket = 0;
+let costChoice = { by: 'project', range: '30', since: '', until: '', project: '', measure: 'cost' };
+let costTicket = 0, costData = null;
 
 function costUrl(choice) {
   const query = new URLSearchParams({ by: choice.by });
   if (choice.since) query.set('since', choice.since);
+  if (choice.until) query.set('until', choice.until);
   if (choice.project) query.set('project', choice.project);
   return `/api/cost?${query}`;
+}
+function localDayText(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+// The from–to of a range preset: the last `preset` local days, today included; 'all': no bounds.
+function costRange(preset, today) {
+  if (!/^\d+$/.test(preset)) return { since: '', until: '' };
+  const from = new Date(today.getFullYear(), today.getMonth(), today.getDate() - Number(preset) + 1);
+  return { since: localDayText(from), until: localDayText(today) };
 }
 // A cost, or n/a when none was reported (Codex reports none): never $0.00 for that.
 function moneyText(value) {
@@ -1168,13 +1184,119 @@ function costNotes(report) {
     notes.push(`* ${plural(report.unpriced, 'turn')} reported no cost (Codex reports none): their tokens are counted, `
       + 'their cost is not in the figures; n/a: no turn of the row reported one.');
   }
-  if (report.rows.some(row => row.removed)) notes.push('Removed agents: what agents deleted for good had spent; their turns are not kept.');
-  if (report.removed_left_out) notes.push('What removed agents had spent has no dates: left out when a start day is set.');
+  if (report.rows.some(row => row.removed)) {
+    notes.push('Removed agents: what agents deleted for good had spent; their turns are not kept. It has no dates, so the chart leaves it out.');
+  }
+  if (report.removed_left_out) notes.push('What removed agents had spent has no dates: left out when a start or end day is set.');
   return notes;
+}
+function allTokens(counts) {
+  return counts.in + counts.out + counts.cache_read + counts.cache_write;
+}
+// The chart's data: every day of the range, each with one part per series (the top
+// COST_SERIES_MAX groups by the measure over the range, then 'other'). A part's cost is null
+// when none of its turns reported one: it adds no height, and the day is marked as unpriced.
+function costChartData(report, measure) {
+  const sums = new Map();
+  for (const cells of Object.values(report.series || {})) {
+    for (const [label, cell] of Object.entries(cells)) {
+      const sum = sums.get(label) || { cost: 0, tokens: 0 };
+      sum.cost += cell.cost_usd || 0; sum.tokens += allTokens(cell.tokens);
+      sums.set(label, sum);
+    }
+  }
+  const key = measure === 'tokens' ? ['tokens', 'cost'] : ['cost', 'tokens'];
+  const ranked = [...sums].sort(([a, x], [b, y]) => y[key[0]] - x[key[0]] || y[key[1]] - x[key[1]] || a.localeCompare(b));
+  const names = ranked.slice(0, COST_SERIES_MAX).map(([label]) => label);
+  if (ranked.length > COST_SERIES_MAX) names.push(`other (${ranked.length - COST_SERIES_MAX} more)`);
+  const index = new Map(ranked.map(([label], i) => [label, Math.min(i, COST_SERIES_MAX)]));
+  let max = 0;
+  const days = (report.days || []).map(day => {
+    const parts = new Map();
+    for (const [label, cell] of Object.entries((report.series || {})[day] || {})) {
+      const series = index.get(label);
+      const part = parts.get(series) || { series, name: names[series], cost: null, tokens: 0, turns: 0, unpriced: 0 };
+      if (typeof cell.cost_usd === 'number') part.cost = (part.cost || 0) + cell.cost_usd;
+      part.tokens += allTokens(cell.tokens); part.turns += cell.turns; part.unpriced += cell.unpriced;
+      parts.set(series, part);
+    }
+    const list = [...parts.values()].sort((a, b) => a.series - b.series);
+    for (const part of list) part.value = measure === 'tokens' ? part.tokens : part.cost || 0;
+    const value = list.reduce((sum, part) => sum + part.value, 0);
+    max = Math.max(max, value);
+    return { day, parts: list, value, unpriced: list.reduce((sum, part) => sum + part.unpriced, 0) };
+  });
+  return { names, days, max };
+}
+function costPartTitle(day, part) {
+  const cost = part.cost === null ? 'cost n/a' : moneyText(part.cost) + (part.unpriced ? '*' : '');
+  return `${day} · ${part.name}: ${cost} · ${count(part.tokens)} tokens · ${plural(part.turns, 'turn')}`;
+}
+function svgNode(tag, attrs, text) {
+  const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [name, value] of Object.entries(attrs || {})) node.setAttribute(name, String(value));
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+// Stacked bars of the spend per local day, coloured by series (CSS classes on the theme's
+// colours), with a legend; a hover title per part. Unpriced turns are marked, never shown as $0.
+function costChart(report, measure) {
+  const box = el('div', 'cost-chart');
+  const data = costChartData(report, measure);
+  if (!data.days.length) { box.append(el('div', 'empty-note', 'No dated spend in this range.')); return box; }
+  const width = 720, height = 200, left = 52, right = 8, top = 10, bottom = 22;
+  const plotW = width - left - right, plotH = height - top - bottom, base = top + plotH;
+  const max = data.max || (measure === 'tokens' ? 1000 : 1);
+  const axis = value => measure === 'tokens' ? count(Math.round(value)) : moneyText(value);
+  const svg = svgNode('svg', { viewBox: `0 0 ${width} ${height}`, role: 'img', class: 'cost-svg' });
+  svg.append(svgNode('title', {}, `${measure === 'tokens' ? 'Tokens' : 'Cost'} per day, ${data.days[0].day} to ${data.days.at(-1).day}`));
+  for (const share of [0, 0.5, 1]) {
+    const y = base - share * plotH;
+    svg.append(svgNode('line', { x1: left, x2: width - right, y1: y, y2: y, class: 'cost-grid' }),
+      svgNode('text', { x: left - 6, y: y + 3, 'text-anchor': 'end' }, axis(max * share)));
+  }
+  const slot = plotW / data.days.length, barW = Math.max(1, slot * 0.72), step = Math.ceil(data.days.length / 8);
+  data.days.forEach(({ day, parts, value, unpriced }, i) => {
+    const x = left + i * slot + (slot - barW) / 2;
+    const hit = svgNode('rect', { x: left + i * slot, y: top, width: slot, height: plotH, class: 'cost-hit' });
+    const priced = parts.some(part => part.cost !== null);
+    const sum = !parts.length ? 'nothing recorded' : measure === 'tokens' ? `${count(value)} tokens` : priced ? moneyText(value) : 'no reported cost';
+    hit.append(svgNode('title', {}, `${day}: ${sum}`));
+    svg.append(hit);
+    let y = base;
+    for (const part of parts) {
+      const h = part.value / max * plotH;
+      if (h <= 0) continue;
+      y -= h;
+      const rect = svgNode('rect', { x, y, width: barW, height: h, class: `cost-s${part.series}` });
+      rect.append(svgNode('title', {}, costPartTitle(day, part)));
+      svg.append(rect);
+    }
+    if (measure !== 'tokens' && unpriced) {
+      const mark = svgNode('circle', { cx: x + barW / 2, cy: y - 4, r: 2.5, class: 'cost-unpriced' });
+      mark.append(svgNode('title', {}, `${day}: ${plural(unpriced, 'turn')} reported no cost (Codex reports none)`
+        + `; ${parts.filter(part => part.unpriced).map(part => costPartTitle(day, part)).join('; ')}`));
+      svg.append(mark);
+    }
+    if (i % step === 0) svg.append(svgNode('text', { x: left + i * slot + slot / 2, y: height - 6, 'text-anchor': 'middle' }, day.slice(5)));
+  });
+  const legend = el('div', 'cost-legend');
+  data.names.forEach((name, i) => {
+    const item = el('span', 'cost-key');
+    item.append(el('span', `cost-swatch cost-s${i}`), name);
+    legend.append(item);
+  });
+  if (measure !== 'tokens' && data.days.some(day => day.unpriced)) {
+    const item = el('span', 'cost-key');
+    item.append(el('span', 'cost-swatch cost-unpriced'), 'turns without a reported cost');
+    legend.append(item);
+  }
+  box.append(svg, legend);
+  return box;
 }
 function costTable(report) {
   const table = el('table', 'cost-table'), head = el('tr');
-  const first = { project: 'Project', day: 'Day', agent: 'Agent' }[report.by] || '';
+  const first = { project: 'Project', day: 'Day', agent: 'Agent', model: 'Model', role: 'Role' }[report.by] || '';
   for (const name of [first, 'Turns', 'Prompt', 'Output', 'Cost']) head.append(el('th', '', name));
   table.append(head);
   const total = { ...report.total, label: 'Total' };
@@ -1211,8 +1333,22 @@ function budgetList(budgets) {
     + `Set or remove them with \`${CLI} budget\`.`));
   return box;
 }
+function costRangeText(report) {
+  if (!report.since && !report.until) return 'All time';
+  return `${report.since || 'the start'} to ${report.until || 'today'} (local days)`;
+}
+function showCost() {
+  if (!costData || selected !== COST || !$('costBody')) return;
+  const report = costData.report;
+  $('costBody').replaceChildren(el('h4', 'cost-head', 'Budgets'), budgetList(costData.budgets),
+    el('h4', 'cost-head', `Spend per day · ${costRangeText(report)}`), costChart(report, costChoice.measure),
+    el('h4', 'cost-head', 'Totals of the range'), costTable(report),
+    ...costNotes(report).map(text => el('p', 'setup-note', text)));
+}
 async function loadCost() {
   const ticket = ++costTicket;
+  if (costChoice.range !== 'custom') Object.assign(costChoice, costRange(costChoice.range, new Date()));
+  if ($('costSince')) { $('costSince').value = costChoice.since; $('costUntil').value = costChoice.until; }
   let data;
   try {
     data = await call(costUrl(costChoice));
@@ -1220,32 +1356,57 @@ async function loadCost() {
     if (ticket === costTicket && $('costBody')) $('costBody').replaceChildren(el('div', 'empty-note', error.message));
     return;
   }
-  if (ticket !== costTicket || selected !== COST || !$('costBody')) return;
-  $('costBody').replaceChildren(el('h4', 'cost-head', 'Budgets'), budgetList(data.budgets),
-    el('h4', 'cost-head', 'Spend'), costTable(data.report), ...costNotes(data.report).map(text => el('p', 'setup-note', text)));
+  if (ticket !== costTicket) return;
+  costData = data;
+  showCost();
+}
+// A labelled control of the toolbar, as the agent's model and effort in its chip row.
+function costControl(name, control) {
+  const wrap = el('label', 'setting');
+  wrap.append(el('span', 'key', name), control);
+  return wrap;
 }
 async function renderCost() {
   if (shown === COST) return;  // built and loaded: Refresh or a choice loads it again
   const page = el('div', 'archive-view cost-view'), head = el('div', 'top-bar'), who = el('div', 'who');
   const face = avatar('cost'); face.id = 'face';
   who.append(el('h2', '', 'Cost'), el('div', 'setup-note', 'What the recorded turns spent, and the budgets. Read-only.'));
-  const by = el('select', 'input'), since = el('input', 'input'), project = el('select', 'input');
-  by.setAttribute('aria-label', 'Group by'); since.setAttribute('aria-label', 'From this day on');
-  project.setAttribute('aria-label', 'Project');
+  const by = el('select', 'input compact'), range = el('select', 'input compact');
+  const since = el('input', 'input compact'), until = el('input', 'input compact');
+  const project = el('select', 'input compact'), measure = el('select', 'input compact');
+  since.id = 'costSince'; until.id = 'costUntil';
+  since.type = 'date'; until.type = 'date';
+  if (!COST_GROUPS.some(([value]) => value === costChoice.by)) costChoice.by = COST_GROUPS[0][0];
   options(by, COST_GROUPS, costChoice.by);
-  since.type = 'date'; since.value = costChoice.since;
+  options(range, COST_RANGES, costChoice.range);
   options(project, [['', 'All projects'], ...state.projects.map(p => [p.name, p.name])], costChoice.project);
-  const change = () => { costChoice = { by: by.value, since: since.value, project: project.value }; loadCost(); };
-  by.onchange = change; since.onchange = change; project.onchange = change;
+  options(measure, COST_MEASURES, costChoice.measure);
+  const bounds = () => { since.max = until.value; until.min = since.value; };
+  const change = () => {
+    costChoice = { ...costChoice, by: by.value, project: project.value };
+    loadCost().then(bounds);
+  };
+  by.onchange = change; project.onchange = change;
+  range.onchange = () => { costChoice.range = range.value; change(); };
+  since.onchange = until.onchange = () => {
+    range.value = 'custom';
+    costChoice = { ...costChoice, range: 'custom', since: since.value, until: until.value };
+    change();
+  };
+  measure.onchange = () => { costChoice.measure = measure.value; showCost(); };
   const tools = el('div', 'cost-tools');
-  tools.append(by, since, project, button('ghost', 'restore', 'Refresh', loadCost));
+  tools.append(costControl('group by', by), costControl('range', range), costControl('from', since),
+    costControl('to', until), costControl('project', project), costControl('chart', measure),
+    button('ghost', 'restore', 'Refresh', () => loadCost().then(bounds)));
   head.append(face, who, tools);
   const body = el('div', 'archive-list cost-body'); body.id = 'costBody';
   body.append(el('div', 'empty-note', 'Loading…'));
   page.append(head, body);
   $('view').replaceChildren(page);
   shown = COST;
+  costData = null;
   await loadCost();
+  bounds();
 }
 
 // -- list dialogs ------------------------------------------------------------
