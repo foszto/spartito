@@ -47,7 +47,8 @@ for f in src/orchestrator/web/static/*.js; do node --check "$f"; done
   notice reaches the desktop (`docs/desktop.md`).
   The suite replaces an inherited `ORCH_HOME` with a temporary one and fails a test that
   reaches a real home (`tests/home_guard.py`); tests must not undo the suite's environment
-  patches.
+  patches. Only children that inherit `os.environ` get the temporary home, and no child gets
+  the refusal: a child given an environment of its own must be given `ORCH_HOME`.
   Run the checkout's code with `uv run spartito …` or `uv run python -m orchestrator …`, not
   an installed `spartito`.
 - Nothing visible on the desktop while testing. Do not run `spartito app`, `spartito menubar`,

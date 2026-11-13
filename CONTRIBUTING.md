@@ -64,6 +64,8 @@ worktrees in temporary directories. It never calls `claude` or `codex` and needs
 `tests/conftest.py` sets a temporary `ORCH_HOME` for every test. The suite also replaces an
 inherited `ORCH_HOME` with a temporary one for the whole run and fails a test that reaches a
 real home (`tests/home_guard.py`), so tests must not undo the suite's environment patches.
+A child process that a test gives an environment of its own gets neither the temporary home
+nor the refusal, so it must be given `ORCH_HOME`.
 In parallel (`pytest-xdist`) it takes about one minute on a recent Mac without the extras
 (1215 passed, 3 skipped). The skips:
 
