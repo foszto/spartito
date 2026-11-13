@@ -340,17 +340,20 @@ def now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-def _schema(conn: sqlite3.Connection) -> dict[str, set[str]]:
-    """The tables of a database and their columns."""
+def _quoted(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _schema(conn: sqlite3.Connection, db: str = "main") -> dict[str, set[str]]:
+    """The tables of a database (`db`: one attached to `conn`) and their columns."""
     tables = [
         row[0]
         for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            f"SELECT name FROM {db}.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
         )
     ]
-    quoted = {table: table.replace('"', '""') for table in tables}
     return {
-        table: {row[1] for row in conn.execute(f'PRAGMA table_info("{quoted[table]}")')}
+        table: {row[1] for row in conn.execute(f"PRAGMA {db}.table_info({_quoted(table)})")}
         for table in tables
     }
 
@@ -401,23 +404,49 @@ def check_database(path: Path) -> list[str]:
     return unknown
 
 
-def _settle(conn: sqlite3.Connection, note: str, run_floor: int) -> None:
-    """Prepare a restored database (Store.replace_from): its queued and running turns end as
-    stopped with `note`, every ended run counts as checked (its parents are not woken), and
-    run ids continue above `run_floor`. Works on the schema of any version."""
-    with conn:
+def _replace_content(conn: sqlite3.Connection, note: str) -> list[str]:
+    """Inside `conn`'s write transaction (Store.replace_from): make the rows of every table of
+    `main` those of the attached database `restored`. A table it lacks ends up empty, and a
+    column it lacks gets its default (an older version's backup). Its tables and columns that
+    `main` lacks (a newer version's) are not copied: they are returned as `table` and
+    `table.column`. Then the restored turns that were queued or running end as stopped with
+    `note` (their runners are gone) and every run counts as checked, so nothing wakes a parent.
+    Row ids never go back: each AUTOINCREMENT sequence stays at least what it was here and
+    in `restored`, so a new turn never reuses an earlier turn's logs/run-<id>."""
+    live, restored = _schema(conn), _schema(conn, "restored")
+    for table, columns in live.items():
+        conn.execute(f"DELETE FROM main.{_quoted(table)}")
+        if table in restored:
+            names = ", ".join(_quoted(column) for column in sorted(columns & restored[table]))
+            conn.execute(
+                f"INSERT INTO main.{_quoted(table)} ({names})"
+                f" SELECT {names} FROM restored.{_quoted(table)}"
+            )
+    left_out: list[str] = []
+    for table, columns in sorted(restored.items()):
+        if table not in live:
+            left_out.append(table)
+        else:
+            left_out += [f"{table}.{column}" for column in sorted(columns - live[table])]
+    has_sequence = conn.execute(
+        "SELECT 1 FROM restored.sqlite_master WHERE name = 'sqlite_sequence'"
+    ).fetchone()
+    for name, seq in (
+        conn.execute("SELECT name, seq FROM restored.sqlite_sequence").fetchall()
+        if has_sequence
+        else []
+    ):
         conn.execute(
-            f"UPDATE runs SET status = ?, error = ?, ended_at = ?"
-            f" WHERE status IN ('{ACTIVE[0]}', '{ACTIVE[1]}')",
-            (RunStatus.STOPPED.value, note, now()),
+            "UPDATE main.sqlite_sequence SET seq = MAX(seq, ?) WHERE name = ?", (seq, name)
         )
-        if "checked" in _schema(conn).get("run_meta", set()):
-            conn.execute("UPDATE run_meta SET checked = 1 WHERE checked = 0")
-        raised = conn.execute(
-            "UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'runs'", (run_floor,)
-        ).rowcount
-        if not raised and run_floor:
-            conn.execute("INSERT INTO sqlite_sequence (name, seq) VALUES ('runs', ?)", (run_floor,))
+    conn.execute(
+        f"UPDATE main.runs SET status = ?, error = ?, ended_at = ?"
+        f" WHERE status IN ('{ACTIVE[0]}', '{ACTIVE[1]}')",
+        (RunStatus.STOPPED.value, note, now()),
+    )
+    if "checked" in live.get("run_meta", set()):
+        conn.execute("UPDATE main.run_meta SET checked = 1 WHERE checked = 0")
+    return left_out
 
 
 def _older_than(timestamp: str | None, seconds: float) -> bool:
@@ -643,38 +672,37 @@ class Store:
             source.close()
 
     def replace_from(
-        self, source: Path, note: str, before: Callable[[], None] = lambda: None
-    ) -> None:
-        """Make this database's content that of the database file `source`, in place with
-        the backup API: no file is swapped, so the connections other processes keep (a
-        dashboard) see the new content with their next transaction, and the database stays
-        in WAL. `source` is first read into memory and settled there (_settle: its queued and
-        running turns end as stopped with `note`, as their runners are gone; nothing wakes a
-        parent; run ids continue above the ones this database used, so a turn never reuses
-        an earlier turn's logs/run-<id>). `before` runs right before the copy: raising there
-        leaves the database as it was. The tables and columns `source` lacks (an older
-        version's) are added by the next open (Store())."""
-        with self._conn() as conn:
-            used = conn.execute(
-                "SELECT MAX(COALESCE((SELECT MAX(id) FROM runs), 0),"
-                " COALESCE((SELECT MAX(seq) FROM sqlite_sequence WHERE name = 'runs'), 0))"
-            ).fetchone()[0]
-        memory = sqlite3.connect(":memory:")
+        self, source: Path, snapshot: Path, note: str, check: Callable[[], None]
+    ) -> list[str]:
+        """Make this database's content that of the database file `source`, keeping the
+        content it replaces in the new (empty) file `snapshot`, with no commit of another
+        process falling between the two: one connection takes the write lock (BEGIN
+        IMMEDIATE) and holds it while `check` runs (raising there changes nothing), while
+        `snapshot` is taken with the backup API from a second connection (readers still read
+        the committed state; nobody can commit meanwhile) and passes check_database, and
+        while the rows are replaced from `source`, attached (_replace_content); then it
+        commits. A writer that comes meanwhile waits and commits on top of the restored state.
+        Rows, not pages, are copied: no schema object or file is swapped under the connections
+        other processes hold (they see the restored rows from their next read), and the
+        database keeps its page size and WAL. Returns what of `source` was not copied (a newer
+        version's tables and columns). Raises ValueError when the snapshot is not usable."""
+        conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         try:
-            disk = sqlite3.connect(source, timeout=30)
+            conn.execute("PRAGMA foreign_keys=OFF")  # rows are copied table by table
+            conn.execute("ATTACH DATABASE ? AS restored", (str(source),))
+            conn.execute("BEGIN IMMEDIATE")
             try:
-                disk.backup(memory)
-            finally:
-                disk.close()
-            _settle(memory, note, used)
-            before()
-            target = sqlite3.connect(self.path, timeout=30)
-            try:
-                memory.backup(target)
-            finally:
-                target.close()
+                check()
+                self.backup(snapshot)
+                check_database(snapshot)
+                left_out = _replace_content(conn, note)
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            conn.execute("COMMIT")
+            return left_out
         finally:
-            memory.close()
+            conn.close()
 
     # -- projects ---------------------------------------------------------
 

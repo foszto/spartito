@@ -26,6 +26,14 @@ from orchestrator.store import Store
 ROOT = Path(__file__).resolve().parent.parent
 
 
+@pytest.fixture(autouse=True)
+def stays_in_the_temporary_home(tmp_path: Path):
+    """Every test of this module works in conftest's temporary home, before and after."""
+    assert config.home().is_relative_to(tmp_path)
+    yield
+    assert config.home().is_relative_to(tmp_path)
+
+
 @pytest.fixture
 def o() -> Orchestrator:
     orch = Orchestrator()
@@ -404,12 +412,18 @@ def test_a_backup_of_an_older_version_restores_and_opens(o: Orchestrator) -> Non
     assert "context_tokens" in columns and {"board_blockers", "run_meta"} <= tables
 
 
-def test_a_backup_of_a_newer_version_is_restored_with_a_note(o: Orchestrator) -> None:
+def test_a_backup_of_a_newer_version_is_restored_without_what_this_version_lacks(
+    o: Orchestrator,
+) -> None:
+    """Judgement call: tables and columns this version does not have are not carried over;
+    the note names them and where they stay (the backup)."""
     finished_run(o, "fix-login-3f2a", "from the future")
     newer = Path(o.backup_state()["database"])
     conn = sqlite3.connect(newer)
     conn.execute("CREATE TABLE future_things (id INTEGER PRIMARY KEY)")
+    conn.execute("INSERT INTO future_things VALUES (7)")
     conn.execute("ALTER TABLE runs ADD COLUMN future_flag INTEGER")
+    conn.execute("UPDATE runs SET future_flag = 1")
     conn.commit()
     conn.close()
 
@@ -417,9 +431,257 @@ def test_a_backup_of_a_newer_version_is_restored_with_a_note(o: Orchestrator) ->
         o.restore_state(str(newer))
     result = invoke("state", "restore", str(newer), "--yes")
     assert result.exit_code == 0 and "a newer version made it" in result.stderr
+    assert f"not restored; they stay in the backup {newer}" in " ".join(result.stderr.split())
     assert prompts() == ["from the future"]
+    conn = sqlite3.connect(config.db_path())
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(runs)")}
+    conn.close()
+    assert "future_things" not in tables and "future_flag" not in columns
+    conn = sqlite3.connect(newer)
+    assert conn.execute(
+        "SELECT id, (SELECT future_flag FROM runs) FROM future_things"
+    ).fetchall() == [(7, 1)]
+    conn.close()
     assert Store().get_agent("fix-login-3f2a") is not None
     finished_run(o, "fix-login-3f2a", "after")  # this version keeps writing to it
+
+
+def test_a_backup_with_another_page_size_restores(o: Orchestrator, tmp_path: Path) -> None:
+    finished_run(o, "fix-login-3f2a", "one")
+    other = tmp_path / "big-pages.db"
+    o.store.backup(other)
+    conn = sqlite3.connect(other)
+    conn.execute("PRAGMA page_size=8192")
+    conn.execute("VACUUM")
+    assert conn.execute("PRAGMA page_size").fetchone()[0] == 8192
+    conn.close()
+    finished_run(o, "fix-login-3f2a", "two")
+
+    o.restore_state(str(other), confirm=True)
+    assert prompts() == ["one"]
+    conn = sqlite3.connect(config.db_path())
+    assert conn.execute("PRAGMA page_size").fetchone()[0] == 4096
+    assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    conn.close()
+
+
+# -- restore: one write lock from the kept state to the replaced one -----------------------------
+
+
+def project_names(path: Path | None = None) -> list[str]:
+    conn = sqlite3.connect(path or config.db_path())
+    try:
+        return [row[0] for row in conn.execute("SELECT name FROM projects ORDER BY name")]
+    finally:
+        conn.close()
+
+
+def test_a_row_committed_while_the_kept_backup_copies_files_is_in_the_kept_backup(
+    o: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    name = o.backup_state()["name"]
+    original = state.copy_files
+
+    def copy_then_commit(work: Path, logs: bool) -> list[str]:
+        skipped = original(work, logs)
+        o.store.add_project(Project("late-app", "/src/late-app", "main"))  # a dashboard
+        return skipped
+
+    monkeypatch.setattr(state, "copy_files", copy_then_commit)
+    kept = Path(o.restore_state(name, confirm=True)["kept"])
+    assert project_names(kept / "orch.db") == ["late-app", "my-app"]
+    assert project_names() == ["my-app"]
+
+
+def test_writers_wait_while_the_state_is_kept_and_replaced_and_commit_after_it(
+    o: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Inside the critical section nobody else can commit; a writer that comes then waits
+    and commits on top of the restored state, so its row is in neither the kept state nor
+    lost: it is in the live database after the restore."""
+    name = o.backup_state()["name"]
+    original, calls, writers = state.refuse_busy, [], []
+
+    def check(orch: Orchestrator) -> None:
+        original(orch)
+        calls.append(1)
+        if len(calls) != 2:  # the first check comes before the confirmation
+            return
+        other = sqlite3.connect(config.db_path(), timeout=0)
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            other.execute("INSERT INTO settings VALUES ('my-app', '{}')")
+        other.close()
+        writer = threading.Thread(
+            target=o.store.add_project, args=(Project("late-app", "/src/late-app", "main"),)
+        )
+        writer.start()
+        writers.append(writer)
+
+    monkeypatch.setattr(state, "refuse_busy", check)
+    kept = Path(o.restore_state(name, confirm=True)["kept"])
+    writers[0].join()
+    assert len(calls) == 2
+    assert project_names(kept / "orch.db") == ["my-app"]
+    assert project_names() == ["late-app", "my-app"]
+
+
+def test_a_turn_queued_while_the_kept_backup_is_made_stops_the_restore(
+    o: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finished_run(o, "fix-login-3f2a", "kept")
+    name = o.backup_state()["name"]
+    before = backups()
+    original = state.copy_files
+
+    def copy_then_queue(work: Path, logs: bool) -> list[str]:
+        skipped = original(work, logs)
+        o.store.add_run("fix-login-3f2a", "queued meanwhile")
+        return skipped
+
+    monkeypatch.setattr(state, "copy_files", copy_then_queue)
+    with pytest.raises(OrchestratorError, match="fix-login-3f2a run 2 waiting"):
+        o.restore_state(name, confirm=True)
+    assert prompts() == ["kept", "queued meanwhile"]
+    assert backups() == before  # the unfinished kept backup is gone, nothing else changed
+
+
+# -- restore: symbolic links in the home ------------------------------------------------------
+
+
+@pytest.fixture
+def outside(tmp_path: Path) -> Path:
+    path = tmp_path / "outside"
+    path.mkdir()
+    return path
+
+
+def test_a_restore_does_not_write_through_a_linked_loadout(o: Orchestrator, outside: Path) -> None:
+    home = config.home()
+    (home / "loadout.toml").write_text("# in the backup\n")
+    name = o.backup_state()["name"]
+    target = outside / "loadout.toml"
+    target.write_bytes(b"# kept outside\n")
+    (home / "loadout.toml").unlink()
+    (home / "loadout.toml").symlink_to(target)
+
+    result = invoke("state", "restore", name, "--yes")
+    assert result.exit_code == 0, result.output
+    assert target.read_bytes() == b"# kept outside\n"
+    assert (home / "loadout.toml").is_symlink()
+    assert f"not in the kept backup (a symbolic link): {home / 'loadout.toml'}" in result.stdout
+    assert f"not restored: {home / 'loadout.toml'}: a symbolic link" in result.stdout
+
+
+def test_a_restore_does_not_write_into_a_linked_roles_directory(
+    o: Orchestrator, outside: Path
+) -> None:
+    roles = config.home() / "roles"
+    roles.mkdir()
+    (roles / "docs-writer.md").write_text("in the backup")
+    name = o.backup_state()["name"]
+    (outside / "docs-writer.md").write_bytes(b"kept outside")
+    (roles / "docs-writer.md").unlink()
+    roles.rmdir()
+    roles.symlink_to(outside, target_is_directory=True)
+
+    result = o.restore_state(name, confirm=True)
+    assert (outside / "docs-writer.md").read_bytes() == b"kept outside"
+    assert sorted(p.name for p in outside.iterdir()) == ["docs-writer.md"]
+    assert result["left"] == [f"{roles}: a symbolic link (or below one), left as it is"]
+
+
+def test_a_restore_does_not_write_through_one_linked_role_file(
+    o: Orchestrator, outside: Path
+) -> None:
+    roles = config.home() / "roles"
+    roles.mkdir()
+    (roles / "docs-writer.md").write_text("in the backup")
+    (roles / "reviewer-strict.md").write_text("in the backup too")
+    name = o.backup_state()["name"]
+    target = outside / "docs-writer.md"
+    target.write_bytes(b"kept outside")
+    (roles / "docs-writer.md").unlink()
+    (roles / "docs-writer.md").symlink_to(target)
+    (roles / "reviewer-strict.md").write_text("changed since")
+
+    result = o.restore_state(name, confirm=True)
+    assert target.read_bytes() == b"kept outside"
+    assert (roles / "reviewer-strict.md").read_text() == "in the backup too"
+    assert result["left"] == [
+        f"{roles / 'docs-writer.md'}: a symbolic link (or below one), left as it is"
+    ]
+    assert result["kept_skipped"] == [str(roles / "docs-writer.md")]
+
+
+# -- backups being made --------------------------------------------------------------------------
+
+
+def test_a_backup_never_goes_into_a_directory_it_copies(o: Orchestrator, tmp_path: Path) -> None:
+    home = config.home()
+    (home / "roles").mkdir()
+    (home / "roles" / "docs-writer.md").write_text("role")
+    config.run_dir(1).mkdir(parents=True)
+    link = tmp_path / "to-roles"
+    link.symlink_to(home / "roles", target_is_directory=True)
+
+    for dest, logs in ((home / "roles" / "bk", False), (link / "bk", False),
+                       (home / "logs" / "bk", True)):  # fmt: skip
+        with pytest.raises(OrchestratorError, match="which the backup copies"):
+            o.backup_state(dest, logs=logs)
+    assert sorted(p.name for p in (home / "roles").iterdir()) == ["docs-writer.md"]
+    assert sorted(p.name for p in (home / "logs").iterdir()) == ["run-1"]
+    assert o.backup_state(home / "logs" / "bk")["files"] == ["roles"]  # logs are not copied
+
+
+def test_a_failed_backup_leaves_nothing_that_list_or_restore_takes(
+    o: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (config.home() / "loadout.toml").write_text("[default]\n")
+
+    def broken_copy(source: Path, dest: Path, skipped: list[str]) -> None:
+        raise OSError("no space left on device")
+
+    def not_intact(path: Path) -> list[str]:
+        raise ValueError(f"{path} fails the integrity check: page 3")
+
+    # Scoped patches: monkeypatch.undo() would also undo conftest's temporary ORCH_HOME.
+    with monkeypatch.context() as patch:
+        patch.setattr(state, "copy_in", broken_copy)
+        with pytest.raises(OrchestratorError, match="the backup failed: no space left"):
+            o.backup_state()
+    assert backups() == [] and o.list_backups() == []
+    with monkeypatch.context() as patch:
+        patch.setattr(state, "check_database", not_intact)
+        result = invoke("state", "backup")
+    assert result.exit_code == 1 and "not usable" in result.stderr
+    assert backups() == []
+
+    # one left by a crash: built, never renamed into place
+    crashed = config.backups_dir() / ".20260101T000000Z.incomplete"
+    crashed.mkdir()
+    o.store.backup(crashed / "orch.db")
+    assert o.list_backups() == []
+    with pytest.raises(OrchestratorError, match="never completed"):
+        o.restore_state(crashed.name, confirm=True)
+
+
+def test_backups_started_in_the_same_second_get_their_own_names(
+    o: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(state, "stamp", lambda: "20260101T000000Z")
+    assert o.backup_state()["name"] == "20260101T000000Z"
+    assert o.backup_state()["name"] == "20260101T000000Z-2"
+    names: list[str] = []
+    threads = [
+        threading.Thread(target=lambda: names.append(o.backup_state()["name"])) for _ in range(4)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(names) == [f"20260101T000000Z-{n}" for n in range(3, 7)]
+    assert len(o.list_backups()) == 6
 
 
 # -- boundaries --------------------------------------------------------------------------------

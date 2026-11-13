@@ -1,12 +1,16 @@
 """Backups of the state (docs/state.md): the database, copied with SQLite's online backup API,
 with the home's user files (your roles, loadout.toml) and optionally the logs; listing the
-backups; restoring one in place. Nothing outside the home is read: symbolic links are left
-out. Nothing is deleted: a restore first keeps the state it replaces as a new backup."""
+backups; restoring one in place. Nothing outside the home is read or written: symbolic links
+are left out of a backup, and a restore leaves them as they are. Nothing is deleted: a restore
+keeps the state it replaces as a new backup. A backup is built under a hidden name
+(`.<name>.incomplete`) and renamed into place once it is complete."""
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -19,6 +23,7 @@ from ..store import Store, check_database, pid_alive
 ROLES, LOADOUT, LOGS = "roles", "loadout.toml", "logs"
 STAMP = "%Y%m%dT%H%M%SZ"  # a backup directory's name: when it was made, in UTC
 BEFORE_RESTORE = "before-restore"  # the name's suffix of the state a restore replaced
+INCOMPLETE = ".incomplete"  # `.<name>.incomplete`: a backup being built, never listed
 WARNING = (
     "a backup holds prompts, answers and tool output, which can include secrets: keep it private"
 )
@@ -60,48 +65,111 @@ def backup(orch: Facade, to: str | Path | None = None, logs: bool = False) -> di
 def make_backup(
     store: Store, dest: Path | None, logs: bool, suffix: str | None = None
 ) -> dict[str, Any]:
+    final, work = start(dest, logs, suffix)
+    try:
+        skipped = copy_files(work, logs)
+        database = new_file(work / db_name())
+        store.backup(database)
+        try:
+            check_database(database)
+        except ValueError as exc:
+            raise OrchestratorError(f"the backup is not usable: {exc}") from None
+        return finish(final, work, skipped)
+    except OSError as exc:
+        abandon(final, work)
+        raise OrchestratorError(f"the backup failed: {exc}") from None
+    except BaseException:
+        abandon(final, work)
+        raise
+
+
+def stamp() -> str:
+    return datetime.now(UTC).strftime(STAMP)
+
+
+def start(dest: Path | None, logs: bool, suffix: str | None) -> tuple[Path, Path]:
+    """Reserve the backup's directory `final` (an empty one: `list` and `restore` do not take
+    it) and create the hidden directory `work` the backup is built in, both 0700. Without
+    `dest`: the first free name `<UTC time>[-suffix][-2, -3, …]` in the home's backups/."""
     if dest is None:
         parent = config.backups_dir()
         parent.mkdir(mode=0o700, exist_ok=True)
-        dest = fresh_name(parent, suffix)
-    dest = dest.absolute()
-    if dest.exists() or dest.is_symlink():
-        raise OrchestratorError(f"{dest} exists already; a backup goes into a new directory")
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.mkdir(mode=0o700)
-    dest.chmod(0o700)
-    database = dest / db_name()
-    os.close(os.open(database, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
-    store.backup(database)
+        base, number = stamp() + (f"-{suffix}" if suffix else ""), 1
+        while True:
+            final = parent / (base if number == 1 else f"{base}-{number}")
+            try:
+                final.mkdir(mode=0o700)
+                break
+            except FileExistsError:
+                number += 1
+    else:
+        final = dest.absolute()
+        refuse_inside(final, logs)
+        final.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            final.mkdir(mode=0o700)
+        except FileExistsError:
+            raise OrchestratorError(
+                f"{final} exists already; a backup goes into a new directory"
+            ) from None
+    work = final.parent / f".{final.name}{INCOMPLETE}"
     try:
-        check_database(database)
-    except ValueError as exc:
-        raise OrchestratorError(f"the backup in {dest} is not usable: {exc}") from None
+        work.mkdir(mode=0o700)
+    except OSError:
+        final.rmdir()
+        raise
+    work.chmod(0o700)
+    return final, work
+
+
+def refuse_inside(dest: Path, logs: bool) -> None:
+    """A backup must not go into a directory it copies (it would copy itself)."""
+    home = config.home()
+    target = dest.resolve()
+    for name in (ROLES, *([LOGS] if logs else [])):
+        if target.is_relative_to((home / name).resolve()):
+            raise OrchestratorError(
+                f"{dest} is inside {home / name}, which the backup copies; choose another place"
+            )
+
+
+def new_file(path: Path) -> Path:
+    os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+    return path
+
+
+def copy_files(work: Path, logs: bool) -> list[str]:
+    """Copy the home's roles/, loadout.toml and with `logs` logs/ into `work`; returns the
+    symbolic links left out."""
     home = config.home()
     skipped: list[str] = []
     for name in (ROLES, LOADOUT, *([LOGS] if logs else [])):
-        copy_in(home / name, dest / name, skipped)
-    lock_down(dest)
+        copy_in(home / name, work / name, skipped)
+    return skipped
+
+
+def finish(final: Path, work: Path, skipped: list[str]) -> dict[str, Any]:
+    """Lock the complete backup down and rename it into its reserved place."""
+    lock_down(work)
+    os.rename(work, final)  # replaces the empty reserved directory
     return {
-        "path": str(dest),
-        "name": dest.name,
-        "database": str(database),
-        "files": [name for name in (ROLES, LOADOUT, LOGS) if (dest / name).exists()],
-        "logs": (dest / LOGS).is_dir(),
-        "size": size_of(dest),
+        "path": str(final),
+        "name": final.name,
+        "database": str(final / db_name()),
+        "files": [name for name in (ROLES, LOADOUT, LOGS) if (final / name).exists()],
+        "logs": (final / LOGS).is_dir(),
+        "size": size_of(final),
         "skipped": skipped,
         "warning": WARNING,
     }
 
 
-def fresh_name(parent: Path, suffix: str | None) -> Path:
-    """`<UTC time>[-suffix]`, with `-2`, `-3`, … when that is taken."""
-    base = datetime.now(UTC).strftime(STAMP) + (f"-{suffix}" if suffix else "")
-    path, number = parent / base, 1
-    while path.exists() or path.is_symlink():
-        number += 1
-        path = parent / f"{base}-{number}"
-    return path
+def abandon(final: Path, work: Path) -> None:
+    """Remove what a backup that failed made: its hidden directory (copies only) and the
+    reservation of its name."""
+    shutil.rmtree(work, ignore_errors=True)
+    with contextlib.suppress(OSError):
+        final.rmdir()
 
 
 def copy_in(source: Path, dest: Path, skipped: list[str]) -> None:
@@ -143,7 +211,7 @@ def listing(orch: Facade | None = None) -> list[dict[str, Any]]:
         return []
     found = []
     for entry in parent.iterdir():
-        if entry.is_symlink():
+        if entry.is_symlink() or entry.name.startswith("."):  # links; backups being made
             continue
         if entry.is_dir() and (entry / db_name()).is_file():
             database, logs = entry / db_name(), (entry / LOGS).is_dir()
@@ -183,6 +251,8 @@ def find(backup: str) -> tuple[Path, Path | None]:
     named = config.backups_dir() / backup
     plain = backup not in ("", ".", "..") and "/" not in backup
     path = named if plain and (named.exists() or named.is_symlink()) else Path(backup).expanduser()
+    if path.name.endswith(INCOMPLETE):
+        raise OrchestratorError(f"{path} is a backup that was never completed")
     if path.is_dir():
         database = path / db_name()
         if not database.is_file():
@@ -202,24 +272,24 @@ def busy(orch: Facade) -> list[Run]:
     return [run for run in orch.store.active_runs() if run.pid is None or pid_alive(run.pid)]
 
 
-def refuse_busy(orch: Facade, kept: str | None = None) -> None:
+def refuse_busy(orch: Facade) -> None:
     if runs := busy(orch):
         what = ", ".join(f"{run.agent_id} run {run.id} {run.status}" for run in runs)
-        also = f"; the current state was kept anyway in {kept}" if kept else ""
         raise OrchestratorError(
             f"not restored: turns are running or queued ({what}); wait for them, or"
-            f" `{config.CLI_NAME} stop` the agents, then restore again{also}"
+            f" `{config.CLI_NAME} stop` the agents, then restore again"
         )
 
 
 def restore(orch: Facade, backup: str, confirm: bool = False, logs: bool = False) -> dict[str, Any]:
     """Make the state that of a backup (see `find`). Refuses a file that is not an intact
     state database, and while any turn is running or queued. Without `confirm` it changes
-    nothing and raises NeedsConfirmation saying what it would do. Else it first keeps the
-    current state as a new backup (`<time>-before-restore`, with the logs when `logs`), then
-    copies the backup's database into the live one in place (Store.replace_from), adds what
-    an older version's database lacks, and copies the backup's roles/ and loadout.toml (with
-    `logs` also its logs/) over the home's: files the backup lacks stay."""
+    nothing and raises NeedsConfirmation saying what it would do. Else it keeps the current
+    state as a new backup (`<time>-before-restore`): first the user files (with `logs` the
+    logs), then, under one write lock with the busy check repeated and the replace, the
+    database (Store.replace_from). Then it copies the backup's roles/ and loadout.toml (with
+    `logs` also its logs/) over the home's, never through a symbolic link: files the backup
+    lacks stay."""
     database, root = find(backup)
     live = Path(orch.store.path)
     if database.resolve() == live.resolve():
@@ -232,34 +302,52 @@ def restore(orch: Facade, backup: str, confirm: bool = False, logs: bool = False
     files = [name for name in (ROLES, LOADOUT) if root and (root / name).exists()]
     if logs and root and (root / LOGS).is_dir():
         files.append(LOGS)
-    newer = newer_note(unknown)
     if not confirm:
-        raise NeedsConfirmation(plan(root or database, live, files, logs, newer))
-    kept = make_backup(orch.store, None, logs, BEFORE_RESTORE)
-    orch.store.replace_from(database, STOPPED_NOTE, lambda: refuse_busy(orch, kept["path"]))
-    Store(live)  # adds the tables and columns an older version's database lacks
-    home = config.home()
+        raise NeedsConfirmation(plan(root or database, live, files, logs, newer_note(unknown)))
+    final, work = start(None, logs, BEFORE_RESTORE)
+    try:
+        skipped = copy_files(work, logs)
+        snapshot = new_file(work / db_name())
+        left_out = orch.store.replace_from(
+            database, snapshot, STOPPED_NOTE, lambda: refuse_busy(orch)
+        )
+    except ValueError as exc:
+        abandon(final, work)
+        raise OrchestratorError(
+            f"not restored: the current state could not be kept: {exc}"
+        ) from None
+    except (OSError, sqlite3.Error) as exc:
+        abandon(final, work)
+        raise OrchestratorError(f"not restored, nothing changed: {exc}") from None
+    except BaseException:
+        abandon(final, work)
+        raise
+    kept = finish(final, work, skipped)
+    home, left = config.home(), []
     for name in files:
         assert root is not None  # files come only from a backup directory
-        put_back(root / name, home / name)
+        put_back(root / name, home, home / name, left)
     return {
         "restored": str(root or database),
         "kept": kept["path"],
         "kept_name": kept["name"],
+        "kept_skipped": skipped,
         "files": files,
-        "newer": newer,
+        "left": left,
+        "newer": newer_note(left_out, root or database),
         "restart": RESTART,
     }
 
 
-def newer_note(unknown: list[str]) -> str | None:
+def newer_note(unknown: list[str], kept_in: Path | None = None) -> str | None:
     if not unknown:
         return None
     shown = ", ".join(unknown[:6]) + (", …" if len(unknown) > 6 else "")
+    where = f" {kept_in}" if kept_in else ""
     return (
-        f"the backup has tables or columns this version does not know ({shown}): a newer"
-        " version made it. This version works with it without reading them (rows it writes get"
-        " their defaults); a newer version uses them again."
+        f"the backup has tables or columns this version does not have ({shown}): a newer"
+        f" version made it. They are not restored; they stay in the backup{where}, for the"
+        " version that knows them."
     )
 
 
@@ -282,8 +370,32 @@ def plan(source: Path, live: Path, files: list[str], logs: bool, newer: str | No
     return "\n".join(lines)
 
 
-def put_back(source: Path, dest: Path) -> None:
-    if source.is_dir():
-        shutil.copytree(source, dest, dirs_exist_ok=True, copy_function=shutil.copyfile)
-    else:
-        shutil.copyfile(source, dest)
+def put_back(source: Path, home: Path, dest: Path, left: list[str]) -> None:
+    """Copy a file or directory of a backup to `dest` in the home, never through a symbolic
+    link: a destination that is one, or lies below one (from the home down), is left as it
+    is and noted in `left`; so is a source entry that is one."""
+
+    def through_link(path: Path) -> bool:
+        parts = path.relative_to(home).parts
+        return any((home.joinpath(*parts[: n + 1])).is_symlink() for n in range(len(parts)))
+
+    def put(src: Path, dst: Path) -> None:
+        if src.is_symlink():
+            left.append(f"{src}: a symbolic link in the backup, not restored")
+        elif through_link(dst):
+            left.append(f"{dst}: a symbolic link (or below one), left as it is")
+        elif src.is_dir():
+            if dst.exists() and not dst.is_dir():
+                left.append(f"{dst}: not a directory, left as it is")
+                return
+            dst.mkdir(exist_ok=True)
+            for child in sorted(src.iterdir()):
+                put(child, dst / child.name)
+        elif dst.is_dir():
+            left.append(f"{dst}: a directory, left as it is")
+        else:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+            with open(os.open(dst, flags, 0o666), "wb") as out, src.open("rb") as data:
+                shutil.copyfileobj(data, out)
+
+    put(source, dest)

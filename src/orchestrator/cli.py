@@ -1636,6 +1636,10 @@ def state_restore(
         f"the replaced state is kept in {result['kept']}"
         f" (`{CLI} state restore {result['kept_name']} --yes` brings it back)"
     )
+    for path in result["kept_skipped"]:
+        typer.echo(f"  not in the kept backup (a symbolic link): {path}")
+    for entry in result["left"]:
+        typer.echo(f"  not restored: {entry}")
     if result["newer"]:
         typer.secho(f"note: {result['newer']}", fg=typer.colors.YELLOW, err=True)
     typer.secho(result["restart"], fg=typer.colors.YELLOW, err=True)
