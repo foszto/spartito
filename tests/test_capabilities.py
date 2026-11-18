@@ -334,7 +334,8 @@ def test_a_leads_turn_keeps_its_flags_and_environment(tmp_path: Path) -> None:
     def lead(wirings: tuple[Wiring, ...]):
         ctx = dataclasses.replace(context(tmp_path, wirings, session_id="sid"), lead=True)
         ctx.mcp = McpServer("python", ["-m", "orchestrator.mcp_server"], {})
-        ctx.loadout = Loadout(tools=("Read",), strict_mcp=True)
+        # `never`: chrome changes nothing else (tool search: test_tool_search.py).
+        ctx.loadout = Loadout(tools=("Read",), strict_mcp=True, tool_search="never")
         return claude.invocation(ctx)
 
     on, off, plain = lead((CLAUDE_CHROME.on,)), lead((CLAUDE_CHROME.off,)), lead(())
@@ -377,7 +378,7 @@ def test_chrome_is_built_in_and_only_claude_supports_it() -> None:
 
     assert list(entry.providers) == ["claude"]
     assert entry.providers["claude"] == Support(
-        on=Wiring(argv=("--chrome",)), off=Wiring(env=CFC_OFF)
+        on=Wiring(argv=("--chrome",), mcp_tools=True), off=Wiring(env=CFC_OFF)
     )
     assert "chrome" not in capabilities.PLUGINS
 

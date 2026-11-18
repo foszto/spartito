@@ -18,7 +18,7 @@ from . import __version__, autostart, capabilities, config, loadout, providers, 
 from .core.access import Caller
 from .models import Agent
 from .providers import locate
-from .providers.claude import loadout_flags
+from .providers.claude import loadout_flags, tool_search
 from .service import (
     ORCHESTRATOR_ID,
     NeedsConfirmation,
@@ -299,13 +299,15 @@ def chat(
     # A person works in this session: --disable-slash-commands would also take away the
     # built-in /compact, /clear, /model and /context. Headless agents keep the setting.
     chosen = replace(chosen, slash_commands=True)
+    # No capability wirings here: only `tool_search = always` adds ToolSearch (for `orch`).
+    search, _ = tool_search(chosen, own_server=True)
     argv = [
         "claude",
         "--mcp-config", mcp_config(),
         "--append-system-prompt",
         f"{role.prompt}\n\n{roles.attribution('claude', bot_coauthor=bot_coauthor)}",
         "--allowedTools", "mcp__orch", f"Bash({CLI} *)",
-        *loadout_flags(chosen),
+        *loadout_flags(chosen, search=search),
     ]  # fmt: skip
     if resume:
         argv.append("--continue")

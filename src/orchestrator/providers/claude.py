@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 
 from .. import memory_guard
@@ -44,8 +45,17 @@ NO_BACKGROUND_ENV = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}
 # The capability `chrome` (capabilities.py): Claude in Chrome's browser tools. On: the CLI's
 # `--chrome`. Off: CLAUDE_CODE_ENABLE_CFC=0, so the user's own `claudeInChromeDefaultEnabled`
 # does not reach agents; a CLI too old to know it ignores the variable (and `--no-chrome`
-# would make it fail). Not verified: whether a headless `-p` turn gets the tools.
-CHROME = Support(on=Wiring(argv=("--chrome",)), off=Wiring(env={"CLAUDE_CODE_ENABLE_CFC": "0"}))
+# would make it fail). Its browser tools are MCP tools (`mcp__claude-in-chrome__…`).
+CHROME = Support(
+    on=Wiring(argv=("--chrome",), mcp_tools=True),
+    off=Wiring(env={"CLAUDE_CODE_ENABLE_CFC": "0"}),
+)
+
+# The built-in tool that loads MCP tools' schemas on demand. Claude Code defers MCP tools
+# only when it is among the built-in tools: a `--tools` list without it sends every MCP
+# tool's full schema with every request (verified with Claude Code 2.1.322). The CLI's
+# default set has it; ENABLE_TOOL_SEARCH, when inherited, still applies as the CLI reads it.
+TOOL_SEARCH = "ToolSearch"
 
 
 # The picker's fallback when the installed CLI cannot say what it offers.
@@ -207,6 +217,24 @@ def memory_settings(canary: Path) -> dict:
     }
 
 
+def tool_search(
+    loadout: Loadout, own_server: bool, wirings: Sequence[Wiring] = ()
+) -> tuple[bool, bool]:
+    """(add ToolSearch to the turn's `--tools`, keep the `orch` server's tools loaded upfront
+    with `alwaysLoad`), by the loadout's `tool_search` (loadout.py). `own_server`: the turn
+    has the `orch` server. Nothing is added to the CLI's default set (`tools = default`
+    has ToolSearch) or to a list that names it already; `none` is a list like any other."""
+    tools = loadout.tools
+    if tools is None or TOOL_SEARCH in tools:
+        return False, False
+    brought = any(wiring.mcp_tools for wiring in wirings)
+    if loadout.tool_search == "auto":
+        return brought, brought and own_server
+    if loadout.tool_search == "always":
+        return brought or own_server, False
+    return False, False
+
+
 def stream_json_prompt(prompt: str) -> str:
     """The prompt as the single user message of `--input-format stream-json`."""
     message = {"role": "user", "content": [{"type": "text", "text": prompt}]}
@@ -214,17 +242,20 @@ def stream_json_prompt(prompt: str) -> str:
     return json.dumps(line) + "\n"
 
 
-def loadout_flags(loadout: Loadout, canary: Path | None = None) -> list[str]:
+def loadout_flags(loadout: Loadout, canary: Path | None = None, search: bool = False) -> list[str]:
     """CLI flags for a loadout. Needed on every turn: `--resume` does not remember them.
 
     `memory` takes effect only with a `canary` (see memory_settings) and a caller that
     waits for it before the prompt; `spartito chat` passes none, so it gets no Write/Edit.
+    `search`: add ToolSearch to a restricted tool list (tool_search).
     """
     flags = []
     tools = loadout.tools
     if canary is not None and memory_guarded(loadout):
         tools = (*tools, "Write", "Edit")
         flags += ["--settings", json.dumps(memory_settings(canary))]
+    if search and tools is not None and TOOL_SEARCH not in tools:
+        tools = (*tools, TOOL_SEARCH)
     if tools is not None:
         flags += ["--tools", ",".join(tools)]
     if loadout.strict_mcp:
@@ -288,7 +319,8 @@ class ClaudeProvider:
         canary = (
             ctx.scratch / f"hooks-ran-{uuid.uuid4().hex}" if memory_guarded(ctx.loadout) else None
         )
-        argv += loadout_flags(ctx.loadout, canary)
+        search, keep_own = tool_search(ctx.loadout, ctx.mcp is not None, ctx.wirings)
+        argv += loadout_flags(ctx.loadout, canary, search)
         if ctx.model:
             argv += ["--model", ctx.model]
         if ctx.effort:
@@ -298,9 +330,14 @@ class ClaudeProvider:
         if ctx.system_prompt:
             argv += ["--append-system-prompt", ctx.system_prompt]
         if ctx.mcp:
-            servers = {
-                "orch": {"command": ctx.mcp.command, "args": ctx.mcp.args, "env": ctx.mcp.env}
+            server: dict[str, object] = {
+                "command": ctx.mcp.command,
+                "args": ctx.mcp.args,
+                "env": ctx.mcp.env,
             }
+            if keep_own:  # a lead keeps using its own tools as without tool search
+                server["alwaysLoad"] = True
+            servers = {"orch": server}
             argv += ["--mcp-config", json.dumps({"mcpServers": servers})]
             argv += ["--allowedTools", "mcp__orch"]
         if ctx.output_schema:
