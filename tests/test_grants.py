@@ -700,6 +700,33 @@ def test_an_agent_cannot_lift_an_off_of_an_agents_own_setting(
     assert own(orch, other.id) is None
 
 
+def test_a_command_of_another_homes_turn_acts_as_the_owner(
+    orch: Orchestrator, project: str, tmp_path
+) -> None:
+    """Tried in a temporary home from a turn: its ORCH_AGENT_ID is of the turn's home."""
+    worker = orch.create_agent(project, worktree=False)
+    other_home = tmp_path / "turn-home"
+    other_home.mkdir()
+    env = {"ORCH_AGENT_ID": "fix-login-3f2a", config.TURN_HOME_ENV: str(other_home)}
+
+    result = CliRunner().invoke(
+        cli.app, ["capabilities", "on", "chrome", "--agent", worker.id], env=env
+    )
+    assert result.exit_code == 0, result.output
+    spawn = ["spawn", "x", "-p", project, "--no-worktree", "--capabilities", "chrome"]
+    spawned = CliRunner().invoke(cli.app, spawn, env=env)
+    assert spawned.exit_code == 0, spawned.output
+    assert own(orch, worker.id) == own(orch, spawned.output.split()[0]) == {"chrome": True}
+
+    link = tmp_path / "same-home"
+    link.symlink_to(config.home())
+    for same in (str(config.home()), str(link), f"{config.home()}/../{config.home().name}"):
+        env[config.TURN_HOME_ENV] = same  # this home: an id it does not know fails closed
+        refused = CliRunner().invoke(cli.app, ["capabilities", "off", "chrome"], env=env)
+        assert refused.exit_code == 1 and "unknown agent 'fix-login-3f2a'" in refused.output
+    assert "capabilities" not in orch.settings()
+
+
 def test_unreadable_stored_values_block_no_other_settings_write(orch: Orchestrator) -> None:
     garbage = {
         "capabilities": "garbage",

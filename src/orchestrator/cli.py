@@ -9,6 +9,7 @@ import sys
 import time
 from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -1820,7 +1821,11 @@ def capabilities_inherit(
 
 def calling_agent(o: Orchestrator) -> Agent | None:
     """The agent whose turn runs this command (ORCH_AGENT_ID, as for its MCP tools): it gives
-    capabilities as that agent; None for the owner."""
+    capabilities as that agent; None for the owner. A turn of another home (its
+    TURN_HOME_ENV, e.g. a command tried in a temporary home) is the owner of this one."""
+    turn_home = os.environ.get(config.TURN_HOME_ENV)
+    if turn_home and Path(turn_home).resolve() != config.home().resolve():
+        return None
     return Caller.from_env(o).agent()
 
 
