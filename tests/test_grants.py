@@ -81,7 +81,7 @@ def test_the_listing_describes_each_capability(orch: Orchestrator) -> None:
         "global": None,
         "roles": {},
         "plugin": False,
-        "docs": "docs/capabilities.md#chrome",
+        "docs": "docs/capabilities.md#chrome-claude-in-chrome",
     }
     assert (tool["name"], tool["providers"], tool["plugin"]) == ("fake-tool", ["fake"], True)
 

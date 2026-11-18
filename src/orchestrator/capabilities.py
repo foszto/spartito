@@ -111,7 +111,7 @@ CHROME = Capability(
         " or a third-party cloud provider (Bedrock, Vertex)",
     ),
     check=chrome_check,
-    docs="docs/capabilities.md#chrome",
+    docs="docs/capabilities.md#chrome-claude-in-chrome",
 )
 
 # The product's default: the capabilities every agent has unless a level turns them off.
