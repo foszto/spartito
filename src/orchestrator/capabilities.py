@@ -198,6 +198,7 @@ def mcp_capability(server: mcp_servers.Server) -> Capability:
         providers={
             "claude": Support(on=Wiring(mcp_servers={server.name: server.entry()}, mcp_tools=True))
         },
+        docs="docs/mcp.md#what-works-today",
         kind=MCP_KIND,
         origin=server.origin,
     )

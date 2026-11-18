@@ -223,7 +223,7 @@ def role() -> str:
     words = [arg for arg in argv[1:] if not arg.startswith("-")]
     if words and words[0] == "app":
         return "notify" if "--notify" in argv else "window"
-    if words and words[0] in ("web", "mcp"):
+    if words[:1] == ["web"] or words[:2] == ["mcp", "serve"]:
         return words[0]
     return "cli"
 

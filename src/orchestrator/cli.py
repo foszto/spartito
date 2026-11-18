@@ -15,6 +15,7 @@ from typing import Annotated
 import typer
 
 from . import __version__, autostart, capabilities, config, loadout, providers, roles
+from . import mcp as mcp_servers
 from .core.access import Caller
 from .models import Agent
 from .providers import locate
@@ -320,14 +321,6 @@ def chat(
     if not here:
         os.chdir(config.workspace_dir())
     os.execvpe("claude", argv, {**os.environ, "PATH": locate.search_path()})
-
-
-@app.command()
-def mcp() -> None:
-    """Run the orchestrator MCP server on stdio (what `{cli} chat` and lead agents connect to)."""
-    from .mcp_server import main
-
-    main()
 
 
 @app.command()
@@ -1176,8 +1169,8 @@ def spawn(
         str | None,
         typer.Option(
             "--capabilities",
-            help='The agent\'s own capabilities: "chrome" turns one on, "-chrome" off;'
-            " comma-separated.",
+            help='The agent\'s own capabilities: "chrome" or "mcp:NAME" turns one on,'
+            ' "-chrome" off; comma-separated.',
         ),
     ] = None,
 ) -> None:
@@ -1700,7 +1693,8 @@ def list_roles() -> None:
 capabilities_app = typer.Typer(
     rich_markup_mode=MARKUP,
     help="Capabilities: extras an agent's CLI gets for its turns, such as Claude in Chrome's"
-    " browser tools; on or off globally, per project, per role and per agent.",
+    " browser tools or an MCP server (`mcp:NAME`); on or off globally, per project, per role"
+    " and per agent.",
 )
 app.add_typer(capabilities_app, name="capabilities")
 RoleOption = Annotated[
@@ -1729,6 +1723,9 @@ def role_lines(entries: list[dict], key: str, scope: str = "") -> list[str]:
 
 
 def print_capabilities(entries: list[dict], project: str | None) -> None:
+    """The built-in capabilities' table, and the MCP servers' in a section of their own."""
+    servers = [entry for entry in entries if entry.get("kind") == capabilities.MCP_KIND]
+    entries = [entry for entry in entries if entry.get("kind") != capabilities.MCP_KIND]
     columns = ["NAME", "PROVIDERS", "GLOBAL", *(["PROJECT"] if project else []), "STATUS"]
     rows = [
         [
@@ -1750,6 +1747,9 @@ def print_capabilities(entries: list[dict], project: str | None) -> None:
         lines += role_lines(entries, "project_roles", f" ({project})")
     for line in lines:
         typer.echo(line)
+    if servers:
+        typer.echo(f"\nMCP servers ({CLI} mcp):")
+        print_mcp_servers(servers, project, key="name")
 
 
 @capabilities_app.callback(invoke_without_command=True)
@@ -1847,6 +1847,226 @@ def capabilities_show(agent_id: str) -> None:
         print_breakdown(orch().agent_capabilities(agent_id))
     except OrchestratorError as exc:
         raise fail(exc) from None
+
+
+# -- MCP servers ----------------------------------------------------------------
+
+mcp_app = typer.Typer(
+    rich_markup_mode=MARKUP,
+    help="MCP servers added in Spartito: each one is the capability `mcp:NAME`, off until a"
+    " level turns it on, given to Claude agents' turns (docs/mcp.md).",
+)
+app.add_typer(mcp_app, name="mcp")
+
+
+def mcp_status(entry: dict) -> str:
+    return entry.get("last_status") or "-"
+
+
+def print_mcp_servers(entries: list[dict], project: str | None, key: str = "server") -> None:
+    """The servers' table (`key`: the name column, `server` or the capability `name`) and
+    the roles' settings below it."""
+    columns = ["NAME", "TRANSPORT", "TARGET", "GLOBAL", *(["PROJECT"] if project else [])]
+    rows = [
+        [
+            entry[key],
+            entry["transport"],
+            entry["definition"].get("command") or entry["definition"].get("url") or "-",
+            on_off_text(entry["global"], entry["default"]),
+            *([on_off_text(entry["project"])] if project else []),
+            mcp_status(entry),
+        ]
+        for entry in entries
+    ]
+    widths = [max(len(row[i]) for row in [columns, *rows]) + 2 for i in range(len(columns))]
+    for row in [[*columns, "LAST STATUS"], *rows]:
+        cells = "".join(f"{cell:<{width}}" for cell, width in zip(row, widths, strict=False))
+        typer.echo(f"  {cells}{row[-1]}")
+    lines = role_lines(entries, "roles")
+    if project:
+        lines += role_lines(entries, "project_roles", f" ({project})")
+    for line in lines:
+        typer.echo(line)
+
+
+NO_SERVERS = (
+    f"no MCP servers added; add one with `{CLI} mcp add NAME --command CMD` (a local command)"
+    f" or `{CLI} mcp add NAME --url URL` (a remote server)"
+)
+
+
+@mcp_app.callback(invoke_without_command=True)
+def mcp_list(
+    ctx: typer.Context,
+    project: ProjectOption = None,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="As JSON, with the definition, reach and agents.")
+    ] = False,
+) -> None:
+    """List the MCP servers added in Spartito: transport, the command or URL origin, the
+    global setting (with `--project` that project's too) and the status the latest turn that
+    had it reported; below the table the roles' settings.
+
+    Add one with `{cli} mcp add`, turn it on with `{cli} mcp on NAME`."""
+    if ctx.invoked_subcommand:
+        return
+    try:
+        entries = orch().mcp_list(project)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    if as_json:
+        typer.echo(json.dumps(entries, indent=2))
+    elif not entries:
+        typer.echo(NO_SERVERS)
+    else:
+        print_mcp_servers(entries, project)
+
+
+def definition_lines(entry: dict) -> list[tuple[str, str]]:
+    shown = entry.get("definition") or {}
+    if entry.get("transport") == mcp_servers.STDIO:
+        return [
+            ("command", shown["command"]),
+            ("args", " ".join(shown["args"]) or "none"),
+            ("env", ", ".join(f"{k}={v}" for k, v in shown["env"].items()) or "none"),
+        ]
+    headers = ", ".join(f"{k}: {v}" for k, v in shown.get("headers", {}).items())
+    return [("url", f"{shown.get('url')} (origin only)"), ("headers", headers or "none")]
+
+
+@mcp_app.command("show")
+def mcp_show(
+    name: str,
+    project: ProjectOption = None,
+    as_json: Annotated[bool, typer.Option("--json", help="As JSON.")] = False,
+) -> None:
+    """One MCP server: its definition (a URL as its origin only), what it reaches, its
+    levels, the agents with their own setting for it and its last status."""
+    try:
+        entry = orch().mcp_show(name, project)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    if as_json:
+        typer.echo(json.dumps(entry, indent=2))
+        return
+    lines = [
+        ("name", f"{entry['server']}  (capability {entry['name']})"),
+        ("transport", entry["transport"]),
+        *definition_lines(entry),
+        ("reaches", entry["reaches"]),
+        ("global", on_off_text(entry["global"], entry["default"])),
+        *([("project", on_off_text(entry["project"]))] if project else []),
+        ("last status", mcp_status(entry)),
+    ]
+    roles = [(role, on, "") for role, on in entry["roles"].items()]
+    roles += [(role, on, f" ({project})") for role, on in entry.get("project_roles", {}).items()]
+    roles_text = [
+        f"{role}{where} {on_off_text(on)}{'' if on else ' (final)'}" for role, on, where in roles
+    ]
+    lines.append(("roles", ", ".join(roles_text) or "none"))
+    agents = [f"{agent} {on_off_text(on)}" for agent, on in entry.get("agents", {}).items()]
+    lines.append(("agents", ", ".join(agents) or "none"))
+    for label, value in lines:
+        typer.echo(f"{label:<12} {value}")
+
+
+@mcp_app.command("add")
+def mcp_add(
+    name: Annotated[str, typer.Argument(help="Letters, digits, '_' and '-'.")],
+    command: Annotated[
+        str | None, typer.Option("--command", help="A local server (stdio): the command it runs.")
+    ] = None,
+    args: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--arg",
+            help="An argument of --command; repeatable, in order. One starting with '-' works"
+            " too: --arg --read-only.",
+        ),
+    ] = None,
+    env: Annotated[
+        list[str] | None,
+        typer.Option("--env", help="NAME=${VAR} for --command; repeatable. No literal values."),
+    ] = None,
+    url: Annotated[
+        str | None, typer.Option("--url", help="A remote server (HTTP): its http(s) URL.")
+    ] = None,
+    headers: Annotated[
+        list[str] | None,
+        typer.Option("--header", help="'Name: ${VAR}' for --url; repeatable. No literal values."),
+    ] = None,
+    reaches: Annotated[
+        str | None,
+        typer.Option("--reaches", help="Your one line on what it reaches, shown after Spartito's."),
+    ] = None,
+) -> None:
+    """Add an MCP server: a command (stdio) or a URL (HTTP). Env and header values are
+    `${VAR}` references, read from the environment of the process that runs the turns;
+    Spartito stores no secret. It is off until you turn it on. Only the owner adds servers:
+    refused in an agent's turn."""
+    o = orch()
+    try:
+        entry = o.mcp_add(
+            name, command=command, args=args or (), env=env, url=url, headers=headers,
+            reaches=reaches, granter=calling_agent(o),
+        )  # fmt: skip
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    typer.echo(f"added {entry['server']} ({entry['transport']}): {entry['reaches']}")
+    typer.echo(
+        f"it is off until a level turns it on: `{CLI} mcp on {entry['server']}`"
+        " (globally; --project P, --role R or --agent A for less)"
+    )
+
+
+@mcp_app.command("remove")
+def mcp_remove(name: str) -> None:
+    """Remove an MCP server, and its setting at every level (global, projects, roles,
+    agents). Only the owner removes servers: refused in an agent's turn."""
+    o = orch()
+    try:
+        entry = o.mcp_remove(name, calling_agent(o))
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    cleared = ", ".join(entry["cleared"])
+    where = f"its settings were removed from: {cleared}" if cleared else "it had no setting"
+    typer.echo(f"removed {entry['server']}; {where}")
+
+
+@mcp_app.command("on")
+def mcp_on(
+    name: str, project: ProjectOption = None, role: RoleOption = None, agent: AgentOption = None
+) -> None:
+    """Turn an MCP server on: globally, for a project, for a role (globally or in a project)
+    or for one agent. The same as `{cli} capabilities on mcp:NAME`."""
+    set_capability(True, mcp_servers.capability_name(name), project, role, agent)
+
+
+@mcp_app.command("off")
+def mcp_off(
+    name: str, project: ProjectOption = None, role: RoleOption = None, agent: AgentOption = None
+) -> None:
+    """Turn an MCP server off at that level (for a role: final). The same as
+    `{cli} capabilities off mcp:NAME`."""
+    set_capability(False, mcp_servers.capability_name(name), project, role, agent)
+
+
+@mcp_app.command("inherit")
+def mcp_inherit(
+    name: str, project: ProjectOption = None, role: RoleOption = None, agent: AgentOption = None
+) -> None:
+    """Remove the MCP server's setting at that level: the one above applies. The same as
+    `{cli} capabilities inherit mcp:NAME`."""
+    set_capability(None, mcp_servers.capability_name(name), project, role, agent)
+
+
+@mcp_app.command("serve")
+def mcp_serve() -> None:
+    """Run Spartito's own MCP server, the one with the agents' tools, on stdio (lead agents
+    and `{cli} chat` start it themselves; there is no need to)."""
+    from .mcp_server import main
+
+    main()
 
 
 # -- cost reports and budgets -------------------------------------------------

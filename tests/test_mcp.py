@@ -455,7 +455,7 @@ def test_the_owner_adds_and_lists_a_server(orch: Orchestrator) -> None:
         "global": None,
         "roles": {},
         "plugin": False,
-        "docs": "",
+        "docs": "docs/mcp.md#what-works-today",
         "kind": "mcp",
         "server": "docs-db",
         "origin": "spartito",
