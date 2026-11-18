@@ -4,7 +4,7 @@
 > as capabilities. Nothing on it exists in the code today. Facts are marked
 > **[documented]** (in the public Claude Code or Codex docs; sources at the end),
 > **[observed]** (seen on one machine with Claude Code 2.1.322) or **[unverified]**.
-> The owner decides the open questions before anything is built.
+> The owner has decided its open questions; see [Decisions](#decisions).
 
 An *MCP server* gives a coding agent a set of tools, such as a ticket tracker's or a
 database's. Today every Claude agent runs with `--strict-mcp-config` and only Spartito's own
@@ -23,7 +23,7 @@ also limit it to some of its tools.
 - [Safety](#safety)
 - [Storage](#storage)
 - [Phases](#phases)
-- [Open questions](#open-questions)
+- [Decisions](#decisions)
 - [Not verified yet](#not-verified-yet)
 - [Sources](#sources)
 
@@ -43,9 +43,9 @@ also limit it to some of its tools.
 
 ### Each server is a capability
 
-**Recommendation:** every MCP server is a capability named `mcp:<name>` (`mcp:jira`), in the
-same registry and with the same levels as `chrome`. A second registry with the same levels is
-not recommended.
+**Decided** ([question 12](#decisions)): every MCP server is a capability named `mcp:<name>`
+(`mcp:jira`), in the same registry and with the same levels as `chrome`. A second registry
+with the same levels is not recommended.
 
 The existing code makes this cheap. These already work on capability names and need no
 copy:
@@ -434,8 +434,8 @@ badges show them.
 
 ### The command
 
-**Recommendation:** a group `spartito mcp`, whose `on`, `off` and `inherit` are the
-capability commands for `mcp:<name>`.
+**Decided** ([question 12](#decisions)): a group `spartito mcp`, whose `on`, `off` and
+`inherit` are the capability commands for `mcp:<name>`.
 
     spartito mcp [--project P] [--refresh] [--json]   # list with status, tools, cost, levels
     spartito mcp show NAME [--project P]              # definition (redacted), tools, levels
@@ -491,8 +491,9 @@ restrict or sign in to servers.
 
 ### Where added servers live
 
-**Recommendation:** in Spartito's database (table `mcp_servers`), seen only by Spartito's
-agents. Spartito does not change `~/.claude.json` unless you ask for exactly that.
+**Decided** ([question 2](#decisions)): in Spartito's database (table `mcp_servers`), seen
+only by Spartito's agents. Spartito does not change `~/.claude.json` unless you ask for
+exactly that.
 
 | | Spartito's table | `claude mcp add` (user or local scope) |
 |---|---|---|
@@ -637,7 +638,7 @@ a day, **L** about two days. Every phase ships alone.
 
 | # | phase | depends on | size |
 |---|---|---|---|
-| 0 | `ToolSearch` and an upfront `orch` server (a separate change, being built) | nothing | S, 1 task |
+| 0 | `ToolSearch` and an upfront `orch` server (a separate change, built) | nothing | S, 1 task |
 | 1 | Spartito's own servers as capabilities, Claude wiring, command | 0 | 3 × M |
 | 2 | Discovering your servers and their status | 1 | 2 × M |
 | 3 | The probe: tools and token cost | 2 | M, possibly + S |
@@ -652,7 +653,7 @@ Phases 0 to 8 come to about 15 to 18 worker-days.
 
 **0. Tool search for agents with MCP tools**
 
-This phase is being built as a separate, small change, ahead of the rest of this design.
+This phase is built as a separate, small change, ahead of the rest of this design.
 
 - Scope: a loadout key `tool_search`:
   - `auto`, the default: on a turn where a capability that brings MCP tools is on, a
@@ -749,6 +750,9 @@ This phase is being built as a separate, small change, ahead of the rest of this
 
 **9. claude.ai connectors and plugin servers**
 
+The connector part is a proposal made after the checks, not decided yet
+([question 8](#decisions)).
+
 - Scope, connectors: read each connector's `claudeai-proxy` entry from the MCP status of a
   session without strict mode; turning one on copies the entry, under its reported name,
   into the turn's private file (see [claude.ai connectors](#claudeai-connectors)); a
@@ -760,42 +764,51 @@ This phase is being built as a separate, small change, ahead of the rest of this
 - Risky: both connector behaviours are observed, not documented, and may change with a
   Claude Code version.
 
-## Open questions
+## Decisions
+
+These were the design's open questions. The owner accepted the recommendations below as the
+baseline for implementation on 2026-11-18. Each question is
+decided (owner, 2026-11-18, decision 127).
+Any of them can still change during implementation, but only with the owner.
 
 1. **Copying definitions from `~/.claude.json` into each turn.** Some hold literal secrets.
-   *Recommendation:* yes, into a private file per turn that is removed when the turn ends,
+   *Decided:* yes, into a private file per turn that is removed when the turn ends,
    never stored, logged or shown. Without it, only `${VAR}`-only definitions could be used.
-2. **Where added servers live.** *Recommendation:* Spartito's database, not a file in the
+2. **Where added servers live.** *Decided:* Spartito's database, not a file in the
    home; it is backed up with the state.
-3. **Refuse literal `env` and header values.** *Recommendation:* yes, `${VAR}` only.
+3. **Refuse literal `env` and header values.** *Decided:* yes, `${VAR}` only.
 4. **OAuth servers must be in Claude Code's configuration** (the *Also add to Claude Code*
-   checkbox). *Recommendation:* yes.
-5. **Who manages servers.** *Recommendation:* add, remove, allowlists and sign-in are the
+   checkbox). *Decided:* yes.
+5. **Who manages servers.** *Decided:* add, remove, allowlists and sign-in are the
    owner's only. Turning on follows the capability rules, so the orchestrator agent may.
-6. **Allowlists per server or per level.** *Recommendation:* one per server first; per role
+6. **Allowlists per server or per level.** *Decided:* one per server first; per role
    later if needed.
-7. **`.mcp.json` servers from repositories.** *Recommendation:* list them and allow the
+7. **`.mcp.json` servers from repositories.** *Decided:* list them and allow the
    owner's on, pinned by shape.
-8. **Connectors.** Strict mode keeps them out, and one can be given alone as a copied
-   `claudeai-proxy` entry (observed once, not documented). *Recommendation:* give them one
-   at a time this way in phase 9, keep strict mode, and check the behaviour per Claude Code
+8. **Connectors.** *Decided:* wait for the two checks (whether `--strict-mcp-config` keeps
+   connectors out, and whether one can be given alone) before connectors reach agents.
+   The checks are done: strict mode keeps them out, and one can be given alone as a copied
+   `claudeai-proxy` entry (observed once, not documented; see
+   [claude.ai connectors](#claudeai-connectors)). *Proposal, not decided:* give them one at
+   a time this way in phase 9, keep strict mode, and check the behaviour per Claude Code
    version; never through `mcp = inherit`.
-9. **How often the status is checked.** *Recommendation:* when the page opens and the cache
+9. **How often the status is checked.** *Decided:* when the page opens and the cache
    is older than 10 minutes, and on **Check now**; never in the background.
-10. **`ToolSearch` always, or only with MCP tools.** *Recommendation:* only with MCP tools
+10. **`ToolSearch` always, or only with MCP tools.** *Decided:* only with MCP tools
     or `chrome`, and the `orch` tools always upfront (`tool_search = auto`). The trade-off
     for leads, from one measurement: deferring the `orch` tools too saves about 4,300
-    tokens per request, and costs a search before the first use of each tool.
-11. **Pre-approving allowlisted tools.** *Recommendation:* no; the permission mode decides,
+    tokens per request, and costs a search before the first use of each tool. Built as
+    phase 0.
+11. **Pre-approving allowlisted tools.** *Decided:* no; the permission mode decides,
     as for `chrome`.
-12. **The command.** *Recommendation:* `spartito mcp`, mapping to `mcp:<name>`
+12. **The command.** *Decided:* `spartito mcp`, mapping to `mcp:<name>`
     capabilities.
-13. **Codex.** It has no approval gate in `exec`. *Recommendation:* support a server for
+13. **Codex.** It has no approval gate in `exec`. *Decided:* support a server for
     Codex only when the owner marks it *runs without approval for Codex*.
 14. **Repositories and `mcp = inherit`.** A repository's `.orch/loadout.toml` or
     `.orch/roles/*.md` can set `mcp = inherit` today, which gives agents every server,
-    including the repository's own `.mcp.json`. *Recommendation:* a separate fix that
-    ignores `mcp = inherit` from project files.
+    including the repository's own `.mcp.json`. *Decided:* a separate fix that
+    ignores `mcp = inherit` from project files. Not built yet.
 
 ## Not verified yet
 
