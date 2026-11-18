@@ -6,6 +6,9 @@ marked `alwaysLoad` (providers/claude.py). Fakes only: no CLI runs."""
 from __future__ import annotations
 
 import json
+import re
+import shlex
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -13,13 +16,19 @@ import pytest
 from test_interfaces import exec_argv, option  # noqa: F401 (a fixture)
 from typer.testing import CliRunner
 
-from orchestrator import cli, config
+from orchestrator import cli, config, memory_guard
 from orchestrator.capabilities import Capability
 from orchestrator.loadout import Loadout
 from orchestrator.models import Agent
 from orchestrator.providers import McpServer, RunContext, get
 from orchestrator.providers.base import Support, Wiring
-from orchestrator.providers.claude import CHROME, NO_BACKGROUND_ENV, loadout_flags, tool_search
+from orchestrator.providers.claude import (
+    CHROME,
+    NO_BACKGROUND_ENV,
+    PARENT_SESSION_ENV,
+    loadout_flags,
+    tool_search,
+)
 from orchestrator.service import Orchestrator
 
 WORKER = Loadout(
@@ -244,6 +253,197 @@ def test_a_compaction_turn_gets_the_same_flags(tmp_path: Path) -> None:
 
     assert tools(compact) == tools(normal) == "Bash,Read,Glob,Grep,ToolSearch"
     assert server(compact) == server(normal) == {**PLAIN_SERVER, "alwaysLoad": True}
+
+
+# -- unchanged where nothing applies: the command lines of `master`, written out -------------
+
+# The packaged lead's loadout (lead.md): the memory guard adds Write,Edit and --settings.
+KEEPER = replace(LEAD, memory=True)
+UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+MCP_CONFIG = (
+    '{"mcpServers": {"orch": {"command": "py", "args": ["-m", "orchestrator.mcp_server"],'
+    ' "env": {"ORCH_AGENT_ID": "a-1"}}}}'
+)
+CFC_OFF = {"CLAUDE_CODE_ENABLE_CFC": "0"}
+
+
+def plain_turn(
+    tmp_path: Path,
+    loadout: Loadout,
+    session_id: str | None,
+    lead: bool = False,
+    wirings: tuple[Wiring, ...] = (),
+    prompt: str = "do it",
+):
+    """A turn under the default `tool_search = auto` with no wiring that brings MCP tools."""
+    assert loadout.tool_search == "auto"
+    agent = Agent(
+        id="fix-login-3f2a",
+        project="my-app",
+        name="fix-login",
+        role="lead" if lead else "worker",
+        provider="claude",
+        cwd="/w",
+        session_id=session_id,
+    )
+    ctx = RunContext(
+        agent=agent,
+        prompt=prompt,
+        system_prompt="ROLE",
+        scratch=tmp_path,
+        mcp=SERVER if lead else None,
+        lead=lead,
+        loadout=loadout,
+        wirings=wirings,
+    )
+    return get("claude").invocation(ctx)
+
+
+def fresh(argv: list[str]) -> list[str]:
+    """A new session's random id as `<uuid>`."""
+    at = argv.index("--session-id") + 1
+    assert UUID.match(argv[at]), argv[at]
+    return [*argv[:at], "<uuid>", *argv[at + 1 :]]
+
+
+def guard_settings(canary: Path) -> str:
+    """The memory guard's `--settings`, as `master` writes it for this canary."""
+    guard = shlex.join([sys.executable, "-I", memory_guard.__file__]) + " || exit 2"
+    touch = shlex.join(["touch", str(canary)])
+    return (
+        '{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": '
+        + json.dumps(touch)
+        + '}]}], "PreToolUse": [{"matcher": "Write|Edit|MultiEdit|NotebookEdit", "hooks": '
+        '[{"type": "command", "command": ' + json.dumps(guard) + "}]}]}}"
+    )
+
+
+def test_a_resumed_lead_without_a_capability_has_the_command_line_of_before(
+    tmp_path: Path,
+) -> None:
+    invocation = plain_turn(tmp_path, KEEPER, "sid", lead=True)
+
+    assert invocation.canary is not None
+    assert invocation.argv == [
+        "claude", "-p", "--output-format", "stream-json", "--verbose",
+        "--resume", "sid", "--permission-mode", "auto",
+        "--settings", guard_settings(invocation.canary),
+        "--tools", "Bash,Read,Glob,Grep,Write,Edit",
+        "--strict-mcp-config", "--setting-sources", "project,local",
+        "--disable-slash-commands", "--append-system-prompt", "ROLE",
+        "--mcp-config", MCP_CONFIG, "--allowedTools", "mcp__orch",
+        "--input-format", "stream-json",
+    ]  # fmt: skip
+    assert invocation.env == NO_BACKGROUND_ENV
+
+
+def test_a_new_worker_turn_without_a_capability_has_the_command_line_of_before(
+    tmp_path: Path,
+) -> None:
+    invocation = plain_turn(tmp_path, WORKER, None)
+
+    assert fresh(invocation.argv) == [
+        "claude", "-p", "--output-format", "stream-json", "--verbose",
+        "--session-id", "<uuid>", "--name", "fix-login-3f2a", "--permission-mode", "auto",
+        "--tools", "Bash,Read,Edit,Write,Glob,Grep",
+        "--strict-mcp-config", "--setting-sources", "project,local",
+        "--disable-slash-commands", "--append-system-prompt", "ROLE",
+    ]  # fmt: skip
+    assert invocation.env == {} and invocation.stdin == "do it"
+
+
+def test_a_new_lead_turn_without_a_capability_has_the_command_line_of_before(
+    tmp_path: Path,
+) -> None:
+    invocation = plain_turn(tmp_path, KEEPER, None, lead=True)
+
+    assert invocation.canary is not None
+    assert fresh(invocation.argv) == [
+        "claude", "-p", "--output-format", "stream-json", "--verbose",
+        "--session-id", "<uuid>", "--name", "fix-login-3f2a", "--permission-mode", "auto",
+        "--settings", guard_settings(invocation.canary),
+        "--tools", "Bash,Read,Glob,Grep,Write,Edit",
+        "--strict-mcp-config", "--setting-sources", "project,local",
+        "--disable-slash-commands", "--append-system-prompt", "ROLE",
+        "--mcp-config", MCP_CONFIG, "--allowedTools", "mcp__orch",
+        "--input-format", "stream-json",
+    ]  # fmt: skip
+    assert invocation.env == NO_BACKGROUND_ENV
+
+
+def test_a_compaction_without_a_capability_has_the_command_line_of_before(
+    tmp_path: Path,
+) -> None:
+    # As the runner passes a compaction: slash commands on, no output schema, `/compact`.
+    worker = plain_turn(
+        tmp_path, replace(WORKER, slash_commands=True), "sid", prompt="/compact keep the plan"
+    )
+    lead = plain_turn(
+        tmp_path, replace(KEEPER, slash_commands=True), "sid", lead=True, prompt="/compact"
+    )
+
+    assert worker.argv == [
+        "claude", "-p", "--output-format", "stream-json", "--verbose",
+        "--resume", "sid", "--permission-mode", "auto",
+        "--tools", "Bash,Read,Edit,Write,Glob,Grep",
+        "--strict-mcp-config", "--setting-sources", "project,local",
+        "--append-system-prompt", "ROLE",
+    ]  # fmt: skip
+    assert worker.stdin == "/compact keep the plan" and worker.env == {}
+    assert lead.canary is not None
+    assert lead.argv == [
+        "claude", "-p", "--output-format", "stream-json", "--verbose",
+        "--resume", "sid", "--permission-mode", "auto",
+        "--settings", guard_settings(lead.canary),
+        "--tools", "Bash,Read,Glob,Grep,Write,Edit",
+        "--strict-mcp-config", "--setting-sources", "project,local",
+        "--append-system-prompt", "ROLE",
+        "--mcp-config", MCP_CONFIG, "--allowedTools", "mcp__orch",
+        "--input-format", "stream-json",
+    ]  # fmt: skip
+    assert json.loads(lead.stdin)["message"]["content"] == [{"type": "text", "text": "/compact"}]
+    assert lead.env == NO_BACKGROUND_ENV
+
+
+@pytest.mark.parametrize("session_id", [None, "sid"], ids=["new", "resumed"])
+@pytest.mark.parametrize("lead", [False, True], ids=["worker", "lead"])
+def test_chrome_off_is_the_command_line_without_a_wiring_plus_its_env(
+    tmp_path: Path, session_id: str | None, lead: bool
+) -> None:
+    loadout = KEEPER if lead else WORKER
+
+    off = plain_turn(tmp_path, loadout, session_id, lead=lead, wirings=(CHROME.off,))
+    plain = plain_turn(tmp_path, loadout, session_id, lead=lead)
+
+    def comparable(invocation) -> list[str]:
+        argv = fresh(invocation.argv) if session_id is None else invocation.argv
+        if invocation.canary is None:
+            return argv
+        # The canary's name is random per invocation; its settings are pinned above.
+        return ["<settings>" if arg == guard_settings(invocation.canary) else arg for arg in argv]
+
+    assert comparable(off) == comparable(plain)
+    assert off.env == {**CFC_OFF, **(NO_BACKGROUND_ENV if lead else {})}
+    assert plain.env == (NO_BACKGROUND_ENV if lead else {})
+
+
+# -- ENABLE_TOOL_SEARCH ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mode", ["auto", "always", "never"])
+@pytest.mark.parametrize("wirings", [(), (CHROME.off,), (CHROME.on,)], ids=["none", "off", "on"])
+@pytest.mark.parametrize("lead", [False, True], ids=["worker", "lead"])
+def test_enable_tool_search_is_neither_set_nor_removed(
+    tmp_path: Path, mode: str, wirings: tuple[Wiring, ...], lead: bool
+) -> None:
+    loadout = replace(KEEPER if lead else WORKER, tool_search=mode)
+
+    invocation = turn(tmp_path, loadout, wirings, lead=lead)
+
+    assert "ENABLE_TOOL_SEARCH" not in invocation.env
+    assert "ENABLE_TOOL_SEARCH" not in invocation.unset_env
+    assert "ENABLE_TOOL_SEARCH" not in PARENT_SESSION_ENV
+    assert not any("ENABLE_TOOL_SEARCH" in arg for arg in invocation.argv)
 
 
 def test_the_rule_on_its_own() -> None:
