@@ -20,12 +20,13 @@ NAMES = (
     "buildControl", "triValue", "triState", "onOff", "capabilityLabel", "capabilityItems",
     "renderCapabilitySetup", "capabilityLine", "saveCapability", "capabilitiesBox", "capabilityRow",
     "isActive", "plural", "isIdle", "stateOf", "count", "tokens", "short",
-    "contextWarn", "compactAtTitle", "contextTitle", "renderNav", "navItem",
+    "contextWarn", "compactAtTitle", "contextTitle", "renderNav", "navItem", "setupTicket",
+    "setupFresh", "placeChildren", "CAPABILITY_SETTINGS",
 )  # fmt: skip
 
 # What the code under test needs beyond the provider tests' harness, and invented data.
 PRELUDE = r"""
-let capabilityNote = null, navKey = '';
+let capabilityNote = null, navKey = '', stateTicket = null;
 const ARCHIVE = 'archive:', COST = 'cost:', CONTEXT_WARN = 80;
 const window = {};
 function icon() { return new Node('svg'); }
@@ -56,6 +57,18 @@ const agentSetup = (items, fields = {}) => ({ id: 'fix-login-3f2a', provider: 'c
   role: 'worker', capabilities: { on: [], items, error: null }, ...fields });
 const lines = () => setupCaps.children.map(n => n.textContent);
 const capSelect = () => setupCaps.querySelector('[data-setup=cap:chrome]');
+const FAKE = { ...CHROME, name: 'fake-tool', label: 'Fake tool', reaches: '', roles: {}, status: 'unknown',
+  reason: 'not checked' };
+// Counts the times a node is taken out of its parent (a focused one would lose the focus).
+const watch = n => {
+  let parent = n.parentNode; const seen = { detached: 0 };
+  Object.defineProperty(n, 'parentNode', { get: () => parent, set: v => { if (!v) seen.detached++; parent = v; } });
+  return seen;
+};
+// A later /api/state with `fields` for chrome, as refresh hands it on (stateTicket: when it started).
+const pollState = (fields, ticket = setupTicket()) => {
+  state.capabilities = [{ ...CHROME, ...fields }]; stateTicket = ticket; providersChanged();
+};
 """
 
 
@@ -498,6 +511,121 @@ out({ later_status, focused, settling, saving, polled, after: radioView(box), st
     ]
     assert result["status"] == "Status: available (found again)"
     assert result["error"] == "refused by server"
+
+
+def test_a_poll_never_takes_a_focused_setup_line_out() -> None:
+    result = run_page(
+        """
+const fake = item({ name: 'fake-tool', label: 'Fake tool' });
+capabilityNote = { id: 'fix-login-3f2a', text: 'A turn is running: the change applies from the next one.' };
+renderSetup(agentSetup([item({ state: 'on', source: 'agent', override: true }), fake], { running: true }));
+const line = capSelect().parentNode, seen = watch(line);
+document.activeElement = capSelect();
+// the turn ends and the other capability changes: the hint goes, the other line is redrawn
+renderSetup(agentSetup([item({ state: 'on', source: 'agent', override: true }),
+  { ...fake, state: 'on', source: 'global' }], { running: false }));
+out({ detached: seen.detached, same: capSelect().parentNode === line, inside: line.parentNode === setupCaps,
+  lines: lines() });
+"""
+    )
+    assert result == {
+        "detached": 0,
+        "same": True,
+        "inside": True,
+        "lines": [
+            "Claude in Chromeinheritonoffonfrom its own setting",
+            "Fake toolinherit (on)onoffonfrom global",
+        ],
+    }
+
+
+def test_a_poll_never_takes_a_focused_settings_row_out() -> None:
+    result = run_page(
+        """
+settingsDialog.open = true;
+state.capabilities = [CHROME, FAKE];
+renderSettings();
+const box = settingsBox(), row = radios(box)[0].parentNode.parentNode.parentNode, seen = watch(row);
+const statuses = () => box.querySelectorAll('.cap-status-line').map(texts);
+document.activeElement = radios(box)[0];
+state.capabilities = [{ ...CHROME, status: 'available', reason: 'found' }, { ...FAKE, status: 'available', reason: 'found' }];
+providersChanged();
+out({ detached: seen.detached, same: radios(box)[0].parentNode.parentNode.parentNode === row,
+  inside: row.parentNode === box.querySelector('.cap-rows'), statuses: statuses() });
+"""
+    )
+    assert result == {
+        "detached": 0,
+        "same": True,
+        "inside": True,
+        "statuses": [
+            "Status: unknown (Spartito cannot see the extension)",
+            "Status: available (found)",
+        ],
+    }
+
+
+def test_a_poll_from_before_a_save_leaves_the_saved_value() -> None:
+    result = run_page(
+        """
+settingsDialog.open = true;
+renderSettings();
+const box = settingsBox(), statusOf = () => box.querySelector('.cap-status-line').textContent;
+const before = setupTicket(), answer = later();
+replies.push(answer.promise);
+radios(box)[0].checked = false; radios(box)[1].checked = true;
+radios(box)[1].onchange({ target: radios(box)[1] });
+await settle();
+const during = setupTicket();  // a poll that starts while the save is on its way
+answer.answer({ capabilities: [{ ...CHROME, global: true }] });
+await settle();
+pollState({ global: null, status: 'available', reason: 'found' }, before);
+const early = [radioView(box), statusOf()];
+pollState({ global: null, status: 'available', reason: 'found' }, during);
+const meanwhile = [radioView(box), statusOf()];
+pollState({ global: true, status: 'available', reason: 'found' });
+out({ early, meanwhile, after: [radioView(box), statusOf()] });
+"""
+    )
+    on = [["inherit (off)", False, False], ["on", True, False], ["off", False, False]]
+    assert result["early"] == [on, "Status: unknown (Spartito cannot see the extension)"]
+    assert result["meanwhile"] == result["early"]
+    assert result["after"] == [on, "Status: available (found)"]
+
+
+def test_a_poll_from_before_a_project_save_is_left_out_too() -> None:
+    result = run_page(
+        """
+settingsDialog.open = true;
+state.settings.projects['my-app'] = {};
+settingsDialog.querySelector('[name=scope]').value = 'my-app';
+replies.push({ capabilities: [{ ...CHROME, project: null, project_roles: {} }] });
+renderSettings();
+await settle();
+const box = settingsBox(), statusOf = () => box.querySelector('.cap-status-line').textContent;
+const before = setupTicket();
+replies.push({ capabilities: [{ ...CHROME, project: true, project_roles: {} }] });
+radios(box)[0].checked = false; radios(box)[1].checked = true;
+radios(box)[1].onchange({ target: radios(box)[1] });
+await settle();
+pollState({ global: false, status: 'available', reason: 'found' }, before);
+const early = [radioView(box), statusOf()];
+pollState({ global: false, status: 'available', reason: 'found' });
+out({ request: posted.at(-1), early, after: [radioView(box), statusOf()] });
+"""
+    )
+    assert result["request"] == {
+        "path": "/api/capabilities",
+        "body": {"name": "chrome", "state": True, "project": "my-app"},
+    }
+    assert result["early"] == [
+        [["inherit (off)", False, False], ["on", True, False], ["off", False, False]],
+        "Status: unknown (Spartito cannot see the extension)",
+    ]
+    assert result["after"] == [
+        [["inherit (off)", False, False], ["on", True, False], ["off", False, False]],
+        "Status: available (found)",
+    ]
 
 
 def test_the_page_scripts_parse() -> None:

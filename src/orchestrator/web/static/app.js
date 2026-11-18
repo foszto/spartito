@@ -774,6 +774,9 @@ const setupEpochs = new Map();  // agent id -> saves started and ended
 const setupTicket = () => ({
   epochs: new Map(setupEpochs), saving: new Set([...savingSetup.keys()].map(slot => slot.split('\u0000')[0])) });
 const setupFresh = (ticket, id) => !ticket.saving.has(id) && (ticket.epochs.get(id) || 0) === (setupEpochs.get(id) || 0);
+// The ticket of the poll whose answer `state` is (refresh): a redraw from it can tell whether
+// it started before a save ended. null: none yet.
+let stateTicket = null;
 const bumpSetup = id => setupEpochs.set(id, (setupEpochs.get(id) || 0) + 1);
 const setupSlot = (id, key) => `${id}\u0000${key}`;
 const setupBusy = (id, key) => pendingSetup.has(setupSlot(id, key)) || savingSetup.has(setupSlot(id, key));
@@ -1091,10 +1094,9 @@ function renderCapabilitySetup(box, data, own) {
     if (focused) refocus = line.querySelector('select');
     return line;
   });
-  box.replaceChildren(...lines);
-  for (const [text, failed] of [[error, true], [note?.text, note?.error]]) {
-    if (text) box.append(el('div', `cap-note${failed ? ' error' : ''}`, text));
-  }
+  const notes = [[error, true], [note?.text, note?.error]].filter(([text]) => text)
+    .map(([text, failed]) => el('div', `cap-note${failed ? ' error' : ''}`, text));
+  placeChildren(box, [...lines, ...notes]);
   box.hidden = !box.childElementCount;
   // a line left alone is redrawn by a later pass (focusout, the next poll)
   if (kept) delete box.dataset.key; else box.dataset.key = key;
@@ -1123,6 +1125,15 @@ function capabilityLine(data, item) {
   const note = item.note || blocked;
   if (note) line.append(el('span', 'cap-note', `· ${note}`));
   return line;
+}
+
+// Puts `nodes` into `parent` in this order without taking out one that is there already (a kept
+// line: a focused select keeps its focus and its open list); the others go, the new ones are
+// inserted around it. The kept ones must already be in this order.
+function placeChildren(parent, nodes) {
+  const keep = new Set(nodes);
+  for (const child of [...parent.children]) if (!keep.has(child)) child.remove();
+  nodes.forEach((node, i) => { if (parent.children[i] !== node) parent.insertBefore(node, parent.children[i] || null); });
 }
 
 async function saveCapability(id, item, value, keepalive) {
@@ -2301,6 +2312,8 @@ function defaultProviderBox(project, redraws) {
 // the role settings, read-only (a role's "off" is final). A project's listing is loaded. A
 // choice stays on screen while it settles and is saved; later polls redraw the other rows
 // (`redraws`), never one the user is on or has a choice of on its way.
+// The saves of the box, as setupRequest counts them (no agent id has a colon).
+const CAPABILITY_SETTINGS = 'settings:capabilities';
 function capabilitiesBox(scope, redraws) {
   const box = el('div', 'tier'), list = el('div', 'cap-rows'), status = el('p', 'about cap-status');
   status.setAttribute('role', 'status');
@@ -2314,7 +2327,7 @@ function capabilitiesBox(scope, redraws) {
   const draw = (focusName, poll) => {
     if (!entries) return;
     const before = new Map([...list.children].map(row => [row.dataset.capability, row]));
-    list.replaceChildren(...entries.map(entry => {
+    placeChildren(list, entries.map(entry => {
       const row = before.get(entry.name);
       if (poll && row && (row.contains(document.activeElement) || chosen.has(entry.name))) return row;
       return capabilityRow(entry, scope, busy, change, chosen.has(entry.name) ? chosen.get(entry.name) : undefined);
@@ -2325,7 +2338,8 @@ function capabilitiesBox(scope, redraws) {
     const focused = list.contains(document.activeElement) ? entry.name : null;
     busy = true; draw(); status.textContent = '';
     try {
-      const reply = await call('/api/capabilities', { name: entry.name, state: value, ...(scope ? { project: scope } : {}) });
+      const reply = await setupRequest(CAPABILITY_SETTINGS, 'save',
+        () => call('/api/capabilities', { name: entry.name, state: value, ...(scope ? { project: scope } : {}) }));
       entries = reply.capabilities;
       status.textContent = `${entry.label || entry.name}: ${value === null ? 'inherited' : onOff(value)}`
         + `${scope ? ` for ${scope}` : ' globally'}, from each agent’s next turn.`;
@@ -2340,9 +2354,12 @@ function capabilitiesBox(scope, redraws) {
     clearTimeout(timers.get(entry.name));
     timers.set(entry.name, setTimeout(() => { timers.delete(entry.name); save(entry, value); }, SETUP_SETTLE_MS));
   };
-  // A later poll's listing: status, reason and the global values (a project keeps its own).
+  // A later poll's listing: status, reason and the global values (a project keeps its own). A
+  // poll that started before a save ended may hold the old values: it is left out, and the next
+  // poll redraws again even when it brings the same listing.
   redraws.push(() => {
     if (!entries) return;
+    if (stateTicket && !setupFresh(stateTicket, CAPABILITY_SETTINGS)) { providersSeen = ''; return; }
     entries = entries.map(entry => {
       const now = (state.capabilities || []).find(c => c.name === entry.name);
       return now ? { ...now, ...(scope ? { project: entry.project, project_roles: entry.project_roles } : {}) } : entry;
@@ -2667,6 +2684,7 @@ async function refresh() {
   const ticket = setupTicket();  // answers older than a save do not touch the model controls
   try {
     state = await call('/api/state');
+    stateTicket = ticket;
     providersChanged();
     applyAppRequest(state.app_open);
     if (selected.startsWith('lead:')) {
