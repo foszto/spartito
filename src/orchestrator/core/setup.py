@@ -86,7 +86,12 @@ def update_settings(orch: Facade, data: Any, project: str | None = None) -> dict
     scope = orch.project(project).name if project else settings.GLOBAL
     # Kept when not named (the settings dialog sends only its own fields; a page from
     # before a key existed does not send that one).
-    kept = (settings.ARCHIVE_AFTER, settings.COMPACT_AT)
+    kept = (
+        settings.ARCHIVE_AFTER,
+        settings.COMPACT_AT,
+        settings.CAPABILITIES,
+        settings.ROLE_CAPABILITIES,
+    )
     for key in kept if project else kept + settings.SWITCHES:
         if isinstance(data, dict) and key not in data:
             stored = orch.store.get_settings(scope).get(key)

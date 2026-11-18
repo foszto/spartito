@@ -25,7 +25,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from . import config, git, keep_awake, loadout, notify, providers, roles, settings
+from . import capabilities, config, git, keep_awake, loadout, notify, providers, roles, settings
 from .core import costs, lifecycle
 from .models import (
     COMPACT,
@@ -151,7 +151,13 @@ def system_prompt(
 
 # Passed on to the orchestrator's MCP server when set: what the runners it starts need to
 # find and run the providers as this runner does (their config homes, plugin providers).
-MCP_PASSED_ENV = ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "ORCH_PROVIDERS", "PYTHONPATH")
+MCP_PASSED_ENV = (
+    "CODEX_HOME",
+    "CLAUDE_CONFIG_DIR",
+    "ORCH_PROVIDERS",
+    capabilities.PLUGINS_ENV,
+    "PYTHONPATH",
+)
 
 
 def mcp_server(agent: Agent) -> McpServer:
@@ -202,6 +208,10 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
     )
     if compact:  # the CLI's own `/compact` is a slash command; the rest of the loadout stays
         resolved = dataclasses.replace(resolved, slash_commands=True)
+    # Every kind of turn, compactions too: one is a turn of the same session, and the same
+    # tools keep its prompt cache (an "off" wiring must reach it as well).
+    granted = capabilities.resolve(store, agent)
+    note_capabilities(store, run.id, agent.id, granted, timeline)
     ctx = RunContext(
         agent=agent,
         # A notification carries child output: data, never {{result:…}} references. A
@@ -217,6 +227,7 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
         writable_dirs=writable,
         loadout=resolved,
         compact_below=compact_limit(before) if compact else None,
+        wirings=granted.wirings,
         **settings.resolve(store, agent, role),
     )
     invocation = provider.invocation(ctx)
@@ -386,6 +397,30 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
     store.add_event(run.id, agent.id, "error", error)
     write_result(store, run, scratch, last_text or error, None)
     store.finish_run(run.id, RunStatus.FAILED, error=error, result=last_text or None, cost_usd=cost)
+
+
+def note_capabilities(
+    store: Store,
+    run_id: int,
+    agent_id: str,
+    granted: capabilities.Resolution,
+    timeline: AgentRuns,
+) -> None:
+    """Record what the turn has of the capabilities on the run; note it in the log when it
+    differs from the agent's previous recorded turn (a first turn: when something is on
+    or skipped). `timeline`: the agent's runs as read before this one was recorded."""
+    record = granted.record()
+    store.set_run_capabilities(run_id, record)
+    earlier = sorted(
+        (other for other in timeline.runs if other.id != run_id and other.id in timeline.meta),
+        key=lambda other: (other.started_at or "", other.id),
+    )
+    previous = capabilities.previous_record(
+        timeline.meta[other.id].capabilities for other in earlier
+    )
+    if previous == record or (previous is None and not (record["on"] or record["skipped"])):
+        return
+    store.add_event(run_id, agent_id, "info", capabilities.describe_record(record))
 
 
 CANARY_SECONDS = 15.0  # the CLI's SessionStart hooks run within about 0.2 s of its start
