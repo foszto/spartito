@@ -28,7 +28,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from .. import __version__, config, roles
-from ..models import Agent
+from ..models import Agent, RunStatus
 from ..service import ORCHESTRATOR_ID, NeedsConfirmation, Orchestrator, OrchestratorError
 from ..settings import ARCHIVE_AFTER, ARCHIVE_AFTER_DEFAULT, COMPACT_AT, COMPACT_AT_DEFAULT, TIERS
 from . import board_api, code_api
@@ -163,6 +163,8 @@ def state(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
         # The supported harnesses and which can run here; never waits for a CLI: what is
         # not checked yet is `unknown` with its models loading, and a later poll has it.
         "providers": orch.provider_list(wait=False),
+        # The registered capabilities with their settings and status; never waits either.
+        "capabilities": orch.capability_list(),
         "tiers": list(TIERS),
         # Ids only: the archive view loads the agents themselves (/api/archive).
         "archived": orch.archived_ids(),
@@ -297,6 +299,7 @@ def spawn_agent(orch: Orchestrator, request: Request, body: dict) -> dict[str, A
         share_with=optional(body, "share_with"),
         base=optional(body, "base"),
         after=optional(body, "after"),
+        capabilities=body.get("capabilities") or None,
     )
     return dispatched(agent, run.id)
 
@@ -337,6 +340,29 @@ def set_agent_model(orch: Orchestrator, request: Request, body: dict) -> dict[st
     if changes or setup is None:  # the newer setup, keeping a note of the move's
         setup = (setup or {}) | orch.set_overrides(agent_id, changes)
     return setup
+
+
+def list_capabilities(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """Every capability with its settings and status; `?project=` adds that project's."""
+    return {"capabilities": orch.capability_list(request.query_params.get("project") or None)}
+
+
+def set_capability(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """`{"name", "state": true|false|null, "project"?, "role"?}`: on, off or inherit,
+    globally, for a project and/or a role. Returns the listing of that scope."""
+    entries = orch.set_capability(
+        required(body, "name"), body.get("state"), optional(body, "project"), optional(body, "role")
+    )
+    return {"capabilities": entries}
+
+
+def set_agent_capabilities(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """The agent's own setting, `{"<name>": true|false|null}` (null: inherit); returns what its
+    next turn gets and whether a turn is running now (it keeps what it started with)."""
+    agent_id = request.path_params["agent_id"]
+    found = orch.set_agent_capabilities(agent_id, body)
+    running = any(run.status is RunStatus.RUNNING for run in orch.active_runs(agent_id))
+    return {"capabilities": found, "running": running}
 
 
 def save_settings(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
@@ -537,9 +563,12 @@ app = Starlette(
         Route("/api/projects/{name}/archive", api(archive_safe), methods=["POST"]),
         Route("/api/orchestrator", api(message_orchestrator), methods=["POST"]),
         Route("/api/settings", api(save_settings), methods=["POST"]),
+        Route("/api/capabilities", api(list_capabilities)),
+        Route("/api/capabilities", api(set_capability), methods=["POST"]),
         Route("/api/agents", api(spawn_agent), methods=["POST"]),
         Route("/api/agents/{agent_id}/messages", api(message_agent), methods=["POST"]),
         Route("/api/agents/{agent_id}/model", api(set_agent_model), methods=["POST"]),
+        Route("/api/agents/{agent_id}/capabilities", api(set_agent_capabilities), methods=["POST"]),
         Route("/api/agents/{agent_id}/stop", api(stop_agent), methods=["POST"]),
         Route("/api/agents/{agent_id}/compact", api(compact_agent), methods=["POST"]),
         Route("/api/agents/{agent_id}/archive", api(archive_agent), methods=["POST"]),

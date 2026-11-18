@@ -552,11 +552,12 @@ def test_the_providers_command_prints_a_table(
 
     assert result.exit_code == 0, result.output
     lines = click.unstyle(result.output).splitlines()
-    assert lines[0].split() == ["NAME", "STATUS", "VERSION", "REASON"]
+    assert lines[0].split() == ["NAME", "STATUS", "VERSION", "CAPABILITIES", "REASON"]
     rows = {line[2:].split()[0]: line for line in lines[1:-2]}
     assert rows["claude"].startswith("  claude ") and "not_installed in this test" in rows["claude"]
     assert rows["codex"].startswith("* codex ") and " available " in rows["codex"]
-    assert rows["fake"].split()[1:3] == ["available", "1.0"]
+    assert rows["fake"].split()[1:4] == ["available", "1.0", "-"]
+    assert rows["claude"][2:].split()[3] == "chrome" and rows["codex"][2:].split()[3] == "-"
     assert calls.count("claude") == 2  # checked again, not taken from the cache
     # What to do after installing a CLI: once, below the table.
     assert lines[-2:] == ["", locate.install_advice()]

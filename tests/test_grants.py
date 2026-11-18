@@ -1,0 +1,513 @@
+"""Capabilities at the surfaces (core/grants.py): the listing, the settings per scope and
+role, an agent's own setting, who may give which, and the CLI, HTTP and MCP interfaces."""
+
+from __future__ import annotations
+
+import json
+
+import click
+import pytest
+from fakecapability import FAKE_TOOL
+from starlette.testclient import TestClient
+from typer.testing import CliRunner
+
+from orchestrator import capabilities, cli, config, mcp_server
+from orchestrator.core import availability
+from orchestrator.providers import locate
+from orchestrator.service import ORCHESTRATOR_ID, Orchestrator, OrchestratorError
+from orchestrator.web.app import app
+
+ORIGIN = {"origin": "http://localhost"}
+UNSEEN = capabilities.CHROME_UNSEEN
+
+
+@pytest.fixture(autouse=True)
+def no_launch(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Turns are queued, never run: these tests look at what is stored."""
+    launched: list[int] = []
+    monkeypatch.setattr(Orchestrator, "_launch", lambda self, run: launched.append(run.id))
+    return launched
+
+
+@pytest.fixture(autouse=True)
+def fake_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`fake-tool` (carried by the fake provider) registered after chrome; no login
+    variables, so chrome's status is `unknown`."""
+    registry = dict(capabilities.REGISTRY)
+    registry["fake-tool"] = FAKE_TOOL
+    monkeypatch.setattr(capabilities, "REGISTRY", registry)
+    monkeypatch.setattr(capabilities, "PLUGINS", {"fake-tool"})
+    for name in capabilities.NOT_CLAUDE_AI:
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture
+def client(orch: Orchestrator) -> TestClient:
+    return TestClient(app, base_url="http://localhost")
+
+
+def own(orch: Orchestrator, agent_id: str) -> dict | None:
+    stored = orch.agent(agent_id).capabilities
+    return json.loads(stored) if stored else None
+
+
+def as_caller(monkeypatch: pytest.MonkeyPatch, agent_id: str | None) -> None:
+    if agent_id:
+        monkeypatch.setenv("ORCH_AGENT_ID", agent_id)
+    else:
+        monkeypatch.delenv("ORCH_AGENT_ID", raising=False)
+
+
+# -- the listing and the settings ---------------------------------------------------------
+
+
+def test_the_listing_describes_each_capability(orch: Orchestrator) -> None:
+    chrome, tool = orch.capability_list()
+
+    assert chrome == {
+        "name": "chrome",
+        "label": "Claude in Chrome",
+        "description": capabilities.CHROME.description,
+        "reaches": capabilities.CHROME.reaches,
+        "requires": list(capabilities.CHROME.requires),
+        "providers": ["claude"],
+        "status": "unknown",
+        "reason": UNSEEN,
+        "default": False,
+        "global": None,
+        "roles": {},
+        "plugin": False,
+        "docs": "docs/capabilities.md#chrome",
+    }
+    assert (tool["name"], tool["providers"], tool["plugin"]) == ("fake-tool", ["fake"], True)
+
+
+def test_the_listing_starts_no_provider_check_unless_asked_to_wait(
+    orch: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+
+    def probe(provider) -> locate.Probe:
+        calls.append(provider.name)
+        return locate.Probe(locate.NOT_INSTALLED, None, None, "not installed")
+
+    monkeypatch.setattr(availability, "probe", probe)
+    availability.reset()
+
+    assert orch.capability_list()[0]["status"] == "unknown" and calls == []
+    chrome = orch.capability_list(wait=True)[0]
+    assert (chrome["status"], chrome["reason"]) == (
+        "unavailable",
+        "needs Claude Code: not installed",
+    )
+    assert "claude" in calls
+    calls.clear()
+    assert orch.capability_list()[0]["status"] == "unavailable" and calls == []  # the cache
+
+
+def test_the_listing_follows_the_default(orch: Orchestrator, monkeypatch) -> None:
+    monkeypatch.setattr(capabilities, "DEFAULT_ON", frozenset({"chrome"}))
+
+    assert orch.capability_list()[0]["default"] is True
+
+
+def test_capabilities_are_set_per_scope_and_role(orch: Orchestrator, project: str) -> None:
+    orch.update_settings({"worker": {"fake": {"model": "fake-small"}}})
+
+    orch.set_capability("chrome", True)
+    orch.set_capability("chrome", False, role="reviewer")
+    orch.set_capability("chrome", False, project)
+    listed = orch.set_capability("chrome", True, project, "tester")
+
+    (chrome, _) = listed
+    assert (chrome["global"], chrome["roles"]) == (True, {"reviewer": False})
+    assert (chrome["project"], chrome["project_roles"]) == (False, {"tester": True})
+    assert orch.settings()["worker"] == {"fake": {"model": "fake-small"}}  # kept
+    assert orch.settings(project) == {
+        "capabilities": {"chrome": False},
+        "role_capabilities": {"tester": {"chrome": True}},
+    }
+
+    orch.set_capability("chrome", None, project)
+    orch.set_capability("chrome", None, role="reviewer")
+    (chrome, _) = orch.capability_list(project)
+    assert (chrome["project"], chrome["roles"], chrome["global"]) == (None, {}, True)
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (("jira", True), r"unknown capability 'jira' \(known: chrome, fake-tool\)"),
+        (("chrome", "on"), "expected true, false or null"),
+        (("chrome", True, "nowhere"), "unknown project 'nowhere'"),
+        (("chrome", True, None, "  "), "role must be a role name"),
+    ],
+)
+def test_a_setting_that_cannot_be_made_is_refused(
+    orch: Orchestrator, args: tuple, message: str
+) -> None:
+    with pytest.raises(OrchestratorError, match=message):
+        orch.set_capability(*args)
+
+
+def test_a_name_whose_plugin_is_gone_can_still_be_removed(orch: Orchestrator) -> None:
+    orch.update_settings({"capabilities": {"gone": True}})
+
+    orch.set_capability("gone", None)
+
+    assert "capabilities" not in orch.settings()
+
+
+# -- an agent's own setting ---------------------------------------------------------------
+
+
+def test_an_agents_own_setting_is_set_and_removed(orch: Orchestrator, project: str) -> None:
+    agent = orch.create_agent(project, worktree=False)
+
+    found = orch.set_agent_capabilities(agent.id, {"fake-tool": True, "chrome": False})
+
+    assert own(orch, agent.id) == {"fake-tool": True, "chrome": False}
+    assert found["on"] == ["fake-tool"]
+    assert [(i["name"], i["state"], i["source"]) for i in found["items"]] == [
+        ("chrome", "off", "agent"),
+        ("fake-tool", "on", "agent"),
+    ]
+    found = orch.set_agent_capabilities(agent.id, {"fake-tool": None, "chrome": None})
+    assert own(orch, agent.id) is None and found["on"] == []
+    assert orch.agent_capabilities(agent.id) == found
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"jira": True}, "unknown capability 'jira'"),
+        ({"chrome": "yes"}, "expected true, false or null"),
+        (["chrome"], "expected an object"),
+        ({"Bad": None}, "invalid capability name"),
+    ],
+)
+def test_an_agents_setting_that_cannot_be_made_is_refused(
+    orch: Orchestrator, project: str, changes: object, message: str
+) -> None:
+    agent = orch.create_agent(project, worktree=False)
+
+    with pytest.raises(OrchestratorError, match=message):
+        orch.set_agent_capabilities(agent.id, changes)
+    assert own(orch, agent.id) is None
+
+
+@pytest.mark.parametrize("scope", ["global", "project"])
+def test_a_roles_restriction_cannot_be_lifted_by_an_agents_own_setting(
+    orch: Orchestrator, project: str, scope: str
+) -> None:
+    orch.set_capability("fake-tool", False, project if scope == "project" else None, "reviewer")
+    agent = orch.create_agent(project, role="reviewer", worktree=False)
+    fix = f"`{config.CLI_NAME} capabilities on fake-tool --role reviewer"
+    fix += f" --project {project}`" if scope == "project" else "`"
+
+    with pytest.raises(OrchestratorError, match="off for role reviewer") as refused:
+        orch.set_agent_capabilities(agent.id, {"fake-tool": True})
+    assert fix in str(refused.value)
+    with pytest.raises(OrchestratorError, match="off for role reviewer"):
+        orch.spawn(project, "x", role="reviewer", worktree=False, capabilities={"fake-tool": True})
+    assert [a.id for a in orch.agents(project)] == [agent.id]
+    orch.set_agent_capabilities(agent.id, {"fake-tool": False})  # off is always allowed
+    assert own(orch, agent.id) == {"fake-tool": False}
+
+
+def test_the_orchestrators_setting_creates_it_on_first_use(orch: Orchestrator) -> None:
+    found = orch.set_agent_capabilities(ORCHESTRATOR_ID, {"chrome": True})
+
+    assert own(orch, ORCHESTRATOR_ID) == {"chrome": True}
+    assert found["items"][0]["source"] == "agent"
+
+
+# -- spawn and the provider note ----------------------------------------------------------
+
+
+def test_spawn_stores_the_agents_own_setting(orch: Orchestrator, project: str) -> None:
+    agent, _ = orch.spawn(project, "x", worktree=False, capabilities={"fake-tool": True})
+
+    assert own(orch, agent.id) == {"fake-tool": True} and agent.provider_note is None
+    plain, _ = orch.spawn(project, "x", worktree=False)
+    assert own(orch, plain.id) is None
+
+
+def test_spawn_notes_a_capability_the_provider_does_not_support(
+    orch: Orchestrator, project: str
+) -> None:
+    agent, _ = orch.spawn(
+        project, "x", worktree=False, provider="codex", capabilities={"chrome": True}
+    )
+
+    assert own(orch, agent.id) == {"chrome": True}  # kept, skipped at its turns
+    assert agent.provider_note == (
+        "codex does not support chrome: kept on the agent and skipped in its turns"
+    )
+    assert orch.agent_capabilities(agent.id)["items"][0]["state"] == "skipped"
+
+
+# -- who may give which: MCP ---------------------------------------------------------------
+
+
+def test_a_lead_gives_only_what_it_has(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lead = orch.lead(project)
+    as_caller(monkeypatch, lead.id)
+
+    with pytest.raises(OrchestratorError, match=f"cannot give fake-tool: {lead.id} does not"):
+        mcp_server.spawn_agent("x", worktree=False, capabilities="fake-tool")
+    assert [a.id for a in orch.agents(project)] == [lead.id]  # nothing spawned
+
+    reply = mcp_server.spawn_agent("x", worktree=False, capabilities="-fake-tool")  # dropping
+    assert own(orch, reply["id"]) == {"fake-tool": False}
+
+    orch.set_agent_capabilities(lead.id, {"fake-tool": True})
+    reply = mcp_server.spawn_agent("x", worktree=False, capabilities="fake-tool")
+    assert own(orch, reply["id"]) == {"fake-tool": True}
+
+
+def test_send_message_changes_the_setting_under_the_same_rule(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lead = orch.lead(project)
+    worker = orch.create_agent(project, worktree=False, parent_id=lead.id)
+    as_caller(monkeypatch, lead.id)
+
+    with pytest.raises(OrchestratorError, match="cannot give fake-tool"):
+        mcp_server.send_message(worker.id, "go", capabilities="fake-tool")
+    assert orch.store.runs_of(worker.id) == [] and own(orch, worker.id) is None
+
+    mcp_server.send_message(worker.id, "go", capabilities="-fake-tool")
+    assert own(orch, worker.id) == {"fake-tool": False}
+    orch.set_agent_capabilities(lead.id, {"fake-tool": True})
+    mcp_server.send_message(worker.id, "again", capabilities="fake-tool")
+    assert own(orch, worker.id) == {"fake-tool": True}
+    mcp_server.send_message(worker.id, "and again")  # empty: no change
+    assert own(orch, worker.id) == {"fake-tool": True}
+    assert len(orch.store.runs_of(worker.id)) == 3
+
+
+@pytest.mark.parametrize("caller", [ORCHESTRATOR_ID, None], ids=["maestro", "chat"])
+def test_the_orchestrator_and_the_interactive_session_give_any(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch, caller: str | None
+) -> None:
+    if caller:
+        orch.orchestrator()
+    as_caller(monkeypatch, caller)
+
+    reply = mcp_server.spawn_agent("x", project, worktree=False, capabilities="fake-tool")
+    assert own(orch, reply["id"]) == {"fake-tool": True}
+    mcp_server.send_message(reply["id"], "go", capabilities="chrome")
+    assert own(orch, reply["id"]) == {"fake-tool": True, "chrome": True}
+
+    orch.set_capability("fake-tool", False, role="tester")
+    with pytest.raises(OrchestratorError, match="off for role tester"):
+        mcp_server.spawn_agent(
+            "x", project, role="tester", worktree=False, capabilities="fake-tool"
+        )
+
+
+@pytest.mark.parametrize("text", ["jira", "Chrome", "-", "fake-tool,,jira"])
+def test_mcp_refuses_unknown_or_malformed_names(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch, text: str
+) -> None:
+    as_caller(monkeypatch, None)
+
+    with pytest.raises(OrchestratorError, match="unknown capability|invalid capability name"):
+        mcp_server.spawn_agent("x", project, worktree=False, capabilities=text)
+    assert orch.agents(project) == []
+
+
+def test_parse_reads_names_and_drops() -> None:
+    assert capabilities.parse(" chrome, -fake-tool ,") == {"chrome": True, "fake-tool": False}
+    assert capabilities.parse("") == {}
+
+
+# -- views --------------------------------------------------------------------------------
+
+
+def test_the_views_carry_the_capabilities(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent, _ = orch.spawn(project, "x", worktree=False, capabilities={"fake-tool": True})
+    as_caller(monkeypatch, None)
+
+    detail = mcp_server.get_agent(agent.id)["capabilities"]
+    listed = next(a for a in mcp_server.list_agents(project) if a["id"] == agent.id)
+
+    assert detail == orch.agent_capabilities(agent.id)
+    assert detail["on"] == ["fake-tool"] and detail["error"] is None
+    assert listed["capabilities"] == ["fake-tool"]
+    assert orch.setup(agent.id)["capabilities"] == detail
+
+
+# -- CLI ----------------------------------------------------------------------------------
+
+
+def run(*args: str) -> list[str]:
+    result = CliRunner().invoke(cli.app, list(args))
+    assert result.exit_code == 0, result.output
+    return click.unstyle(result.output).splitlines()
+
+
+def test_the_cli_lists_the_capabilities(orch: Orchestrator, project: str) -> None:
+    orch.set_capability("chrome", False, role="reviewer")
+    orch.set_capability("fake-tool", True, project, "tester")
+
+    lines = run("capabilities")
+    assert lines[0].split() == ["NAME", "PROVIDERS", "GLOBAL", "STATUS", "REASON"]
+    assert lines[1].split()[:5] == ["chrome", "claude", "off", "(default)", "unknown"]
+    assert lines[1].endswith(UNSEEN)
+    assert lines[2].split()[:5] == ["fake-tool", "fake", "off", "(default)", "unknown"]
+    assert lines[3:] == ["role reviewer: chrome off (final)"]
+
+    lines = run("capabilities", "--project", project)
+    assert lines[0].split()[:4] == ["NAME", "PROVIDERS", "GLOBAL", "PROJECT"]
+    assert lines[1].split()[4] == "inherit"
+    assert lines[-1] == f"role tester ({project}): fake-tool on"
+
+    listed = json.loads(CliRunner().invoke(cli.app, ["capabilities", "--json"]).output)
+    assert listed == orch.capability_list()
+
+
+def test_the_cli_turns_them_on_and_off_at_each_level(orch: Orchestrator, project: str) -> None:
+    agent = orch.create_agent(project, worktree=False)
+
+    run("capabilities", "on", "chrome")
+    run("capabilities", "off", "chrome", "--project", project)
+    run("capabilities", "off", "fake-tool", "--role", "reviewer")
+    run("capabilities", "on", "fake-tool", "--role", "tester", "--project", project)
+    lines = run("capabilities", "on", "fake-tool", "--agent", agent.id)
+
+    assert orch.settings()["capabilities"] == {"chrome": True}
+    assert orch.settings()["role_capabilities"] == {"reviewer": {"fake-tool": False}}
+    assert orch.settings(project)["capabilities"] == {"chrome": False}
+    assert orch.settings(project)["role_capabilities"] == {"tester": {"fake-tool": True}}
+    assert own(orch, agent.id) == {"fake-tool": True}
+    assert lines == ["chrome     off      project", "fake-tool  on       agent"]
+    assert run("capabilities", "show", agent.id) == lines
+
+    run("capabilities", "inherit", "fake-tool", "--agent", agent.id)
+    run("capabilities", "inherit", "chrome")
+    assert own(orch, agent.id) is None and "capabilities" not in orch.settings()
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["on", "chrome", "--agent", "x", "--role", "r"], "--agent cannot be combined"),
+        (["on", "jira"], "unknown capability 'jira'"),
+        (["show", "nobody"], "unknown agent 'nobody'"),
+    ],
+)
+def test_the_cli_refuses(orch: Orchestrator, args: list[str], message: str) -> None:
+    result = CliRunner().invoke(cli.app, ["capabilities", *args])
+
+    assert result.exit_code == 1 and message in result.output
+
+
+def test_spawn_takes_capabilities_on_the_command_line(orch: Orchestrator, project: str) -> None:
+    lines = run("spawn", "x", "-p", project, "--no-worktree", "--capabilities", "fake-tool,-chrome")
+
+    agent_id = lines[0].split()[0]
+    assert own(orch, agent_id) == {"fake-tool": True, "chrome": False}
+    status = run("status", agent_id)
+    assert "capabilities fake-tool" in status
+    bad = CliRunner().invoke(cli.app, ["spawn", "x", "-p", project, "--capabilities", "Bad"])
+    assert bad.exit_code == 1 and "invalid capability name" in bad.output
+
+
+def test_status_names_what_is_skipped(orch: Orchestrator, project: str) -> None:
+    agent = orch.create_agent(project, worktree=False, capabilities={"chrome": True})
+
+    status = run("status", agent.id)
+
+    assert (
+        f"capabilities none  (skipped: chrome; {config.CLI_NAME} capabilities show {agent.id})"
+        in status
+    )
+
+
+def test_providers_json_lists_what_each_provider_carries(orch: Orchestrator) -> None:
+    found = json.loads(CliRunner().invoke(cli.app, ["providers", "--json"]).output)
+
+    carried = {entry["name"]: entry["capabilities"] for entry in found}
+    assert carried["claude"] == ["chrome"] and carried["codex"] == []
+    assert carried["fake"] == ["fake-tool"]
+
+
+# -- HTTP ---------------------------------------------------------------------------------
+
+
+def test_http_lists_and_sets_the_capabilities(
+    orch: Orchestrator, project: str, client: TestClient
+) -> None:
+    assert client.get("/api/capabilities").json() == {"capabilities": orch.capability_list()}
+    assert "project" in client.get(f"/api/capabilities?project={project}").json()["capabilities"][0]
+
+    body = {"name": "chrome", "state": False, "project": project, "role": "reviewer"}
+    reply = client.post("/api/capabilities", json=body, headers=ORIGIN)
+
+    assert reply.status_code == 200
+    assert reply.json()["capabilities"][0]["project_roles"] == {"reviewer": False}
+    reply = client.post("/api/capabilities", json={"name": "chrome", "state": True}, headers=ORIGIN)
+    assert reply.json()["capabilities"][0]["global"] is True
+    assert client.get("/api/state").json()["capabilities"] == orch.capability_list()
+
+
+def test_http_sets_an_agents_own_and_shows_it(
+    orch: Orchestrator, project: str, client: TestClient
+) -> None:
+    agent = orch.create_agent(project, worktree=False)
+
+    reply = client.post(
+        f"/api/agents/{agent.id}/capabilities", json={"fake-tool": True}, headers=ORIGIN
+    )
+
+    assert reply.status_code == 200
+    assert reply.json() == {"capabilities": orch.agent_capabilities(agent.id), "running": False}
+    detail = client.get(f"/api/agents/{agent.id}/events").json()["agent"]
+    assert detail["capabilities"]["on"] == ["fake-tool"]
+    state = client.get("/api/state").json()
+    (listed,) = [a for p in state["projects"] for a in p["agents"] if a["id"] == agent.id]
+    assert listed["capabilities"] == ["fake-tool"]
+    assert state["orchestrator_setup"]["capabilities"]["on"] == []
+
+
+def test_http_spawns_with_capabilities(
+    orch: Orchestrator, project: str, client: TestClient
+) -> None:
+    body = {"project": project, "task": "x", "worktree": False, "capabilities": {"chrome": True}}
+
+    reply = client.post("/api/agents", json=body, headers=ORIGIN).json()
+
+    assert own(orch, reply["agent_id"]) == {"chrome": True}
+    assert "fake does not support chrome" in reply["note"]
+
+
+@pytest.mark.parametrize(
+    ("path", "body", "message"),
+    [
+        ("/api/capabilities", {"name": "jira", "state": True}, "unknown capability 'jira'"),
+        ("/api/capabilities", {"state": True}, "'name' is required"),
+        ("/api/capabilities", {"name": "chrome", "state": 1}, "expected true, false or null"),
+        ("/api/capabilities", {"name": "chrome", "state": True, "project": "x"}, "unknown project"),
+        ("/api/agents/nobody/capabilities", {"chrome": True}, "unknown agent 'nobody'"),
+        ("/api/agents", {"project": "demo", "task": "x", "capabilities": {"jira": True}}, "jira"),
+    ],
+)
+def test_http_refusals(
+    orch: Orchestrator, project: str, client: TestClient, path: str, body: dict, message: str
+) -> None:
+    reply = client.post(path, json=body, headers=ORIGIN)
+
+    assert reply.status_code == 400 and message in reply.json()["error"]
+    assert orch.agents(project) == []
+
+
+def test_a_plugin_that_is_gone_is_not_listed(orch: Orchestrator) -> None:
+    capabilities.REGISTRY.pop("fake-tool")  # the fixture's copy
+
+    assert [entry["name"] for entry in orch.capability_list()] == ["chrome"]

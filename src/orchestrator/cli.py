@@ -13,7 +13,7 @@ from typing import Annotated
 
 import typer
 
-from . import __version__, autostart, config, loadout, providers, roles
+from . import __version__, autostart, capabilities, config, loadout, providers, roles
 from .models import Agent
 from .providers import locate
 from .providers.claude import loadout_flags
@@ -1168,12 +1168,25 @@ def spawn(
     permission: Annotated[
         str | None, typer.Option(help="Claude permission mode / Codex sandbox mode.")
     ] = None,
+    granted: Annotated[
+        str | None,
+        typer.Option(
+            "--capabilities",
+            help='The agent\'s own capabilities: "chrome" turns one on, "-chrome" off;'
+            " comma-separated.",
+        ),
+    ] = None,
 ) -> None:
     """Start a new agent on a task and return immediately."""
+    try:
+        own = capabilities.parse(granted or "")
+    except ValueError as exc:
+        raise fail(exc) from None
     try:
         agent, run = orch().spawn(
             project, task, name=name, role=role, provider=provider, model=model, effort=effort,
             worktree=worktree, share_with=share, base=base, after=after, permission=permission,
+            capabilities=own,
         )  # fmt: skip
     except OrchestratorError as exc:
         raise fail(exc) from None
@@ -1315,6 +1328,7 @@ def status(agent_id: str) -> None:
     context, refusal = view.pop("context"), view.pop("compact_refusal")
     compaction = view.pop("last_compaction")
     queue, working = view.pop("queue"), view.pop("children_running")
+    granted = view.pop("capabilities")
     if view["id"] == ORCHESTRATOR_ID:
         view["name"] = config.ORCHESTRATOR_NAME  # the id line keeps `orchestrator`
     if mark := view.pop("archived", None):
@@ -1327,6 +1341,10 @@ def status(agent_id: str) -> None:
         view["status"] = f"idle while its agents work{last_run}"
     for key, value in view.items():
         typer.echo(f"{key:<12} {value}")
+    skipped = [item["name"] for item in granted["items"] if item["state"] == "skipped"]
+    extras = ", ".join(granted["on"]) or "none"
+    skipped_text = f"  (skipped: {', '.join(skipped)}; {CLI} capabilities show {agent_id})"
+    typer.echo(f"{'capabilities':<12} {extras}{skipped_text if skipped else ''}")
     plural = "agent" if working == 1 else "agents"
     typer.echo(f"{'children':<12} {f'{working} {plural} working' if working else 'none working'}")
     typer.echo(f"{'usage':<12} {usage_line(counts, cost)}")
@@ -1643,19 +1661,21 @@ def list_providers(
     Each one is looked for on PATH and in the usual install locations, and asked its
     version (with `--json` also its models, as the dashboard lists them): no agent turn is
     run and no login is checked. `*` marks the provider a new project gets: the first
-    available one. When one is not installed, a line below the table says what to do after
+    available one. CAPABILITIES: the ones it carries (`{cli} capabilities`). When one is not installed, a line below the table says what to do after
     installing it (not with `--json`)."""
     found = orch().provider_list(refresh=True, models=as_json)
     if as_json:
         typer.echo(json.dumps(found, indent=2))
         return
     width = max(len(entry["name"]) for entry in [*found, {"name": "NAME"}]) + 2
-    typer.echo(f"  {'NAME':<{width}}{'STATUS':<15}{'VERSION':<12}REASON")
+    carried = {entry["name"]: ",".join(entry["capabilities"]) or "-" for entry in found}
+    extras = max(len(text) for text in [*carried.values(), "CAPABILITIES"]) + 2
+    typer.echo(f"  {'NAME':<{width}}{'STATUS':<15}{'VERSION':<12}{'CAPABILITIES':<{extras}}REASON")
     for entry in found:
         mark = "* " if entry["default"] else "  "
         line = (
             f"{mark}{entry['name']:<{width}}{entry['status']:<15}"
-            f"{entry['version'] or '-':<12}{entry['reason']}"
+            f"{entry['version'] or '-':<12}{carried[entry['name']]:<{extras}}{entry['reason']}"
         )
         typer.secho(line, fg=None if entry["usable"] else typer.colors.YELLOW)
     if any(entry["status"] == locate.NOT_INSTALLED for entry in found):
@@ -1668,6 +1688,149 @@ def list_roles() -> None:
     for role in roles.available():
         flags = ("lead " if role.lead else "") + ("worktree" if role.worktree else "checkout")
         typer.echo(f"{role.name:<13} {flags:<14} {role.description}")
+
+
+# -- capabilities ---------------------------------------------------------------
+
+capabilities_app = typer.Typer(
+    rich_markup_mode=MARKUP,
+    help="Capabilities: extras an agent's CLI gets for its turns, such as Claude in Chrome's"
+    " browser tools; on or off globally, per project, per role and per agent.",
+)
+app.add_typer(capabilities_app, name="capabilities")
+RoleOption = Annotated[
+    str | None, typer.Option("--role", "-r", help="For agents of this role (in --project's scope).")
+]
+AgentOption = Annotated[
+    str | None, typer.Option("--agent", "-a", help="For this agent only (its own setting).")
+]
+
+
+def on_off_text(value: bool | None, default: bool | None = None) -> str:
+    """`on`, `off`; unset: `inherit`, or the default as `off (default)`."""
+    if value is not None:
+        return "on" if value else "off"
+    return "inherit" if default is None else f"{'on' if default else 'off'} (default)"
+
+
+def role_lines(entries: list[dict], key: str, scope: str = "") -> list[str]:
+    """`role reviewer: chrome off (final)`, per role and capability."""
+    lines = []
+    for entry in entries:
+        for role, on in entry.get(key, {}).items():
+            final = "" if on else " (final)"
+            lines.append(f"role {role}{scope}: {entry['name']} {on_off_text(on)}{final}")
+    return sorted(lines)
+
+
+def print_capabilities(entries: list[dict], project: str | None) -> None:
+    columns = ["NAME", "PROVIDERS", "GLOBAL", *(["PROJECT"] if project else []), "STATUS"]
+    rows = [
+        [
+            entry["name"],
+            ",".join(entry["providers"]) or "-",
+            on_off_text(entry["global"], entry["default"]),
+            *([on_off_text(entry["project"])] if project else []),
+            entry["status"],
+            entry["reason"],
+        ]
+        for entry in entries
+    ]
+    widths = [max(len(row[i]) for row in [columns, *rows]) + 2 for i in range(len(columns))]
+    for row in [[*columns, "REASON"], *rows]:
+        cells = "".join(f"{cell:<{width}}" for cell, width in zip(row, widths, strict=False))
+        typer.echo(f"  {cells}{row[-1]}")
+    lines = role_lines(entries, "roles")
+    if project:
+        lines += role_lines(entries, "project_roles", f" ({project})")
+    for line in lines:
+        typer.echo(line)
+
+
+@capabilities_app.callback(invoke_without_command=True)
+def capabilities_list(
+    ctx: typer.Context,
+    project: ProjectOption = None,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="As JSON, with what each one reaches and requires.")
+    ] = False,
+) -> None:
+    """List the capabilities: the providers that support each one, the global setting (with
+    `--project` that project's too), whether it can work here, and below the table the
+    roles' settings. A role's `off` is final: an agent's own setting cannot turn it back on.
+
+    Turn them on and off with `{cli} capabilities on|off|inherit NAME`."""
+    if ctx.invoked_subcommand:
+        return
+    try:
+        # The provider check (versions only) may run first: a new process knows nothing yet.
+        entries = orch().capability_list(project, wait=True)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    if as_json:
+        typer.echo(json.dumps(entries, indent=2))
+        return
+    print_capabilities(entries, project)
+
+
+def set_capability(
+    state: bool | None, name: str, project: str | None, role: str | None, agent: str | None
+) -> None:
+    if agent and (project or role):
+        raise fail("--agent cannot be combined with --project or --role")
+    o = orch()
+    try:
+        if agent:
+            print_breakdown(o.set_agent_capabilities(agent, {name: state}))
+            return
+        o.set_capability(name, state, project, role)
+        print_capabilities(o.capability_list(project, wait=True), project)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+
+
+@capabilities_app.command("on")
+def capabilities_on(
+    name: str, project: ProjectOption = None, role: RoleOption = None, agent: AgentOption = None
+) -> None:
+    """Turn a capability on: globally, for a project, for a role (globally or in a project)
+    or for one agent. Applies from each agent's next turn."""
+    set_capability(True, name, project, role, agent)
+
+
+@capabilities_app.command("off")
+def capabilities_off(
+    name: str, project: ProjectOption = None, role: RoleOption = None, agent: AgentOption = None
+) -> None:
+    """Turn a capability off at that level (for a role: a restriction that agents' own
+    settings cannot lift)."""
+    set_capability(False, name, project, role, agent)
+
+
+@capabilities_app.command("inherit")
+def capabilities_inherit(
+    name: str, project: ProjectOption = None, role: RoleOption = None, agent: AgentOption = None
+) -> None:
+    """Remove the setting at that level: the one above applies."""
+    set_capability(None, name, project, role, agent)
+
+
+def print_breakdown(found: dict) -> None:
+    """One line per capability: name, state, the level that decided it, and a note."""
+    width = max([len(item["name"]) for item in found["items"]] + [4]) + 2
+    for item in found["items"]:
+        note = f"  {item['note']}" if item["note"] else ""
+        typer.echo(f"{item['name']:<{width}}{item['state']:<9}{item['source']}{note}")
+
+
+@capabilities_app.command("show")
+def capabilities_show(agent_id: str) -> None:
+    """What the agent's next turn gets: each capability's state (on, off, or skipped with
+    the reason) and the level that decided it."""
+    try:
+        print_breakdown(orch().agent_capabilities(agent_id))
+    except OrchestratorError as exc:
+        raise fail(exc) from None
 
 
 # -- cost reports and budgets -------------------------------------------------
