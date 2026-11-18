@@ -255,6 +255,9 @@ class Event:
     model: str | None = None  # the model the CLI reports, when it does (session events)
     usage: Usage | None = None  # on result, context and compact events
     windows: dict[str, int] | None = None  # on result events: context window per model
+    # On session events: the MCP servers' statuses the CLI reports, name -> status (None:
+    # it reports none).
+    mcp: dict[str, str] | None = None
     id: int = 0
     run_id: int = 0
     agent_id: str = ""

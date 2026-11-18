@@ -375,9 +375,10 @@ def test_a_name_without_a_server_is_off_and_not_listed(store: Store) -> None:
     assert found.record() == {"on": [], "skipped": {}}
 
 
-def test_a_claude_invocation_with_a_server_on_does_not_fail(store: Store, tmp_path: Path) -> None:
-    """The Claude provider does not place the server yet (a later change); the turn still
-    gets tool search, as for every capability that brings MCP tools."""
+def test_a_claude_invocation_with_a_server_on_places_it(store: Store, tmp_path: Path) -> None:
+    """The Claude provider places the server in the turn's configuration file (in detail:
+    test_mcp_wiring.py); the turn gets tool search, as for every capability that brings MCP
+    tools."""
     mcp.add(store, docs_db())
     store.set_settings(settings.GLOBAL, {"capabilities": {"mcp:docs-db": True}})
     granted = capabilities.resolve(store, agent())
@@ -387,11 +388,14 @@ def test_a_claude_invocation_with_a_server_on_does_not_fail(store: Store, tmp_pa
         system_prompt="ROLE",
         scratch=tmp_path,
         wirings=granted.wirings,
+        mcp_config=tmp_path / "mcp-1.json",
     )
 
     invocation = provider("claude").invocation(ctx)
 
     assert invocation.argv[0]
+    (content,) = invocation.private_files.values()
+    assert list(json.loads(content)["mcpServers"]) == ["docs-db"]
 
 
 def test_the_breakdown_carries_the_last_status() -> None:

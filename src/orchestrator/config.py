@@ -67,6 +67,27 @@ def runtime_dir() -> Path:
     return path
 
 
+PRIVATE_DIR, PRIVATE_DIR_MODE = "private", 0o700
+
+
+def private_dir() -> Path:
+    """Files only the turn's CLI may read, about one live turn: the MCP configuration of a
+    turn with MCP servers (mcp_config_file). Mode PRIVATE_DIR_MODE (made so if it was not);
+    not in the logs, a worktree or a project."""
+    path = runtime_dir() / PRIVATE_DIR
+    path.mkdir(mode=PRIVATE_DIR_MODE, exist_ok=True)
+    if path.stat().st_mode & 0o777 != PRIVATE_DIR_MODE:
+        path.chmod(PRIVATE_DIR_MODE)
+    return path
+
+
+def mcp_config_file(run_id: int) -> Path:
+    """The MCP configuration of run `run_id`'s turn when it has MCP servers besides `orch`
+    (the runner writes it as the turn starts and removes it when the turn ends). The path
+    only: nothing is created here."""
+    return runtime_dir() / PRIVATE_DIR / f"mcp-{run_id}.json"
+
+
 def run_dir(run_id: int) -> Path:
     """Per-run files: the CLI's raw output stream, stderr, schemas, the final answer."""
     return logs_dir() / f"run-{run_id}"
