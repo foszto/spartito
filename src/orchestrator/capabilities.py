@@ -202,6 +202,24 @@ def role_flags(value: Any, role: str) -> dict[str, bool]:
     return flags(value.get(role)) if isinstance(value, dict) else {}
 
 
+def readable(data: dict[str, Any]) -> dict[str, Any]:
+    """A scope's stored settings with only the readable entries of its `capabilities` and
+    `role_capabilities` (what reading uses; the rest would fail `clean` when written back)."""
+    data = dict(data)
+    if SETTING in data:
+        data[SETTING] = flags(data[SETTING])
+    if ROLE_SETTING in data:
+        per_role = data[ROLE_SETTING]
+        roles = per_role if isinstance(per_role, dict) else {}
+        data[ROLE_SETTING] = {
+            role: values
+            for role in roles
+            if isinstance(role, str) and role.strip()
+            if (values := role_flags(roles, role))
+        }
+    return data
+
+
 def parse(text: str) -> dict[str, bool]:
     """`chrome,-other` as {"chrome": True, "other": False}; "" is {}. Raises ValueError."""
     result = {}

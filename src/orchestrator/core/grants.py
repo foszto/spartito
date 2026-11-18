@@ -130,7 +130,7 @@ def set_capability(
             f"{granter.id} cannot turn {name} on {where}: only the owner or the orchestrator"
             " turns a capability on globally, for a project or for a role"
         )
-    data = _readable(orch.store.get_settings(scope))
+    data = capabilities.readable(orch.store.get_settings(scope))
     if role:
         per_role = data.get(settings.ROLE_CAPABILITIES)
         per_role = dict(per_role) if isinstance(per_role, dict) else {}
@@ -147,23 +147,6 @@ def set_capability(
 def _agent(granter: Agent | None) -> bool:
     """True for a granting agent other than the orchestrator (the one without a project)."""
     return granter is not None and granter.project is not None
-
-
-def _readable(data: dict[str, Any]) -> dict[str, Any]:
-    """The scope's settings with only the readable entries of its capability settings."""
-    data = dict(data)
-    if settings.CAPABILITIES in data:
-        data[settings.CAPABILITIES] = capabilities.flags(data[settings.CAPABILITIES])
-    if settings.ROLE_CAPABILITIES in data:
-        per_role = data[settings.ROLE_CAPABILITIES]
-        roles = per_role if isinstance(per_role, dict) else {}
-        data[settings.ROLE_CAPABILITIES] = {
-            role: values
-            for role in roles
-            if isinstance(role, str) and role.strip()
-            if (values := capabilities.role_flags(roles, role))
-        }
-    return data
 
 
 def _stored_names(orch: Facade, project: str | None) -> set[str]:

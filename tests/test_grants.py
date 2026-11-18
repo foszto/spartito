@@ -612,6 +612,55 @@ def test_the_cli_in_the_orchestrators_turn_and_the_owners_give_any(
     assert own(orch, worker.id) == {"chrome": True}
 
 
+def test_unreadable_stored_values_block_no_other_settings_write(orch: Orchestrator) -> None:
+    garbage = {
+        "capabilities": "garbage",
+        "role_capabilities": {"tester": {"chrome": "yes"}, " ": {}, "reviewer": {"chrome": False}},
+    }
+    orch.store.set_settings("", garbage)
+
+    data = orch.settings()  # read the scope, change one key, write all of it back
+    data["archive_after_hours"] = 5
+    orch.update_settings(data)
+    assert orch.settings() == {
+        "archive_after_hours": 5,
+        "role_capabilities": {"reviewer": {"chrome": False}},
+    }
+
+    orch.store.set_settings("", garbage)
+    orch.update_settings({"archive_after_hours": 6})  # not named: kept, without the garbage
+    assert orch.settings()["role_capabilities"] == {"reviewer": {"chrome": False}}
+    assert "capabilities" not in orch.settings()
+
+    orch.store.set_settings("", garbage)
+    run("config", "keep-awake", "off")
+    assert orch.settings()["keep_awake"] is False and "capabilities" not in orch.settings()
+
+    orch.store.set_settings("", garbage)  # one role changed, the others sent back as read
+    roles = {"tester": {"chrome": "yes"}, " ": {}, "reviewer": {"chrome": True}}
+    orch.update_settings({"role_capabilities": roles})
+    assert orch.settings()["role_capabilities"] == {"reviewer": {"chrome": True}}
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"capabilities": "other garbage"},
+        {"role_capabilities": {"tester": {"chrome": "no"}}},
+        {"role_capabilities": "other garbage"},
+    ],
+)
+def test_a_malformed_value_the_request_sends_is_still_refused(
+    orch: Orchestrator, data: dict
+) -> None:
+    stored = {"capabilities": "garbage", "role_capabilities": {"tester": {"chrome": "yes"}}}
+    orch.store.set_settings("", stored)
+
+    with pytest.raises(OrchestratorError, match="capabilit"):
+        orch.update_settings(data)
+    assert orch.settings() == stored
+
+
 def test_status_names_what_is_skipped(orch: Orchestrator, project: str) -> None:
     agent = orch.create_agent(project, worktree=False, capabilities={"chrome": True})
 

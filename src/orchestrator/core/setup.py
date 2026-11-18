@@ -74,8 +74,10 @@ def stored_settings(orch: Facade, project: str | None = None) -> dict[str, Any]:
 
 def update_settings(orch: Facade, data: Any, project: str | None = None) -> dict[str, Any]:
     """Replace the model/effort settings globally or, with `project`, for one project."""
+    scope = orch.project(project).name if project else settings.GLOBAL
+    stored = orch.store.get_settings(scope)
     try:
-        cleaned = settings.clean(data)
+        cleaned = settings.clean(_as_stored(data, stored))
     except ValueError as exc:
         raise OrchestratorError(str(exc)) from None
     if project and "orchestrator" in cleaned:
@@ -83,8 +85,7 @@ def update_settings(orch: Facade, data: Any, project: str | None = None) -> dict
     for key in settings.SWITCHES:
         if project and key in cleaned:
             raise OrchestratorError(f"{key} can only be set globally")
-    scope = orch.project(project).name if project else settings.GLOBAL
-    _registered(cleaned, orch.store.get_settings(scope))
+    _registered(cleaned, stored)
     # Kept when not named (the settings dialog sends only its own fields; a page from
     # before a key existed does not send that one).
     kept = (
@@ -93,12 +94,35 @@ def update_settings(orch: Facade, data: Any, project: str | None = None) -> dict
         settings.CAPABILITIES,
         settings.ROLE_CAPABILITIES,
     )
+    readable = capabilities.readable(stored)
     for key in kept if project else kept + settings.SWITCHES:
-        if isinstance(data, dict) and key not in data:
-            stored = orch.store.get_settings(scope).get(key)
-            cleaned.update({} if stored is None else {key: stored})
+        if isinstance(data, dict) and key not in data and readable.get(key) not in (None, {}):
+            cleaned[key] = readable[key]
     orch.store.set_settings(scope, cleaned)
     return cleaned
+
+
+def _as_stored(data: Any, stored: dict[str, Any]) -> Any:
+    """The request, with the capability settings it sends back as stored (a command that
+    read the whole scope and writes it) reduced to their readable entries, so that an
+    unreadable stored one blocks no write; what the request changes is checked as sent."""
+    if not isinstance(data, dict):
+        return data
+    data = dict(data)
+    readable = capabilities.readable(stored)
+    for key in (settings.CAPABILITIES, settings.ROLE_CAPABILITIES):
+        if key in stored and key in data and data[key] == stored[key]:
+            data[key] = readable[key]
+    key, before = settings.ROLE_CAPABILITIES, stored.get(settings.ROLE_CAPABILITIES)
+    if isinstance(data.get(key), dict) and isinstance(before, dict):
+        sent = dict(data[key])
+        for role in [role for role in sent if role in before and sent[role] == before[role]]:
+            if role in readable[key]:
+                sent[role] = readable[key][role]
+            else:
+                del sent[role]
+        data[key] = sent
+    return data
 
 
 def _registered(cleaned: dict[str, Any], stored: dict[str, Any]) -> None:
