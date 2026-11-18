@@ -9,13 +9,11 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import threading
-import time
 from datetime import UTC, datetime
 from pathlib import Path
 
 from ..models import Agent, Event, Usage
-from . import locate
+from . import kit
 from .base import Invocation, RunContext, brief, wired
 
 DEFAULT_SANDBOX = "workspace-write"
@@ -28,22 +26,21 @@ COMPACT_PROMPT = (
 )
 MODEL_LIST_TIMEOUT = 15
 # An empty model list (the CLI missing or failing) is asked for again after this long.
-MODEL_LIST_RETRY_SECONDS = 600
+MODEL_LIST_RETRY_SECONDS = kit.MODEL_LIST_RETRY_SECONDS
 
 
 def request_model_list() -> str:
     """The output of `codex debug models`: the models the installed Codex offers for this
     account, as JSON. Raises OSError or subprocess.SubprocessError."""
-    env = {**os.environ, "PATH": locate.search_path()}
-    proc = subprocess.run(
-        ["codex", "debug", "models"],
-        capture_output=True,
-        text=True,
-        timeout=MODEL_LIST_TIMEOUT,
-        env=env,
-        stdin=subprocess.DEVNULL,
-    )
-    return proc.stdout
+    return kit.run_cli(["codex", "debug", "models"], MODEL_LIST_TIMEOUT)[1]
+
+
+def _lookup_models() -> kit.Models:
+    """The listed models; none when the CLI is missing or fails."""
+    try:
+        return parse_model_list(request_model_list()), None
+    except OSError, subprocess.SubprocessError:
+        return [], None
 
 
 def _toml(value: object) -> str:
@@ -88,22 +85,13 @@ class CodexProvider:
     )
 
     def __init__(self) -> None:
-        self._models: list[str] | None = None
-        self._models_at = 0.0  # time.monotonic() of the lookup
-        self._models_lock = threading.Lock()
+        # An empty list is asked for again.
+        self.catalog = kit.ModelCatalog(_lookup_models, retry_when=lambda models, note: not models)
 
     def models(self) -> list[str]:
         """The models the installed Codex offers for this account. Asked once per process;
         an empty answer is asked for again once it is MODEL_LIST_RETRY_SECONDS old."""
-        with self._models_lock:
-            age = time.monotonic() - self._models_at
-            if self._models is None or (not self._models and age >= MODEL_LIST_RETRY_SECONDS):
-                self._models_at = time.monotonic()
-                try:
-                    self._models = parse_model_list(request_model_list())
-                except OSError, subprocess.SubprocessError:
-                    self._models = []
-            return self._models
+        return self.catalog.models()
 
     def invocation(self, ctx: RunContext) -> Invocation:
         agent = ctx.agent
@@ -121,9 +109,9 @@ class CodexProvider:
         if ctx.effort:
             argv += ["-c", f"model_reasoning_effort={_toml(ctx.effort)}"]
         if ctx.mcp:
-            argv += ["-c", f"mcp_servers.orch.command={_toml(ctx.mcp.command)}"]
-            argv += ["-c", f"mcp_servers.orch.args={_toml(ctx.mcp.args)}"]
-            argv += ["-c", f"mcp_servers.orch.env={_toml(ctx.mcp.env)}"]
+            own = kit.own_server_entry(ctx.mcp)
+            for key in ("command", "args", "env"):
+                argv += ["-c", f"mcp_servers.orch.{key}={_toml(own[key])}"]
             # Waiting on sub-agents is a long tool call.
             argv += ["-c", "mcp_servers.orch.tool_timeout_sec=3600"]
             # Without the user's approvals_reviewer, exec rejects MCP calls that need approval.
@@ -131,82 +119,15 @@ class CodexProvider:
         if ctx.compact_below:
             argv += ["-c", f"model_auto_compact_token_limit={int(ctx.compact_below)}"]
         if ctx.output_schema:
-            schema_file = ctx.scratch / "output-schema.json"
-            schema_file.write_text(json.dumps(ctx.output_schema), encoding="utf-8")
-            argv += ["--output-schema", str(schema_file)]
+            argv += ["--output-schema", str(kit.schema_file(ctx))]
         extra_argv, extra_env = wired(ctx.wirings)  # no capability has a Codex wiring yet
         argv += extra_argv
         argv.append("-")
         # Codex has no system-prompt flag for exec; the role opens the first turn instead.
-        prompt = ctx.prompt
-        if ctx.system_prompt and not agent.session_id:
-            prompt = f"{ctx.system_prompt}\n\n---\n\n{ctx.prompt}"
-        return Invocation(argv=argv, stdin=prompt, env=extra_env)
+        return Invocation(argv=argv, stdin=kit.with_role_prefix(ctx), env=extra_env)
 
     def parse(self, line: str) -> list[Event]:
-        try:
-            data = json.loads(line)
-        except json.JSONDecodeError:
-            return [Event("info", line.strip())] if line.strip() else []
-        kind = data.get("type")
-        if kind == "thread.started":
-            return [Event("session", session_id=data.get("thread_id"))]
-        if kind == "item.completed":
-            return self._item(data.get("item", {}))
-        if kind == "turn.completed":
-            # The text is the last agent_message; the runner keeps it.
-            return [Event("result", usage=self._usage(data.get("usage")))]
-        if kind == "turn.failed":
-            return [
-                Event("result", brief(data.get("error", {}).get("message"), 2000), is_error=True)
-            ]
-        if kind == "error":
-            return [Event("error", brief(data.get("message"), 2000))]
-        return []
-
-    @staticmethod
-    def _usage(usage: object) -> Usage | None:
-        """Token counts of `turn.completed`. Codex reports no cost.
-
-        On `codex exec resume` the figures are totals for the whole thread, not for this
-        turn (verified with codex-cli 0.155.1), so they are marked cumulative. Codex counts
-        cached tokens inside `input_tokens`; they are moved out to match Claude's meaning.
-        """
-        if not isinstance(usage, dict) or not usage:
-            return None
-        cached = int(usage.get("cached_input_tokens") or 0)
-        return Usage(
-            input_tokens=int(usage.get("input_tokens") or 0) - cached,
-            output_tokens=int(usage.get("output_tokens") or 0),
-            cache_read_tokens=cached,
-            cache_creation_tokens=int(usage.get("cache_write_input_tokens") or 0),
-            cumulative=True,
-        )
-
-    @staticmethod
-    def _item(item: dict) -> list[Event]:
-        kind = item.get("type")
-        if kind == "agent_message":
-            return [Event("text", item.get("text", ""))]
-        if kind == "command_execution":
-            return [
-                Event("tool", f"shell {brief(item.get('command'))} -> exit {item.get('exit_code')}")
-            ]
-        if kind == "file_change":
-            changes = ", ".join(
-                f"{change.get('kind')} {change.get('path')}" for change in item.get("changes", [])
-            )
-            return [Event("tool", f"edit {changes}")]
-        if kind == "mcp_tool_call":
-            return [
-                Event(
-                    "tool",
-                    f"{item.get('server')}.{item.get('tool')} {brief(item.get('arguments'))}",
-                )
-            ]
-        if kind == "error":
-            return [Event("info", brief(item.get("message"), 1000))]
-        return []
+        return Stream().feed(line)
 
     def attach_command(self, agent: Agent) -> list[str]:
         return ["codex", "resume", agent.session_id or ""]
@@ -271,6 +192,71 @@ class CodexProvider:
         if usage.context_tokens is None and not compactions:
             return None
         return usage
+
+
+class Stream(kit.JsonLines):
+    """The events of `codex exec --json`."""
+
+    def on_json(self, data: dict) -> list[Event]:
+        kind = data.get("type")
+        if kind == "thread.started":
+            return [Event("session", session_id=data.get("thread_id"))]
+        if kind == "item.completed":
+            return self._item(data.get("item", {}))
+        if kind == "turn.completed":
+            # The text is the last agent_message; the runner keeps it.
+            return [Event("result", usage=self._usage(data.get("usage")))]
+        if kind == "turn.failed":
+            return [
+                Event("result", brief(data.get("error", {}).get("message"), 2000), is_error=True)
+            ]
+        if kind == "error":
+            return [Event("error", brief(data.get("message"), 2000))]
+        return []
+
+    @staticmethod
+    def _usage(usage: object) -> Usage | None:
+        """Token counts of `turn.completed`. Codex reports no cost.
+
+        On `codex exec resume` the figures are totals for the whole thread, not for this
+        turn (verified with codex-cli 0.155.1), so they are marked cumulative. Codex counts
+        cached tokens inside `input_tokens`; they are moved out to match Claude's meaning.
+        """
+        if not isinstance(usage, dict) or not usage:
+            return None
+        cached = int(usage.get("cached_input_tokens") or 0)
+        return Usage(
+            input_tokens=int(usage.get("input_tokens") or 0) - cached,
+            output_tokens=int(usage.get("output_tokens") or 0),
+            cache_read_tokens=cached,
+            cache_creation_tokens=int(usage.get("cache_write_input_tokens") or 0),
+            cumulative=True,
+        )
+
+    @staticmethod
+    def _item(item: dict) -> list[Event]:
+        kind = item.get("type")
+        if kind == "agent_message":
+            return [Event("text", item.get("text", ""))]
+        if kind == "command_execution":
+            return [
+                Event("tool", f"shell {brief(item.get('command'))} -> exit {item.get('exit_code')}")
+            ]
+        if kind == "file_change":
+            changes = ", ".join(
+                f"{change.get('kind')} {change.get('path')}" for change in item.get("changes", [])
+            )
+            return [Event("tool", f"edit {changes}")]
+        if kind == "mcp_tool_call":
+            return [
+                Event(
+                    "tool",
+                    f"{item.get('server')}.{item.get('tool')} {brief(item.get('arguments'))}",
+                )
+            ]
+        if kind == "error":
+            return [Event("info", brief(item.get("message"), 1000))]
+        return []
 
 
 def _when(stamp: object) -> datetime | None:

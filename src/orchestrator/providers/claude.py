@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import shlex
-import signal
 import subprocess
 import sys
 import tempfile
-import threading
-import time
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -20,7 +16,7 @@ from typing import Any
 from .. import memory_guard
 from ..loadout import Loadout
 from ..models import Agent, Event, Usage
-from . import locate
+from . import kit
 from .base import (
     NOTIFICATION_RESULT,
     Invocation,
@@ -29,7 +25,6 @@ from .base import (
     Wiring,
     brief,
     wired,
-    wired_servers,
 )
 
 # Set by a parent Claude Code session; a child must not believe it is that session.
@@ -67,8 +62,7 @@ CHROME = Support(
 # default set has it; ENABLE_TOOL_SEARCH, when inherited, still applies as the CLI reads it.
 TOOL_SEARCH = "ToolSearch"
 
-# Spartito's own MCP server (`mcp__orch__…`), in every lead's turn.
-OWN_SERVER = "orch"
+OWN_SERVER = kit.OWN_SERVER
 
 
 def config_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
@@ -102,7 +96,7 @@ def server_statuses(data: dict) -> dict[str, str] | None:
 FALLBACK_MODELS = ("fable", "opus", "sonnet", "haiku")
 MODEL_LIST_TIMEOUT = 20
 # A fallback or generic list is asked for again after this long; a full one is kept.
-MODEL_LIST_RETRY_SECONDS = 600
+MODEL_LIST_RETRY_SECONDS = kit.MODEL_LIST_RETRY_SECONDS
 UNAVAILABLE_NOTE = "model list unavailable: showing aliases"
 GENERIC_NOTE = "model list may be incomplete"
 _INIT_ID = "orch-models"
@@ -124,29 +118,12 @@ def request_model_list() -> str:
     argv += ["--verbose", "--strict-mcp-config", "--setting-sources", "project,local"]
     argv += ["--no-session-persistence"]
     env = {k: v for k, v in os.environ.items() if k not in PARENT_SESSION_ENV}
-    env["PATH"] = locate.search_path(env.get("PATH"))
     with tempfile.TemporaryDirectory(prefix="orch-models-") as cwd:
-        proc = subprocess.Popen(
-            argv,
-            cwd=cwd,
-            env=env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
+        code, out, err = kit.run_cli(
+            argv, MODEL_LIST_TIMEOUT, stdin=json.dumps(request) + "\n", env=env, cwd=cwd
         )
-        try:
-            out, err = proc.communicate(json.dumps(request) + "\n", timeout=MODEL_LIST_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            # A group that has just exited is not an error (macOS answers EPERM while the
-            # CLI is still unreaped); the CLI must be reaped either way.
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(proc.pid, signal.SIGKILL)
-            proc.communicate()
-            raise
-    if proc.returncode:
-        raise subprocess.SubprocessError(f"exit {proc.returncode}: {brief(err, 200)}")
+    if code:
+        raise subprocess.SubprocessError(f"exit {code}: {brief(err, 200)}")
     return out
 
 
@@ -212,6 +189,17 @@ def _model_choice(entry: dict) -> tuple[str, str]:
     if not _has_digit(label) and resolved and resolved != label:
         label = f"{label} · {resolved}"  # a name without a version: add the model it stands for
     return value, label
+
+
+def _lookup_models() -> kit.Models:
+    """The picker's list and its note: the aliases when the CLI cannot say."""
+    try:
+        entries = model_entries(request_model_list())
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        print(f"claude model list unavailable ({exc}); showing aliases", file=sys.stderr)
+        return list(FALLBACK_MODELS), UNAVAILABLE_NOTE
+    models = [_model_choice(entry) for entry in entries]
+    return models, GENERIC_NOTE if looks_generic(entries) else None
 
 
 def compaction_text(usage: Usage) -> str:
@@ -319,10 +307,16 @@ class ClaudeProvider:
     role_prompt = "every_turn"
     limits: tuple[str, ...] = ()
 
-    models_note: str | None = None  # set when the list is the fallback or looks generic
-    _models: list[tuple[str, str]] | list[str] | None = None
-    _models_at = 0.0  # time.monotonic() of the lookup
-    _models_lock = threading.Lock()
+    def __init__(self) -> None:
+        # A fallback or generic list (one with a note) is asked for again.
+        self.catalog = kit.ModelCatalog(
+            _lookup_models, retry_when=lambda models, note: note is not None
+        )
+
+    @property
+    def models_note(self) -> str | None:
+        """Set when the list is the fallback or looks generic."""
+        return self.catalog.note
 
     def models(self) -> list[tuple[str, str]] | list[str]:
         """What Claude Code's own `/model` picker offers, as (value for --model, label).
@@ -330,22 +324,7 @@ class ClaudeProvider:
         Asked from the installed CLI once per process; the aliases when that fails. A
         fallback or generic answer is asked for again once it is MODEL_LIST_RETRY_SECONDS old.
         """
-        with self._models_lock:
-            age = time.monotonic() - self._models_at
-            if self._models is None or (self.models_note and age >= MODEL_LIST_RETRY_SECONDS):
-                self._models_at = time.monotonic()
-                try:
-                    entries = model_entries(request_model_list())
-                except (OSError, subprocess.SubprocessError, ValueError) as exc:
-                    print(
-                        f"claude model list unavailable ({exc}); showing aliases", file=sys.stderr
-                    )
-                    self._models = list(FALLBACK_MODELS)
-                    self.models_note = UNAVAILABLE_NOTE
-                else:
-                    self._models = [_model_choice(entry) for entry in entries]
-                    self.models_note = GENERIC_NOTE if looks_generic(entries) else None
-            return self._models
+        return self.catalog.models()
 
     def invocation(self, ctx: RunContext) -> Invocation:
         agent = ctx.agent
@@ -369,26 +348,17 @@ class ClaudeProvider:
         argv += extra_argv
         if ctx.system_prompt:
             argv += ["--append-system-prompt", ctx.system_prompt]
-        servers: dict[str, object] = {}
-        if ctx.mcp:
-            server: dict[str, object] = {
-                "command": ctx.mcp.command,
-                "args": ctx.mcp.args,
-                "env": ctx.mcp.env,
-            }
-            if keep_own:  # a lead keeps using its own tools as without tool search
-                server["alwaysLoad"] = True
-            servers[OWN_SERVER] = server
-        brought = {
-            name: config_entry(entry)
-            for name, entry in wired_servers(ctx.wirings).items()
-            if name != OWN_SERVER  # Spartito's own name: its own server only
-        }
+        servers = kit.turn_servers(ctx)
+        if keep_own:  # a lead keeps using its own tools as without tool search
+            servers[OWN_SERVER]["alwaysLoad"] = True
+        brought = [name for name in servers if name != OWN_SERVER]
         private_files = {}
         if brought:
             if ctx.mcp_config is None:
                 raise ValueError("a turn with MCP servers needs a path for its configuration")
-            content = json.dumps({"mcpServers": {**servers, **brought}})
+            for name in brought:
+                servers[name] = config_entry(servers[name])
+            content = json.dumps({"mcpServers": servers})
             private_files[ctx.mcp_config] = content
             argv += ["--mcp-config", str(ctx.mcp_config)]
         elif servers:
@@ -411,10 +381,25 @@ class ClaudeProvider:
         )
 
     def parse(self, line: str) -> list[Event]:
-        try:
-            data = json.loads(line)
-        except json.JSONDecodeError:
-            return [Event("info", line.strip())] if line.strip() else []
+        return Stream().feed(line)
+
+    def attach_command(self, agent: Agent) -> list[str]:
+        return ["claude", "--resume", agent.session_id or ""]
+
+    @staticmethod
+    def compact_prompt(instructions: str | None) -> str:
+        """The CLI's own `/compact [instructions]`, on one line. It works only without
+        `--disable-slash-commands` (with it the CLI answers "/compact isn't available in
+        this environment." without compacting) and keeps the session id; its result is
+        empty, with `num_turns: 0` (verified with Claude Code 2.1.322)."""
+        words = " ".join((instructions or "").split())
+        return f"/compact {words}" if words else "/compact"
+
+
+class Stream(kit.JsonLines):
+    """The events of Claude Code's `stream-json` output."""
+
+    def on_json(self, data: dict) -> list[Event]:
         kind = data.get("type")
         if kind == "system" and data.get("subtype") == "init":
             session = Event("session", session_id=data.get("session_id"), model=data.get("model"))
@@ -552,15 +537,3 @@ class ClaudeProvider:
             if block.get("type") == "tool_result" and block.get("is_error"):
                 events.append(Event("tool_result", "error: " + brief(block.get("content"))))
         return events
-
-    def attach_command(self, agent: Agent) -> list[str]:
-        return ["claude", "--resume", agent.session_id or ""]
-
-    @staticmethod
-    def compact_prompt(instructions: str | None) -> str:
-        """The CLI's own `/compact [instructions]`, on one line. It works only without
-        `--disable-slash-commands` (with it the CLI answers "/compact isn't available in
-        this environment." without compacting) and keeps the session id; its result is
-        empty, with `num_turns: 0` (verified with Claude Code 2.1.322)."""
-        words = " ".join((instructions or "").split())
-        return f"/compact {words}" if words else "/compact"

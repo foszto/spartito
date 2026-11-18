@@ -15,6 +15,7 @@ import re
 import shutil
 import signal
 import subprocess
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -131,15 +132,28 @@ def says_more() -> str:
     return f"`{config.CLI_NAME} providers` says more"
 
 
-def _run(argv: list[str], timeout: float) -> tuple[int, str, str]:
-    """Exit code, stdout and stderr of `argv` (no shell, no input), with PATH searched; the
-    whole process group is killed on a timeout (subprocess.TimeoutExpired). A child that left
-    the group may keep the output open: it is waited for PIPES_SECONDS at most."""
-    env = {**os.environ, "PATH": search_path()}
+def run_cli(
+    argv: Sequence[str],
+    timeout: float,
+    stdin: str | None = None,
+    env: Mapping[str, str] | None = None,
+    cwd: str | Path | None = None,
+) -> tuple[int, str, str]:
+    """Exit code, stdout and stderr of a brief CLI call (no shell). `stdin`: its input, none
+    when None. `env`: its environment (default: this process's), with the usual install
+    directories appended to its PATH (search_path).
+
+    It runs in a process group of its own, which is killed as a whole on a timeout
+    (subprocess.TimeoutExpired is raised). A child that left the group may keep the output
+    open: it is waited for PIPES_SECONDS at most.
+    """
+    env = dict(os.environ if env is None else env)
+    env["PATH"] = search_path(env.get("PATH"))
     proc = subprocess.Popen(
-        argv,
+        list(argv),
+        cwd=cwd,
         env=env,
-        stdin=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL if stdin is None else subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -147,9 +161,10 @@ def _run(argv: list[str], timeout: float) -> tuple[int, str, str]:
         start_new_session=True,
     )
     try:
-        out, err = proc.communicate(timeout=timeout)
+        out, err = proc.communicate(stdin, timeout=timeout)
     except subprocess.TimeoutExpired:
-        # macOS answers EPERM for a group that has just exited but is not reaped yet.
+        # macOS answers EPERM for a group that has just exited but is not reaped yet; the
+        # CLI must be reaped either way.
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(proc.pid, signal.SIGKILL)
         try:
@@ -183,7 +198,7 @@ def probe(
         return Probe(NOT_INSTALLED, None, str(path), problem)
     asked = " ".join([executable, *version_args])
     try:
-        code, out, err = _run([str(path), *version_args], timeout)
+        code, out, err = run_cli([str(path), *version_args], timeout)
     except subprocess.TimeoutExpired:
         reason = f"`{asked}` did not answer within {timeout:g} s"
         return Probe(UNKNOWN, None, str(path), reason)
@@ -200,7 +215,7 @@ def probe(
     if not login_args:
         return Probe(AVAILABLE, version, str(path), f"{where}; {LOGIN_NOT_CHECKED}")
     try:
-        code, out, err = _run([str(path), *login_args], timeout)
+        code, out, err = run_cli([str(path), *login_args], timeout)
     except subprocess.TimeoutExpired, OSError:
         return Probe(UNKNOWN, version, str(path), f"{where}; the login check did not answer")
     if code:
