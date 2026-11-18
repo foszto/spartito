@@ -304,9 +304,9 @@ class ClaudeProvider:
     reports_cost = True
     role_prompt = "every_turn"
     limits: tuple[str, ...] = ()
-    # Facts the tables keyed by provider name hold today (roles._CREDITS, setup.CACHE_EFFECT,
-    # runner.MCP_PASSED_ENV and autostart.ENV_NAMES, availability's and capabilities' checks
-    # for the built-in ones), as data of the provider; nothing reads them yet.
+    # Facts about the CLI as data of the provider (base.Provider's optional facts): its
+    # attribution, what a change of model or effort does to the prompt cache, its config
+    # home's variable, whether it reports the context size and takes capabilities' MCP servers.
     reports_context = True
     carries_mcp_servers = True
     credit = kit.Credit("[Claude Code](https://claude.com/claude-code)", kit.TRAILER_AS_ASKED)
@@ -379,6 +379,9 @@ class ClaudeProvider:
             unset_env=PARENT_SESSION_ENV,
             private_files=private_files,
         )
+
+    def stream(self) -> Stream:
+        return Stream()
 
     def parse(self, line: str) -> list[Event]:
         return Stream().feed(line)

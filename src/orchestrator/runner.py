@@ -22,6 +22,7 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,7 @@ from .providers.base import (
     Invocation,
     Wiring,
     server_references,
+    turn_stream,
     wired_servers,
 )
 from .store import Store, now
@@ -166,15 +168,15 @@ def system_prompt(
     return f"{prompt}\n\n## Context\n" + "\n".join(context)
 
 
-# Passed on to the orchestrator's MCP server when set: what the runners it starts need to
-# find and run the providers as this runner does (their config homes, plugin providers).
-MCP_PASSED_ENV = (
-    "CODEX_HOME",
-    "CLAUDE_CONFIG_DIR",
-    "ORCH_PROVIDERS",
-    capabilities.PLUGINS_ENV,
-    "PYTHONPATH",
-)
+def passed_env(registered: Iterable[providers.Provider]) -> tuple[str, ...]:
+    """The variables passed on to the orchestrator's MCP server when set: what the runners
+    it starts need to find and run the providers as this runner does (the config homes the
+    `registered` providers name in `config_env`, plugin providers)."""
+    homes = [name for provider in registered for name in getattr(provider, "config_env", ())]
+    return (*dict.fromkeys(homes), "ORCH_PROVIDERS", capabilities.PLUGINS_ENV, "PYTHONPATH")
+
+
+MCP_PASSED_ENV = passed_env(providers.PROVIDERS.values())
 
 
 def mcp_server(agent: Agent) -> McpServer:
@@ -261,6 +263,7 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
     plain_ctx = dataclasses.replace(ctx, loadout=dataclasses.replace(ctx.loadout, memory=False))
     if invocation.canary is not None and hooks_known_off(agent):
         invocation = _plain(provider, plain_ctx)
+    note_invocation(store, run.id, agent.id, invocation)
 
     stderr_path = scratch / "stderr.log"
     last_text, results, errors, reported_model, session_id = "", [], [], None, None
@@ -271,6 +274,37 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
     compaction: Usage | None = None
     windows: dict[str, int] = {}
     answered = False  # a result answering the prompt (not a background-task notification)
+
+    def handle(event: Event) -> None:
+        nonlocal session_id, reported_model, record, context, first_context, compaction
+        nonlocal answered, last_text
+        if event.session_id:
+            store.set_session(agent.id, event.session_id)
+            session_id = event.session_id
+        if event.kind == "session":
+            reported_model = event.model or reported_model
+            if given and event.mcp is not None:
+                record = note_server_statuses(store, run.id, record, given, event.mcp)
+            return
+        if event.kind == "context":
+            context = event.usage
+            first_context = first_context or event.usage
+            return
+        if event.kind == "compact":
+            compaction, context = event.usage, None
+            store.add_event(run.id, agent.id, "info", event.text)
+            return
+        if event.kind in ("result", NOTIFICATION_RESULT):
+            windows.update(event.windows or {})
+            results.append(event)
+            answered = answered or event.kind == "result"
+            return
+        if event.kind == "text":
+            last_text = event.text
+        if event.kind == "error":
+            errors.append(event.text)
+        store.add_event(run.id, agent.id, event.kind, event.text)
+
     with (
         # Removed when the block ends, however it ends: by then the turn's processes are.
         PrivateFiles(store, run.id, invocation.private_files) as private,
@@ -299,7 +333,8 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
                 for pipe in (child.stdin, child.stdout):
                     if pipe:
                         pipe.close()
-                invocation = _plain(provider, plain_ctx)
+                noted, invocation = invocation, _plain(provider, plain_ctx)
+                note_invocation(store, run.id, agent.id, invocation, noted)
                 private.write(invocation.private_files)
                 child = _start(invocation, agent, token, stderr)
         assert child.stdin and child.stdout
@@ -307,6 +342,7 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
         reader = threading.Thread(target=_pump, args=(child.stdout, lines), daemon=True)
         reader.start()
         known: dict[int, tuple[int, int]] = {}
+        stream = turn_stream(provider)
         try:
             with contextlib.suppress(BrokenPipeError):  # a CLI that exited unasked
                 child.stdin.write(invocation.stdin)
@@ -330,33 +366,8 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
                 exited_at = None
                 raw.write(line)
                 raw.flush()
-                for event in provider.parse(line):
-                    if event.session_id:
-                        store.set_session(agent.id, event.session_id)
-                        session_id = event.session_id
-                    if event.kind == "session":
-                        reported_model = event.model or reported_model
-                        if given and event.mcp is not None:
-                            record = note_server_statuses(store, run.id, record, given, event.mcp)
-                        continue
-                    if event.kind == "context":
-                        context = event.usage
-                        first_context = first_context or event.usage
-                        continue
-                    if event.kind == "compact":
-                        compaction, context = event.usage, None
-                        store.add_event(run.id, agent.id, "info", event.text)
-                        continue
-                    if event.kind in ("result", NOTIFICATION_RESULT):
-                        windows.update(event.windows or {})
-                        results.append(event)
-                        answered = answered or event.kind == "result"
-                        continue
-                    if event.kind == "text":
-                        last_text = event.text
-                    if event.kind == "error":
-                        errors.append(event.text)
-                    store.add_event(run.id, agent.id, event.kind, event.text)
+                for event in stream.feed(line):
+                    handle(event)
                 if answered and role.lead:
                     # A lead's turn ends with its answer: a background command it left
                     # running must not keep it unreachable (the CLI would stay alive and
@@ -371,6 +382,10 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
             else:  # the CLI is gone; end whatever holds its stdout
                 end_turn(child, mark)
                 code = child.returncode
+            # The stream has ended (for a lead: with its answer) and the exit code is known;
+            # what the stream reports now counts before anything is concluded below.
+            for event in stream.finish(code):
+                handle(event)
         except BaseException:
             end_turn(child, mark, known)
             raise
@@ -426,6 +441,20 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
     store.add_event(run.id, agent.id, "error", error)
     write_result(store, run, scratch, last_text or error, None)
     store.finish_run(run.id, RunStatus.FAILED, error=error, result=last_text or None, cost_usd=cost)
+
+
+def note_invocation(
+    store: Store,
+    run_id: int,
+    agent_id: str,
+    invocation: Invocation,
+    noted: Invocation | None = None,
+) -> None:
+    """Log the provider's notes on the turn's invocation, as info lines; on a relaunch
+    only those the invocation `noted` before it did not have."""
+    for note in invocation.notes:
+        if noted is None or note not in noted.notes:
+            store.add_event(run_id, agent_id, "info", note)
 
 
 def note_capabilities(
