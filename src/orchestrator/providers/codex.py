@@ -81,9 +81,9 @@ class CodexProvider:
         "compacts without instructions, once its context size is known",
         "of the loadout only `codex_user_config` applies: `tools` and `memory` do not restrict it",
     )
-    # Facts the tables keyed by provider name hold today (roles._CREDITS, setup.CACHE_EFFECT,
-    # runner.MCP_PASSED_ENV and autostart.ENV_NAMES, availability's and capabilities' checks
-    # for the built-in ones), as data of the provider; nothing reads them yet.
+    # Facts about the CLI as data of the provider (base.Provider's optional facts): its
+    # attribution, what a change of model or effort does to the prompt cache, its config
+    # home's variable, whether it reports the context size and takes capabilities' MCP servers.
     reports_context = True
     carries_mcp_servers = False
     credit = kit.Credit("[Codex](https://github.com/openai/codex)", kit.TRAILER_IF_ADDED)
@@ -130,6 +130,9 @@ class CodexProvider:
         argv.append("-")
         # Codex has no system-prompt flag for exec; the role opens the first turn instead.
         return Invocation(argv=argv, stdin=kit.with_role_prefix(ctx), env=extra_env)
+
+    def stream(self) -> Stream:
+        return Stream()
 
     def parse(self, line: str) -> list[Event]:
         return Stream().feed(line)

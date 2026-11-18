@@ -138,6 +138,23 @@ class Invocation:
     # starts (mode 0600, created so, in config.private_dir) and removes it when the turn
     # ends, however it ends. Their content is never logged or shown.
     private_files: dict[Path, str] = field(default_factory=dict)
+    # Info lines the runner logs for the turn, e.g. a setting the CLI cannot take.
+    notes: list[str] = field(default_factory=list)
+
+
+class TurnStream(Protocol):
+    """Reads one turn's output stream: a provider's `stream()` gives a new one per turn, so
+    it may keep state from line to line and report once the stream has ended."""
+
+    def feed(self, line: str) -> list[Event]:
+        """The events of one line of the CLI's output."""
+        ...
+
+    def finish(self, exit_code: int) -> list[Event]:
+        """The events once the output has ended, with the CLI's exit code. On a lead's turn
+        whose CLI the runner ended after its answer the code is 0, which cannot be told
+        apart from a clean exit."""
+        ...
 
 
 class Provider(Protocol):
@@ -190,6 +207,43 @@ class Provider(Protocol):
     #       The conversation's size (Usage.context_*) and a compaction since `since` (an
     #       ISO time; Usage.compact_*) when the output stream does not report them; read
     #       after the turn, best effort.
+    #   stream() -> TurnStream
+    #       A new reader for one turn's output (kit.JsonLines is one). Default: each line
+    #       through `parse`, nothing at the end of the stream (turn_stream).
+    #
+    # Optional facts, looked up with getattr:
+    #   credit: kit.Credit              how its agents credit the CLI (pull requests, commit
+    #                                   trailers); none: no attribution section
+    #   cache_effect: dict[str, str]    what changing "model" or "effort" does to the prompt
+    #                                   cache ("restarts", "may restart", "keeps"); default:
+    #                                   "may restart" for both
+    #   config_env: tuple[str, ...]     variables that locate the CLI's configuration home,
+    #                                   passed on to what starts more turns; default ()
+    #   reports_context: bool | None    whether its turns report the conversation's size;
+    #                                   None: not said
+    #   carries_mcp_servers: bool       whether it takes MCP servers from capabilities;
+    #                                   default False
+    #   min_version: tuple[int, ...]    the oldest CLI version it supports; none: any
+    # Invocation.notes (default empty) holds info lines the runner logs for the turn.
+
+
+class ParsedLines:
+    """The turn stream of a provider without `stream()`: each line through its `parse`."""
+
+    def __init__(self, provider: Provider) -> None:
+        self.provider = provider
+
+    def feed(self, line: str) -> list[Event]:
+        return self.provider.parse(line)
+
+    def finish(self, exit_code: int) -> list[Event]:
+        return []
+
+
+def turn_stream(provider: Provider) -> TurnStream:
+    """A new reader for one turn of `provider`: its own `stream()`, or ParsedLines."""
+    stream = getattr(provider, "stream", None)
+    return stream() if stream is not None else ParsedLines(provider)
 
 
 def model_choices(provider: Provider) -> dict[str, Any]:
