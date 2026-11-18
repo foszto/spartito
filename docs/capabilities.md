@@ -69,9 +69,15 @@ spartito capabilities inherit chrome                           # back to the def
 `on` and `off` set the value at one level; `inherit` removes it, so that the level above
 applies. Without `--project`, `--role` or `--agent` the level is the global one. `--agent`
 cannot be combined with `--project` or `--role`. Each command prints the listing of its
-scope afterwards, or with `--agent` the agent's capabilities (as `capabilities show`). The
-dashboard's settings and an agent's setup panel show and change them. The JSON API:
-`GET /api/capabilities` and `POST /api/capabilities`, `POST /api/agents/<id>/capabilities`
+scope afterwards, or with `--agent` the agent's capabilities (as `capabilities show`), and
+drops entries of that scope's settings that cannot be read.
+
+In the dashboard, the settings have a **Capabilities** box, for all projects and per project,
+with an inherit / on / off choice per capability and the roles' settings shown read-only. An
+agent's setup panel has a line per capability with its state, where it comes from and an
+inherit / on / off choice; the new-agent dialog has a choice per capability, and agents with a
+capability on show a small badge in the list. The JSON API: `GET /api/capabilities` and
+`POST /api/capabilities`, `POST /api/agents/<id>/capabilities`
 ([usage.md](usage.md#dashboard)).
 
 For each capability the last level that says something wins:
@@ -98,9 +104,9 @@ global or the project level is not final: a role or an agent setting below it ca
 capability on again.
 
 A name that is not registered is refused when it is set (`unknown capability 'jira' (known:
-chrome)`). `inherit` also accepts a name that is no longer registered, so that a setting left by
-a removed plugin can be cleared; until then, a turn that would have it skips it with the note
-`not registered here`.
+chrome)`), by the commands and by the settings API alike. `inherit` also accepts a name that is
+no longer registered, so that a setting left by a removed plugin can be cleared; until then, a
+turn that would have it skips it with the note `not registered here`.
 
 A capability that is on but that the agent's provider does not support is skipped, with the
 note `codex does not support it`; it is not an error, and the setting stays. Starting an agent
@@ -139,33 +145,44 @@ When a turn's set differs from the agent's previous turn's, the agent's log gets
 first turn gets one only when something is on or skipped. Every turn's set is recorded with the
 turn in the database.
 
-Changing the set of an agent that has a conversation changes the tools its model sees, which
-can cost a fresh prompt cache. Capabilities apply to agents' turns only: `spartito chat` and
-`spartito attach` are your own sessions and run with your own CLI settings.
+Changing the set of an agent that has a conversation changes the tools its model sees, so
+expect its next turn to start a fresh prompt cache. Capabilities apply to agents' turns only:
+`spartito chat` and `spartito attach` are your own sessions and run with your own CLI settings.
 
 ## Giving capabilities from agents
 
 The MCP tools `spawn_agent` and `send_message` take `capabilities`, comma-separated:
-`"chrome"` turns one on in the agent's own setting, `"-chrome"` turns it off.
+`"chrome"` turns one on in the agent's own setting, `"-chrome"` turns it off. A `spartito`
+command run in an agent's turn (`spartito capabilities …`, `spartito spawn --capabilities …`)
+acts as that agent too: every turn runs with `ORCH_AGENT_ID` set to its own agent, and the same
+rules apply.
 
 - `spawn_agent(…, capabilities="chrome")` sets the new agent's own setting.
 - `send_message(agent_id, message, capabilities="chrome")` changes the target agent's own
   setting before the message is queued. The change stays for its later turns. A refused change
   queues nothing.
 
-**No escalation.** An agent can turn on for another agent only a capability that its own next
-turn has. The orchestrator agent, the interactive `spartito chat` session and the owner's
-surfaces (the command line, the dashboard, the JSON API) can give any. Turning a capability off
-is always allowed. A role's `off` applies to everyone, the owner included. A refusal names the
-reason:
+**No escalation.** The orchestrator agent, the interactive `spartito chat` session and the
+owner's own surfaces (a terminal outside any agent's turn, the dashboard, the JSON API) can give
+any capability, at any level. Any other agent:
+
+- can turn on for another agent only a capability that its own next turn has
+- cannot turn on again what an agent's own setting turned off: a lead that gave a worker
+  `"-chrome"` cannot give it back; the owner or the orchestrator agent can
+- cannot turn a capability on globally, for a project or for a role
+- can always turn a capability off, and set `inherit`
+
+A role's `off` applies to everyone, the owner included. A refusal names the reason:
 
 ```
 cannot give chrome: lead-1c2d does not have it itself, and an agent may give only the capabilities its own turns have
+cannot give chrome: it was turned off for fix-login-3f2a, and only the owner or the orchestrator can turn it on again
+lead-1c2d cannot turn chrome on globally: only the owner or the orchestrator turns a capability on globally, for a project or for a role
 ```
 
 From the command line, `spartito spawn --capabilities "chrome"` sets a new agent's own setting
-the same way. Back to inherit, for an agent's own setting, goes only through
-`spartito capabilities inherit NAME --agent AGENT` and the JSON API.
+the same way. Back to inherit, for an agent's own setting, goes through
+`spartito capabilities inherit NAME --agent AGENT`, the dashboard and the JSON API.
 
 ## `chrome`: Claude in Chrome
 
@@ -217,6 +234,11 @@ spartito capabilities off chrome
   `spawn --permission` sets another). Do not combine `chrome` with `bypassPermissions`.
 - Roles that should never browse can be turned off, for example
   `spartito capabilities off chrome --role planner`.
+
+The rules on who may give a capability ([above](#giving-capabilities-from-agents)) are a guard
+rail, not a sandbox. They stop an agent from widening its tools by accident or because a web
+page told it to; an agent with a shell on your machine can still reach Spartito's home, the
+dashboard's API or the command without its identity, as it can for every other setting.
 
 ### Not verified yet
 

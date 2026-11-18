@@ -110,7 +110,10 @@ spartito capabilities show AGENT
   the others); `inherit` removes the setting at that level. A role's `off` is final: an
   agent's own setting cannot turn it back on. An unknown name is refused. Each prints the
   listing of its scope, or with `--agent` the agent's capabilities. Changes apply from each
-  agent's next turn.
+  agent's next turn. Run in an agent's turn, these commands and `spawn --capabilities` act as
+  that agent: it can give only what its own turns have, and cannot turn anything on globally,
+  for a project or for a role
+  ([capabilities.md](capabilities.md#giving-capabilities-from-agents)).
 - `show` prints what the agent's next turn gets: per capability its state (`on`, `off` or
   `skipped`), the level that decided it and a note, such as `codex does not support it`.
 
@@ -548,8 +551,11 @@ notifications globally. Under **Notifications**, **Allow in this browser** lets 
 the notifications itself, so that a click opens the agent or decision (see
 [desktop.md](desktop.md#notifications-with-click-through)).
 
-**Capabilities.** The dashboard's settings and an agent's setup panel show and change them
-([capabilities.md](capabilities.md)).
+**Capabilities.** The settings have a **Capabilities** box, for all projects and per project:
+an inherit / on / off choice per capability, and the roles' settings shown read-only. An
+agent's setup panel has a line per capability with its state, where it comes from and an
+inherit / on / off choice; the new-agent dialog has a choice per capability, and agents with a
+capability on show a small badge in the list ([capabilities.md](capabilities.md)).
 
 **Decisions** window: every open decision across projects with its project, agent, question,
 options, recommendation and age; answer with an option or free text.

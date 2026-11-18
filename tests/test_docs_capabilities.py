@@ -1,7 +1,8 @@
 """docs/capabilities.md describes every built-in capability from its own entry: a section per
 capability (its label and `name` in the heading), its providers and default rows, what it
-reaches and what it requires word for word, and every status. A capability added to
-capabilities.BUILTIN without a section fails here. No home, no subprocess."""
+reaches and what it requires word for word, the anchor of its `docs` link, and every status.
+A capability added to capabilities.BUILTIN without a section fails here. No home, no
+subprocess."""
 
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ import re
 from pathlib import Path
 
 import pytest
+from test_docs_links import anchors, slug
 from test_docs_providers import flat, row, sections
 
 from orchestrator import capabilities
@@ -47,6 +49,17 @@ def test_what_it_reaches_and_requires_is_listed_word_for_word(capability: Capabi
     listed = flat(body)
     for needed in capability.requires:
         assert f"- {flat(needed)}" in listed, f"{capability.name}: not listed: {needed}"
+
+
+@pytest.mark.parametrize("capability", BUILTIN, ids=lambda c: c.name)
+def test_its_docs_link_names_a_heading(capability: Capability) -> None:
+    """The entry's `docs` (in the listing's JSON) leads to its own section."""
+    path, _, anchor = capability.docs.partition("#")
+    assert path == "docs/capabilities.md" and anchor, capability.docs
+    assert anchor in anchors(DOC), f"no heading with the anchor #{anchor} in {path}"
+    assert any(
+        f"`{capability.name}`" in heading and slug(heading) == anchor for heading in sections(DOC)
+    ), f"#{anchor} is not the heading of {capability.name}'s section"
 
 
 def test_the_list_of_levels_states_the_default() -> None:

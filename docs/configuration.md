@@ -458,6 +458,7 @@ no declarative pipeline layer.
 | `ORCH_CAPABILITIES` | extra capabilities, `package.module:attribute`, comma-separated ([capabilities.md](capabilities.md#adding-a-capability)) |
 | `ORCH_NOTIFY_DELAY` | seconds a notification turn waits to collect results (default 5) |
 | `ORCH_DESKTOP_NOTIFICATIONS` | `off` (or `0`, `false`, `no`): no desktop notification by any path; notices are still recorded, with the reason, in `spartito notices` ([desktop.md](desktop.md#notifications-with-click-through)). For CI and manual runs of a checkout |
+| `ORCH_AGENT_ID` | set by the runner for every command of an agent's turn: its own agent id. A `spartito` command run there acts as that agent ([capabilities.md](capabilities.md#giving-capabilities-from-agents)) |
 | `ORCH_TURN_HOME` | set by the runner for an agent's turn: the home of the instance it belongs to. A process with it that works on another home shows no desktop notification |
 | `CODEX_HOME` | read for Codex rollout files and `config.toml` (Codex's own variable) |
 | `PYWEBVIEW_GUI` | the pywebview backend of `spartito app` on Linux (pywebview's own variable; default Qt) |

@@ -66,9 +66,11 @@ commits) and `set_project_provider` (existing agents on another provider) always
 [capabilities](capabilities.md), comma-separated: `"chrome"` turns one on, `"-chrome"` off.
 Unset, the configured levels apply. In `send_message` the change is made before the message is
 queued and stays for the agent's later turns; a refused change queues nothing. An agent can
-turn on only a capability that its own next turn has; the orchestrator and `spartito chat` can
-give any, turning one off is always allowed, and nobody turns on one that the agent's role
-turns off ([capabilities.md](capabilities.md#giving-capabilities-from-agents)). A capability
+turn on only a capability that its own next turn has, and not one that the target's own setting
+turned off; the orchestrator and `spartito chat` can give any, turning one off is always
+allowed, and nobody turns on one that the agent's role turns off. A `spartito` command run in
+an agent's turn follows the same rules
+([capabilities.md](capabilities.md#giving-capabilities-from-agents)). A capability
 that the agent's provider does not support is kept and skipped in its turns; `spawn_agent`'s
 `note` says so. `get_agent` shows each capability's state for the next turn (`capabilities`:
 `on`, and per capability `state`, `source`, `override`, `final` and `note`); `list_agents`

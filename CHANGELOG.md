@@ -37,12 +37,14 @@ chosen is in the
   Claude in Chrome's browser tools for Claude agents. It is off by default:
   `spartito capabilities on chrome` turns it on for every agent, `off` turns it off again, and
   `inherit` goes back to the default. It drives your real, signed-in browser, so read
-  [the capabilities guide](https://github.com/foszto/spartito/blob/master/docs/capabilities.md)
-  first. `spartito capabilities` lists them with their status, `spartito capabilities show`
-  and `spartito status` show what an agent's next turn gets, `spartito spawn --capabilities`
-  and `capabilities` in the MCP tools `spawn_agent` and `send_message` set an agent's own (an
-  agent can give only what its own turns have), and `spartito providers` has a `CAPABILITIES`
-  column. More capabilities can be registered with `ORCH_CAPABILITIES`.
+  `docs/capabilities.md` first. `spartito capabilities` lists them with their status,
+  `spartito capabilities show` and `spartito status` show what an agent's next turn gets,
+  `spartito spawn --capabilities` and `capabilities` in the MCP tools `spawn_agent` and
+  `send_message` set an agent's own (an agent can give only what its own turns have, also
+  through the command run in its turn), and `spartito providers` has a `CAPABILITIES` column.
+  The dashboard has a **Capabilities** box in its settings, an inherit / on / off choice per
+  capability in an agent's setup panel and the new-agent dialog, and a badge on agents that
+  have one. More capabilities can be registered with `ORCH_CAPABILITIES`.
 
 ### Changed
 
