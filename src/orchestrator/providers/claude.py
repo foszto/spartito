@@ -306,6 +306,14 @@ class ClaudeProvider:
     reports_cost = True
     role_prompt = "every_turn"
     limits: tuple[str, ...] = ()
+    # Facts the tables keyed by provider name hold today (roles._CREDITS, setup.CACHE_EFFECT,
+    # runner.MCP_PASSED_ENV and autostart.ENV_NAMES, availability's and capabilities' checks
+    # for the built-in ones), as data of the provider; nothing reads them yet.
+    reports_context = True
+    carries_mcp_servers = True
+    credit = kit.Credit("[Claude Code](https://claude.com/claude-code)", kit.TRAILER_AS_ASKED)
+    cache_effect = {"model": "restarts", "effort": "may restart"}
+    config_env = ("CLAUDE_CONFIG_DIR",)
 
     def __init__(self) -> None:
         # A fallback or generic list (one with a note) is asked for again.

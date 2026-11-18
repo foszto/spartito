@@ -13,7 +13,8 @@ from pathlib import Path
 import pytest
 from minimalprovider import MinimalProvider
 
-from orchestrator import providers
+from orchestrator import autostart, providers, roles, runner
+from orchestrator.core import setup
 from orchestrator.models import Agent, Event, RunStatus
 from orchestrator.providers import McpServer, RunContext, kit, locate
 from orchestrator.providers.base import Wiring
@@ -178,6 +179,22 @@ def test_the_role_prefix_opens_only_a_new_session(tmp_path: Path) -> None:
     assert kit.with_role_prefix(fresh) == "ROLE\n\n---\n\ndo it"
     assert kit.with_role_prefix(resumed) == "do it"
     assert kit.with_role_prefix(replace(fresh, system_prompt="")) == "do it"
+
+
+# -- the providers' attributes ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["claude", "codex"])
+def test_the_provider_attributes_say_what_the_tables_say(name: str) -> None:
+    """Data only for now: the tables keyed by name still decide."""
+    provider = providers.get(name)
+
+    assert (provider.credit.link, provider.credit.trailer_rule) == roles._CREDITS[name]
+    assert provider.cache_effect == setup.CACHE_EFFECT[name]
+    assert set(provider.config_env) <= set(runner.MCP_PASSED_ENV) & set(autostart.ENV_NAMES)
+    assert provider.reports_context is isinstance(provider, providers.BUILTIN)
+    assert provider.carries_mcp_servers is (name == "claude")  # capabilities.mcp_capability
+    assert not hasattr(provider, "min_version")
 
 
 # -- a plugin that knows nothing of the kit -----------------------------------------------------

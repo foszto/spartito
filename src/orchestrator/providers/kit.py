@@ -8,6 +8,7 @@ import json
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -110,3 +111,28 @@ def with_role_prefix(ctx: RunContext) -> str:
     if ctx.system_prompt and not ctx.agent.session_id:
         return f"{ctx.system_prompt}\n\n---\n\n{ctx.prompt}"
     return ctx.prompt
+
+
+# How a commit's Co-Authored-By trailer names Spartito; `{project}` is the project's name.
+TRAILER = "`Co-Authored-By: <name> via {project} <email>`"
+# The rule for a CLI that asks for a trailer of its own unless that is switched off.
+TRAILER_AS_ASKED = (
+    "take the Co-Authored-By trailer your CLI asks for, keep its email exactly, and add "
+    "` via {project}` right after the name: " + TRAILER + "; if your CLI asks for no "
+    "trailer, add none, and do not invent a trailer or an email."
+)
+# The rule for a CLI without a trailer of its own: the agent may still add one.
+TRAILER_IF_ADDED = (
+    "when you add a Co-Authored-By trailer, keep its email exactly and add "
+    "` via {project}` right after the name: " + TRAILER + "; do not invent a trailer "
+    "or an email."
+)
+
+
+@dataclass(frozen=True)
+class Credit:
+    """How a provider's agents credit its CLI: `link`, after Spartito in the closing line of
+    a pull request description, and `trailer_rule`, how a commit's trailer names Spartito."""
+
+    link: str
+    trailer_rule: str

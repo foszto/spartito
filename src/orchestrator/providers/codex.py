@@ -83,6 +83,14 @@ class CodexProvider:
         "compacts without instructions, once its context size is known",
         "of the loadout only `codex_user_config` applies: `tools` and `memory` do not restrict it",
     )
+    # Facts the tables keyed by provider name hold today (roles._CREDITS, setup.CACHE_EFFECT,
+    # runner.MCP_PASSED_ENV and autostart.ENV_NAMES, availability's and capabilities' checks
+    # for the built-in ones), as data of the provider; nothing reads them yet.
+    reports_context = True
+    carries_mcp_servers = False
+    credit = kit.Credit("[Codex](https://github.com/openai/codex)", kit.TRAILER_IF_ADDED)
+    cache_effect = {"model": "restarts", "effort": "keeps"}
+    config_env = ("CODEX_HOME",)
 
     def __init__(self) -> None:
         # An empty list is asked for again.
