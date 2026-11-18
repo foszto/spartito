@@ -329,7 +329,7 @@ Sources:
   - the global config can only be avoided by moving `XDG_CONFIG_HOME`. That variable is inherited by the commands the agent runs, where `git`, `gh` and others read it too. **[observed, V15]**:
     - the agent's shell printed the temporary `XDG_CONFIG_HOME`: the leak is real.
     - without other settings the shell was `/bin/zsh +o nomatch -c …`.
-    - **a workaround worked**: the config setting `"shell": "<wrapper>"`, where the wrapper exports another `XDG_CONFIG_HOME` and `exec`s bash. The agent's command then saw the wrapper's value. MCP servers would need their `environment` set the same way.
+    - **a workaround worked**: the config setting `"shell": "<wrapper>"`, where the wrapper exports another `XDG_CONFIG_HOME` and `exec`s bash. The agent's command then saw the wrapper's value. MCP servers have their own `environment` (2.6); the adapter will set the same value there (4.6).
 
 ### 2.11 Hooks, structured output, compaction, server mode
 
@@ -549,6 +549,7 @@ opencode run --standalone --format json --session <ses_id> [--archived --title <
   - `policies`, from the loadout (4.2). The `permissions` go into `OPENCODE_CONFIG_CONTENT` instead, because project config ranks above the `OPENCODE_CONFIG` file and below `OPENCODE_CONFIG_CONTENT` (V5); every deny is also backed by a `tool.use` or `mcp.use` policy.
   - `mcp.servers`: the `orch` MCP server for leads, and the `mcp:` servers (4.3).
   - `update: "disable"`, so a turn never updates the CLI. The docs honour it only in the global config; whether the `OPENCODE_CONFIG` file counts as global is not verified (4.6).
+  - `shell`: the wrapper that restores the user's `XDG_CONFIG_HOME`, when the global config is moved away (4.2, Q9).
 
 ### 4.2 Loadout keys
 
@@ -557,7 +558,7 @@ opencode run --standalone --format json --session <ses_id> [--archived --title <
 | `tools` | Claude tool names map to actions: `Bash`→`shell`; `Read`→`read`; `Edit`/`Write`/`MultiEdit`/`NotebookEdit`→`edit`; `Glob`→`glob`; `Grep`→`grep`; `WebFetch`→`webfetch`; `WebSearch`→`websearch`; `Task`/`Agent`→`subagent`; `Skill`→`skill`. A built-in action that no listed tool covers gets a `deny` rule and a `tool.use` deny policy. `default` denies nothing extra; `none` denies every built-in action. `ToolSearch` and unknown names are ignored, with a note |
 | always | `question` denied (nobody answers). The `opencode` namespace tools that create, move or remove worktrees and sessions are denied (Spartito owns both): `opencode_session_move`, `opencode_session_rename`, `opencode_worktree_create`, `opencode_worktree_list`, `opencode_worktree_remove` (V6; `worktree_remove` also uses the `edit` permission). `external_directory` denied except the turn's `writable_dirs` (the shared `.git`) |
 | `mcp` | `strict`: policies `mcp.use` `deny *`, then `allow` for the `orch` MCP server and each turn server. `inherit`: no policy |
-| `setting_sources` | without `project`: `OPENCODE_DISABLE_PROJECT_CONFIG=1`. This also drops project `AGENTS.md`, unlike Claude, where `project` keeps `CLAUDE.md`. Without `user`: policies `plugin.use` `deny *`. Moving the global config away (`XDG_CONFIG_HOME`) only if the agent's commands can keep the user's own value. V15 showed the leak, and a `shell` wrapper that avoids it; until Q9 is revisited, the user's global `opencode.json` still applies (a listed limit) |
+| `setting_sources` | without `project`: `OPENCODE_DISABLE_PROJECT_CONFIG=1`. This also drops project `AGENTS.md`, unlike Claude, where `project` keeps `CLAUDE.md`. Without `user`: policies `plugin.use` `deny *`, as before, and the global config is moved away: `XDG_CONFIG_HOME` points at a temporary config home of the turn, and the turn config's `"shell"` is a wrapper that gives the agent's commands the user's own value back; MCP servers get it through their `environment` (Q9, 4.6) |
 | `slash_commands` | `false`: `skill` denied and `skill.use` `deny *` |
 | `memory` | no effect (opencode has no memory directory). A listed limit |
 | `tool_search` | no effect. Code Mode, opencode's default for MCP servers, is its own way: it keeps the schemas out of the request (V12) |
@@ -604,7 +605,7 @@ opencode run --standalone --format json --session <ses_id> [--archived --title <
 - **No context window in the gauge.**
 - **Costs may show `$0.00` for subscription sign-ins**, and per-turn costs miss opencode's hidden title and compaction calls.
 - **No OS sandbox.** The agent's shell can write outside its worktree. Only opencode's own tools are held back.
-- **Possibly the user's global `opencode.json`** (model, providers, instructions) applies to agents (4.2).
+- **Agent commands run in bash, not the user's shell** (for example zsh), when the global config is moved away (4.2): the `shell` wrapper `exec`s bash.
 - **Sessions are stored in the user's opencode database**, marked archived but still listed by `opencode session list` (V18), and visible in opencode's own UI.
 - **A lost session restarts empty** instead of failing.
 - **`spartito chat` stays Claude only.**
@@ -625,7 +626,7 @@ For phases 5b–5d; the facts are in §2, the results in §5.
 10. **`--archived`** does not hide sessions in 2.3.2 (V18); §2.2, §4.1 and §4.5 say so.
 11. **Model list**: `opencode models` with `OPENCODE_DISABLE_MODELS_FETCH=1` is usable: plain lines, credentialed providers only, no variants (V10).
 12. **Login check**: `auth list --format json` is secret-free but misses providers keyed in a config file (V11).
-13. **Isolation**: the `XDG_CONFIG_HOME` leak can be fixed with a `shell` wrapper, which may reopen Q9 and the `setting_sources`/`user` row of 4.2. MCP servers would need `environment` set the same way (V15).
+13. **Isolation** (Q9): the adapter will point `XDG_CONFIG_HOME` at the turn's temporary config home and set the turn config's `"shell"` to a wrapper that restores the user's original `XDG_CONFIG_HOME` (or unsets it, when it was unset) and `exec`s bash. MCP servers get the same original value through their `environment`. A test with the fake-CLI dialect fails if the wrapper or the MCP `environment` is no longer applied; no live run is needed (V15).
 14. **Version**: strip the leading `v` of `opencode v2.3.2` (V19).
 15. **First event**: `step_start` comes at the first model token, so the first event of a turn is the time to first token (V12).
 16. **Further settings to consider**: the server watches every parent directory up to `/`; `OPENCODE_DISABLE_FILEWATCHER` exists in the source, its effect untested. Machine-wide config applies whatever the XDG directories are.
@@ -643,7 +644,7 @@ Sizes are per worker, tests and docs included: **S** about half a day, **M** abo
 | 3 | The stream hook and `Invocation.notes` in the runner; `MCP_PASSED_ENV` from `config_env` | `runner.py`, `providers/base.py` | 1 | S |
 | 4 | Fake-CLI harness; Claude and Codex dialects; `PROVIDER_CLIS` from the registry | `tests/fakecli/`, `tests/conftest.py`, `tests/fakeprovider.py` | 1 | M |
 | 5a | Live checks V1–V19 with the owner | notes for this document | the owner's go-ahead; can run during 1–4 | S |
-| 5b | `providers/opencode.py`: invocation, turn config, loadout mapping, MCP translation; registered last in `BUILTIN`; a fake `opencode` on `PATH` in the same change | `providers/opencode.py`, `providers/__init__.py`, `tests/test_opencode.py` | 2, 3, 4, 5a | M |
+| 5b | `providers/opencode.py`: invocation, turn config, loadout mapping, MCP translation; the `XDG_CONFIG_HOME` move with the `shell` wrapper and its test (about S of it, Q9); registered last in `BUILTIN`; a fake `opencode` on `PATH` in the same change | `providers/opencode.py`, `providers/__init__.py`, `tests/test_opencode.py` | 2, 3, 4, 5a | M |
 | 5c | opencode stream: usage, context, structured answers, the dialect | same owner as 5b | 5b | M |
 | 5d | Model list, availability, docs (`providers.md`, `configuration.md`, `capabilities.md`, `mcp.md`, `architecture.md`), `CHANGELOG.md` | docs, small code | 5b | M |
 
@@ -654,7 +655,7 @@ Sizes are per worker, tests and docs included: **S** about half a day, **M** abo
 **Risks**:
 - **opencode's surface changes**: undocumented `run` flags and JSON events, weekly releases. Mitigations: `min_version`, defensive parsing, a recorded fixture per tested version, and a note of the tested version in `providers.md`.
 - **Config precedence**: the `OPENCODE_CONFIG` file loads before project config, so a repository's `opencode.json` can widen its permissions; `OPENCODE_CONFIG_CONTENT` loads after it. The turn's permission rules therefore go into `OPENCODE_CONFIG_CONTENT`, and policies, which held against the project, back every deny (V5).
-- **Isolation**: moving `XDG_CONFIG_HOME` leaks into the agent's commands (V15); a `shell` wrapper avoids it.
+- **Isolation**: moving `XDG_CONFIG_HOME` leaks into the agent's commands (V15) unless the `shell` wrapper and the MCP servers' `environment` restore the user's value. Risks: one of them is not applied (covered by the test of 4.6, item 13), or a future opencode release changes or drops the `shell` setting.
 - **Shared database**: concurrent standalone processes share one SQLite database, as does the user's own opencode. Three parallel turns ran without lock errors (V14).
 - **Silent new session**: a missing `PWD` sends the turn to the wrong directory; a lost session id silently starts a new one.
 - **Refactor drift**: mitigated by the existing tests, the normal review and phase-by-phase pull requests.
@@ -718,7 +719,7 @@ Decided: no golden tests for now; the existing tests and the normal review carry
 6. **Q6 Server model**: one process per turn now, `serve` or ACP later? Decided: one process per turn; ACP is on the roadmap ([ACP as a generic provider](../ROADMAP.md#acp-as-a-generic-provider)).
 7. **Q7 Order of work**: refactor (1–4) before opencode, or opencode first on today's structure? Decided: refactor first (phases 1–4), then opencode.
 8. **Q8 MCP servers on opencode** without an approval gate (as decided for Codex in [mcp.md](mcp.md#decisions)): allow them only when the owner marks a server for it, or in general? Decided: MCP servers on opencode follow the same marked-server rule as Codex.
-9. **Q9 Global opencode config**: if V15 shows the leak, accept that the user's global `opencode.json` applies to agents (listed), or deny opencode agents some of it through policies only? Decided: accept that the global `opencode.json` applies, and list it as a limit. May be revisited: V15 confirmed the leak, but a `shell` wrapper that exports another `XDG_CONFIG_HOME` kept it out of the agent's commands, so the global config could be moved away after all (4.2, 4.6).
+9. **Q9 Global opencode config**: if V15 shows the leak, accept that the user's global `opencode.json` applies to agents (listed), or deny opencode agents some of it through policies only? Decided anew after V15, replacing the earlier answer (accept the global config and list it as a limit): when `setting_sources` leaves out `user` (4.2), the adapter moves the global config away by pointing `XDG_CONFIG_HOME` at the turn's temporary config home. The turn config sets `"shell"` to a wrapper that restores the user's original `XDG_CONFIG_HOME` (unsets it when it was unset) and `exec`s bash; MCP servers get the same value through their `environment`. So `git`, `gh` and the user's other tools keep reading the user's own config (for example the `gh` login under `~/.config/gh`). Accepted side effect: agent commands run in bash, not the user's shell (listed in 4.5). A test with the fake-CLI dialect fails if the wrapper is no longer applied. About S, inside phase 5b.
 
 See also [mcp.md](mcp.md#wiring-per-provider) for how MCP servers are wired per provider,
 [configuration.md](configuration.md#model-and-effort) for model and effort, and
