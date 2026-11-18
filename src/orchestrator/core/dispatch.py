@@ -3,6 +3,7 @@ turns with dependencies, and withdrawing or editing a queued message."""
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from dataclasses import replace
@@ -13,6 +14,7 @@ from ..errors import OrchestratorError
 from ..models import COMPACT, MESSAGE, NOTIFICATION, NOTIFY_MODES, Agent, Project, Run, RunStatus
 from ..store import ANYONE, Store
 from ..timeline import AgentRuns
+from . import availability, grants
 
 
 class Facade(Protocol):
@@ -38,6 +40,8 @@ class Facade(Protocol):
         base: str | None = None,
         parent_id: str | None = None,
         permission: str | None = None,
+        capabilities: dict[str, bool] | None = None,
+        granter: Agent | None = None,
     ) -> Agent: ...
 
     def send(
@@ -49,6 +53,8 @@ class Facade(Protocol):
         role_schema: bool = False,
         sender: str | None = None,
         notify: str = "each",
+        capabilities: dict[str, bool | None] | None = None,
+        granter: Agent | None = None,
     ) -> Run: ...
 
     def _cause(self, sender: str | None) -> int | None: ...
@@ -60,7 +66,7 @@ class Facade(Protocol):
     def role_schema(role: str, project_path: str | None) -> dict[str, Any] | None: ...
 
     @staticmethod
-    def _orchestrator_draft() -> Agent: ...
+    def _orchestrator_draft(provider: str | None = None, wait: bool = True) -> Agent: ...
 
     def _resolve_after(self, after: list[str | int] | None) -> list[int]: ...
 
@@ -72,6 +78,10 @@ class Facade(Protocol):
 LEAD_ROLE = "lead"
 ORCHESTRATOR_ID = "orchestrator"
 WITHDRAWN_PREVIEW_CHARS = 80  # of a withdrawn message, in the agent's info event
+
+# A provider fallback at an agent's creation, noted on its first run (an info event) by
+# `send`, which follows the creation in the same process. Per process, not stored.
+_first_run_notes: dict[str, str] = {}
 
 
 def slug(text: str) -> str:
@@ -92,15 +102,27 @@ def create_agent(
     base: str | None = None,
     parent_id: str | None = None,
     permission: str | None = None,
+    capabilities: dict[str, bool] | None = None,
+    granter: Agent | None = None,
 ) -> Agent:
-    """Register an agent. Its worktree is created lazily, when its first run starts."""
+    """Register an agent. Its worktree is created lazily, when its first run starts.
+
+    `capabilities`: the agent's own setting ({name: bool}), given by `granter` (the agent
+    that starts it; None: the owner), checked as grants.granted does; one its provider does
+    not support is kept, and `provider_note` says so."""
     project = orch.project(project_name)
     try:
         role_def = roles.load(role, project.path)
-        provider_name = provider or role_def.provider or project.default_provider
-        providers.get(provider_name)
     except KeyError as exc:
         raise OrchestratorError(str(exc.args[0])) from None
+    choice = availability.choose(
+        provider,
+        [
+            (role_def.provider, f"the {role} role's provider"),
+            (project.default_provider, "the project's default"),
+        ],
+    )
+    provider_name = choice.provider
     if model:
         try:
             settings.check_model(model)
@@ -111,6 +133,8 @@ def create_agent(
         raise OrchestratorError(f"{provider_name} has no effort '{effort}' (use: {allowed})")
     if parent_id:
         orch.agent(parent_id)
+    draft = Agent(id="", project=project.name, name="", role=role, provider=provider_name, cwd="")
+    own = grants.granted(orch, draft, capabilities or {}, granter)
 
     agent_id = f"{slug(name or role)}-{uuid.uuid4().hex[:4]}"
     branch = base_ref = None
@@ -123,7 +147,7 @@ def create_agent(
         cwd = str(config.worktrees_dir(project.name) / agent_id)
     else:
         cwd = project.path
-    return orch.store.add_agent(
+    agent = orch.store.add_agent(
         Agent(
             id=agent_id,
             project=project.name,
@@ -137,8 +161,21 @@ def create_agent(
             branch=branch,
             base_ref=base_ref,
             permission=permission,
+            capabilities=json.dumps(own) if own else None,
         )
     )
+    agent = _noted(agent, choice.note)
+    if unsupported := grants.unsupported_note(provider_name, own):  # the runner notes it too
+        agent.provider_note = "; ".join(filter(None, (agent.provider_note, unsupported)))
+    return agent
+
+
+def _noted(agent: Agent, note: str | None) -> Agent:
+    """The new agent with its provider note, kept for its first run as well."""
+    if note:
+        _first_run_notes[agent.id] = note
+    agent.provider_note = note
+    return agent
 
 
 def send(
@@ -150,6 +187,8 @@ def send(
     role_schema: bool = False,
     sender: str | None = None,
     notify: str = "each",
+    capabilities: dict[str, bool | None] | None = None,
+    granter: Agent | None = None,
 ) -> Run:
     """Queue a turn for an agent and start its runner. Returns immediately.
 
@@ -157,22 +196,30 @@ def send(
     `sender` is the agent that sends it (None: the user); when that is the agent's
     parent, `notify` says when it is woken: `each` once this agent is done, `all` once
     all its agents are. The sender's running turn is recorded as the run's cause.
+    `capabilities`: changes to the agent's own setting ({name: True|False|None}) made by
+    `granter` (None: the owner) before the message is queued, so they hold from this turn
+    on (grants.set_agent_capabilities); a refused change queues nothing.
     """
     agent = orch.agent(agent_id)
     orch._check_notify(notify)
     if output_schema is None and role_schema:
         project = orch.store.get_project(agent.project) if agent.project else None
         output_schema = orch.role_schema(agent.role, project.path if project else None)
+    depends_on = orch._resolve_after(after)
+    if capabilities:
+        grants.set_agent_capabilities(orch, agent.id, capabilities, granter)
     run = orch.store.add_run(
         agent.id,
         message,
-        orch._resolve_after(after),
+        depends_on,
         output_schema,
         kind=MESSAGE,
         sender=sender,
         notify=notify,
         cause_run=orch._cause(sender),
     )
+    if note := _first_run_notes.pop(agent.id, None):
+        orch.store.add_event(run.id, agent.id, "info", note)
     orch._launch(run)
     return run
 
@@ -211,44 +258,71 @@ def role_schema(role: str, project_path: str | None) -> dict[str, Any] | None:
         raise OrchestratorError(str(exc)) from None
 
 
-def lead(orch: Facade, project_name: str, adopt: str | None = None) -> Agent:
+def lead(
+    orch: Facade, project_name: str, adopt: str | None = None, provider: str | None = None
+) -> Agent:
     """The project's own agent: works in the main checkout and may run sub-agents.
 
     `adopt`: the headless orchestrator asking; a lead created before it existed (no
-    parent) becomes its child, so that the orchestrator is notified about it.
+    parent) becomes its child, so that the orchestrator is notified about it. `provider`:
+    the lead's provider when it is created now (default: the project's); a lead that
+    exists on another one keeps it, and its `provider_note` says so.
     """
     for agent in orch.store.list_agents(orch.project(project_name).name):
         if agent.role == LEAD_ROLE and agent.parent_id in (None, ORCHESTRATOR_ID):
             if adopt == ORCHESTRATOR_ID and agent.parent_id is None:
                 orch.store.set_parent(agent.id, ORCHESTRATOR_ID)
                 agent.parent_id = ORCHESTRATOR_ID
+            if provider and provider != agent.provider:
+                agent.provider_note = (
+                    f"the lead already runs on {agent.provider}, not {provider}: an existing"
+                    " lead keeps its provider until it is moved"
+                )
             return agent
     parent = ORCHESTRATOR_ID if orch.store.get_agent(ORCHESTRATOR_ID) else None
-    return orch.create_agent(project_name, name="lead", role=LEAD_ROLE, parent_id=parent)
+    return orch.create_agent(
+        project_name, name="lead", role=LEAD_ROLE, parent_id=parent, provider=provider
+    )
 
 
-def orchestrator(orch: Facade) -> Agent:
+def orchestrator(orch: Facade, provider: str | None = None) -> Agent:
     """The headless top-level orchestrator agent (the one the dashboard talks to).
 
     It belongs to no project, works in the orchestrator workspace and reaches every
     project through the MCP tools. `spartito chat` is a separate, interactive session.
+    `provider`: the one it is created on, when it is created now (see _orchestrator_draft).
     """
-    return orch.store.get_agent(ORCHESTRATOR_ID) or orch.store.add_agent(
-        replace(orch._orchestrator_draft(), cwd=str(config.workspace_dir()))
-    )
+    existing = orch.store.get_agent(ORCHESTRATOR_ID)
+    if existing:
+        return existing
+    draft = orch._orchestrator_draft(provider)
+    agent = orch.store.add_agent(replace(draft, cwd=str(config.workspace_dir())))
+    return _noted(agent, draft.provider_note)
 
 
-def _orchestrator_draft() -> Agent:
+def _orchestrator_draft(provider: str | None = None, wait: bool = True) -> Agent:
     """The orchestrator agent as it is created on first use, without creating anything
-    (not stored; its workspace is made when it is created)."""
+    (not stored; its workspace is made when it is created). Its provider: `provider`
+    (explicit), else the orchestrator role's, else the first usable one. `wait=False`:
+    without waiting for an availability check (for a view of it)."""
     role = roles.load(ORCHESTRATOR_ID)
+    defaults = [(role.provider, "the orchestrator role's provider")]
+    try:
+        choice = availability.choose(provider, defaults, wait=wait)
+    except availability.NoneUsable as exc:  # its first turn fails with the runner's reason
+        choice = availability.Choice(role.provider or next(iter(providers.PROVIDERS)), str(exc))
+    except OrchestratorError as exc:  # the role names one not registered in this process
+        if provider or not role.provider:
+            raise
+        choice = availability.Choice(role.provider, str(exc))  # its first turn says so
     return Agent(
         id=ORCHESTRATOR_ID,
         project=None,
         name=ORCHESTRATOR_ID,
         role=ORCHESTRATOR_ID,
-        provider=role.provider or "claude",
+        provider=choice.provider,
         cwd="",
+        provider_note=choice.note,
     )
 
 

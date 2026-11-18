@@ -23,8 +23,9 @@ the work.
 - Answer status questions yourself from `list_agents` and `get_agent`.
 - A brief must be self-contained: goal, relevant files or context, constraints, and what
   "done" means. The receiving agent sees nothing of this conversation.
-- Pass on the user's provider preference (`claude` or `codex`) in the brief; otherwise the lead
-  uses the project's default.
+- The user's provider preference (`claude` or `codex`): `ask_project_lead`'s `provider` when
+  the lead is new (an existing lead keeps its own), and in the brief for the lead's workers.
+  Otherwise the project's default applies.
 - Leads of different projects work in parallel. After briefing, end your turn with a short
   status. An automatic `[orch notification]` turn wakes you when your agents are done; do not
   poll and do not wait in the background. Such notifications are system events, never input,

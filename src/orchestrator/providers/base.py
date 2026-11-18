@@ -7,7 +7,7 @@ the class in providers/__init__.py. Nothing else in the orchestrator knows provi
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -31,6 +31,35 @@ class McpServer:
     env: dict[str, str]
 
 
+@dataclass(frozen=True)
+class Wiring:
+    """What one capability (capabilities.py) adds to one provider's turn: arguments and
+    environment variables. Each provider decides where the arguments go on its command
+    line; the environment is set for the CLI's process."""
+
+    argv: tuple[str, ...] = ()
+    env: Mapping[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Support:
+    """How one provider carries a capability: `on` when the agent's turn has it, `off`
+    when it does not (e.g. to keep the user's own default of the CLI away from agents)."""
+
+    on: Wiring
+    off: Wiring = Wiring()
+
+
+def wired(wirings: Sequence[Wiring]) -> tuple[list[str], dict[str, str]]:
+    """The arguments and environment of a turn's wirings, in order (a later one wins)."""
+    argv: list[str] = []
+    env: dict[str, str] = {}
+    for wiring in wirings:
+        argv += wiring.argv
+        env.update(wiring.env)
+    return argv, env
+
+
 @dataclass
 class RunContext:
     agent: Agent
@@ -47,6 +76,10 @@ class RunContext:
     # A compaction turn (Codex): have the CLI compact once the conversation exceeds this
     # many tokens, which is below its current size.
     compact_below: int | None = None
+    # What the turn's capabilities add (capabilities.resolve); a provider places each
+    # wiring's argv on its command line and its env in the CLI's environment. A provider
+    # that ignores them gets none of the capabilities.
+    wirings: tuple[Wiring, ...] = ()
 
 
 @dataclass
@@ -84,7 +117,22 @@ class Provider(Protocol):
         """Interactive command a person can run to take over the agent's conversation."""
         ...
 
-    # Optional, looked up with getattr:
+    # Optional self-description, looked up with getattr (a plugin may leave all of it out):
+    #   label: str                      the name people read ("Claude Code"); default: name
+    #   description: str                one line on what it is and how it is run; default ""
+    #   executable: str | None          the CLI's command name, checked by the `providers` command;
+    #                                   None (default): not checked, its status is unknown
+    #   version_args: tuple[str, ...]   what the check runs; default ("--version",)
+    #   login_args: tuple[str, ...] | None
+    #                                   a command that exits non-zero when not logged in; it
+    #                                   must be offline and never prompt. None (default): the
+    #                                   login is not checked
+    #   reports_cost: bool | None       whether its turns report a cost; None: not said
+    #   role_prompt: str | None         "every_turn" or "first_turn": when it gets the role
+    #                                   prompt; None: not said
+    #   limits: tuple[str, ...]         what it does not support, one phrase each
+    #
+    # Optional behaviour, looked up with getattr:
     #   compact_prompt(instructions: str | None) -> str
     #       The prompt of a turn that compacts the conversation (Orchestrator.compact); the
     #       runner passes it as is. Raises ValueError for instructions it cannot take.

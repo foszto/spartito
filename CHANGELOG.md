@@ -7,6 +7,68 @@ chosen is in the
 
 ## [Unreleased]
 
+### Added
+
+- `spartito providers` checks which of the supported harnesses, Claude Code and Codex, this
+  machine can run: each CLI is looked for on `PATH` and in the usual install directories and
+  asked its version, without a network request, an agent turn or a login check. `--json` adds
+  each provider's features, limits and models.
+- Every provider choice in the dashboard lists all supported providers: the add-project and
+  new-agent dialogs, a project's **Default provider** in the **Models and effort** window
+  (applied at once), and a `provider` select next to each agent's model and effort, the
+  Maestro's included before its first message. A provider that is not available is disabled
+  with the reason, a hint with **Check again** appears when the provider that would apply is
+  not available, and the new-agent dialog starts on the role's provider when the role names
+  one.
+- `spartito project provider` changes the provider of a project's new agents; existing agents
+  keep theirs. The dashboard's project settings and the MCP tool `set_project_provider` do the
+  same.
+- `spartito model AGENT --provider` moves an agent, the Maestro included, to another provider.
+  Spartito keeps the agent's last conversation on each provider: the first move to a provider
+  starts a new conversation there, and moving back continues the earlier one. Nothing is
+  carried over between providers. The agent's own model and effort are cleared; its worktree,
+  branch, board items and sub-agents stay. It asks first when the agent has a conversation
+  (`--yes` skips the question), and says whether the next message continues an earlier
+  conversation or starts a new one; the dashboard's `provider` select asks the same way.
+- `spartito ask --provider` (and `provider` in the MCP tool `ask_project_lead`) chooses the
+  provider of a new project lead.
+- Agent capabilities: extras an agent's CLI gets for its turns, turned on and off globally,
+  per project, per role and per agent; a role's `off` is final. The first one is `chrome`,
+  Claude in Chrome's browser tools for Claude agents. It is off by default:
+  `spartito capabilities on chrome` turns it on for every agent, `off` turns it off again, and
+  `inherit` goes back to the default. It drives your real, signed-in browser, so read
+  `docs/capabilities.md` first. `spartito capabilities` lists them with their status,
+  `spartito capabilities show` and `spartito status` show what an agent's next turn gets,
+  `spartito spawn --capabilities` and `capabilities` in the MCP tools `spawn_agent` and
+  `send_message` set an agent's own (an agent can give only what its own turns have, also
+  through the command run in its turn), and `spartito providers` has a `CAPABILITIES` column.
+  The dashboard has a **Capabilities** box in its settings, an inherit / on / off choice per
+  capability in an agent's setup panel and the new-agent dialog, and a badge on agents that
+  have one. More capabilities can be registered with `ORCH_CAPABILITIES`.
+
+### Changed
+
+- New projects and agents get a provider that is available here. `spartito project add`
+  without `--provider` takes the first available one instead of always `claude`, and prints
+  it. An explicit provider that is not available is refused, naming the available ones. When
+  a role's or a project's provider is not available, the agent runs on the first available one,
+  and says so in the agent's log and in the reply: a `note:` line on the command line, a `note`
+  in the MCP and JSON replies, and a message in the dashboard after starting an agent or
+  sending a message.
+- Codex can be chosen for the Maestro (in the dashboard, or with
+  `spartito model orchestrator --provider codex`) and for project leads (through the project's
+  default provider, or `spartito ask --provider`). The Maestro runs on the first available
+  provider unless another is chosen.
+- A role's `model` applies only to agents of the role's own provider.
+- Every Claude turn runs with `CLAUDE_CODE_ENABLE_CFC=0` unless `chrome` is on for it, so that
+  your own Claude in Chrome setting does not reach agents.
+
+### Fixed
+
+- A turn whose CLI is missing fails with a clear message that says where it was looked for,
+  and the CLIs are also found in the usual install directories when a background service or
+  launcher has a shorter `PATH`.
+
 ## [0.2.0] - 2026-11-13
 
 ### Added

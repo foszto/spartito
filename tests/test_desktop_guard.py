@@ -211,12 +211,18 @@ def child_env(orch: Orchestrator, agent_id: str) -> dict[str, str]:
     return json.loads(found.read_text())
 
 
-def test_a_command_of_a_turn_gets_the_turn_and_its_home(orch: Orchestrator, project: str):
+def test_a_command_of_a_turn_gets_the_turn_and_its_home(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+):
+    """And its own agent id (what it may give, core/grants), also when its runner inherited
+    the id of the lead whose MCP server started it."""
+    monkeypatch.setenv("ORCH_AGENT_ID", "lead-1234")
     agent, run = orch.spawn(project, "ENVCHILD", worktree=False)
     env = child_env(orch, agent.id)
     assert env["ORCH_TURN"].startswith(f"{run.id}-")
     assert env[config.TURN_HOME_ENV] == str(config.home().resolve())
     assert env["ORCH_HOME"] == str(config.home())
+    assert env["ORCH_AGENT_ID"] == agent.id
 
 
 def test_the_outermost_home_is_kept_and_the_nested_turn_ends_quiet(

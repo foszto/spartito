@@ -16,23 +16,26 @@ lists as `#12`. *Project lead* or *lead* is the agent with role `lead` of a proj
 | command | purpose |
 |---|---|
 | `spartito project add/list/rm` | register, list and unregister projects |
+| `spartito project provider <project> <provider>` | the provider of a project's new agents |
+| `spartito providers` | which provider CLIs (Claude Code, Codex) this machine can run |
+| `spartito capabilities` | capabilities such as Claude in Chrome: list, `on`/`off`/`inherit` per level, `show` an agent's |
 | `spartito chat` | interactive orchestrator session (Claude Code) |
 | `spartito web` | dashboard |
 | `spartito app` | dashboard in its own window |
 | `spartito menubar` | running agents and open decisions in the macOS menu bar |
 | `spartito service install/uninstall/status/logs` | dashboard as a background service |
 | `spartito notices` | how the recent desktop notifications were shown, and why |
-| `spartito ask <project> "…"` | message the project lead (creates it) |
-| `spartito spawn -p <project> "…"` | start an agent (`-r` role, `-n` name, `--provider`, `--after`, `--share`, `--base`) |
+| `spartito ask <project> "…"` | message the project lead (creates it; `--provider` for a new one) |
+| `spartito spawn -p <project> "…"` | start an agent (`-r` role, `-n` name, `--provider`, `--after`, `--share`, `--base`, `--capabilities`) |
 | `spartito send <agent> "…"` | follow-up message, queued if the agent is busy |
 | `spartito ps` | tree of projects and agents: state, model/effort, context, tokens, cost |
-| `spartito status <agent>` | one agent: last result, queue, context, commits and changes |
+| `spartito status <agent>` | one agent: last result, queue, context, capabilities, commits and changes |
 | `spartito logs <agent> -f` | activity: messages, tool calls, errors |
 | `spartito wait <agent>…` | block until idle; exit code 0 done, 1 failed, 2 timeout |
 | `spartito withdraw <run>`, `spartito edit <run> "…"` | withdraw or rewrite a queued message |
 | `spartito stop <agent>` | stop its running and queued turns |
 | `spartito attach <agent>` | continue its session interactively in `claude` / `codex` |
-| `spartito model <agent>` | show or set its own model and effort |
+| `spartito model <agent>` | show or set its own model and effort, or move it to another provider |
 | `spartito compact <agent>` | compact its conversation |
 | `spartito archive`, `spartito restore`, `spartito rm` | archive, bring back, delete for good |
 | `spartito board …`, `spartito decisions`, `spartito decide` | task board and decisions |
@@ -53,18 +56,70 @@ listed by `spartito ps`; the top-level orchestrator's id is `orchestrator`.
 
 ```sh
 spartito project add [PATH] [--name NAME] [--provider claude|codex]
+spartito project provider PROJECT PROVIDER
 spartito project list
 spartito project rm NAME
 ```
 
 - `add` registers the git repository containing `PATH` (default: the current directory). The
   name defaults to the repository's directory name; `--provider` is the default provider for
-  the project's agents (default `claude`). The branch checked out at that moment becomes the
-  project's base branch. A repository without commits is accepted with a note: the first agent
-  that needs a worktree creates an empty initial commit, and worktree agents only see
-  committed files.
+  the project's agents, and must be available here (default: the first available one,
+  [providers.md](providers.md#how-a-provider-is-chosen)). The branch checked out at that
+  moment becomes the project's base branch. The output names both:
+  `added my-app  /home/dev/src/my-app  (base branch: main, provider: claude)`. A repository
+  without commits is accepted with a note: the first agent that needs a worktree creates an
+  empty initial commit, and worktree agents only see committed files.
+- `provider` changes the provider of the project's new agents; it must be available here.
+  Existing agents keep theirs, and a note lists those on another provider;
+  `spartito model AGENT --provider` moves one
+  ([providers.md](providers.md#a-projects-default-provider)).
 - `rm` unregisters a project that has no agents (archived ones included). The repository is not
   touched.
+
+### Providers
+
+```sh
+spartito providers [--json]
+```
+
+- `providers` checks now which provider CLIs this machine can run, one line each: name,
+  status (`available`, `not_installed`, `not_logged_in`, `unknown`), version, the
+  capabilities it supports (`CAPABILITIES`: `chrome` for `claude`, `-` for none) and the
+  reason, such as `found on PATH; login not checked`. `*` marks the first available one, which a new
+  project gets. It runs only each CLI's `--version`: no agent turn, no login check, no network.
+  When a provider is `not_installed`, a line below the table says to run
+  `spartito service install` or `spartito app install` again after installing a CLI.
+  `--json` adds each provider's description, features, limits and models, without that line. The statuses, where
+  the CLIs are looked for and what is not checked: [providers.md](providers.md#availability).
+
+### Capabilities
+
+```sh
+spartito capabilities [-p PROJECT] [--json]
+spartito capabilities on|off|inherit NAME [-p PROJECT] [--role|-r ROLE]
+spartito capabilities on|off|inherit NAME --agent|-a AGENT
+spartito capabilities show AGENT
+```
+
+- `capabilities` lists the capabilities: the providers that support each one, the global
+  setting (with `-p` the project's too), the status (`unknown`, `unavailable`, `available`)
+  with its reason, and below the table the roles' settings. It checks the providers' versions
+  first. `--json` adds each one's label, description, what it reaches and what it requires.
+- `on` and `off` turn a capability on or off globally, for a project (`-p`), for a role
+  (`--role`, globally or with `-p` in a project) or for one agent (`--agent`, not combined with
+  the others); `inherit` removes the setting at that level. A role's `off` is final: an
+  agent's own setting cannot turn it back on. An unknown name is refused. Each prints the
+  listing of its scope, or with `--agent` the agent's capabilities. Changes apply from each
+  agent's next turn. Run in an agent's turn, these commands and `spawn --capabilities` act as
+  that agent: it can give only what its own turns have, cannot turn anything on globally, for
+  a project or for a role, and cannot use `inherit` to remove an off at any level
+  ([capabilities.md](capabilities.md#giving-capabilities-from-agents)). Run against another
+  home than the turn's own, they act as that home's owner.
+- `show` prints what the agent's next turn gets: per capability its state (`on`, `off` or
+  `skipped`), the level that decided it and a note, such as `codex does not support it`.
+
+The levels, the safety of `chrome` and what is not verified yet:
+[capabilities.md](capabilities.md).
 
 ### Orchestrator
 
@@ -74,7 +129,8 @@ spartito web [--host 127.0.0.1] [--port 8787]
 spartito mcp
 ```
 
-- `chat` opens the orchestrator as an interactive Claude Code session (requires `claude`). It
+- `chat` opens the orchestrator as an interactive Claude Code session (requires `claude`, also
+  when the dashboard's Maestro runs on Codex). It
   runs in `~/.orchestrator/workspace/` unless `--here` is given; `--continue` continues the
   last conversation there. Model and effort default to the global Claude setting of the
   `orchestrator` tier. The session gets the `orch` MCP tools and may run `spartito …` commands
@@ -130,19 +186,28 @@ Details: [desktop.md](desktop.md).
 ```sh
 spartito spawn TASK -p PROJECT [-n NAME] [-r ROLE] [--provider P] [--model M] [--effort E]
            [--worktree|--no-worktree] [--share AGENT] [--base REF_OR_AGENT]
-           [--after AGENT_OR_RUN ...] [--permission MODE]
-spartito ask PROJECT MESSAGE
+           [--after AGENT_OR_RUN ...] [--permission MODE] [--capabilities LIST]
+spartito ask PROJECT MESSAGE [--provider P]
 spartito send AGENT MESSAGE [--after AGENT_OR_RUN ...]
 ```
 
 - `spawn` starts a new agent and returns at once, printing its id, run id and working
   directory. `TASK` must be self-contained: the agent knows nothing else. Defaults: role
-  `worker`, the project's provider, the tier's model and effort, a worktree if the role works
-  in one. `--share` works in another agent's worktree; `--base` branches from a ref or from
-  another agent's branch; `--after` (repeatable) waits until those agents or turns (by run id)
-  have finished successfully, and skips this agent if one fails. `--permission` is the Claude
-  permission mode or the Codex sandbox mode (defaults: `auto`, `workspace-write`).
-- `ask` sends a message to the project's lead, creating it on first use.
+  `worker`, the role's provider or else the project's, the tier's model and effort, a worktree
+  if the role works in one. A `--provider` that is not available here is refused, naming the
+  available ones; a default that is not available falls back to the first available provider,
+  and `spawn` prints a `note: …` line that says so
+  ([providers.md](providers.md#how-a-provider-is-chosen)). `--share` works in another agent's
+  worktree; `--base` branches from a ref or from another agent's branch; `--after`
+  (repeatable) waits until those agents or turns (by run id) have finished successfully, and
+  skips this agent if one fails. `--permission` is the Claude permission mode or the Codex
+  sandbox mode (defaults: `auto`, `workspace-write`). `--capabilities` sets the agent's own
+  capabilities, comma-separated: `"chrome"` turns one on, `"-chrome"` off
+  ([capabilities.md](capabilities.md#turning-them-on-and-off)); one its provider does not
+  support is kept, skipped in its turns, and `spawn` prints a `note: …` line about it.
+- `ask` sends a message to the project's lead, creating it on first use. `--provider` is the
+  lead's provider when this message creates it (default: as for `spawn`); an existing lead
+  keeps its own, and `ask` prints a `note: …` line about it, as for a fallback.
 - `send` sends a follow-up to an agent; it continues its conversation. Messages to a busy agent
   queue and run in order. A message to an archived agent restores it.
 
@@ -174,9 +239,11 @@ spartito wait AGENT... [--timeout 3600]
   sub-agents are working (it is notified when they finish); `running·3↓` means its own turn
   runs meanwhile; `failed·3↓` that its last turn failed while they work; `+2` that two more
   turns are queued. `--archived` lists the archive instead.
-- `status` shows one agent: state, model and effort (and whether set on the agent), usage,
-  context and automatic compaction state, the last compaction, the queue (with run ids), the
-  commits and uncommitted changes in its worktree, and the last turn's result or error.
+- `status` shows one agent: state, model and effort (and whether set on the agent), the
+  capabilities its next turn has (`capabilities chrome`, or
+  `capabilities none  (skipped: chrome; spartito capabilities show AGENT)`), usage, context and
+  automatic compaction state, the last compaction, the queue (with run ids), the commits and
+  uncommitted changes in its worktree, and the last turn's result or error.
 - `logs` prints the agent's events (messages, tool calls, errors, info); `-f` follows.
 - `wait` blocks until the agents and their sub-agents are idle and prints their results. Exit
   code: 0 all done, 1 at least one did not succeed, 2 timeout.
@@ -200,7 +267,7 @@ spartito attach AGENT
 ### Model, effort and compaction of one agent
 
 ```sh
-spartito model AGENT [--model MODEL] [--effort EFFORT]
+spartito model AGENT [--model MODEL] [--effort EFFORT] [--provider P [--yes|-y]]
 spartito compact AGENT [INSTRUCTIONS]
 ```
 
@@ -209,6 +276,17 @@ spartito compact AGENT [INSTRUCTIONS]
   session a model change starts a new prompt cache (the next turn reads the whole conversation
   at full price); an effort change keeps the cache with Codex and may start a new one with
   Claude. The orchestrator can be set too (`spartito model orchestrator --effort high`).
+- `model --provider` moves an idle agent, the orchestrator included, to another available
+  provider. Nothing of a conversation is carried over: the next message continues the agent's
+  last conversation on that provider, or starts a new one if it has none there; its
+  conversation on the provider it left is kept for a move back. The agent's own model and
+  effort are cleared, and its worktree, branch, board items and sub-agents stay.
+  When the agent has a conversation it asks first; refusing exits with code 1, and `--yes`
+  skips the question. After the move a `note: …` line says whether the next message continues
+  an earlier conversation or starts a new one. `--model` and `--effort` given with it apply on
+  the new provider. Before its first message, the orchestrator is created on the given
+  provider ([providers.md](providers.md#moving-an-agent-to-another-provider)). When `model`
+  creates the orchestrator on a fallback provider, it prints a `note: …` line too.
 - `compact` queues a compaction of the agent's conversation. See
   [agents.md](agents.md#context-and-compaction).
 
@@ -255,7 +333,10 @@ spartito decide DECISION_ID ANSWER
 
 States: `idea`, `ready`, `in_progress`, `done`. `spartito board` without `-p` lists every
 project's board. In `board edit`, `""` clears `--agent` or `--branch`. `decide` takes an
-option number or free text. `--live`, `show`, `link` and dispatching named items:
+option number or free text. `board dispatch` prints a `note: …` line when it created a
+project's lead on a fallback provider
+([providers.md](providers.md#how-a-provider-is-chosen)). `--live`, `show`, `link` and
+dispatching named items:
 [board.md](board.md#command-line-mcp-and-api). See [agents.md](agents.md#task-board) and
 [agents.md](agents.md#decisions).
 
@@ -448,11 +529,34 @@ never with the page's regular refresh.
 workspace (own worktree, main checkout or another agent's worktree) and *Start after*
 dependencies.
 
+**Providers.** Every provider choice lists every supported provider: **Default provider** in
+the add-project dialog, **Provider** in the new-agent dialog, **Default provider** in the
+**Models and effort** window for one project, and the `provider` select next to an agent's
+model and effort drop-downs (the Maestro's too, before its first message). One that is not
+available here is disabled, with the reason as its tooltip. The choice starts on an available
+provider: the new-agent dialog on the role's provider when the role names one, else on the
+project's default. When the provider that would apply is not available, a short hint says so,
+for example *Codex is not available (not installed). Claude Code is chosen instead.*, with the
+whole reason as its tooltip and a **Check again** button that checks once more. The project's
+**Default provider** in the settings applies at once, apart from **Save**; existing agents keep
+theirs. Changing an agent's `provider` select moves the agent; for an agent with a conversation
+a dialog asks first and says whether the next message continues an earlier conversation on that
+provider or starts a new one. After a project is added, an agent is started or a message
+creates a lead or the Maestro, a fallback provider is shown as a message; a setting that
+creates the Maestro and a dispatch from the board show none. Details:
+[providers.md](providers.md).
+
 **Models and effort** window: the tier settings per provider, the automatic compaction
 threshold and the archive hours, globally or for one project; keep-awake and desktop
 notifications globally. Under **Notifications**, **Allow in this browser** lets the page show
 the notifications itself, so that a click opens the agent or decision (see
 [desktop.md](desktop.md#notifications-with-click-through)).
+
+**Capabilities.** The settings have a **Capabilities** box, for all projects and per project:
+an inherit / on / off choice per capability, and the roles' settings shown read-only. An
+agent's setup panel has a line per capability with its state, where it comes from and an
+inherit / on / off choice; the new-agent dialog has a choice per capability, and agents with a
+capability on show a small badge in the list ([capabilities.md](capabilities.md)).
 
 **Decisions** window: every open decision across projects with its project, agent, question,
 options, recommendation and age; answer with an option or free text.
@@ -475,8 +579,25 @@ convenient from scripts:
 - `GET /api/ping`: `{"tool": "orchestrator", "version": "…", "home": "…"}`, where `home` is a
   digest of the resolved `ORCH_HOME`, never the path.
 
+- `GET /api/providers`: the supported providers with their availability (`?refresh=1` checks
+  again).
 - `POST /api/agents/<id>/model` with `{"model": "...", "effort": null}`: `null` clears a value,
-  a missing key leaves it unchanged.
+  a missing key leaves it unchanged. `"provider": "codex"` moves the agent first; for an agent
+  with a conversation the reply is `{"confirm": "…"}` and nothing changes, until the request
+  is repeated with `"confirm": true`. The reply has a `note` when the call created the
+  orchestrator on a fallback provider.
+- `POST /api/projects/<name>/provider` with `{"provider": "codex"}`: the project's default
+  provider; the reply has the project and a `note`.
+- `GET /api/capabilities` (`?project=<name>` adds the project's settings): every capability
+  with its settings and status, as `spartito capabilities --json`. `POST /api/capabilities`
+  with `{"name": "chrome", "state": true, "project": "<name>", "role": "<role>"}` (`state`
+  `false`: off, `null`: inherit; `project` and `role` optional) sets one and returns the
+  listing of that scope.
+- `POST /api/agents/<id>/capabilities` with `{"chrome": true}` (`false`: off, `null`: inherit):
+  the agent's own setting; the reply has the agent's `capabilities` and `running`, whether a
+  turn runs now (the change applies from the next one). `POST /api/agents` takes
+  `"capabilities": {"chrome": true}` for a new agent. A refused change is a 400 with
+  `{"error": "…"}`.
 - `POST /api/agents/<id>/compact` with `{"instructions": "..."}`.
 - `GET /api/cost?by=project|day|agent|model|role&since=YYYY-MM-DD&until=YYYY-MM-DD&project=<name>`:
   the cost report (with `days`, every local day of the range, and `series`, the spend per day

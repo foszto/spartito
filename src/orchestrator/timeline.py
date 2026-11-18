@@ -28,13 +28,19 @@ def compaction_left(
     size at its first model request (Claude: what the compaction left, prompt and tools
     included), or where that is not reported (Codex) the size at its end, which can only
     be larger: conservative."""
-    ordered = sorted(runs, key=turn_order)
-    # Only the current session: from after the last run recorded in another one.
-    for index in range(len(ordered) - 1, -1, -1):
-        other = usage.get(ordered[index].id)
-        if other is not None and other.session_id not in (None, session_id):
-            ordered = ordered[index + 1 :]
-            break
+    # Only the current session's runs. A run without a recorded session ran in that of the
+    # latest recorded run before it (the ones before any: in none, kept unless another
+    # session was recorded). The agent may have left the session and come back to it (a
+    # move to another provider and back): runs of other sessions are left out wherever
+    # they are.
+    sessions = {record.session_id for record in usage.values() if record.session_id}
+    ordered, current = [], None
+    for run in sorted(runs, key=turn_order):
+        record = usage.get(run.id)
+        if record is not None and record.session_id is not None:
+            current = record.session_id
+        if current == session_id or (current is None and sessions <= {session_id}):
+            ordered.append(run)
 
     def measured(run: Run) -> Usage | None:
         record = usage.get(run.id)

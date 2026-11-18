@@ -64,8 +64,8 @@ It credits Spartito's GitHub App bot; `spartito config bot-coauthor off` leaves 
 ([configuration.md](configuration.md#bot-co-author-bot_coauthor)). These rules override the
 attribution guidance of the agent's CLI, except where an organization's managed settings
 prescribe the attribution lines: then the agent uses exactly those lines, without the Spartito
-line, ` via Spartito` or the bot's trailer. The orchestrator's session gets the Claude Code
-rules too.
+line, ` via Spartito` or the bot's trailer. The interactive `spartito chat` session gets the
+Claude Code rules too.
 
 ## Worktrees and branches
 

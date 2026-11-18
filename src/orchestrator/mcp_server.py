@@ -15,7 +15,7 @@ from typing import Any
 import anyio
 from mcp.server.mcpserver import MCPServer
 
-from . import board, roles
+from . import board, capabilities, roles
 from .core.access import Caller
 from .core.delivery import delivery_floor as _delivery_floor  # noqa: F401 (old import path)
 from .core.delivery import wait_for_agents as _wait  # noqa: F401 (old import path)
@@ -46,20 +46,26 @@ def _orch() -> Orchestrator:
 
 
 def _queued(
-    orch: Orchestrator, agent_id: str, run_id: int, notify: str | None = None
+    orch: Orchestrator,
+    agent_id: str,
+    run_id: int,
+    notify: str | None = None,
+    note: str | None = None,
 ) -> dict[str, Any]:
     """The reply to a dispatch, led by `next`: what happens now. The caller is woken only
-    when it is an agent and the target's parent; the interactive session never is."""
+    when it is an agent and the target's parent; the interactive session never is. `note`
+    (only when there is one): what choosing the agent's provider had to tell."""
     agent = orch.agent(agent_id)
     view = orch.view(agent)
     keys = ("id", "project", "role", "provider", "status", "branch", "cwd")
     caller = Caller.from_env(orch).id
     woken = notify and caller and agent.parent_id == caller
-    return {
+    reply = {
         "next": NEXT[notify] if woken else NEXT_UNNOTIFIED,
         **{key: view[key] for key in keys},
         "run_id": run_id,
     }
+    return {**reply, "note": note} if note else reply
 
 
 NEXT = {
@@ -94,9 +100,11 @@ def list_projects() -> list[dict[str, Any]]:
 
 @server.tool()
 def add_project(
-    path: str, name: str | None = None, default_provider: str = "claude"
+    path: str, name: str | None = None, default_provider: str | None = None
 ) -> dict[str, Any]:
-    """Register a git repository as a project. `path` may be any directory inside the repo."""
+    """Register a git repository as a project. `path` may be any directory inside the repo.
+    `default_provider`: `claude` or `codex`, if available here; default: the first available.
+    """
     orch = _orch()
     if Caller.from_env(orch).scoped():
         raise OrchestratorError("only the top-level orchestrator registers projects")
@@ -132,6 +140,7 @@ def spawn_agent(
     output_schema: dict[str, Any] | None = None,
     freeform: bool = False,
     notify: str = "each",
+    capabilities: str = "",
 ) -> dict[str, Any]:
     """Start a new agent on a task. Returns immediately; end your turn, you are notified.
 
@@ -140,9 +149,10 @@ def spawn_agent(
       (combine with `after`); text is cut at 4000 chars, `{{result:<agent-id>:full}}` is not.
     name: short label, becomes part of the agent id and branch (`orch/<name>-xxxx`).
     role: see list_roles. `lead` agents can spawn their own sub-agents.
-    provider: `claude` or `codex`; defaults to the project's default.
+    provider: `claude` or `codex`; default: the role's, else the project's.
     model, effort: leave unset to use the configured defaults for the agent's tier; set them
       only when the user asks or the task clearly needs a stronger or cheaper setting.
+    capabilities: "chrome" adds one, "-chrome" drops it.
     worktree: own git worktree and branch (default for most roles) or the main checkout.
     share_worktree_with: agent id whose worktree to work in instead (review, test, fix).
     base: branch/ref, or an agent id whose branch to start from; default is the project's
@@ -174,25 +184,38 @@ def spawn_agent(
         parent_id=caller.id if caller else None,
         sender=caller.id if caller else None,
         notify=notify,
+        capabilities=_granted(capabilities),
+        granter=caller,
     )
-    return _queued(orch, agent.id, run.id, notify)
+    return _queued(orch, agent.id, run.id, notify, agent.provider_note)
+
+
+def _granted(text: str) -> dict[str, bool]:
+    """`chrome,-other` as the changes it makes to an agent's own capabilities."""
+    try:
+        return capabilities.parse(text or "")
+    except ValueError as exc:
+        raise OrchestratorError(str(exc)) from None
 
 
 @server.tool()
-def ask_project_lead(project: str, message: str, notify: str = "each") -> dict[str, Any]:
+def ask_project_lead(
+    project: str, message: str, notify: str = "each", provider: str | None = None
+) -> dict[str, Any]:
     """Send a message to a project's lead agent, creating it on first use.
 
     The lead works in the project's main checkout, keeps one long conversation about the
     project and can plan work and run its own worker agents. Returns immediately.
-    `notify` as in spawn_agent.
+    `notify` as in spawn_agent. `provider`: the new lead's, as in spawn_agent (default: the
+    project's); an existing lead keeps its own (`note`).
     """
     orch = _orch()
     access = Caller.from_env(orch)
     if access.scoped():
         raise OrchestratorError("only the top-level orchestrator talks to project leads")
-    lead = orch.lead(project, adopt=access.sender())
+    lead = orch.lead(project, adopt=access.sender(), provider=provider)
     run = orch.send(lead.id, message, sender=access.sender(), notify=notify)
-    return _queued(orch, lead.id, run.id, notify)
+    return _queued(orch, lead.id, run.id, notify, lead.provider_note)
 
 
 @server.tool()
@@ -203,11 +226,12 @@ def send_message(
     output_schema: dict[str, Any] | None = None,
     freeform: bool = False,
     notify: str = "each",
+    capabilities: str = "",
 ) -> dict[str, Any]:
     """Send a follow-up to an existing agent; it continues its conversation with full memory.
 
     Messages to a busy agent queue up and run in order. Returns immediately.
-    `output_schema`/`freeform`/`notify` as in spawn_agent.
+    `output_schema`/`freeform`/`notify`/`capabilities` as in spawn_agent; capabilities stay.
     """
     orch = _orch()
     access = Caller.from_env(orch)
@@ -219,6 +243,8 @@ def send_message(
         not freeform,
         sender=access.sender(),
         notify=notify,
+        capabilities=_granted(capabilities),
+        granter=access.agent(),
     )
     return _queued(orch, agent_id, run.id, notify)
 
@@ -608,7 +634,8 @@ def dispatch_board(project: str, items: tuple[int, ...] = ()) -> dict[str, Any]:
     reply: dict[str, Any] = {"sent": [item["id"] for item in sent["items"]]}
     if skipped:
         reply["skipped"] = {str(s["id"]): s["reason"] for s in skipped}
-    return {**reply, "lead": sent["agent_id"], "run_id": run_id}
+    reply |= {"lead": sent["agent_id"], "run_id": run_id}
+    return reply | ({"note": sent["note"]} if sent.get("note") else {})
 
 
 def _without_titles(name: str) -> None:
@@ -623,9 +650,27 @@ def _without_titles(name: str) -> None:
 _without_titles("dispatch_board")
 
 
+@server.tool(structured_output=False)
+def set_project_provider(project: str, provider: str) -> dict[str, Any]:
+    """Set the provider (`claude`, `codex`) of a project's new agents; it must be available.
+    Existing agents keep theirs."""
+    orch = _orch()
+    if Caller.from_env(orch).scoped():
+        raise OrchestratorError("only the top-level orchestrator sets a project's provider")
+    found = orch.set_default_provider(project, provider)
+    return {**vars(found), "note": orch.default_provider_note(found)}
+
+
+_without_titles("set_project_provider")
+_lean("add_project", "default_provider")
+_lean("spawn_agent", "capabilities")
+_lean("send_message", "capabilities")
+_lean("ask_project_lead", "provider")
+
+
 # Tools only the top-level orchestrator (and the interactive session) sees: every other
-# agent pays for each tool's description in every turn.
-ORCHESTRATOR_TOOLS = ("dispatch_board",)
+# agent pays for each tool's description in every turn, and these refuse other agents.
+ORCHESTRATOR_TOOLS = ("dispatch_board", "add_project", "ask_project_lead", "set_project_provider")
 
 
 def main() -> None:

@@ -18,7 +18,8 @@ from pathlib import Path
 from .. import memory_guard
 from ..loadout import Loadout
 from ..models import Agent, Event, Usage
-from .base import NOTIFICATION_RESULT, Invocation, RunContext, brief
+from . import locate
+from .base import NOTIFICATION_RESULT, Invocation, RunContext, Support, Wiring, brief, wired
 
 # Set by a parent Claude Code session; a child must not believe it is that session.
 PARENT_SESSION_ENV = [
@@ -39,6 +40,12 @@ DEFAULT_PERMISSION = "auto"
 # (verified with Claude Code 2.1.322). Set for leads: a background command keeps the CLI
 # alive after its answer, and a lead must stay reachable between turns.
 NO_BACKGROUND_ENV = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}
+
+# The capability `chrome` (capabilities.py): Claude in Chrome's browser tools. On: the CLI's
+# `--chrome`. Off: CLAUDE_CODE_ENABLE_CFC=0, so the user's own `claudeInChromeDefaultEnabled`
+# does not reach agents; a CLI too old to know it ignores the variable (and `--no-chrome`
+# would make it fail). Not verified: whether a headless `-p` turn gets the tools.
+CHROME = Support(on=Wiring(argv=("--chrome",)), off=Wiring(env={"CLAUDE_CODE_ENABLE_CFC": "0"}))
 
 
 # The picker's fallback when the installed CLI cannot say what it offers.
@@ -67,6 +74,7 @@ def request_model_list() -> str:
     argv += ["--verbose", "--strict-mcp-config", "--setting-sources", "project,local"]
     argv += ["--no-session-persistence"]
     env = {k: v for k, v in os.environ.items() if k not in PARENT_SESSION_ENV}
+    env["PATH"] = locate.search_path(env.get("PATH"))
     with tempfile.TemporaryDirectory(prefix="orch-models-") as cwd:
         proc = subprocess.Popen(
             argv,
@@ -231,6 +239,14 @@ def loadout_flags(loadout: Loadout, canary: Path | None = None) -> list[str]:
 class ClaudeProvider:
     name = "claude"
     efforts = ("low", "medium", "high", "xhigh", "max")
+    label = "Claude Code"
+    description = "Anthropic's coding agent CLI, run as claude -p --output-format stream-json"
+    executable = "claude"
+    version_args = ("--version",)
+    login_args = None  # not checked: no check known to be offline and free of prompts
+    reports_cost = True
+    role_prompt = "every_turn"
+    limits: tuple[str, ...] = ()
 
     models_note: str | None = None  # set when the list is the fallback or looks generic
     _models: list[tuple[str, str]] | list[str] | None = None
@@ -277,6 +293,8 @@ class ClaudeProvider:
             argv += ["--model", ctx.model]
         if ctx.effort:
             argv += ["--effort", ctx.effort]
+        extra_argv, extra_env = wired(ctx.wirings)
+        argv += extra_argv
         if ctx.system_prompt:
             argv += ["--append-system-prompt", ctx.system_prompt]
         if ctx.mcp:
@@ -295,7 +313,7 @@ class ClaudeProvider:
             argv=argv,
             stdin=stdin,
             canary=canary,
-            env=dict(NO_BACKGROUND_ENV) if ctx.lead else {},
+            env={**extra_env, **(NO_BACKGROUND_ENV if ctx.lead else {})},
             unset_env=PARENT_SESSION_ENV,
         )
 

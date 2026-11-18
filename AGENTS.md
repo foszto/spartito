@@ -64,7 +64,9 @@ for f in src/orchestrator/web/static/*.js; do node --check "$f"; done
 - `docs/concepts.md`: orchestrator, leads, roles, worktrees, turns.
 - `docs/usage.md`: every command and option, the dashboard.
 - `docs/configuration.md`: model and effort, settings, loadout, roles, providers, files.
+- `docs/providers.md`: the supported harnesses, availability, choosing and moving a provider.
 - `docs/agents.md`: MCP tools, dependencies, notifications, decisions, compaction.
+- `docs/capabilities.md`: agent capabilities (Claude in Chrome), their levels and safety.
 - `docs/desktop.md`: background service, notifications, `spartito app`, launcher, menu bar.
 - `docs/board.md`: the task board.
 - `docs/state.md`: backup and restore of the state, moving a home.

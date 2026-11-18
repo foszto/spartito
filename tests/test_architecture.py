@@ -37,6 +37,7 @@ LAYERS = {
     "notify": "domain",  # notification rules; its run SQL moves to the store in task 6
     "board": "domain",  # self-contained feature owning its table
     "decisions": "domain",  # self-contained feature owning its table
+    "capabilities": "domain",  # the registry of agent capabilities and their resolution
     "store": "infra",
     "git": "infra",
     "providers": "infra",

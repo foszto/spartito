@@ -8,7 +8,9 @@ form cannot send).
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+from collections.abc import AsyncIterator
 from dataclasses import asdict
 from html import escape
 from importlib import resources
@@ -25,8 +27,8 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from .. import __version__, config, providers, roles
-from ..providers.base import model_choices
+from .. import __version__, config, roles
+from ..models import Agent, RunStatus
 from ..service import ORCHESTRATOR_ID, NeedsConfirmation, Orchestrator, OrchestratorError
 from ..settings import ARCHIVE_AFTER, ARCHIVE_AFTER_DEFAULT, COMPACT_AT, COMPACT_AT_DEFAULT, TIERS
 from . import board_api, code_api
@@ -89,6 +91,12 @@ def queued(agent_id: str, run_id: int) -> dict[str, Any]:
     return {"agent_id": agent_id, "run_id": run_id}
 
 
+def dispatched(agent: Agent, run_id: int) -> dict[str, Any]:
+    """The reply to a message that may have created its agent; `note`: what choosing the
+    agent's provider had to tell (a fallback, a lead that keeps its own), else null."""
+    return {**queued(agent.id, run_id), "note": agent.provider_note}
+
+
 def index(request: Request) -> HTMLResponse:
     page = resources.files("orchestrator.web") / "index.html"
     html = page.read_text(encoding="utf-8")
@@ -146,15 +154,17 @@ def state(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
         "version": __version__,
         "orchestrator": top,
         # Its model and effort before the first message, so they can be chosen up front.
-        "orchestrator_setup": None if top else orch.setup(ORCHESTRATOR_ID),
+        # Its provider is the one it would get now, without waiting for a check.
+        "orchestrator_setup": None if top else orch.setup(ORCHESTRATOR_ID, wait=False),
         "projects": [
             {**asdict(project), "agents": [a for a in agents if a["project"] == project.name]}
             for project in orch.projects()
         ],
-        "providers": [
-            {"name": name, **model_choices(provider), "efforts": list(provider.efforts)}
-            for name, provider in providers.PROVIDERS.items()
-        ],
+        # The supported harnesses and which can run here; never waits for a CLI: what is
+        # not checked yet is `unknown` with its models loading, and a later poll has it.
+        "providers": orch.provider_list(wait=False),
+        # The registered capabilities with their settings and status; never waits either.
+        "capabilities": orch.capability_list(),
         "tiers": list(TIERS),
         # Ids only: the archive view loads the agents themselves (/api/archive).
         "archived": orch.archived_ids(),
@@ -169,7 +179,13 @@ def state(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
             "projects": {p.name: orch.settings(p.name) for p in orch.projects()},
         },
         "roles": [
-            {"name": r.name, "description": r.description, "worktree": r.worktree, "lead": r.lead}
+            {
+                "name": r.name,
+                "description": r.description,
+                "worktree": r.worktree,
+                "lead": r.lead,
+                "provider": r.provider,  # its default provider; null: the project's
+            }
             for r in roles.available()
             if r.name != ORCHESTRATOR_ID
         ],
@@ -179,6 +195,13 @@ def state(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
         # {id, target} while the request is fresh, else null.
         "app_open": orch.app_open_request(),
     }
+
+
+def list_providers(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """The supported harnesses with their availability, checked now when `?refresh=1` (or
+    when the last check is old); waits for the check."""
+    refresh = request.query_params.get("refresh") in ("1", "true")
+    return {"providers": orch.provider_list(refresh=refresh)}
 
 
 def events(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
@@ -245,10 +268,17 @@ def browse(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
 
 
 def add_project(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """`provider`: the project's default; missing or null: the first available one."""
     project = orch.add_project(
-        required(body, "path"), optional(body, "name"), optional(body, "provider") or "claude"
+        required(body, "path"), optional(body, "name"), optional(body, "provider")
     )
     return {**asdict(project), "note": orch.project_note(project)}
+
+
+def set_project_provider(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """The provider of the project's new agents; it must be available."""
+    project = orch.set_default_provider(request.path_params["name"], required(body, "provider"))
+    return {"project": asdict(project), "note": orch.default_provider_note(project)}
 
 
 def remove_project(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
@@ -269,8 +299,9 @@ def spawn_agent(orch: Orchestrator, request: Request, body: dict) -> dict[str, A
         share_with=optional(body, "share_with"),
         base=optional(body, "base"),
         after=optional(body, "after"),
+        capabilities=body.get("capabilities") or None,
     )
-    return queued(agent.id, run.id)
+    return dispatched(agent, run.id)
 
 
 def message_agent(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
@@ -280,18 +311,58 @@ def message_agent(orch: Orchestrator, request: Request, body: dict) -> dict[str,
 
 def message_orchestrator(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
     agent = orch.orchestrator()
-    return queued(agent.id, orch.send(agent.id, required(body, "message")).id)
+    run = orch.send(agent.id, required(body, "message"))
+    return dispatched(agent, run.id)
 
 
 def message_lead(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
-    lead = orch.lead(request.path_params["name"])
-    return queued(lead.id, orch.send(lead.id, required(body, "message")).id)
+    """`provider`: the lead's when it is created now (default: the project's)."""
+    lead = orch.lead(request.path_params["name"], provider=optional(body, "provider"))
+    run = orch.send(lead.id, required(body, "message"))
+    return dispatched(lead, run.id)
 
 
 def set_agent_model(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
     """Set (a string) or clear (null) the agent's own `model` and/or `effort`; a missing
-    key keeps the value. Creates the orchestrator on first use, like a message does."""
-    return orch.set_overrides(request.path_params["agent_id"], body)
+    key keeps the value. Creates the orchestrator on first use, like a message does.
+    `provider` moves the agent to that provider first (set_provider); a move of an agent
+    with a conversation answers `confirm` (what happens) instead, until the request is
+    repeated with `confirm: true`. Returns the agent's setup, with `note` when
+    this created the orchestrator on a fallback provider."""
+    agent_id = request.path_params["agent_id"]
+    changes = {key: value for key, value in body.items() if key not in ("provider", "confirm")}
+    setup = None
+    if provider := optional(body, "provider"):
+        try:
+            setup = orch.set_provider(agent_id, provider, bool(body.get("confirm")))
+        except NeedsConfirmation as exc:
+            return {"confirm": str(exc)}
+    if changes or setup is None:  # the newer setup, keeping a note of the move's
+        setup = (setup or {}) | orch.set_overrides(agent_id, changes)
+    return setup
+
+
+def list_capabilities(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """Every capability with its settings and status; `?project=` adds that project's."""
+    return {"capabilities": orch.capability_list(request.query_params.get("project") or None)}
+
+
+def set_capability(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """`{"name", "state": true|false|null, "project"?, "role"?}`: on, off or inherit,
+    globally, for a project and/or a role. Returns the listing of that scope."""
+    entries = orch.set_capability(
+        required(body, "name"), body.get("state"), optional(body, "project"), optional(body, "role")
+    )
+    return {"capabilities": entries}
+
+
+def set_agent_capabilities(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """The agent's own setting, `{"<name>": true|false|null}` (null: inherit); returns what its
+    next turn gets and whether a turn is running now (it keeps what it started with)."""
+    agent_id = request.path_params["agent_id"]
+    found = orch.set_agent_capabilities(agent_id, body)
+    running = any(run.status is RunStatus.RUNNING for run in orch.active_runs(agent_id))
+    return {"capabilities": found, "running": running}
 
 
 def save_settings(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
@@ -465,12 +536,22 @@ def dispatch_board(orch: Orchestrator, request: Request, body: dict) -> dict[str
     return orch.dispatch_board(required(body, "project"), body.get("ids"))
 
 
+@contextlib.asynccontextmanager
+async def lifespan(app: Starlette) -> AsyncIterator[None]:
+    """Start checking the providers at once, in the background: the first page load then
+    finds them checked, and the server's start does not wait for any CLI."""
+    Orchestrator().provider_list(wait=False)
+    yield
+
+
 app = Starlette(
+    lifespan=lifespan,
     routes=[
         Route("/", index),
         Route("/manifest.webmanifest", manifest),
         Route("/api/ping", ping),
         Route("/api/state", api(state)),
+        Route("/api/providers", api(list_providers)),
         Route("/api/browse", api(browse)),
         Mount("/static", NoCacheStatic(directory=Path(__file__).parent / "static")),
         Route("/api/agents/{agent_id}/events", api(events)),
@@ -478,12 +559,16 @@ app = Starlette(
         Route("/api/projects", api(add_project), methods=["POST"]),
         Route("/api/projects/{name}/remove", api(remove_project), methods=["POST"]),
         Route("/api/projects/{name}/lead", api(message_lead), methods=["POST"]),
+        Route("/api/projects/{name}/provider", api(set_project_provider), methods=["POST"]),
         Route("/api/projects/{name}/archive", api(archive_safe), methods=["POST"]),
         Route("/api/orchestrator", api(message_orchestrator), methods=["POST"]),
         Route("/api/settings", api(save_settings), methods=["POST"]),
+        Route("/api/capabilities", api(list_capabilities)),
+        Route("/api/capabilities", api(set_capability), methods=["POST"]),
         Route("/api/agents", api(spawn_agent), methods=["POST"]),
         Route("/api/agents/{agent_id}/messages", api(message_agent), methods=["POST"]),
         Route("/api/agents/{agent_id}/model", api(set_agent_model), methods=["POST"]),
+        Route("/api/agents/{agent_id}/capabilities", api(set_agent_capabilities), methods=["POST"]),
         Route("/api/agents/{agent_id}/stop", api(stop_agent), methods=["POST"]),
         Route("/api/agents/{agent_id}/compact", api(compact_agent), methods=["POST"]),
         Route("/api/agents/{agent_id}/archive", api(archive_agent), methods=["POST"]),

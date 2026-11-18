@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from starlette.testclient import TestClient
 
-from orchestrator import providers, settings
+from orchestrator import providers, roles, settings
 from orchestrator.models import Agent
 from orchestrator.providers import RunContext, claude, codex, get
 from orchestrator.service import Orchestrator, OrchestratorError
@@ -90,6 +90,7 @@ def test_settings_over_the_api_and_cleared_values_are_dropped(
     bad = client.post(
         "/api/settings", json={"data": {"worker": {"fake": {"effort": "extreme"}}}}, headers=origin
     )
+    client.get("/api/providers")  # waits for the check; /api/state never does
     state = client.get("/api/state").json()
 
     assert saved.json() == {"worker": {"fake": {"model": "fake-small"}}}
@@ -111,13 +112,10 @@ def test_state_lists_each_providers_models_as_values_and_labels(
 ) -> None:
     client = TestClient(app, base_url="http://localhost")
     catalog = '{"models":[{"slug":"gpt-x","visibility":"list"},{"slug":"h","visibility":"hide"}]}'
-    monkeypatch.setattr(
-        codex.subprocess,
-        "run",
-        lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=catalog, stderr=""),
-    )
+    monkeypatch.setattr(codex, "request_model_list", lambda: catalog)
     monkeypatch.setitem(providers.PROVIDERS, "codex", codex.CodexProvider())
 
+    client.get("/api/providers")  # waits for the check; /api/state never does
     listed = {p["name"]: p for p in client.get("/api/state").json()["providers"]}
 
     assert listed["codex"]["models"] == [{"value": "gpt-x", "label": "gpt-x"}]
@@ -141,7 +139,7 @@ def test_state_says_when_the_claude_list_is_the_fallback(
     monkeypatch.setattr(claude, "request_model_list", timeout)
     monkeypatch.setitem(providers.PROVIDERS, "claude", claude.ClaudeProvider())
 
-    listed = {p["name"]: p for p in client.get("/api/state").json()["providers"]}
+    listed = {p["name"]: p for p in client.get("/api/providers").json()["providers"]}
 
     assert listed["claude"]["models_note"] == "model list unavailable: showing aliases"
     assert listed["claude"]["models"][0] == {"value": "fable", "label": "fable"}
@@ -211,3 +209,17 @@ def test_every_non_tier_key_is_validated_kept_when_not_named_and_in_the_dialog(
             orch.update_settings({key: True}, project)
     script = (Path(settings.__file__).parent / "web" / "static" / "app.js").read_text()
     assert all(f"key: '{key}'" in script for key in settings.SWITCHES)  # a box each
+
+
+def test_a_roles_model_applies_only_to_its_providers_agents(
+    orch: Orchestrator, project: str
+) -> None:
+    agent = orch.create_agent(project, worktree=False)
+    on_claude = roles.Role("coder", "Code.", provider="claude", model="sonnet")
+    anywhere = roles.Role("coder", "Code.", model="sonnet")
+
+    assert settings.resolve(orch.store, agent, on_claude)["model"] is None
+    assert settings.resolve(orch.store, agent, anywhere)["model"] == "sonnet"
+    claude_agent = orch.agent(agent.id)
+    claude_agent.provider = "claude"
+    assert settings.resolve(orch.store, claude_agent, on_claude)["model"] == "sonnet"

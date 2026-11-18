@@ -65,6 +65,22 @@ def test_the_page_and_the_state_carry_the_display_names(client: TestClient) -> N
     assert (state["project_name"], state["orchestrator_name"]) == ("Spartito", "Maestro")
 
 
+def test_the_state_lists_the_roles_with_their_default_provider(client: TestClient) -> None:
+    config.user_roles_dir().mkdir(parents=True)
+    role = "---\ndescription: Checks the docs\nprovider: codex\n---\nYou check docs."
+    (config.user_roles_dir() / "docs-checker.md").write_text(role)
+
+    listed = {entry["name"]: entry for entry in client.get("/api/state").json()["roles"]}
+
+    assert all(
+        set(entry) == {"name", "description", "worktree", "lead", "provider"}
+        for entry in listed.values()
+    )
+    assert listed["docs-checker"]["provider"] == "codex"
+    assert listed["worker"]["provider"] is None
+    assert ORCHESTRATOR_ID not in listed
+
+
 def test_project_and_agent_lifecycle_over_the_api(
     client: TestClient, orch: Orchestrator, repo: Path
 ) -> None:

@@ -125,6 +125,23 @@ const findAgent = id => allAgents().find(agent => agent.id === id);
 const isArchived = id => (state.archived || []).includes(id);
 const leadOf = project => project.agents.find(a => a.role === 'lead' && (!a.parent_id || a.parent_id === ORCH));
 const provider = name => state.providers.find(p => p.name === name) || { name, models: [], efforts: [] };
+const providerLabel = name => provider(name).label || name;
+// Whether a provider can run here; an entry without `usable` (a server older than this page) can.
+const canRun = p => p.usable !== false;
+const isUsable = name => state.providers.some(p => p.name === name && canRun(p));
+// The provider a choice starts on: the preferred one if it can run here, else the first that
+// can (the server marks it `default`); null when none can.
+const pickProvider = preferred => (preferred && isUsable(preferred) ? preferred
+  : (state.providers.find(p => p.default) || state.providers.find(canRun))?.name ?? null);
+// Its tooltip: what it is, or why it cannot run here (the server's whole reason).
+const providerTitle = p => (canRun(p) ? p.description || p.label || p.name
+  : `${p.label || p.name} is not available: ${p.reason || p.status || 'not supported here'}`);
+// The short visible line for one that cannot run: its status, not the whole reason.
+const unavailableText = p => `${p.label || p.name} is not available (${String(p.status || 'unavailable').replace(/_/g, ' ')}).`;
+// The supported providers again, checked now (waits for the check).
+async function checkProviders() {
+  state.providers = (await call('/api/providers?refresh=1')).providers;
+}
 // A provider's models as {value, label}: the value goes to the CLI, the label (with the version
 // where the provider names one) is shown. Any other typed name is still accepted.
 const modelLabel = (p, value) => p.models.find(m => m.value === value)?.label || value;
@@ -287,7 +304,7 @@ function renderNav() {
 
   const orch = state.orchestrator;
   const top = navItem(ORCH, ORCH, orch ? stateOf(orch).cls : '', state.orchestrator_name,
-    orch ? `${stateOf(orch).label} · talks to every project` : 'Tell it what you want built', 0, orch?.context);
+    orch ? `${stateOf(orch).label} · talks to every project` : 'Tell it what you want built', 0, orch?.context, orch?.capabilities);
   top.classList.add('orchestrator');
   nav.append(top);
   if (window.BoardView) nav.append(BoardView.navEntry(selected));
@@ -329,7 +346,8 @@ function renderNav() {
         total++;
         if (isActive(agent)) busy++;
         const now = stateOf(agent);
-        agents.append(navItem(agent.id, agent.provider, now.cls, agent.id, `${agent.role} · ${now.label}`, depth, agent.context));
+        agents.append(navItem(agent.id, agent.provider, now.cls, agent.id, `${agent.role} · ${now.label}`, depth, agent.context,
+          agent.capabilities));
         add(agent.id, depth + 1);
       }
     };
@@ -353,7 +371,8 @@ function renderNav() {
   $('summary').textContent = `${total} agents · ${busy} active · ${count(used[0] + used[1])} tokens · ${cost} spent`;
 }
 
-function navItem(id, providerName, status, name, sub, depth, context) {
+// `capabilities`: the names its next turn has, each a small badge (none from an older server).
+function navItem(id, providerName, status, name, sub, depth, context, capabilities) {
   const row = el('button', `nav-item${id === selected ? ' selected' : ''}`);
   row.type = 'button';
   row.style.paddingLeft = `${8 + depth * 16}px`;
@@ -361,9 +380,11 @@ function navItem(id, providerName, status, name, sub, depth, context) {
   // One small field: the context's fill (or `compacted`), in a warning colour from CONTEXT_WARN.
   const fill = context && (context.compacted ? 'compacted' : context.percent != null ? `ctx ${context.percent}%` : '');
   if (fill) subLine.append(' · ', el('span', `ctx${contextWarn(context) ? ' warn' : ''}`, fill));
+  const caps = (Array.isArray(capabilities) ? capabilities : []).map(capabilityLabel);
+  for (const cap of caps) subLine.append(' ', el('span', 'cap-badge', cap));
   label.append(el('span', 'name', name), subLine);
   row.append(avatar(providerName, status), label);
-  row.title = `${name}\n${sub}${fill ? `\n${contextTitle(context)}` : ''}`;
+  row.title = `${name}\n${sub}${fill ? `\n${contextTitle(context)}` : ''}${caps.length ? `\nwith ${caps.join(', ')}` : ''}`;
   row.onclick = () => select(id);
   return row;
 }
@@ -379,11 +400,13 @@ function buildView() {
   // The model/effort controls live in their own slot, so rebuilding the chips around them
   // never takes away a control the user is using.
   const chips = el('div', 'chips'), lead = el('span', 'chip-group'), tail = el('span', 'chip-group');
-  const setup = el('span', 'setup'), note = el('div', 'setup-note');
+  const setup = el('span', 'setup'), note = el('div', 'setup-note'), caps = el('div', 'setup-caps');
   lead.id = 'chips'; tail.id = 'chipsTail'; setup.id = 'setup'; note.id = 'setupNote'; note.hidden = true;
+  caps.id = 'setupCaps'; caps.hidden = true;
   setup.addEventListener('focusout', () => setTimeout(() => renderSetup(setupData)));
+  caps.addEventListener('focusout', () => setTimeout(() => renderSetup(setupData)));
   chips.append(lead, setup, tail);
-  who.append(title, chips, note);
+  who.append(title, chips, note, caps);
   const detailsButton = button('ghost', 'info', 'Details', () => { $('details').hidden = !$('details').hidden; });
   const codeButton = button('ghost', 'code', 'Code', () => toggleCode());
   codeButton.id = 'codeButton'; codeButton.hidden = true;
@@ -435,18 +458,26 @@ function buildView() {
     finally { send.disabled = false; input.focus(); }
   };
   view.append(top, details, code, log, queue, busy, form);
-  shown = selected; lastEvent = 0; toolGroup = null; setupData = null; codeShown = null;
+  shown = selected; lastEvent = 0; toolGroup = null; setupData = null; codeShown = null; capabilityNote = null;
   input.focus();
 }
 
+// The provider of the agent shown, also before it exists: a lead-to-be gets the project's
+// default, the Maestro-to-be the one it would get now.
+function shownProvider(agent) {
+  if (agent) return agent.provider;
+  if (selected.startsWith('lead:')) return state.projects.find(p => p.name === selected.slice(5))?.default_provider;
+  return selected === ORCH ? state.orchestrator_setup?.provider : undefined;
+}
+
 function renderWelcome(agent, leadProject) {
-  const welcome = $('welcome');
+  const welcome = $('welcome'), key = `${selected}\u0000${shownProvider(agent)}`;
   welcome.hidden = Boolean(agent && agent.runs > 0);
-  if (welcome.hidden || welcome.dataset.for === selected) return;
-  welcome.dataset.for = selected;
+  if (welcome.hidden || welcome.dataset.for === key) return;
+  welcome.dataset.for = key;
   welcome.replaceChildren();
   const isOrch = selected === ORCH;
-  welcome.append(avatar(isOrch ? ORCH : agent ? agent.provider : 'claude'),
+  welcome.append(avatar(isOrch ? ORCH : shownProvider(agent)),
     el('h3', '', isOrch ? `Talk to ${state.orchestrator_name}` : leadProject ? `Lead of ${leadProject}` : 'No messages yet'),
     el('p', '', isOrch
       ? 'It registers projects, briefs project leads and starts agents in their own worktrees. You stay in one conversation.'
@@ -467,7 +498,7 @@ function renderHeader(agent, setupFreshness = true) {
   const leadProject = selected.startsWith('lead:') ? selected.slice(5) : null;
   const title = $('title'), chips = $('chips');
   const name = agent ? (agent.id === ORCH ? state.orchestrator_name : agent.id) : leadProject ? `${leadProject} lead` : state.orchestrator_name;
-  const face = avatar(selected === ORCH ? ORCH : agent ? agent.provider : 'claude');
+  const face = avatar(selected === ORCH ? ORCH : shownProvider(agent));
   face.id = 'face'; $('face').replaceWith(face);
   const now = stateOf(agent);
   title.replaceChildren(name, el('span', `pill ${now.cls}`, now.label));
@@ -514,11 +545,11 @@ function renderHeader(agent, setupFreshness = true) {
     id: agent.id, provider: agent.provider, effective: agent.effective || {}, inherited: agent.inherited || {},
     own: { model: agent.model_override, effort: agent.effort_override },
     session: Boolean(agent.session_id), running: agent.status === 'running', cacheHint: agent.cache_hint,
-    resolved: agent.last_run?.usage?.model || null,
+    resolved: agent.last_run?.usage?.model || null, role: agent.role, capabilities: agent.capabilities,
   } : draft && {
     id: ORCH, provider: draft.provider, effective: draft.effective, inherited: draft.inherited,
     own: { model: draft.model_override, effort: draft.effort_override }, session: false, running: false,
-    cacheHint: draft.cache_hint,
+    cacheHint: draft.cache_hint, role: ORCH, capabilities: draft.capabilities,
   }, setupFreshness);
   if (!agent) return;
   const chip = (text, iconName, parent) => {
@@ -526,7 +557,7 @@ function renderHeader(agent, setupFreshness = true) {
     const node = el('span', 'chip'); if (iconName) node.append(icon(iconName)); node.append(text);
     (parent || chips).append(node);
   };
-  chip(agent.role); chip(agent.provider);
+  chip(agent.role);  // the provider is the setup's first choice
   const context = agent.context;
   if (context || agent.session_id) {
     const node = el('span', `chip context${contextWarn(context) ? ' warn' : ''}`);
@@ -743,6 +774,9 @@ const setupEpochs = new Map();  // agent id -> saves started and ended
 const setupTicket = () => ({
   epochs: new Map(setupEpochs), saving: new Set([...savingSetup.keys()].map(slot => slot.split('\u0000')[0])) });
 const setupFresh = (ticket, id) => !ticket.saving.has(id) && (ticket.epochs.get(id) || 0) === (setupEpochs.get(id) || 0);
+// The ticket of the poll whose answer `state` is (refresh): a redraw from it can tell whether
+// it started before a save ended. null: none yet.
+let stateTicket = null;
 const bumpSetup = id => setupEpochs.set(id, (setupEpochs.get(id) || 0) + 1);
 const setupSlot = (id, key) => `${id}\u0000${key}`;
 const setupBusy = (id, key) => pendingSetup.has(setupSlot(id, key)) || savingSetup.has(setupSlot(id, key));
@@ -760,23 +794,134 @@ function renderSetup(data, fresh = true) {
   // A stale answer does not touch controls that are there; a view without any still gets them.
   if (!box || (!fresh && box.childElementCount)) return;
   setupData = data;
-  if (!data) { box.replaceChildren(); note.textContent = ''; note.hidden = true; return; }
+  const caps = $('setupCaps');
+  if (caps) renderCapabilitySetup(caps, data);
+  if (!data) { box.replaceChildren(); note.replaceChildren(); note.dataset.key = ''; note.hidden = true; return; }
   const notes = [];
   if (data.running) notes.push('A change applies from the next turn; the running one is not changed.');
   if (data.session && data.cacheHint) notes.push(data.cacheHint);
-  note.textContent = notes.join(' ');
-  note.hidden = !notes.length;
+  // Rebuilt only when it changed, so a focused "Check again" stays.
+  const noteKey = JSON.stringify([notes, data.provider, providerTitle(provider(data.provider)), state.providers.some(canRun)]);
+  if (note.dataset.key !== noteKey) {
+    note.dataset.key = noteKey;
+    const hint = el('span', 'provider-hint');
+    providerHint(hint, data.provider, null, refresh);
+    note.replaceChildren(notes.join(' '));
+    if (!hint.hidden) note.append(notes.length ? ' ' : '', hint);
+    note.hidden = !notes.length && hint.hidden;
+  }
+  const described = !note.hidden;
+  const providers = JSON.stringify([data.id, data.provider, state.providers.map(p => [p.name, providerTitle(p)]), described]);
+  const choice = box.querySelector('[data-control=provider]');
+  if (!(choice && (choice.contains(document.activeElement) || choice.dataset.built === providers || setupBusy(data.id, 'provider')))) {
+    const control = buildProviderControl(data, described);
+    control.dataset.built = providers;
+    if (choice) choice.replaceWith(control); else box.prepend(control);
+  }
   for (const key of ['model', 'effort']) {
     const p = provider(data.provider);
     const items = key === 'model' ? p.models.map(m => [m.value, m.label]) : p.efforts.map(e => [e, e]);
     const extras = key === 'model' ? [data.resolved, p.models_note] : [];
-    const built = JSON.stringify([data.id, data.own[key], data.inherited[key], items, extras, notes.length > 0]);
+    const built = JSON.stringify([data.id, data.own[key], data.inherited[key], items, extras, described]);
     const current = box.querySelector(`[data-control=${key}]`);
     if (current && current.contains(document.activeElement)) { syncControl(current, data, key); continue; }
     if (current && (current.dataset.built === built || setupBusy(data.id, key))) continue;  // keep a pick on its way
-    const control = buildControl(data, key, items, notes.length > 0);
+    const control = buildControl(data, key, items, described);
     control.dataset.built = built;
     if (current) current.replaceWith(control); else box.append(control);
+  }
+}
+
+// The setup's provider: every supported one, those that cannot run here disabled with the
+// reason. Another one moves the agent (moveAgent).
+function buildProviderControl(data, described) {
+  const wrap = el('label', 'setting'), select = el('select', 'input compact');
+  wrap.dataset.control = 'provider';
+  select.dataset.setup = 'provider';
+  if (described) select.setAttribute('aria-describedby', 'setupNote');
+  const names = state.providers.map(p => p.name);
+  if (!names.includes(data.provider)) names.push(data.provider);
+  select.replaceChildren(...names.map(name => {
+    const p = provider(name), option = el('option', '', canRun(p) ? providerLabel(name) : `${providerLabel(name)} (not available)`);
+    option.value = name;
+    option.disabled = !canRun(p) && name !== data.provider;
+    option.title = providerTitle(p);
+    return option;
+  }));
+  select.value = data.provider;
+  select.setAttribute('aria-label', `Provider of ${data.id}`);
+  select.title = `The agent CLI that the turns of ${data.id} run on`;
+  // Sent once the choice rests (arrow keys on a closed list change it at every step); a choice
+  // still settling when the view changes is dropped (flushSetup), never sent.
+  select.onchange = () => {
+    const id = data.id, slot = setupSlot(id, 'provider'), value = select.value;
+    clearTimeout(pendingSetup.get(slot)?.timer);
+    pendingSetup.delete(slot);
+    // the provider it is on now: a focused control is not rebuilt after a move
+    if (value === (setupData?.id === id ? setupData.provider : data.provider)) return;
+    const timer = setTimeout(() => { pendingSetup.delete(slot); moveAgent(id, value); }, SETUP_SETTLE_MS);
+    pendingSetup.set(slot, { timer, save: () => pendingSetup.delete(slot) });
+  };
+  wrap.append(el('span', 'key', 'provider'), select);
+  return wrap;
+}
+
+// Moves an agent (or the Maestro before its first message) to another provider. A move that
+// starts its conversation anew is confirmed first, as archiving is; until then, and when it is
+// cancelled, the choice shows the current provider.
+async function moveAgent(id, target) {
+  const url = `/api/agents/${encodeURIComponent(id)}/model`;
+  // No second move while one is on its way: the choice is disabled until moved() redraws it.
+  const send = body => {
+    const control = setupData?.id === id && $('setup')?.querySelector('[data-setup=provider]');
+    if (control) control.disabled = true;
+    return setupRequest(id, 'provider', () => call(url, body));
+  };
+  let reply = null;
+  try { reply = await send({ provider: target }); }
+  catch (error) { toast(error.message, true); }
+  if (reply?.confirm) {
+    confirmDialog({
+      title: `Move ${id} to ${providerLabel(target)}?`, text: `${reply.confirm}.`, ok: 'Move',
+      action: async () => {
+        try { moved(id, await send({ provider: target, confirm: true })); }
+        catch (error) { moved(id, null); throw error; }
+      },
+    });
+    reply = null;
+  }
+  moved(id, reply);
+}
+
+// After a move (`setup`: the agent's new setup) or none: the panel shows the provider it is on.
+function moved(id, setup) {
+  if (setup) {
+    toast(`${id} runs on ${providerLabel(setup.provider)} from its next turn`);
+    if (setupData?.id === id) {
+      setupData = { ...setupData, provider: setup.provider, effective: setup.effective, inherited: setup.inherited,
+        own: { model: setup.model_override, effort: setup.effort_override }, session: Boolean(setup.session_id),
+        cacheHint: setup.cache_hint, resolved: null };
+    }
+  }
+  if (setupData?.id !== id) { refresh(); return; }
+  for (const control of $('setup').querySelectorAll('[data-control]')) delete control.dataset.built;
+  const select = $('setup').querySelector('[data-setup=provider]');
+  if (select) { select.value = setupData.provider; select.disabled = false; }
+  renderSetup(setupData);
+  refresh();
+}
+
+// A request that changes the setup: answers of /api/state that started before it ends leave
+// the controls alone (setupFresh), and refreshes keep the pick on its way (setupBusy).
+async function setupRequest(id, key, request) {
+  const slot = setupSlot(id, key);
+  savingSetup.set(slot, (savingSetup.get(slot) || 0) + 1);
+  bumpSetup(id);
+  try { return await request(); }
+  finally {
+    const left = savingSetup.get(slot) - 1;
+    if (left > 0) savingSetup.set(slot, left); else savingSetup.delete(slot);
+    bumpSetup(id);
   }
 }
 
@@ -912,6 +1057,107 @@ async function saveSetup(id, key, value, keepalive) {
   refresh();
 }
 
+// -- capabilities of the selected agent ---------------------------------------
+// Named extra tool sets a turn can have (state.capabilities). Per name the last level that
+// says something wins: default, global, project, role, the agent's own; a role's "off" is
+// final. A server older than this page sends none of them: then nothing of this is shown.
+
+// A setting as the inherit / on / off choice ('' is inherit), and back.
+const triValue = value => (value === true ? 'on' : value === false ? 'off' : '');
+const triState = value => (value === 'on' ? true : value === 'off' ? false : null);
+const onOff = value => (value ? 'on' : 'off');
+const capabilityLabel = name => (state.capabilities || []).find(c => c.name === name)?.label || name;
+// The items of an agent's breakdown ({on, items, error}); none from an older server.
+const capabilityItems = holder => (Array.isArray(holder?.capabilities?.items) ? holder.capabilities.items : []);
+// The answer to the last change, kept across redraws: {id, text, error, items}. Dropped when
+// the view is built anew (buildView), for another agent, and on the next answer; a refusal also
+// once the agent's breakdown is no longer the one it was refused against (`items`), the hint of
+// a running turn once no turn runs.
+let capabilityNote = null;
+
+// One line per capability under the setup, rebuilt when it changed. A poll leaves a line alone
+// while the user is on its choice or a choice of it is on its way; `own`: the capability whose
+// save has just answered, whose line is redrawn even while focused (the answer shows at once).
+function renderCapabilitySetup(box, data, own) {
+  const items = capabilityItems(data), error = data?.capabilities?.error || null;
+  const current = capabilityNote, seen = JSON.stringify(items);
+  if (current && (current.id !== data?.id || (current.error ? current.items !== seen : !data.running))) capabilityNote = null;
+  const note = capabilityNote;
+  const key = JSON.stringify([data?.id, data?.role, items, error, note]);
+  if (box.dataset.key === key) return;
+  const before = new Map([...box.querySelectorAll('[data-control]')].map(line => [line.dataset.control, line]));
+  let kept = false, refocus = null;
+  const lines = items.map(item => {
+    const slot = `cap:${item.name}`, old = before.get(slot), focused = Boolean(old?.contains(document.activeElement));
+    if (old && (setupBusy(data.id, slot) || (focused && item.name !== own))) { kept = true; return old; }
+    const line = capabilityLine(data, item);
+    if (focused) refocus = line.querySelector('select');
+    return line;
+  });
+  const notes = [[error, true], [note?.text, note?.error]].filter(([text]) => text)
+    .map(([text, failed]) => el('div', `cap-note${failed ? ' error' : ''}`, text));
+  placeChildren(box, [...lines, ...notes]);
+  box.hidden = !box.childElementCount;
+  // a line left alone is redrawn by a later pass (focusout, the next poll)
+  if (kept) delete box.dataset.key; else box.dataset.key = key;
+  refocus?.focus();
+}
+
+function capabilityLine(data, item) {
+  const line = el('label', `setting cap-line${item.override != null ? ' own' : ''}`), select = el('select', 'input compact');
+  line.dataset.control = `cap:${item.name}`;
+  // what "inherit" gives, known when the agent has no setting of its own
+  const inherits = item.override == null ? ` (${item.state === 'off' ? 'off' : 'on'})` : '';
+  options(select, [['', `inherit${inherits}`], ['on', 'on'], ['off', 'off']], triValue(item.override));
+  const blocked = item.final ? `off for role ${data.role || 'of this agent'}: its own setting cannot turn it on` : '';
+  select.options[1].disabled = Boolean(item.final);
+  select.dataset.setup = `cap:${item.name}`;
+  select.setAttribute('aria-label', `${item.label || item.name} for ${data.id}`);
+  select.title = blocked || 'Its own setting; “inherit” takes the role’s, project’s or global one';
+  select.onchange = () => {
+    const id = data.id, slot = setupSlot(id, `cap:${item.name}`), value = triState(select.value);
+    clearTimeout(pendingSetup.get(slot)?.timer);
+    const save = keepalive => { pendingSetup.delete(slot); saveCapability(id, item, value, keepalive); };
+    pendingSetup.set(slot, { timer: setTimeout(save, SETUP_SETTLE_MS), save });
+  };
+  line.append(el('span', 'key', item.label || item.name), select, el('span', `cap-state ${item.state}`, item.state),
+    el('span', 'cap-source', `from ${item.source === 'agent' ? 'its own setting' : item.source}`));
+  const note = item.note || blocked;
+  if (note) line.append(el('span', 'cap-note', `· ${note}`));
+  return line;
+}
+
+// Puts `nodes` into `parent` in this order without taking out one that is there already (a kept
+// line: a focused select keeps its focus and its open list); the others go, the new ones are
+// inserted around it. The kept ones must already be in this order.
+function placeChildren(parent, nodes) {
+  const keep = new Set(nodes);
+  for (const child of [...parent.children]) if (!keep.has(child)) child.remove();
+  nodes.forEach((node, i) => { if (parent.children[i] !== node) parent.insertBefore(node, parent.children[i] || null); });
+}
+
+async function saveCapability(id, item, value, keepalive) {
+  const label = item.label || item.name;
+  try {
+    const reply = await setupRequest(id, `cap:${item.name}`,
+      () => call(`/api/agents/${encodeURIComponent(id)}/capabilities`, { [item.name]: value }, keepalive));
+    const now = capabilityItems(reply).find(i => i.name === item.name)?.state || (value === null ? 'inherited' : onOff(value));
+    toast(`${label} of ${id}: ${now}, from its next turn`);
+    capabilityNote = reply.running ? { id, text: 'A turn is running: the change applies from the next one.' } : null;
+    if (setupData?.id === id) {
+      setupData = { ...setupData, capabilities: reply.capabilities, running: setupData.running || Boolean(reply.running) };
+    }
+  } catch (error) {
+    capabilityNote = { id, text: error.message, error: true, items: JSON.stringify(capabilityItems(setupData)) };
+  }
+  if (setupData?.id !== id) return;
+  const box = $('setupCaps');
+  if (box) delete box.dataset.key;  // after a refusal: the stored value again
+  renderSetup(setupData);
+  if (box) renderCapabilitySetup(box, setupData, item.name);  // also while its choice has the focus
+  refresh();
+}
+
 function renderQueue(agent) {
   const queue = $('queue'), items = (agent && agent.queue) || [];
   // `queue` may be capped; `queued_runs` counts every active turn, the running one too.
@@ -979,6 +1225,7 @@ async function sendMessage(message) {
   else if (selected.startsWith('lead:'))
     result = await call(`/api/projects/${encodeURIComponent(selected.slice(5))}/lead`, { message });
   else result = await call(`/api/agents/${encodeURIComponent(selected)}/messages`, { message });
+  if (result.note) toast(result.note, false, 12000);
   if (result.agent_id !== selected) {  // a lead that was just created: keep the view, adopt its id
     selected = result.agent_id; shown = selected; location.hash = encodeURIComponent(selected);
   }
@@ -1699,6 +1946,53 @@ function choices(container, type, name, items, value, onchange) {
     return label;
   }));
 }
+// Radios of every supported provider, by label; one that cannot run here is disabled, with the
+// reason as its tooltip (each one's tooltip says what it is or why it cannot run).
+function providerChoices(container, name, value, onchange) {
+  choices(container, 'radio', name, state.providers.map(p => [p.name, p.label || p.name]), value, onchange);
+  for (const label of container.children) {
+    const input = label.children[0], p = provider(input.value);
+    input.disabled = !canRun(p);
+    label.title = providerTitle(p);
+  }
+}
+
+// Open dialogs whose provider parts follow the providers of later polls: dialog -> redraw.
+// A redraw keeps what the user typed or picked (unless a picked provider can no longer run).
+const providerViews = new Map();
+let providersSeen = '';
+function providersChanged() {
+  // only what the dialogs show: a re-check with the same result (a new checked_at) redraws nothing
+  // (the capabilities too: their status follows the providers, and the settings show them)
+  const key = JSON.stringify([state.providers.map(p => [p.name, p.label, p.usable, p.status, p.reason, p.models,
+    p.models_note, p.efforts]), state.capabilities || []]);
+  if (key === providersSeen) return;
+  providersSeen = key;
+  for (const [dialog, redraw] of providerViews) if (dialog.open) redraw();
+}
+
+// Fills `hint`, the line under a provider choice, when `expected` (the provider one would get
+// there) cannot run here, or when none can; `instead`: the one chosen in its place. With a
+// control that checks the CLIs again and then calls `redraw`. Hidden when there is nothing to say.
+function providerHint(hint, expected, instead, redraw) {
+  const p = expected ? provider(expected) : null, none = !state.providers.some(canRun);
+  const text = none ? 'None of the agent CLIs can run here.'
+    : p && !canRun(p) ? `${unavailableText(p)}${instead && instead !== expected ? ` ${providerLabel(instead)} is chosen instead.` : ''}`
+    : '';
+  hint.replaceChildren();
+  hint.hidden = !text;
+  // the whole reasons, as the tooltip of the short line
+  hint.title = none ? state.providers.map(providerTitle).join('\n') : text ? providerTitle(p) : '';
+  if (!text) return;
+  const again = button('ghost again', null, 'Check again', async () => {
+    again.disabled = true;
+    try { await checkProviders(); redraw(); }
+    catch (error) { toast(error.message, true); again.disabled = false; }
+  });
+  again.title = 'Check again which agent CLIs are installed and can run here';
+  hint.append(`${text} `, again);
+}
+
 function options(select, items, value) {
   select.replaceChildren(...items.map(([itemValue, label]) => {
     const option = el('option', '', label); option.value = itemValue; return option;
@@ -1781,8 +2075,22 @@ function renderFolder() {
 function openProjectDialog() {
   const dialog = $('projectDialog');
   dialog.querySelector('form').reset();
-  choices(dialog.querySelector('[data-segment=provider]'), 'radio', 'provider',
-    state.providers.map(p => [p.name, p.name]), 'claude');
+  // The first provider that can run here, or the one picked while it can (redrawn by "Check
+  // again" and when a poll brings other providers).
+  const group = dialog.querySelector('[data-segment=provider]');
+  let picked = null;
+  const drawProviders = () => {
+    const chosen = pickProvider(picked);
+    // a pick only updates the hint: rebuilding the radios would take the keyboard focus away
+    providerChoices(group, 'provider', chosen, event => {
+      picked = event.target.value;
+      providerHint($('projectProviderHint'), picked, picked, drawProviders);
+    });
+    providerHint($('projectProviderHint'), picked, chosen, drawProviders);
+  };
+  group.replaceChildren();
+  drawProviders();
+  providerViews.set(dialog, drawProviders);
   $('pickerUp').onclick = () => folder?.parent && loadFolder(folder.parent);
   $('pickerHome').onclick = () => loadFolder(folder?.home || '');
   $('pickerUseHere').onclick = () => chooseRepository(folder.path);
@@ -1811,6 +2119,28 @@ function openAgentDialog(project) {
   dialog.querySelector('form').reset();
   dialog.querySelector('[data-project]').textContent = project.name;
   const current = name => dialog.querySelector(`[name=${name}]:checked`)?.value;
+  // Per capability inherit / on / off; only a changed one is sent. A provider that does not
+  // support one is named under it: the agent would start with it skipped.
+  const capsBox = dialog.querySelector('[data-capabilities]');
+  const capChoices = (capsBox ? state.capabilities || [] : []).map(entry => {
+    const row = el('label', 'cap-choice'), select = el('select', 'input compact'), hint = el('span', 'help provider-hint');
+    options(select, [['', 'inherit'], ['on', 'on'], ['off', 'off']], '');
+    select.dataset.capability = entry.name;
+    select.setAttribute('aria-label', entry.label || entry.name);
+    row.title = entry.description || '';
+    row.append(el('span', 'key', entry.label || entry.name), select, hint);
+    const update = providerName => {
+      const skipped = select.value !== 'off' && !(entry.providers || []).includes(providerName);
+      hint.textContent = skipped ? `not supported on ${providerLabel(providerName)}: skipped there if on` : '';
+      hint.hidden = !skipped;
+    };
+    select.onchange = () => update(current('provider'));
+    return { entry, select, row, update };
+  });
+  if (capsBox) {
+    capsBox.replaceChildren(...capChoices.map(choice => choice.row));
+    dialog.querySelector('[data-capabilities-field]').hidden = !capChoices.length;
+  }
   const sync = () => {
     const role = state.roles.find(r => r.name === current('role')), chosen = provider(current('provider'));
     const tier = role?.lead ? 'lead' : 'worker';
@@ -1818,13 +2148,30 @@ function openAgentDialog(project) {
     const effort = inherited(tier, chosen.name, 'effort', project.name);
     $('agentModels').replaceChildren(...modelOptions(chosen));
     field('model').placeholder = model ? `${model} (from settings)` : 'default';
-    field('model').title = chosen.models_note || '';
-    options(field('effort'), [['', effort ? `${effort} (from settings)` : 'default'], ...chosen.efforts.map(e => [e, e])], '');
+    const note = dialog.querySelector('[data-models-note]');
+    note.textContent = chosen.models_note || ''; note.hidden = !chosen.models_note;
+    const kept = field('effort').value;  // an effort picked stays while the provider offers it
+    options(field('effort'), [['', effort ? `${effort} (from settings)` : 'default'], ...chosen.efforts.map(e => [e, e])],
+      chosen.efforts.includes(kept) ? kept : '');
+    providerHint($('agentProviderHint'), wanted(), chosen.name, drawProviders);
+    for (const choice of capChoices) choice.update(chosen.name);
+  };
+  // The provider: the one the user picked, else the role's (a server older than this page names
+  // none), else the project's default; the first of these that can run here, else any that can.
+  let picked = null;
+  const roleProvider = () => state.roles.find(r => r.name === current('role'))?.provider || null;
+  const wanted = () => picked || roleProvider() || project.default_provider;
+  const group = dialog.querySelector('[data-segment=provider]');
+  const drawProviders = () => {
+    const chosen = [wanted(), roleProvider(), project.default_provider].find(name => name && isUsable(name)) ?? pickProvider(null);
+    providerChoices(group, 'provider', chosen, event => { picked = event.target.value; sync(); });
+    sync();
   };
   choices(dialog.querySelector('[data-cards=role]'), 'radio', 'role',
-    state.roles.map(r => [r.name, r.name, r.description]), 'worker', sync);
-  choices(dialog.querySelector('[data-segment=provider]'), 'radio', 'provider',
-    state.providers.map(p => [p.name, p.name]), project.default_provider, sync);
+    state.roles.map(r => [r.name, r.name, r.description]), 'worker', drawProviders);
+  group.replaceChildren();
+  drawProviders();
+  providerViews.set(dialog, drawProviders);
   options(field('workspace'), [['', 'Default for the role'], ['own', 'Own worktree and branch'], ['main', 'Main checkout of the project'],
     ...project.agents.filter(a => a.branch).map(a => [`share:${a.id}`, `Share the worktree of ${a.id}`])]);
   dialog.querySelector('[data-after-field]').hidden = !project.agents.length;
@@ -1832,14 +2179,17 @@ function openAgentDialog(project) {
   sync();
   openDialog(dialog, async data => {
     const workspace = data.get('workspace');
+    const capabilities = Object.fromEntries(capChoices.filter(choice => choice.select.value)
+      .map(choice => [choice.entry.name, choice.select.value === 'on']));
     const result = await call('/api/agents', {
       project: project.name, task: data.get('task'), name: data.get('name'), role: data.get('role'),
       provider: data.get('provider'), model: data.get('model'), effort: data.get('effort'),
       worktree: workspace === 'own' ? true : workspace === 'main' ? false : null,
       share_with: workspace.startsWith('share:') ? workspace.slice(6) : null,
-      after: data.getAll('after'),
+      after: data.getAll('after'), ...(Object.keys(capabilities).length ? { capabilities } : {}),
     });
-    toast('Agent started'); select(result.agent_id);
+    toast(result.note ? `Agent started. ${result.note}` : 'Agent started', false, result.note ? 12000 : 0);
+    select(result.agent_id);
   });
 }
 
@@ -1853,14 +2203,16 @@ function renderSettings() {
     : 'Defaults for every project. An agent started with an explicit model or effort keeps its own.';
   const rows = $('settingsRows');
   rows.replaceChildren();
+  const project = scope && state.projects.find(p => p.name === scope), redraws = [];
+  providerViews.set(dialog, () => { for (const redraw of redraws) redraw(); });
+  if (project) rows.append(defaultProviderBox(project, redraws));
   for (const tier of state.tiers) {
     if (scope && tier === 'orchestrator') continue;
     const box = el('div', 'tier'), [title, about] = TIER_INFO[tier] || [tier, ''];
     box.append(el('h4', '', title), el('p', 'about', typeof about === 'function' ? about() : about));
     for (const p of state.providers) {
-      if (tier === 'orchestrator' && p.name !== 'claude') continue;
       const row = el('div', 'tier-row'), who = el('span', 'who');
-      who.append(avatar(p.name), p.name);
+      who.append(avatar(p.name), p.label || p.name);
       const model = el('input', 'input'), effort = el('select', 'input'), list = el('datalist');
       const base = scope ? state.settings.global?.[tier]?.[p.name] || {} : {};
       list.id = `models-${tier}-${p.name}`;
@@ -1868,14 +2220,24 @@ function renderSettings() {
       model.name = `${tier}.${p.name}.model`; model.setAttribute('list', list.id); model.autocomplete = 'off';
       model.value = data?.[tier]?.[p.name]?.model || '';
       model.placeholder = base.model ? `${base.model} (global)` : 'default model';
-      model.setAttribute('aria-label', `${title} ${p.name} model`);
+      model.setAttribute('aria-label', `${title} ${p.label || p.name} model`);
       model.title = p.models_note || '';
       effort.name = `${tier}.${p.name}.effort`;
-      effort.setAttribute('aria-label', `${title} ${p.name} effort`);
+      effort.setAttribute('aria-label', `${title} ${p.label || p.name} effort`);
       options(effort, [['', base.effort ? `${base.effort} (global)` : 'default effort'], ...p.efforts.map(e => [e, e])],
         data?.[tier]?.[p.name]?.effort || '');
       row.append(who, model, effort, list);
       box.append(row);
+      // A later poll's providers: their models, notes and whether they can run.
+      const update = () => {
+        const now = provider(p.name);
+        who.classList.toggle('unusable', !canRun(now));
+        who.title = providerTitle(now);
+        model.title = now.models_note || '';
+        list.replaceChildren(...modelOptions(now));
+      };
+      update();
+      redraws.push(update);
     }
     rows.append(box);
   }
@@ -1892,8 +2254,153 @@ function renderSettings() {
   box.append(row);
   rows.append(box);
   rows.append(compactAtBox(scope, data));
+  if (state.capabilities?.length) rows.append(capabilitiesBox(scope, redraws));
   if (!scope) rows.append(...SWITCHES.map(switchBox));
   if (!scope) rows.append(versionBox(state));
+}
+
+// A project's default provider, the one its new agents run on: set at once, apart from Save.
+// A choice is sent once it rests (arrow keys move through the radios), and the choice is
+// disabled while it is on its way, so the last choice is the one stored.
+function defaultProviderBox(project, redraws) {
+  const box = el('div', 'tier'), group = el('div', 'segmented'), hint = el('p', 'about provider-hint');
+  const status = el('p', 'about provider-status');
+  let current = project.default_provider, chosen = current, timer = null, busy = false;
+  hint.id = 'settingsProviderHint';
+  status.setAttribute('role', 'status');
+  group.setAttribute('role', 'radiogroup');
+  group.setAttribute('aria-label', `Default provider of ${project.name}`);
+  group.setAttribute('aria-describedby', hint.id);
+  const draw = (refocus = group.contains(document.activeElement)) => {
+    providerChoices(group, 'default_provider', chosen, change);
+    if (busy) for (const input of group.querySelectorAll('input')) input.disabled = true;
+    providerHint(hint, chosen, null, draw);
+    if (refocus) group.querySelector(':checked')?.focus();
+  };
+  const save = async () => {
+    if (chosen === current) return;
+    const focused = group.contains(document.activeElement);
+    busy = true;
+    for (const input of group.querySelectorAll('input')) input.disabled = true;
+    status.textContent = '';
+    try {
+      const result = await call(`/api/projects/${encodeURIComponent(project.name)}/provider`, { provider: chosen });
+      current = result.project.default_provider;
+      status.textContent = result.note || `New agents of ${project.name} run on ${providerLabel(current)}.`;
+      refresh();
+    } catch (error) {
+      status.textContent = error.message;
+    }
+    busy = false; chosen = current;
+    draw(focused);  // the focus goes back to the choice it was on
+  };
+  const change = event => {
+    chosen = event.target.value;
+    clearTimeout(timer);
+    timer = setTimeout(save, SETUP_SETTLE_MS);
+  };
+  redraws.push(draw);
+  box.append(el('h4', '', 'Default provider'), el('p', 'about',
+    'The agent CLI that new agents of this project run on, unless their role names another. '
+    + 'Agents that exist keep theirs. Applies at once.'), group, hint, status);
+  draw();
+  return box;
+}
+
+// The capabilities, globally or for a project: one row each, with what it is and reaches, its
+// status, an inherit / on / off choice set at once (apart from Save), sent once it rests, and
+// the role settings, read-only (a role's "off" is final). A project's listing is loaded. A
+// choice stays on screen while it settles and is saved; later polls redraw the other rows
+// (`redraws`), never one the user is on or has a choice of on its way.
+// The saves of the box, as setupRequest counts them (no agent id has a colon).
+const CAPABILITY_SETTINGS = 'settings:capabilities';
+function capabilitiesBox(scope, redraws) {
+  const box = el('div', 'tier'), list = el('div', 'cap-rows'), status = el('p', 'about cap-status');
+  status.setAttribute('role', 'status');
+  box.append(el('h4', '', 'Capabilities'), el('p', 'about', scope
+    ? `Extra tools for the agents of ${scope}; “inherit” takes the global setting. From each agent’s next turn.`
+    : 'Extra tools agents can be given; projects, roles and agents may set their own. From each agent’s next turn.'),
+  list, status);
+  let entries = scope ? null : state.capabilities, busy = false;
+  const timers = new Map(), chosen = new Map();  // name -> the choice settling or being saved
+  // `poll`: a redraw for a later /api/state, which keeps the row the user is on or has chosen in
+  const draw = (focusName, poll) => {
+    if (!entries) return;
+    const before = new Map([...list.children].map(row => [row.dataset.capability, row]));
+    placeChildren(list, entries.map(entry => {
+      const row = before.get(entry.name);
+      if (poll && row && (row.contains(document.activeElement) || chosen.has(entry.name))) return row;
+      return capabilityRow(entry, scope, busy, change, chosen.has(entry.name) ? chosen.get(entry.name) : undefined);
+    }));
+    if (focusName) list.querySelector(`[name=capability-${focusName}]:checked`)?.focus();
+  };
+  const save = async (entry, value) => {
+    const focused = list.contains(document.activeElement) ? entry.name : null;
+    busy = true; draw(); status.textContent = '';
+    try {
+      const reply = await setupRequest(CAPABILITY_SETTINGS, 'save',
+        () => call('/api/capabilities', { name: entry.name, state: value, ...(scope ? { project: scope } : {}) }));
+      entries = reply.capabilities;
+      status.textContent = `${entry.label || entry.name}: ${value === null ? 'inherited' : onOff(value)}`
+        + `${scope ? ` for ${scope}` : ' globally'}, from each agent’s next turn.`;
+      refresh();
+    } catch (error) {
+      status.textContent = error.message;
+    }
+    busy = false; chosen.delete(entry.name); draw(focused);  // after an error: the stored value again
+  };
+  const change = (entry, value) => {
+    chosen.set(entry.name, value);
+    clearTimeout(timers.get(entry.name));
+    timers.set(entry.name, setTimeout(() => { timers.delete(entry.name); save(entry, value); }, SETUP_SETTLE_MS));
+  };
+  // A later poll's listing: status, reason and the global values (a project keeps its own). A
+  // poll that started before a save ended may hold the old values: it is left out, and the next
+  // poll redraws again even when it brings the same listing.
+  redraws.push(() => {
+    if (!entries) return;
+    if (stateTicket && !setupFresh(stateTicket, CAPABILITY_SETTINGS)) { providersSeen = ''; return; }
+    entries = entries.map(entry => {
+      const now = (state.capabilities || []).find(c => c.name === entry.name);
+      return now ? { ...now, ...(scope ? { project: entry.project, project_roles: entry.project_roles } : {}) } : entry;
+    });
+    draw(null, true);
+  });
+  if (scope) {
+    list.append(el('p', 'about', 'Loading…'));
+    call(`/api/capabilities?project=${encodeURIComponent(scope)}`).then(reply => { entries = reply.capabilities; draw(); },
+      error => { list.replaceChildren(); status.textContent = error.message; });
+  } else draw();
+  return box;
+}
+
+// `shown`: the choice to show instead of the stored one (one settling or being saved).
+function capabilityRow(entry, scope, busy, change, shown) {
+  const row = el('div', 'cap-row'), head = el('div', 'cap-head'), group = el('div', 'segmented');
+  row.dataset.capability = entry.name;
+  const label = entry.label || entry.name, name = el('b', '', label);
+  name.title = entry.description || '';
+  const statusText = String(entry.status || 'unknown').replace(/_/g, ' ');
+  head.append(name, el('span', 'cap-providers', (entry.providers || []).map(providerLabel).join(', ') || 'no provider'));
+  // what "inherit" gives: the global setting for a project, else the product's default
+  const inherited = scope && entry.global != null ? entry.global : Boolean(entry.default);
+  const from = scope && entry.global != null ? 'the global setting' : 'the default';
+  choices(group, 'radio', `capability-${entry.name}`, [['', `inherit (${onOff(inherited)})`], ['on', 'on'], ['off', 'off']],
+    triValue(shown !== undefined ? shown : scope ? entry.project : entry.global), event => change(entry, triState(event.target.value)));
+  group.setAttribute('role', 'radiogroup');
+  group.setAttribute('aria-label', `${label} ${scope ? `for ${scope}` : 'globally'}`);
+  group.children[0].title = `Takes ${from}: ${onOff(inherited)}`;
+  if (busy) for (const input of group.querySelectorAll('input')) input.disabled = true;
+  const status = el('p', 'about cap-status-line', `Status: ${statusText}${entry.reason ? ` (${entry.reason})` : ''}`);
+  status.title = entry.reason || '';
+  row.append(head);
+  if (entry.reaches) row.append(el('p', 'about cap-reaches', `Reaches ${entry.reaches}`));
+  row.append(status, group);
+  // the role settings, read-only; a project's own role entry wins over the global one
+  const roleLine = (role, on, where) => el('p', 'about cap-role', `role ${role}${where ? ` (${where})` : ''}: ${on ? 'on' : 'off (final)'}`);
+  for (const [role, on] of Object.entries(entry.roles || {})) row.append(roleLine(role, on));
+  for (const [role, on] of Object.entries(scope ? entry.project_roles || {} : {})) row.append(roleLine(role, on, scope));
+  return row;
 }
 
 // The installed version (from /api/state); checking for a newer one is a command, never the page.
@@ -2177,6 +2684,8 @@ async function refresh() {
   const ticket = setupTicket();  // answers older than a save do not touch the model controls
   try {
     state = await call('/api/state');
+    stateTicket = ticket;
+    providersChanged();
     applyAppRequest(state.app_open);
     if (selected.startsWith('lead:')) {
       const project = state.projects.find(p => p.name === selected.slice(5));

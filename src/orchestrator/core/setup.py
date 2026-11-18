@@ -6,10 +6,11 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, Protocol
 
-from .. import providers, roles, settings
-from ..errors import OrchestratorError
+from .. import capabilities, providers, roles, settings
+from ..errors import NeedsConfirmation, OrchestratorError
 from ..models import Agent, Project
 from ..store import Store
+from . import availability
 from .dispatch import ORCHESTRATOR_ID
 
 
@@ -26,14 +27,14 @@ class Facade(Protocol):
 
     def inherited(self, agent: Agent) -> dict[str, str | None]: ...
 
-    def setup(self, agent_id: str) -> dict[str, Any]: ...
+    def setup(self, agent_id: str, wait: bool = True) -> dict[str, Any]: ...
 
-    def _agent_or_orchestrator_draft(self, agent_id: str) -> Agent: ...
+    def _agent_or_orchestrator_draft(self, agent_id: str, wait: bool = True) -> Agent: ...
 
-    def orchestrator(self) -> Agent: ...
+    def orchestrator(self, provider: str | None = None) -> Agent: ...
 
     @staticmethod
-    def _orchestrator_draft() -> Agent: ...
+    def _orchestrator_draft(provider: str | None = None, wait: bool = True) -> Agent: ...
 
 
 # What a model or effort switch in a resumed session does to the prompt cache. Measured
@@ -73,8 +74,10 @@ def stored_settings(orch: Facade, project: str | None = None) -> dict[str, Any]:
 
 def update_settings(orch: Facade, data: Any, project: str | None = None) -> dict[str, Any]:
     """Replace the model/effort settings globally or, with `project`, for one project."""
+    scope = orch.project(project).name if project else settings.GLOBAL
+    stored = orch.store.get_settings(scope)
     try:
-        cleaned = settings.clean(data)
+        cleaned = settings.clean(_as_stored(data, stored))
     except ValueError as exc:
         raise OrchestratorError(str(exc)) from None
     if project and "orchestrator" in cleaned:
@@ -82,16 +85,66 @@ def update_settings(orch: Facade, data: Any, project: str | None = None) -> dict
     for key in settings.SWITCHES:
         if project and key in cleaned:
             raise OrchestratorError(f"{key} can only be set globally")
-    scope = orch.project(project).name if project else settings.GLOBAL
+    _registered(cleaned, stored)
     # Kept when not named (the settings dialog sends only its own fields; a page from
     # before a key existed does not send that one).
-    kept = (settings.ARCHIVE_AFTER, settings.COMPACT_AT)
+    kept = (
+        settings.ARCHIVE_AFTER,
+        settings.COMPACT_AT,
+        settings.CAPABILITIES,
+        settings.ROLE_CAPABILITIES,
+    )
+    readable = capabilities.readable(stored)
     for key in kept if project else kept + settings.SWITCHES:
-        if isinstance(data, dict) and key not in data:
-            stored = orch.store.get_settings(scope).get(key)
-            cleaned.update({} if stored is None else {key: stored})
+        if isinstance(data, dict) and key not in data and readable.get(key) not in (None, {}):
+            cleaned[key] = readable[key]
     orch.store.set_settings(scope, cleaned)
     return cleaned
+
+
+def _as_stored(data: Any, stored: dict[str, Any]) -> Any:
+    """The request, with the capability settings it sends back as stored (a command that
+    read the whole scope and writes it) reduced to their readable entries, so that an
+    unreadable stored one blocks no write; what the request changes is checked as sent."""
+    if not isinstance(data, dict):
+        return data
+    data = dict(data)
+    readable = capabilities.readable(stored)
+    for key in (settings.CAPABILITIES, settings.ROLE_CAPABILITIES):
+        if key in stored and key in data and data[key] == stored[key]:
+            data[key] = readable[key]
+    key, before = settings.ROLE_CAPABILITIES, stored.get(settings.ROLE_CAPABILITIES)
+    if isinstance(data.get(key), dict) and isinstance(before, dict):
+        sent = dict(data[key])
+        for role in [role for role in sent if role in before and sent[role] == before[role]]:
+            if role in readable[key]:
+                sent[role] = readable[key][role]
+            else:
+                del sent[role]
+        data[key] = sent
+    return data
+
+
+def _registered(cleaned: dict[str, Any], stored: dict[str, Any]) -> None:
+    """Refuse a capability setting the request names for a capability that is not registered
+    (it would be skipped on every turn); one stored with the same value already (a plugin
+    that is gone) stays, and removing one is always possible."""
+    stored_roles = stored.get(settings.ROLE_CAPABILITIES)
+    pairs = [
+        (
+            cleaned.get(settings.CAPABILITIES, {}),
+            capabilities.flags(stored.get(settings.CAPABILITIES)),
+        )
+    ]
+    for role, values in cleaned.get(settings.ROLE_CAPABILITIES, {}).items():
+        pairs.append((values, capabilities.role_flags(stored_roles, role)))
+    for values, before in pairs:
+        for name, on in values.items():
+            if name not in capabilities.REGISTRY and before.get(name) is not on:
+                try:
+                    capabilities.known(name)
+                except ValueError as exc:
+                    raise OrchestratorError(str(exc)) from None
 
 
 def effective(orch: Facade, agent: Agent) -> dict[str, str | None]:
@@ -109,15 +162,21 @@ def inherited(orch: Facade, agent: Agent) -> dict[str, str | None]:
     return orch.effective(replace(agent, model=None, effort=None))
 
 
-def setup(orch: Facade, agent_id: str) -> dict[str, Any]:
+def setup(orch: Facade, agent_id: str, wait: bool = True) -> dict[str, Any]:
     """An agent's model and effort: what its next turn uses (`effective`), the values
     set on the agent itself (`model_override`/`effort_override`; null: inherited) and
     what applies without them (`inherited`); `running`: a turn is running (a change
     applies from the next one); `cache_effect`: per setting, what switching it in an
     existing session does to the prompt cache (`restarts`, `may restart`, `keeps`) and
-    `cache_hint` says it in words. The orchestrator is shown before its first use too
-    (`exists` false), without creating anything."""
-    agent = orch._agent_or_orchestrator_draft(agent_id)
+    `cache_hint` says it in words; `capabilities`: what its next turn gets of them
+    (capabilities.Resolution.breakdown). The orchestrator is shown before its first use too
+    (`exists` false), without creating anything; `wait=False` shows it on the provider it
+    would get without waiting for an availability check. The replies of set_overrides and
+    set_provider add `note` when they created the orchestrator on a fallback provider."""
+    if wait:
+        agent = orch._agent_or_orchestrator_draft(agent_id)
+    else:
+        agent = orch._agent_or_orchestrator_draft(agent_id, wait=False)
     return {
         "agent_id": agent.id,
         "provider": agent.provider,
@@ -130,6 +189,7 @@ def setup(orch: Facade, agent_id: str) -> dict[str, Any]:
         "running": orch.store.running_run(agent.id) is not None,
         "cache_effect": cache_effect(agent.provider),
         "cache_hint": cache_hint(agent.provider),
+        "capabilities": capabilities.resolve(orch.store, agent).breakdown(),
     }
 
 
@@ -164,13 +224,83 @@ def set_overrides(orch: Facade, agent_id: str, changes: dict[str, Any]) -> dict[
             raise OrchestratorError(
                 f"{agent.provider} has no effort {effort!r} (use: {', '.join(allowed)})"
             )
-    if agent.id == ORCHESTRATOR_ID:
-        orch.orchestrator()
+    note = orch.orchestrator().provider_note if agent.id == ORCHESTRATOR_ID else None
     orch.store.set_overrides(agent.id, changes)
+    return _noting(orch.setup(agent.id), note)
+
+
+def _noting(setup: dict[str, Any], note: str | None) -> dict[str, Any]:
+    """`setup` with `note` when the call created the orchestrator on a fallback provider (what
+    choosing it had to tell); without the key otherwise."""
+    return {**setup, "note": note} if note else setup
+
+
+def _agent_or_orchestrator_draft(orch: Facade, agent_id: str, wait: bool = True) -> Agent:
+    if agent_id == ORCHESTRATOR_ID:
+        return orch.store.get_agent(ORCHESTRATOR_ID) or orch._orchestrator_draft(wait=wait)
+    return orch.agent(agent_id)
+
+
+def set_provider(
+    orch: Facade, agent_id: str, provider: str, confirm: bool = False
+) -> dict[str, Any]:
+    """Move an agent to another provider; returns its `setup`.
+
+    The orchestrator before its first use is created on it. An existing agent: the provider
+    must be usable here (the same one changes nothing); refused while the agent has a
+    running or queued turn. A conversation cannot move between providers: the agent's
+    session is kept for the provider it leaves, and the next message continues the one
+    kept for the new provider (from an earlier move away from it) or starts a new one.
+    With a session that needs `confirm` (else NeedsConfirmation says what happens). The
+    agent's own model and effort are cleared (they were the old provider's); its worktree,
+    branch, board items and sub-agents stay."""
+    if agent_id == ORCHESTRATOR_ID and orch.store.get_agent(ORCHESTRATOR_ID) is None:
+        note = orch.orchestrator(provider).provider_note
+        return _noting(orch.setup(ORCHESTRATOR_ID), note)
+    agent = orch.agent(agent_id)
+    if provider == agent.provider:
+        return orch.setup(agent.id)
+    availability.choose(provider)  # registered and usable, or OrchestratorError
+    if orch.store.active_runs(agent.id):
+        raise OrchestratorError(busy(agent))
+    if agent.session_id and not confirm:
+        then = next_message(provider, orch.store.provider_sessions(agent.id).get(provider))
+        raise NeedsConfirmation(
+            f"{agent.id} has a conversation on {agent.provider}: {then}; the one on"
+            f" {agent.provider} is kept and resumed when it moves back"
+        )
+    _move(orch, agent, provider)
     return orch.setup(agent.id)
 
 
-def _agent_or_orchestrator_draft(orch: Facade, agent_id: str) -> Agent:
-    if agent_id == ORCHESTRATOR_ID:
-        return orch.store.get_agent(ORCHESTRATOR_ID) or orch._orchestrator_draft()
-    return orch.agent(agent_id)
+def busy(agent: Agent) -> str:
+    return f"{agent.id} has a running or queued turn: stop it or wait, then move it"
+
+
+def next_message(provider: str, session_id: str | None) -> str:
+    """What the next message does after a move to `provider`, where `session_id` (None:
+    nothing) is the conversation kept for it."""
+    if session_id:
+        return f"the next message continues the earlier conversation on {provider} (session {session_id})"
+    return f"the next message starts a new conversation on {provider}"
+
+
+def _move(orch: Facade, agent: Agent, provider: str) -> None:
+    """The one place an agent changes provider (Store.move_provider, one transaction): its
+    session is kept for the provider it leaves, the one kept for `provider` (if any) becomes
+    its session, its own model and effort go; the log notes it on the latest run."""
+    moved, resumed = orch.store.move_provider(agent.id, provider)
+    if not moved:
+        raise OrchestratorError(busy(agent))
+    last = orch.store.last_run(agent.id)
+    if last is None:
+        return
+    text = f"moved from {agent.provider} to {provider}: {next_message(provider, resumed)}"
+    if agent.model or agent.effort:
+        text += "; the agent's own model and effort were cleared"
+    if agent.session_id:
+        text += (
+            f"; the conversation on {agent.provider} (session {agent.session_id}) is kept and"
+            " resumed when it moves back"
+        )
+    orch.store.add_event(last.id, agent.id, "info", text)

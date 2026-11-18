@@ -62,7 +62,13 @@ CREATE TABLE IF NOT EXISTS agents (
     session_id TEXT,
     permission TEXT,
     created_at TEXT NOT NULL,
-    effort TEXT
+    effort TEXT,
+    -- The agent's last session on each provider it has left, as a JSON object
+    -- {"<provider>": "<session id>"}; NULL: none (and in rows of older code).
+    provider_sessions TEXT,
+    -- The agent's own capabilities (capabilities.py) as a JSON object {"<name>": true|false};
+    -- NULL: none (and in rows of older code).
+    capabilities TEXT
 );
 CREATE TABLE IF NOT EXISTS settings (
     scope TEXT PRIMARY KEY,  -- '' is global, otherwise a project name
@@ -140,7 +146,8 @@ CREATE TABLE IF NOT EXISTS run_meta (
     claimed TEXT,
     checked INTEGER NOT NULL DEFAULT 0,
     auto INTEGER NOT NULL DEFAULT 0,
-    stopping INTEGER NOT NULL DEFAULT 0
+    stopping INTEGER NOT NULL DEFAULT 0,
+    capabilities TEXT
 );
 -- Archived agents: hidden from the default listings, everything else kept. Its own table
 -- for the same reasons as run_usage. A row whose restored_at is set is no longer archived
@@ -325,7 +332,14 @@ RUN_META_ADDED = (
     ("checked", "INTEGER NOT NULL DEFAULT 0"),
     ("auto", "INTEGER NOT NULL DEFAULT 0"),
     ("stopping", "INTEGER NOT NULL DEFAULT 0"),
+    # What the turn had of the capabilities, JSON {"on": [...], "skipped": {"<name>": why}},
+    # written when it starts (runner.py); NULL: not recorded (older code, not started yet).
+    ("capabilities", "TEXT"),
 )
+# agents columns added after its first version, in the order of SCHEMA's CREATE TABLE (a
+# rebuild copies the rows with SELECT *): effort, provider_sessions (Store.move_provider) and
+# capabilities (Store.set_agent_capabilities).
+AGENTS_ADDED = (("effort", "TEXT"), ("provider_sessions", "TEXT"), ("capabilities", "TEXT"))
 # notices columns added after its first version (desktop.py). route: whom the notice is left
 # to ('window', 'helper', 'page', 'banner', 'waiting'; 'osascript' or 'linux' when shown at
 # once, 'quiet' when the environment says nothing is shown; both claimed at once; NULL:
@@ -384,7 +398,7 @@ def known_schema() -> dict[str, set[str]]:
     try:
         conn.executescript(SCHEMA)
         added = (("run_meta", RUN_META_ADDED), ("run_usage", RUN_USAGE_ADDED))
-        for table, columns in (*added, ("notices", NOTICES_ADDED)):
+        for table, columns in (*added, ("notices", NOTICES_ADDED), ("agents", AGENTS_ADDED)):
             present = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
             for name, ddl in columns:
                 if name not in present:
@@ -524,11 +538,23 @@ class RunMeta:
     checked: int = 0
     auto: int = 0  # 1: an automatic compaction
     stopping: int = 0  # 1: a stop signalled its runner
+    capabilities: str | None = None  # JSON: what the turn had (runner.note_capabilities)
     known: bool = True  # False: queued by code from before run metadata
 
     @classmethod
     def legacy(cls) -> RunMeta:
         return cls(known=False)
+
+
+def _sessions(stored: str | None) -> dict[str, str]:
+    """agents.provider_sessions read: NULL or anything but a JSON object of strings is none."""
+    try:
+        found = json.loads(stored) if stored else {}
+    except ValueError:
+        return {}
+    if not isinstance(found, dict):
+        return {}
+    return {k: v for k, v in found.items() if isinstance(k, str) and isinstance(v, str) and v}
 
 
 def subtree_sql(column: str = "?") -> str:
@@ -553,9 +579,11 @@ class Store:
         with self._conn() as conn:
             conn.executescript(SCHEMA)
             columns = conn.execute("PRAGMA table_info(agents)").fetchall()
-            if not any(column["name"] == "effort" for column in columns):
-                conn.execute("ALTER TABLE agents ADD COLUMN effort TEXT")
-            for table, added in (("run_usage", RUN_USAGE_ADDED), ("notices", NOTICES_ADDED)):
+            for table, added in (
+                ("agents", AGENTS_ADDED),
+                ("run_usage", RUN_USAGE_ADDED),
+                ("notices", NOTICES_ADDED),
+            ):
                 present = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
                 for name, ddl in added:
                     if name in present:
@@ -753,6 +781,12 @@ class Store:
             )
         return project
 
+    def set_default_provider(self, name: str, provider: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE projects SET default_provider = ? WHERE name = ?", (provider, name)
+            )
+
     def get_project(self, name: str) -> Project | None:
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM projects WHERE name = ?", (name,)).fetchone()
@@ -790,8 +824,8 @@ class Store:
         with self._conn() as conn:
             conn.execute(
                 "INSERT INTO agents (id, project, parent_id, name, role, provider, model, cwd,"
-                " branch, base_ref, session_id, permission, created_at, effort)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " branch, base_ref, session_id, permission, created_at, effort, capabilities)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     agent.id,
                     agent.project,
@@ -807,6 +841,7 @@ class Store:
                     agent.permission,
                     agent.created_at,
                     agent.effort,
+                    agent.capabilities,
                 ),
             )
         return agent
@@ -828,6 +863,41 @@ class Store:
         with self._conn() as conn:
             conn.execute("UPDATE agents SET session_id = ? WHERE id = ?", (session_id, agent_id))
 
+    def move_provider(self, agent_id: str, provider: str) -> tuple[bool, str | None]:
+        """Move the agent to `provider`, unless it has a queued or running turn: (False,
+        None), nothing changed. Its session is remembered under the provider it leaves; the
+        one remembered under `provider`, if any, becomes its session (returned), else it has
+        none. Its own model and effort are cleared. One transaction."""
+        with self.transaction() as conn:
+            busy = conn.execute(
+                f"SELECT 1 FROM runs WHERE agent_id = ? AND status IN ('{ACTIVE[0]}', '{ACTIVE[1]}')",
+                (agent_id,),
+            ).fetchone()
+            row = conn.execute(
+                "SELECT provider, session_id, provider_sessions FROM agents WHERE id = ?",
+                (agent_id,),
+            ).fetchone()
+            if busy or row is None:
+                return False, None
+            sessions = _sessions(row["provider_sessions"])
+            if row["session_id"]:
+                sessions[row["provider"]] = row["session_id"]
+            resumed = sessions.pop(provider, None)
+            conn.execute(
+                "UPDATE agents SET provider = ?, session_id = ?, model = NULL, effort = NULL,"
+                " provider_sessions = ? WHERE id = ?",
+                (provider, resumed, json.dumps(sessions) if sessions else None, agent_id),
+            )
+        return True, resumed
+
+    def provider_sessions(self, agent_id: str) -> dict[str, str]:
+        """The agent's last session on each provider it has left: {provider: session id}."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT provider_sessions FROM agents WHERE id = ?", (agent_id,)
+            ).fetchone()
+        return _sessions(row["provider_sessions"]) if row else {}
+
     def set_overrides(self, agent_id: str, changes: dict[str, str | None]) -> None:
         """Set the agent's own `model` and/or `effort` (None: inherit from the settings).
         Only the given columns are written, so two changes at once do not undo each other."""
@@ -840,6 +910,13 @@ class Store:
                 f"UPDATE agents SET {assignments} WHERE id = ?",
                 (*(changes[key] for key in columns), agent_id),
             )
+
+    def set_agent_capabilities(self, agent_id: str, data: dict[str, bool] | None) -> None:
+        """Replace the agent's own capabilities ({name: bool}; None or empty: none). Only
+        that column is written."""
+        stored = json.dumps(data) if data else None
+        with self._conn() as conn:
+            conn.execute("UPDATE agents SET capabilities = ? WHERE id = ?", (stored, agent_id))
 
     def delete_agent(self, agent_id: str) -> None:
         """Delete the agent with its runs; what they spent stays in spent_removed (one
@@ -1098,6 +1175,14 @@ class Store:
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM run_meta WHERE run_id = ?", (run_id,)).fetchone()
         return from_row(RunMeta, row) if row else RunMeta.legacy()
+
+    def set_run_capabilities(self, run_id: int, data: dict[str, Any]) -> None:
+        """Record what the run's turn has of the capabilities (a run without a run_meta row,
+        queued by older code, keeps none)."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE run_meta SET capabilities = ? WHERE run_id = ?", (json.dumps(data), run_id)
+            )
 
     def meta_of(self, agent_id: str) -> dict[int, RunMeta]:
         """Metadata of an agent's runs, by run id. Runs without a row are absent."""

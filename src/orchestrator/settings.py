@@ -27,13 +27,17 @@ starts.
 And `compact_at_tokens`: when a turn ends with the agent's context above this many tokens,
 an automatic compaction is queued (Orchestrator.auto_compact; 0: never). A project's value
 overrides the global one; without either it is COMPACT_AT_DEFAULT.
+
+And `capabilities` ({"chrome": true}) and `role_capabilities` ({"reviewer": {"chrome":
+false}}), globally and per project: which capabilities agents get (capabilities.py, where
+the precedence is).
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from . import providers
+from . import capabilities, providers
 from .models import Agent
 from .roles import Role
 from .store import Store
@@ -50,6 +54,8 @@ DESKTOP_NOTIFICATIONS = "desktop_notifications"
 BOT_COAUTHOR = "bot_coauthor"
 # Global on/off keys, on unless set to false.
 SWITCHES = (KEEP_AWAKE, DESKTOP_NOTIFICATIONS, BOT_COAUTHOR)
+CAPABILITIES = capabilities.SETTING
+ROLE_CAPABILITIES = capabilities.ROLE_SETTING
 
 
 MODEL_MAX_CHARS = 200
@@ -192,6 +198,14 @@ def clean(data: Any) -> dict[str, Any]:
             if tokens is not None:
                 result[COMPACT_AT] = tokens
             continue
+        if tier == CAPABILITIES:
+            if per_provider is not None and (flags := capabilities.clean(per_provider)):
+                result[CAPABILITIES] = flags
+            continue
+        if tier == ROLE_CAPABILITIES:
+            if per_provider is not None and (per_role := capabilities.clean_roles(per_provider)):
+                result[ROLE_CAPABILITIES] = per_role
+            continue
         if tier in SWITCHES:
             on = on_off(per_provider, tier)
             if on is not None:
@@ -227,14 +241,17 @@ def clean(data: Any) -> dict[str, Any]:
 
 
 def resolve(store: Store, agent: Agent, role: Role) -> dict[str, str | None]:
-    """The model and effort an agent's next turn runs with."""
+    """The model and effort an agent's next turn runs with. A role's `model` is the last
+    resort, and only for agents of the role's provider (any agent when it names none): a
+    model name means nothing to another provider's CLI."""
     tier = tier_of(agent, role)
     scopes = [store.get_settings(agent.project)] if agent.project else []
     scopes.append(store.get_settings(GLOBAL))
+    role_model = role.model if role.provider in (None, agent.provider) else None
     resolved: dict[str, str | None] = {}
     for key in FIELDS:
         value = getattr(agent, key)
         for scope in scopes:
             value = value or scope.get(tier, {}).get(agent.provider, {}).get(key)
-        resolved[key] = value or (role.model if key == "model" else None)
+        resolved[key] = value or (role_model if key == "model" else None)
     return resolved

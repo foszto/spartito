@@ -9,12 +9,15 @@ import sys
 import time
 from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated
 
 import typer
 
-from . import __version__, autostart, config, loadout, providers, roles
+from . import __version__, autostart, capabilities, config, loadout, providers, roles
+from .core.access import Caller
 from .models import Agent
+from .providers import locate
 from .providers.claude import loadout_flags
 from .service import (
     ORCHESTRATOR_ID,
@@ -22,6 +25,7 @@ from .service import (
     Orchestrator,
     OrchestratorError,
     cache_hint,
+    next_message,
 )
 from .settings import (
     ARCHIVE_AFTER,
@@ -270,8 +274,10 @@ def chat(
     ] = None,
 ) -> None:
     """Open the orchestrator: an interactive Claude Code session that steers all agents."""
-    if not shutil.which("claude"):
-        raise fail("the `claude` CLI is not on PATH")
+    if not shutil.which("claude", path=locate.search_path()):
+        raise fail(
+            f"the `claude` CLI is not available: {locate.not_found('claude')}; {locate.says_more()}"
+        )
     data = orch().settings()
     tier = data.get("orchestrator", {}).get("claude", {})
     bot_coauthor = data.get(BOT_COAUTHOR, True) is not False
@@ -311,7 +317,7 @@ def chat(
         argv += ["--effort", effort]
     if not here:
         os.chdir(config.workspace_dir())
-    os.execvp("claude", argv)
+    os.execvpe("claude", argv, {**os.environ, "PATH": locate.search_path()})
 
 
 @app.command()
@@ -582,8 +588,12 @@ def project_add(
         str | None, typer.Option(help="Defaults to the repository directory name.")
     ] = None,
     provider: Annotated[
-        str, typer.Option(help="Default agent provider for the project.")
-    ] = "claude",
+        str | None,
+        typer.Option(
+            help="Default agent provider for the project; default: the first available one"
+            f" (`{CLI} providers`)."
+        ),
+    ] = None,
 ) -> None:
     """Register a git repository as a project."""
     try:
@@ -591,8 +601,28 @@ def project_add(
         project = o.add_project(path, name, provider)
     except (OrchestratorError, KeyError) as exc:
         raise fail(exc) from None
-    typer.echo(f"added {project.name}  {project.path}  (base branch: {project.base_branch})")
+    typer.echo(
+        f"added {project.name}  {project.path}  (base branch: {project.base_branch},"
+        f" provider: {project.default_provider})"
+    )
     if note := o.project_note(project):
+        typer.secho(f"note: {note}", fg=typer.colors.YELLOW)
+
+
+@project_app.command("provider")
+def project_provider(
+    project: str,
+    provider: Annotated[str, typer.Argument(help="The provider of the project's new agents.")],
+) -> None:
+    """Set the provider a project's new agents get (it must be available here). Existing
+    agents keep theirs; `{cli} model AGENT --provider NAME` moves one."""
+    o = orch()
+    try:
+        found = o.set_default_provider(project, provider)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    typer.echo(f"{found.name}: new agents run on {found.default_provider}")
+    if note := o.default_provider_note(found):
         typer.secho(f"note: {note}", fg=typer.colors.YELLOW)
 
 
@@ -1096,6 +1126,7 @@ def board_dispatch(
         return
     ids = ", ".join(f"#{item['id']}" for item in result["items"])
     typer.echo(f"{ids} -> {result['agent_id']}  run {result['run_id']}")
+    print_note(result.get("note"))
 
 
 def board_dispatch_items(ids: list[int], project: str | None) -> None:
@@ -1103,6 +1134,7 @@ def board_dispatch_items(ids: list[int], project: str | None) -> None:
     for sent in result["results"]:
         names = ", ".join(f"#{item['id']}" for item in sent["items"])
         typer.echo(f"{names} -> {sent['agent_id']}  run {sent['run_id']}")
+        print_note(sent.get("note"))
     for skipped in result["skipped"]:
         typer.echo(f"#{skipped['id']} not sent: {skipped['reason']}")
     if not result["results"]:
@@ -1138,28 +1170,56 @@ def spawn(
     permission: Annotated[
         str | None, typer.Option(help="Claude permission mode / Codex sandbox mode.")
     ] = None,
+    granted: Annotated[
+        str | None,
+        typer.Option(
+            "--capabilities",
+            help='The agent\'s own capabilities: "chrome" turns one on, "-chrome" off;'
+            " comma-separated.",
+        ),
+    ] = None,
 ) -> None:
     """Start a new agent on a task and return immediately."""
     try:
-        agent, run = orch().spawn(
+        own = capabilities.parse(granted or "")
+    except ValueError as exc:
+        raise fail(exc) from None
+    o = orch()
+    try:
+        agent, run = o.spawn(
             project, task, name=name, role=role, provider=provider, model=model, effort=effort,
             worktree=worktree, share_with=share, base=base, after=after, permission=permission,
+            capabilities=own, granter=calling_agent(o) if own else None,
         )  # fmt: skip
     except OrchestratorError as exc:
         raise fail(exc) from None
     typer.echo(f"{agent.id}  run {run.id}  {agent.cwd}")
+    print_note(agent.provider_note)
+
+
+def print_note(note: str | None) -> None:
+    if note:
+        typer.secho(f"note: {note}", fg=typer.colors.YELLOW)
 
 
 @app.command()
-def ask(project: str, message: str) -> None:
+def ask(
+    project: str,
+    message: str,
+    provider: Annotated[
+        str | None,
+        typer.Option(help="The lead's provider when it is created now; default: the project's."),
+    ] = None,
+) -> None:
     """Send a message to a project's lead agent (created on first use)."""
     o = orch()
     try:
-        lead = o.lead(project)
+        lead = o.lead(project, provider=provider)
         run = o.send(lead.id, message)
     except OrchestratorError as exc:
         raise fail(exc) from None
     typer.echo(f"{lead.id}  run {run.id}")
+    print_note(lead.provider_note)
 
 
 @app.command()
@@ -1271,6 +1331,7 @@ def status(agent_id: str) -> None:
     context, refusal = view.pop("context"), view.pop("compact_refusal")
     compaction = view.pop("last_compaction")
     queue, working = view.pop("queue"), view.pop("children_running")
+    granted = view.pop("capabilities")
     if view["id"] == ORCHESTRATOR_ID:
         view["name"] = config.ORCHESTRATOR_NAME  # the id line keeps `orchestrator`
     if mark := view.pop("archived", None):
@@ -1283,6 +1344,10 @@ def status(agent_id: str) -> None:
         view["status"] = f"idle while its agents work{last_run}"
     for key, value in view.items():
         typer.echo(f"{key:<12} {value}")
+    skipped = [item["name"] for item in granted["items"] if item["state"] == "skipped"]
+    extras = ", ".join(granted["on"]) or "none"
+    skipped_text = f"  (skipped: {', '.join(skipped)}; {CLI} capabilities show {agent_id})"
+    typer.echo(f"{'capabilities':<12} {extras}{skipped_text if skipped else ''}")
     plural = "agent" if working == 1 else "agents"
     typer.echo(f"{'children':<12} {f'{working} {plural} working' if working else 'none working'}")
     typer.echo(f"{'usage':<12} {usage_line(counts, cost)}")
@@ -1381,14 +1446,28 @@ def model_command(
     effort: Annotated[
         str | None, typer.Option(help='The agent\'s own effort; "" clears it (inherit).')
     ] = None,
+    provider: Annotated[
+        str | None,
+        typer.Option(help="Move the agent to this provider (its conversation there: below)."),
+    ] = None,
+    yes: Annotated[
+        bool, typer.Option("--yes", "-y", help="Move without asking about the conversation.")
+    ] = False,
 ) -> None:
-    """Show, set or clear an agent's own model and effort.
+    """Show, set or clear an agent's own model and effort, or move it to another provider.
 
     Without options it shows them. A cleared value falls back to the tier default
     (`{cli} config`). A change applies from the agent's next turn; a running one keeps its
     model. In an existing session a model switch starts a fresh prompt cache (the next
     turn re-reads the whole conversation at full price); an effort switch keeps the cache
     with Codex and may start a fresh one with Claude.
+
+    `--provider` moves an idle agent (the orchestrator too) to another available provider. A
+    conversation cannot move: the one on the old provider is kept for when the agent moves
+    back, and the next message continues the agent's earlier conversation on the new one,
+    if it had one there, or starts a new one; the agent's own model and effort are
+    cleared; its worktree, branch, board items and sub-agents stay. It asks first when the
+    agent has a conversation.
     """
     changes = {
         key: value or None
@@ -1396,8 +1475,20 @@ def model_command(
         if value is not None
     }
     o = orch()
+    moved_from = None
+    moved: dict = {}
     try:
-        setup = o.set_overrides(agent_id, changes) if changes else o.setup(agent_id)
+        if provider:
+            before = o.setup(agent_id)
+            moved_from = before["provider"] if before["exists"] else None
+            try:
+                moved = o.set_provider(agent_id, provider, confirm=yes)
+            except NeedsConfirmation as exc:
+                if not typer.confirm(f"{exc}. Move anyway?"):
+                    raise typer.Exit(1) from None
+                moved = o.set_provider(agent_id, provider, confirm=True)
+        # the newer setup, keeping the note of a move that created the orchestrator
+        setup = moved | (o.set_overrides(agent_id, changes) if changes else o.setup(agent_id))
     except OrchestratorError as exc:
         raise fail(exc) from None
     typer.secho(f"{setup['agent_id']}  {setup['provider']}", bold=True)
@@ -1406,6 +1497,10 @@ def model_command(
         own, inherited = setup[f"{key}_override"], setup["inherited"][key] or "default"
         source = f"own (inherited: {inherited})" if own else "inherited"
         typer.echo(f"  {key:<7} {value:<20} {source}")
+    if moved_from and moved_from != setup["provider"]:
+        then = next_message(setup["provider"], setup["session_id"])
+        typer.echo(f"note: moved from {moved_from} to {setup['provider']}: {then}")
+    print_note(setup.get("note"))
     if not changes:
         return
     notes = []
@@ -1548,8 +1643,46 @@ def attach(agent_id: str) -> None:
     if o.active_runs(agent.id):
         raise fail(f"the agent is busy; `{CLI} stop` it first or wait")
     argv = providers.get(agent.provider).attach_command(agent)
+    env = {**os.environ, "PATH": locate.search_path()}
+    if not shutil.which(argv[0], path=env["PATH"]):
+        raise fail(
+            f"the `{argv[0]}` CLI is not available: {locate.not_found(argv[0])};"
+            f" {locate.says_more()}"
+        )
     os.chdir(agent.cwd)
-    os.execvp(argv[0], argv)
+    os.execvpe(argv[0], argv, env)
+
+
+@app.command("providers")
+def list_providers(
+    as_json: Annotated[
+        bool, typer.Option("--json", help="As JSON, with models and limits.")
+    ] = False,
+) -> None:
+    """Check which coding-agent CLIs (providers) this machine can run, now.
+
+    Each one is looked for on PATH and in the usual install locations, and asked its
+    version (with `--json` also its models, as the dashboard lists them): no agent turn is
+    run and no login is checked. `*` marks the provider a new project gets: the first
+    available one. CAPABILITIES: the ones it carries (`{cli} capabilities`). When one is not installed, a line below the table says what to do after
+    installing it (not with `--json`)."""
+    found = orch().provider_list(refresh=True, models=as_json)
+    if as_json:
+        typer.echo(json.dumps(found, indent=2))
+        return
+    width = max(len(entry["name"]) for entry in [*found, {"name": "NAME"}]) + 2
+    carried = {entry["name"]: ",".join(entry["capabilities"]) or "-" for entry in found}
+    extras = max(len(text) for text in [*carried.values(), "CAPABILITIES"]) + 2
+    typer.echo(f"  {'NAME':<{width}}{'STATUS':<15}{'VERSION':<12}{'CAPABILITIES':<{extras}}REASON")
+    for entry in found:
+        mark = "* " if entry["default"] else "  "
+        line = (
+            f"{mark}{entry['name']:<{width}}{entry['status']:<15}"
+            f"{entry['version'] or '-':<12}{carried[entry['name']]:<{extras}}{entry['reason']}"
+        )
+        typer.secho(line, fg=None if entry["usable"] else typer.colors.YELLOW)
+    if any(entry["status"] == locate.NOT_INSTALLED for entry in found):
+        typer.echo(f"\n{locate.install_advice()}")
 
 
 @app.command("roles")
@@ -1558,6 +1691,160 @@ def list_roles() -> None:
     for role in roles.available():
         flags = ("lead " if role.lead else "") + ("worktree" if role.worktree else "checkout")
         typer.echo(f"{role.name:<13} {flags:<14} {role.description}")
+
+
+# -- capabilities ---------------------------------------------------------------
+
+capabilities_app = typer.Typer(
+    rich_markup_mode=MARKUP,
+    help="Capabilities: extras an agent's CLI gets for its turns, such as Claude in Chrome's"
+    " browser tools; on or off globally, per project, per role and per agent.",
+)
+app.add_typer(capabilities_app, name="capabilities")
+RoleOption = Annotated[
+    str | None, typer.Option("--role", "-r", help="For agents of this role (in --project's scope).")
+]
+AgentOption = Annotated[
+    str | None, typer.Option("--agent", "-a", help="For this agent only (its own setting).")
+]
+
+
+def on_off_text(value: bool | None, default: bool | None = None) -> str:
+    """`on`, `off`; unset: `inherit`, or the default as `off (default)`."""
+    if value is not None:
+        return "on" if value else "off"
+    return "inherit" if default is None else f"{'on' if default else 'off'} (default)"
+
+
+def role_lines(entries: list[dict], key: str, scope: str = "") -> list[str]:
+    """`role reviewer: chrome off (final)`, per role and capability."""
+    lines = []
+    for entry in entries:
+        for role, on in entry.get(key, {}).items():
+            final = "" if on else " (final)"
+            lines.append(f"role {role}{scope}: {entry['name']} {on_off_text(on)}{final}")
+    return sorted(lines)
+
+
+def print_capabilities(entries: list[dict], project: str | None) -> None:
+    columns = ["NAME", "PROVIDERS", "GLOBAL", *(["PROJECT"] if project else []), "STATUS"]
+    rows = [
+        [
+            entry["name"],
+            ",".join(entry["providers"]) or "-",
+            on_off_text(entry["global"], entry["default"]),
+            *([on_off_text(entry["project"])] if project else []),
+            entry["status"],
+            entry["reason"],
+        ]
+        for entry in entries
+    ]
+    widths = [max(len(row[i]) for row in [columns, *rows]) + 2 for i in range(len(columns))]
+    for row in [[*columns, "REASON"], *rows]:
+        cells = "".join(f"{cell:<{width}}" for cell, width in zip(row, widths, strict=False))
+        typer.echo(f"  {cells}{row[-1]}")
+    lines = role_lines(entries, "roles")
+    if project:
+        lines += role_lines(entries, "project_roles", f" ({project})")
+    for line in lines:
+        typer.echo(line)
+
+
+@capabilities_app.callback(invoke_without_command=True)
+def capabilities_list(
+    ctx: typer.Context,
+    project: ProjectOption = None,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="As JSON, with what each one reaches and requires.")
+    ] = False,
+) -> None:
+    """List the capabilities: the providers that support each one, the global setting (with
+    `--project` that project's too), whether it can work here, and below the table the
+    roles' settings. A role's `off` is final: an agent's own setting cannot turn it back on.
+
+    Turn them on and off with `{cli} capabilities on|off|inherit NAME`."""
+    if ctx.invoked_subcommand:
+        return
+    try:
+        # The provider check (versions only) may run first: a new process knows nothing yet.
+        entries = orch().capability_list(project, wait=True)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+    if as_json:
+        typer.echo(json.dumps(entries, indent=2))
+        return
+    print_capabilities(entries, project)
+
+
+def set_capability(
+    state: bool | None, name: str, project: str | None, role: str | None, agent: str | None
+) -> None:
+    if agent and (project or role):
+        raise fail("--agent cannot be combined with --project or --role")
+    o = orch()
+    try:
+        granter = calling_agent(o)
+        if agent:
+            print_breakdown(o.set_agent_capabilities(agent, {name: state}, granter))
+            return
+        o.set_capability(name, state, project, role, granter)
+        print_capabilities(o.capability_list(project, wait=True), project)
+    except OrchestratorError as exc:
+        raise fail(exc) from None
+
+
+@capabilities_app.command("on")
+def capabilities_on(
+    name: str, project: ProjectOption = None, role: RoleOption = None, agent: AgentOption = None
+) -> None:
+    """Turn a capability on: globally, for a project, for a role (globally or in a project)
+    or for one agent. Applies from each agent's next turn."""
+    set_capability(True, name, project, role, agent)
+
+
+@capabilities_app.command("off")
+def capabilities_off(
+    name: str, project: ProjectOption = None, role: RoleOption = None, agent: AgentOption = None
+) -> None:
+    """Turn a capability off at that level (for a role: a restriction that agents' own
+    settings cannot lift)."""
+    set_capability(False, name, project, role, agent)
+
+
+@capabilities_app.command("inherit")
+def capabilities_inherit(
+    name: str, project: ProjectOption = None, role: RoleOption = None, agent: AgentOption = None
+) -> None:
+    """Remove the setting at that level: the one above applies."""
+    set_capability(None, name, project, role, agent)
+
+
+def calling_agent(o: Orchestrator) -> Agent | None:
+    """The agent whose turn runs this command (ORCH_AGENT_ID, as for its MCP tools): it gives
+    capabilities as that agent; None for the owner. A turn of another home (its
+    TURN_HOME_ENV, e.g. a command tried in a temporary home) is the owner of this one."""
+    turn_home = os.environ.get(config.TURN_HOME_ENV)
+    if turn_home and Path(turn_home).resolve() != config.home().resolve():
+        return None
+    return Caller.from_env(o).agent()
+
+
+def print_breakdown(found: dict) -> None:
+    """One line per capability: name, state, the level that decided it, and a note."""
+    width = max([len(item["name"]) for item in found["items"]] + [4]) + 2
+    for item in found["items"]:
+        note = f"  {item['note']}" if item["note"] else ""
+        typer.echo(f"{item['name']:<{width}}{item['state']:<9}{item['source']}{note}")
+
+
+@capabilities_app.command("show")
+def capabilities_show(agent_id: str) -> None:
+    """What the agent's next turn gets: each capability's state (on, off, or skipped with
+    the reason) and the level that decided it."""
+    try:
+        print_breakdown(orch().agent_capabilities(agent_id))
+    except OrchestratorError as exc:
+        raise fail(exc) from None
 
 
 # -- cost reports and budgets -------------------------------------------------

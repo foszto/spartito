@@ -10,11 +10,13 @@ from typing import Any
 from . import app_open, board, decisions, desktop, git, providers
 from .core import (
     access,
+    availability,
     boards,
     compaction,
     costs,
     delivery,
     dispatch,
+    grants,
     launcher,
     lifecycle,
     reads,
@@ -30,6 +32,7 @@ from .core.dispatch import ORCHESTRATOR_ID as ORCHESTRATOR_ID  # old import path
 from .core.dispatch import slug as slug  # old import path
 from .core.setup import cache_effect as cache_effect  # old import path
 from .core.setup import cache_hint as cache_hint  # old import path
+from .core.setup import next_message as next_message  # the move's words, for the CLI
 from .core.views import context_view as context_view  # old import path
 from .core.views import result_file as result_file  # old import path
 from .core.views import run_usage as run_usage  # old import path
@@ -57,27 +60,56 @@ class Orchestrator:
     # -- projects ---------------------------------------------------------
 
     def add_project(
-        self, path: str, name: str | None = None, default_provider: str = "claude"
+        self, path: str, name: str | None = None, default_provider: str | None = None
     ) -> Project:
+        """Register a repository. `default_provider` must be usable here; None: the first
+        usable one (with none usable, the first supported one; project_note says so)."""
         try:
             root = git.repo_root(Path(path).expanduser().resolve())
         except git.GitError, FileNotFoundError, NotADirectoryError:
             raise OrchestratorError(f"{path} is not inside a git repository") from None
-        providers.get(default_provider)
         name = slug(name or root.name)
         if self.store.get_project(name):
             raise OrchestratorError(f"project '{name}' already exists")
-        project = Project(name, str(root), git.current_branch(root), default_provider)
+        try:
+            chosen = availability.choose(default_provider).provider
+        except availability.NoneUsable:  # registering needs no CLI; its agents do
+            chosen = next(iter(providers.PROVIDERS))
+        project = Project(name, str(root), git.current_branch(root), chosen)
         return self.store.add_project(project)
 
     def project_note(self, project: Project) -> str | None:
         """What a person should know about a project right after registering it."""
-        if git.has_commits(project.path):
+        notes = [availability.default_note(project.default_provider)]
+        if not git.has_commits(project.path):
+            notes.append(
+                "This repository has no commits yet. The first agent that needs its own "
+                "worktree creates an empty initial commit; worktree agents only see committed "
+                "files, so commit existing work first, or let the project lead work in the "
+                "main checkout."
+            )
+        return " ".join(note for note in notes if note) or None
+
+    def set_default_provider(self, project: str, provider: str) -> Project:
+        """Change the provider a project's new agents get; it must be usable here. Existing
+        agents keep theirs (`set_provider` moves one)."""
+        found = self.project(project)
+        chosen = availability.choose(provider).provider
+        self.store.set_default_provider(found.name, chosen)
+        return self.project(found.name)
+
+    def default_provider_note(self, project: Project) -> str | None:
+        """After a change of the default: which agents keep another provider."""
+        others = [
+            agent.id
+            for agent in self.store.list_agents(project.name)
+            if agent.provider != project.default_provider
+        ]
+        if not others:
             return None
         return (
-            "This repository has no commits yet. The first agent that needs its own worktree "
-            "creates an empty initial commit; worktree agents only see committed files, so "
-            "commit existing work first, or let the project lead work in the main checkout."
+            f"{len(others)} existing agent(s) keep their provider ({', '.join(others)}); "
+            f"new agents run on {project.default_provider}"
         )
 
     def project(self, name: str) -> Project:
@@ -274,7 +306,8 @@ class Orchestrator:
     ) -> dict[str, Any]:
         """Send the project's ready items (with `ids`: only those of them that are still
         ready) to its lead as one user message (none: nothing is sent); they become
-        in_progress and linked to the lead. An agent `actor` sends it as itself."""
+        in_progress and linked to the lead. An agent `actor` sends it as itself. `note` (only
+        when there is one): the lead was created now on a fallback provider."""
         name = self.project(project).name
         if ids is not None and (not isinstance(ids, list) or not all(type(i) is int for i in ids)):
             raise OrchestratorError("ids must be a list of board item ids")
@@ -282,12 +315,17 @@ class Orchestrator:
         if not [i for i in ready if ids is None or i in ids]:
             return {"items": [], "agent_id": None, "run_id": None}
         items, lead, run_id = boards.to_lead(self, name, ids, actor or board.OWNER)
-        return {"items": [item.to_dict() for item in items], "agent_id": lead.id, "run_id": run_id}
+        sent = {"items": [item.to_dict() for item in items], "agent_id": lead.id, "run_id": run_id}
+        return boards.noted(sent, lead)
 
     dispatch_items = boards.dispatch_items  # named items, any projects
 
     board_sync = boards.board_sync  # the throttled git pass; a merged item moves to done
     board_live = boards.board_live  # the items' agent and branch state, from the database
+
+    # -- the supported harnesses and their availability (core/availability.py)
+
+    provider_list = availability.provider_list
 
     # -- settings (core/setup.py) ----------------------------------------
 
@@ -297,7 +335,15 @@ class Orchestrator:
     inherited = agent_setup.inherited
     setup = agent_setup.setup
     set_overrides = agent_setup.set_overrides
+    set_provider = agent_setup.set_provider
     _agent_or_orchestrator_draft = agent_setup._agent_or_orchestrator_draft
+
+    # -- capabilities: listing, settings, an agent's own (core/grants.py) --
+
+    capability_list = grants.capability_list
+    set_capability = grants.set_capability
+    agent_capabilities = grants.agent_capabilities
+    set_agent_capabilities = grants.set_agent_capabilities
 
     # -- observation (core/views.py) --------------------------------------
 
