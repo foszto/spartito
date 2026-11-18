@@ -111,9 +111,10 @@ spartito capabilities show AGENT
   agent's own setting cannot turn it back on. An unknown name is refused. Each prints the
   listing of its scope, or with `--agent` the agent's capabilities. Changes apply from each
   agent's next turn. Run in an agent's turn, these commands and `spawn --capabilities` act as
-  that agent: it can give only what its own turns have, and cannot turn anything on globally,
-  for a project or for a role
-  ([capabilities.md](capabilities.md#giving-capabilities-from-agents)).
+  that agent: it can give only what its own turns have, cannot turn anything on globally, for
+  a project or for a role, and cannot use `inherit` to remove an off at any level
+  ([capabilities.md](capabilities.md#giving-capabilities-from-agents)). Run against another
+  home than the turn's own, they act as that home's owner.
 - `show` prints what the agent's next turn gets: per capability its state (`on`, `off` or
   `skipped`), the level that decided it and a note, such as `codex does not support it`.
 

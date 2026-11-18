@@ -155,7 +155,8 @@ The MCP tools `spawn_agent` and `send_message` take `capabilities`, comma-separa
 `"chrome"` turns one on in the agent's own setting, `"-chrome"` turns it off. A `spartito`
 command run in an agent's turn (`spartito capabilities …`, `spartito spawn --capabilities …`)
 acts as that agent too: every turn runs with `ORCH_AGENT_ID` set to its own agent, and the same
-rules apply.
+rules apply. Run against another home than the turn's own (a temporary one, for example), the
+command acts as that home's owner.
 
 - `spawn_agent(…, capabilities="chrome")` sets the new agent's own setting.
 - `send_message(agent_id, message, capabilities="chrome")` changes the target agent's own
@@ -166,11 +167,13 @@ rules apply.
 owner's own surfaces (a terminal outside any agent's turn, the dashboard, the JSON API) can give
 any capability, at any level. Any other agent:
 
-- can turn on for another agent only a capability that its own next turn has
+- can turn on, for itself or another agent, only a capability that its own next turn has
 - cannot turn on again what an agent's own setting turned off: a lead that gave a worker
   `"-chrome"` cannot give it back; the owner or the orchestrator agent can
 - cannot turn a capability on globally, for a project or for a role
-- can always turn a capability off, and set `inherit`
+- cannot use `inherit` to remove an off, whether the global one, a project's, a role's or an
+  agent's own: removing an off can turn the capability on
+- can always turn a capability off, and use `inherit` to remove an on
 
 A role's `off` applies to everyone, the owner included. A refusal names the reason:
 
@@ -178,11 +181,14 @@ A role's `off` applies to everyone, the owner included. A refusal names the reas
 cannot give chrome: lead-1c2d does not have it itself, and an agent may give only the capabilities its own turns have
 cannot give chrome: it was turned off for fix-login-3f2a, and only the owner or the orchestrator can turn it on again
 lead-1c2d cannot turn chrome on globally: only the owner or the orchestrator turns a capability on globally, for a project or for a role
+lead-1c2d cannot lift the off of chrome for role reviewer: only the owner or the orchestrator removes an off globally, for a project or for a role
+cannot lift the off of chrome for fix-login-3f2a: it was turned off for it, and only the owner or the orchestrator can lift it
 ```
 
 From the command line, `spartito spawn --capabilities "chrome"` sets a new agent's own setting
 the same way. Back to inherit, for an agent's own setting, goes through
-`spartito capabilities inherit NAME --agent AGENT`, the dashboard and the JSON API.
+`spartito capabilities inherit NAME --agent AGENT`, the dashboard and the JSON API (for an
+off, the owner's or the orchestrator agent's only).
 
 ## `chrome`: Claude in Chrome
 

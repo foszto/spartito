@@ -68,7 +68,8 @@ Unset, the configured levels apply. In `send_message` the change is made before 
 queued and stays for the agent's later turns; a refused change queues nothing. An agent can
 turn on only a capability that its own next turn has, and not one that the target's own setting
 turned off; the orchestrator and `spartito chat` can give any, turning one off is always
-allowed, and nobody turns on one that the agent's role turns off. A `spartito` command run in
+allowed (removing an off is not, at any level, for agents other than the orchestrator), and
+nobody turns on one that the agent's role turns off. A `spartito` command run in
 an agent's turn follows the same rules
 ([capabilities.md](capabilities.md#giving-capabilities-from-agents)). A capability
 that the agent's provider does not support is kept and skipped in its turns; `spawn_agent`'s
