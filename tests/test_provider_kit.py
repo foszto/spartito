@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from minimalprovider import MinimalProvider
 
-from orchestrator import autostart, providers, roles, runner
+from orchestrator import autostart, providers, runner
 from orchestrator.core import setup
 from orchestrator.models import Agent, Event, RunStatus
 from orchestrator.providers import McpServer, RunContext, claude, kit, locate
@@ -241,12 +241,12 @@ def test_the_role_prefix_opens_only_a_new_session(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("name", ["claude", "codex"])
 def test_the_provider_attributes_say_what_the_tables_say(name: str) -> None:
-    """Data only for now: the tables keyed by name still decide."""
+    """What the consumers read instead of the tables keyed by name; the attribution texts
+    both produce are pinned in test_attribution."""
     provider = providers.get(name)
 
-    assert (provider.credit.link, provider.credit.trailer_rule) == roles._CREDITS[name]
-    assert provider.cache_effect == setup.CACHE_EFFECT[name]
-    assert set(provider.config_env) <= set(runner.MCP_PASSED_ENV) & set(autostart.ENV_NAMES)
+    assert provider.cache_effect == setup.cache_effect(name)
+    assert set(provider.config_env) <= set(runner.MCP_PASSED_ENV) & set(autostart.env_names())
     assert provider.reports_context is isinstance(provider, providers.BUILTIN)
     assert provider.carries_mcp_servers is (name == "claude")  # capabilities.mcp_capability
     assert not hasattr(provider, "min_version")

@@ -10,7 +10,7 @@ otherwise, so a temporary home never touches the real service. `launchctl` and `
 are called by bare name through PATH. Of `launchctl print`, whose output is not an API, only
 the exit code and the `pid =` line are read.
 
-The unit carries the PATH of the install and a whitelist of variables (ENV_NAMES,
+The unit carries the PATH of the install and a whitelist of variables (env_names(),
 ENV_PREFIXES), never anything else: unit files are world-readable.
 """
 
@@ -35,7 +35,7 @@ from . import config
 DEFAULT_HOME = "~/.orchestrator"  # config.home() without ORCH_HOME
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
-ENV_NAMES = ("PATH", "LANG", "CLAUDE_CONFIG_DIR", "CODEX_HOME")
+ENV_NAMES = ("PATH", "LANG")  # and each provider's config_env (env_names())
 ENV_PREFIXES = ("ORCH_", "LC_")
 # Markers of the calling process (an agent, a turn), not settings, and the switch for one
 # shell's runs (the instance's own is the desktop_notifications setting): never carried over.
@@ -120,13 +120,23 @@ def web_argv(host: str, port: int) -> list[str]:
     return [sys.executable, "-m", "orchestrator", "web", "--host", host, "--port", str(port)]
 
 
+def env_names() -> tuple[str, ...]:
+    """ENV_NAMES and the variables that point the registered providers' CLIs at their
+    configuration (`config_env`, such as CLAUDE_CONFIG_DIR)."""
+    from . import providers  # not at import: the window and notifier processes need none
+
+    named = (getattr(provider, "config_env", ()) for provider in providers.PROVIDERS.values())
+    return ENV_NAMES + tuple(name for names in named for name in names)
+
+
 def captured_env(path: Path, environ: dict[str, str] | None = None) -> dict[str, str]:
     """The whitelisted variables of the install, with ORCH_HOME set to the resolved home."""
     environ = dict(os.environ if environ is None else environ)
+    names = env_names()
     env = {
         name: value
         for name, value in environ.items()
-        if (name in ENV_NAMES or name.startswith(ENV_PREFIXES)) and name not in ENV_EXCLUDED
+        if (name in names or name.startswith(ENV_PREFIXES)) and name not in ENV_EXCLUDED
     }
     env["ORCH_HOME"] = str(path)
     return dict(sorted(env.items()))

@@ -234,6 +234,117 @@ def test_a_declared_login_check_reports_not_logged_in(bare_path: Path) -> None:
     assert found.reason == "found on PATH; not logged in: Not logged in"
 
 
+class OldestSupported(FakeProvider):
+    """A provider whose CLI is `mycli` and must be 2.2.3 or later."""
+
+    executable = "mycli"
+    min_version = (2, 2, 3)
+
+
+@pytest.mark.parametrize("version", ["2.2.3", "2.10.0", "3.0"])
+def test_a_cli_at_or_above_the_minimum_version_is_available(bare_path: Path, version: str) -> None:
+    path = script(bare_path, "mycli", f'echo "mycli {version}"')
+
+    found = availability.probe(OldestSupported())
+
+    assert found == locate.Probe(
+        "available", version, str(path), "found on PATH; login not checked"
+    )
+
+
+@pytest.mark.parametrize("version", ["2.2.2", "1.9.9", "2.1"])
+def test_a_cli_below_the_minimum_version_is_not_usable(bare_path: Path, version: str) -> None:
+    path = script(bare_path, "mycli", f'echo "mycli {version}"')
+
+    found = availability.probe(OldestSupported())
+
+    assert found == locate.Probe(
+        "not_installed",
+        version,
+        str(path),
+        f"found on PATH; version {version} is older than 2.2.3, the oldest supported",
+    )
+    assert not availability.usable(found)
+
+
+@pytest.mark.parametrize(
+    ("minimum", "printed", "usable"),
+    [
+        ((2, 2, 0), "mycli 2.2", True),  # missing parts count as 0: 2.2 = 2.2.0
+        ((2, 2), "mycli 2.2.0", True),
+        ((2, 2, 1), "mycli 2.2", False),
+        ((2, 2), "mycli 2.1.9", False),
+        ((2, 2, 3), "mycli 2.2.4", True),
+        ((2, 2, 3), "mycli v2.3.2", True),  # a leading v
+        ((2, 2, 3), "mycli v2.2.2", False),
+        ("2.2.3", "mycli 2.2.2", False),  # a dotted string as well as a tuple
+        ("2.2.3", "mycli 2.2.3", True),
+        ("v2.2", "mycli 2.2.0", True),
+    ],
+)
+def test_versions_compare_part_by_part(
+    bare_path: Path, minimum: object, printed: str, usable: bool
+) -> None:
+    script(bare_path, "mycli", f'echo "{printed}"')
+    provider = OldestSupported()
+    provider.min_version = minimum
+
+    assert availability.usable(availability.probe(provider)) is usable
+
+
+@pytest.mark.parametrize(
+    "printed", ["mycli (development build)", "mycli version three", "mycli 7", "mycli"]
+)
+def test_a_cli_without_a_readable_version_is_not_judged_by_it(
+    bare_path: Path, printed: str
+) -> None:
+    script(bare_path, "mycli", f'echo "{printed}"')
+
+    found = availability.probe(OldestSupported())
+
+    assert (found.status, found.version) == ("available", None)
+
+
+@pytest.mark.parametrize(
+    "minimum", ["", "latest", 2.2, 3, (2, "2"), ("2", "2"), (True,), (), None, object()]
+)
+def test_a_wrong_minimum_version_is_ignored_and_breaks_no_listing(
+    orch: Orchestrator, bare_path: Path, monkeypatch: pytest.MonkeyPatch, minimum: object
+) -> None:
+    """One plugin's wrong declaration affects at most that plugin: it stays usable."""
+    script(bare_path, "mycli", 'echo "mycli 1.0.0"')
+    provider = OldestSupported()
+    provider.min_version = minimum
+    monkeypatch.setitem(providers.PROVIDERS, "mycli", provider)
+
+    listed = {entry["name"]: entry for entry in orch.provider_list()}
+
+    assert listed["claude"]["usable"] and listed["codex"]["usable"]
+    assert (listed["mycli"]["status"], listed["mycli"]["usable"]) == ("available", True)
+
+
+def test_an_old_cli_is_listed_as_not_usable(
+    orch: Orchestrator, bare_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script(bare_path, "mycli", 'echo "mycli 1.4.0"')
+    monkeypatch.setitem(providers.PROVIDERS, "mycli", OldestSupported())
+
+    entry = next(e for e in orch.provider_list() if e["name"] == "mycli")
+
+    assert (entry["status"], entry["usable"], entry["version"]) == ("not_installed", False, "1.4.0")
+    assert (
+        entry["reason"] == "found on PATH; version 1.4.0 is older than 2.2.3, the oldest supported"
+    )
+    assert entry["models_note"] == availability.MODELS_UNAVAILABLE and not entry["default"]
+
+
+def test_the_context_size_flag_is_the_providers_own() -> None:
+    reports = type("Reports", (FakeProvider,), {"reports_context": True})()
+
+    assert availability.describe(reports)["features"]["context_size"] is True
+    assert availability.describe(FakeProvider())["features"]["context_size"] is None
+
+
 # -- the self-description ------------------------------------------------------------------
 
 

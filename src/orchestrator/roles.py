@@ -25,6 +25,7 @@ import json
 from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
+from typing import Protocol
 
 from . import config
 from .loadout import KEYS as LOADOUT_KEYS
@@ -48,40 +49,29 @@ class SchemaError(Exception):
     """A role's output schema that cannot be used; the message names the role and file."""
 
 
-# Per provider: the CLI credited after Spartito in the closing line of a pull request
-# description, and how a commit's Co-Authored-By trailer names Spartito. Claude Code asks for
-# a trailer (with the model's name) unless that is switched off; Codex has none of its own.
-# Neither gets an invented trailer.
-_TRAILER = "`Co-Authored-By: <name> via {project} <email>`"
-_CREDITS = {
-    "claude": (
-        "[Claude Code](https://claude.com/claude-code)",
-        "take the Co-Authored-By trailer your CLI asks for, keep its email exactly, and add "
-        "` via {project}` right after the name: " + _TRAILER + "; if your CLI asks for no "
-        "trailer, add none, and do not invent a trailer or an email.",
-    ),
-    "codex": (
-        "[Codex](https://github.com/openai/codex)",
-        "when you add a Co-Authored-By trailer, keep its email exactly and add "
-        "` via {project}` right after the name: " + _TRAILER + "; do not invent a trailer "
-        "or an email.",
-    ),
-}
+class Credit(Protocol):
+    """How a provider's agents credit its CLI (a provider's `credit`, providers/kit.py):
+    `link`, the CLI credited after Spartito in the closing line of a pull request
+    description, and `trailer_rule`, how a commit's Co-Authored-By trailer names Spartito
+    (`{project}`: the project's name)."""
+
+    link: str
+    trailer_rule: str
 
 
-def attribution(provider: str, *, bot_coauthor: bool) -> str:
-    """The system prompt section on attribution lines for an agent of this provider.
+def attribution(credit: Credit | None, *, bot_coauthor: bool) -> str:
+    """The system prompt section on attribution lines for an agent of a provider with this
+    credit (the provider's `credit`).
 
     Every agent's system prompt carries it after the role prompt (a role file overrides only
-    the prompt) and so does the orchestrator's session. Empty for a provider without a credit.
+    the prompt) and so does the orchestrator's session. Empty without a credit.
     `bot_coauthor` (the setting `bot_coauthor`) adds the project bot's trailer to every commit
     message; without it the section is the one from before that setting.
     """
-    if provider not in _CREDITS:
+    if credit is None:
         return ""
-    credit, trailer = _CREDITS[provider]
     project = config.PROJECT_NAME
-    line = f"🤖 Generated with [{project}]({config.PROJECT_URL}) + {credit}"
+    line = f"🤖 Generated with [{project}]({config.PROJECT_URL}) + {credit.link}"
     others = f"the pull request line below nor ` via {project}`"
     if bot_coauthor:
         others += f", and not the `{config.BOT_NAME}` trailer below either"
@@ -94,7 +84,7 @@ def attribution(provider: str, *, bot_coauthor: bool) -> str:
         "managed settings or apply even if the user's instructions say otherwise, use exactly "
         f"those lines instead: add neither {others}.\n"
         f"- End every pull request description you write with exactly this line:\n  {line}\n"
-        f"- In commit messages, {trailer.format(project=project)}"
+        f"- In commit messages, {credit.trailer_rule.format(project=project)}"
     )
     if not bot_coauthor:
         return section

@@ -8,6 +8,7 @@ the command line, the service and the MCP servers can each see a different one.
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ MODELS_LOADING = "model list loading"
 MODELS_UNAVAILABLE = "the CLI is not available"
 USABLE = (locate.AVAILABLE, locate.UNKNOWN)
 DOCS = "docs/providers.md"
+VERSION_TEXT = re.compile(r"\d+(?:\.\d+)*")  # in a declared min_version or a CLI's version
 
 
 class Facade(Protocol):
@@ -55,15 +57,43 @@ def reset() -> None:
 
 
 def probe(provider: Provider) -> locate.Probe:
-    """The availability check of one provider; runs its CLI's version command only."""
+    """The availability check of one provider; runs its CLI's version command only. A CLI
+    older than the provider's `min_version` is not installed in a usable version."""
     executable = getattr(provider, "executable", None)
     if not executable:
         return locate.Probe(locate.UNKNOWN, None, None, NO_EXECUTABLE)
-    return locate.probe(
+    found = locate.probe(
         executable,
         tuple(getattr(provider, "version_args", None) or ("--version",)),
         getattr(provider, "login_args", None),
     )
+    minimum = _version(getattr(provider, "min_version", None))
+    version = _version(found.version)
+    if minimum and version and _older(version, minimum):
+        where = found.reason.partition("; ")[0]
+        oldest = ".".join(str(part) for part in minimum)
+        reason = f"{where}; version {found.version} is older than {oldest}, the oldest supported"
+        return locate.Probe(locate.NOT_INSTALLED, found.version, found.path, reason)
+    return found
+
+
+def _version(value: Any) -> tuple[int, ...] | None:
+    """A version as numbers: a tuple of ints as declared, or the first `2.10.1` in a text
+    (`v2.10.1` too) -> (2, 10, 1). None for anything else: the min_version rule is skipped,
+    so a wrong declaration or an unreadable version never makes a provider unusable."""
+    if isinstance(value, str):
+        match = VERSION_TEXT.search(value)
+        return tuple(int(part) for part in match.group().split(".")) if match else None
+    numbers = isinstance(value, tuple | list) and value
+    if numbers and all(isinstance(part, int) and not isinstance(part, bool) for part in value):
+        return tuple(value)
+    return None
+
+
+def _older(version: tuple[int, ...], minimum: tuple[int, ...]) -> bool:
+    """Whether `version` is below `minimum`, missing parts counting as 0 (2.2 = 2.2.0)."""
+    width = max(len(version), len(minimum))
+    return version + (0,) * (width - len(version)) < minimum + (0,) * (width - len(minimum))
 
 
 def usable(entry: dict[str, Any] | locate.Probe) -> bool:
@@ -124,7 +154,6 @@ def describe(provider: Provider) -> dict[str, Any]:
             instructions = True
         except ValueError:
             pass
-    builtin = isinstance(provider, providers.BUILTIN)
     return {
         "name": provider.name,
         "label": getattr(provider, "label", None) or provider.name,
@@ -135,9 +164,11 @@ def describe(provider: Provider) -> dict[str, Any]:
             "cost": getattr(provider, "reports_cost", None),
             "compaction": compact_prompt is not None,
             "compaction_instructions": instructions,
-            "context_size": True if builtin else None,
+            "context_size": getattr(provider, "reports_context", None),
             "role_prompt": getattr(provider, "role_prompt", None),
-            "attribution": bool(roles.attribution(provider.name, bot_coauthor=False)),
+            "attribution": bool(
+                roles.attribution(getattr(provider, "credit", None), bot_coauthor=False)
+            ),
         },
         "limits": list(getattr(provider, "limits", None) or ()),
         # The registered capabilities it carries (capabilities.py).

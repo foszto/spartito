@@ -18,7 +18,7 @@ from . import __version__, autostart, capabilities, config, loadout, providers, 
 from . import mcp as mcp_servers
 from .core.access import Caller
 from .models import Agent
-from .providers import locate
+from .providers import McpServer, kit, locate
 from .providers.claude import loadout_flags, tool_search
 from .service import (
     ORCHESTRATOR_ID,
@@ -249,14 +249,10 @@ CHAT_ENV = "ORCH_CHAT_SESSION"
 
 
 def mcp_config() -> str:
-    servers = {
-        "orch": {
-            "command": sys.executable,
-            "args": ["-m", "orchestrator.mcp_server"],
-            "env": {"ORCH_HOME": str(config.home())},
-        }
-    }
-    return json.dumps({"mcpServers": servers})
+    own = McpServer(
+        sys.executable, ["-m", "orchestrator.mcp_server"], {"ORCH_HOME": str(config.home())}
+    )
+    return json.dumps({"mcpServers": {kit.OWN_SERVER: kit.own_server_entry(own)}})
 
 
 # -- orchestrator session ---------------------------------------------------
@@ -293,6 +289,7 @@ def chat(
     if effort and effort not in providers.get("claude").efforts:
         allowed = ", ".join(providers.get("claude").efforts)
         raise fail(f"claude has no effort '{effort}' (use: {allowed})")
+    credit = getattr(providers.get("claude"), "credit", None)
     role = roles.load("orchestrator")
     try:
         # No project: only $ORCH_HOME/loadout.toml applies.
@@ -312,7 +309,7 @@ def chat(
         "claude",
         "--mcp-config", mcp_config(),
         "--append-system-prompt",
-        f"{role.prompt}\n\n{roles.attribution('claude', bot_coauthor=bot_coauthor)}",
+        f"{role.prompt}\n\n{roles.attribution(credit, bot_coauthor=bot_coauthor)}",
         "--allowedTools", "mcp__orch", f"Bash({CLI} *)",
         *loadout_flags(chosen, search=search),
     ]  # fmt: skip

@@ -65,6 +65,7 @@ code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, m
 .nav-item.orchestrator.selected { border-color: var(--accent); background: var(--accent-soft); }
 .avatar { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; flex: none;
   font-size: 11px; font-weight: 700; background: var(--sunken); color: var(--muted); position: relative; }
+/* a provider's own colour; one without (a plugin's) keeps the neutral one above */
 .avatar.claude { background: #f6e3d7; color: #a4532a; }
 .avatar.codex { background: #dcefe8; color: #17694f; }
 .avatar.orch { background: var(--accent); color: var(--on-accent); }

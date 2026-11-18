@@ -37,15 +37,12 @@ class Facade(Protocol):
     def _orchestrator_draft(provider: str | None = None, wait: bool = True) -> Agent: ...
 
 
-# What a model or effort switch in a resumed session does to the prompt cache. Measured
-# with real turns: a model switch re-wrote Claude's cache on --resume, and codex-cli
-# 0.155.1 read 0 cached tokens after `-m` changed on `exec resume`; an effort switch alone
-# kept Codex's cache (12k of 14k tokens cached). Claude's effort switch was not measured.
+# What a model or effort switch in a resumed session does to the prompt cache: each
+# provider's `cache_effect`, else CACHE_EFFECT_UNKNOWN. Measured with real turns: a model
+# switch re-wrote Claude's cache on --resume, and codex-cli 0.155.1 read 0 cached tokens
+# after `-m` changed on `exec resume`; an effort switch alone kept Codex's cache (12k of 14k
+# tokens cached). Claude's effort switch was not measured.
 RESTARTS, MAY_RESTART, KEEPS = "restarts", "may restart", "keeps"
-CACHE_EFFECT = {
-    "claude": {"model": RESTARTS, "effort": MAY_RESTART},
-    "codex": {"model": RESTARTS, "effort": KEEPS},
-}
 CACHE_EFFECT_UNKNOWN = {"model": MAY_RESTART, "effort": MAY_RESTART}
 CACHE_WORDS = {
     RESTARTS: "starts a fresh prompt cache",
@@ -55,7 +52,8 @@ CACHE_WORDS = {
 
 
 def cache_effect(provider: str) -> dict[str, str]:
-    return CACHE_EFFECT.get(provider, CACHE_EFFECT_UNKNOWN)
+    known = providers.PROVIDERS.get(provider)
+    return {**CACHE_EFFECT_UNKNOWN, **(getattr(known, "cache_effect", None) or {})}
 
 
 def cache_hint(provider: str, keys: tuple[str, ...] = ("model", "effort")) -> str:

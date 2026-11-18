@@ -8,7 +8,8 @@ import pytest
 from starlette.testclient import TestClient
 from typer.testing import CliRunner
 
-from orchestrator import cli, config
+from orchestrator import cli, config, providers
+from orchestrator.core import setup
 from orchestrator.service import ORCHESTRATOR_ID, Orchestrator, OrchestratorError, cache_hint
 from orchestrator.web.app import app
 
@@ -148,6 +149,17 @@ def test_an_invalid_change_does_not_create_the_orchestrator(
     with pytest.raises(OrchestratorError):
         orch.set_overrides(ORCHESTRATOR_ID, {"effort": "extreme"})
     assert orch.store.get_agent(ORCHESTRATOR_ID) is None
+
+
+def test_the_cache_effect_is_the_providers_own(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A provider's `cache_effect`; without it, or for a key it leaves out: "may restart"."""
+    keeps = type("Keeps", (), {"cache_effect": {"effort": "keeps"}})()
+    monkeypatch.setitem(providers.PROVIDERS, "my-cli", keeps)
+    monkeypatch.setitem(providers.PROVIDERS, "bare", object())
+
+    assert setup.cache_effect("my-cli") == {"model": "may restart", "effort": "keeps"}
+    assert setup.cache_effect("bare") == {"model": "may restart", "effort": "may restart"}
+    assert setup.cache_effect("gone") == {"model": "may restart", "effort": "may restart"}
 
 
 def test_the_cache_hint_says_what_was_measured(orch: Orchestrator, project: str) -> None:
