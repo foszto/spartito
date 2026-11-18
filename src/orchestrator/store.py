@@ -65,7 +65,10 @@ CREATE TABLE IF NOT EXISTS agents (
     effort TEXT,
     -- The agent's last session on each provider it has left, as a JSON object
     -- {"<provider>": "<session id>"}; NULL: none (and in rows of older code).
-    provider_sessions TEXT
+    provider_sessions TEXT,
+    -- The agent's own capabilities (capabilities.py) as a JSON object {"<name>": true|false};
+    -- NULL: none (and in rows of older code).
+    capabilities TEXT
 );
 CREATE TABLE IF NOT EXISTS settings (
     scope TEXT PRIMARY KEY,  -- '' is global, otherwise a project name
@@ -143,7 +146,8 @@ CREATE TABLE IF NOT EXISTS run_meta (
     claimed TEXT,
     checked INTEGER NOT NULL DEFAULT 0,
     auto INTEGER NOT NULL DEFAULT 0,
-    stopping INTEGER NOT NULL DEFAULT 0
+    stopping INTEGER NOT NULL DEFAULT 0,
+    capabilities TEXT
 );
 -- Archived agents: hidden from the default listings, everything else kept. Its own table
 -- for the same reasons as run_usage. A row whose restored_at is set is no longer archived
@@ -328,10 +332,14 @@ RUN_META_ADDED = (
     ("checked", "INTEGER NOT NULL DEFAULT 0"),
     ("auto", "INTEGER NOT NULL DEFAULT 0"),
     ("stopping", "INTEGER NOT NULL DEFAULT 0"),
+    # What the turn had of the capabilities, JSON {"on": [...], "skipped": {"<name>": why}},
+    # written when it starts (runner.py); NULL: not recorded (older code, not started yet).
+    ("capabilities", "TEXT"),
 )
 # agents columns added after its first version, in the order of SCHEMA's CREATE TABLE (a
-# rebuild copies the rows with SELECT *): effort, and provider_sessions (Store.move_provider).
-AGENTS_ADDED = (("effort", "TEXT"), ("provider_sessions", "TEXT"))
+# rebuild copies the rows with SELECT *): effort, provider_sessions (Store.move_provider) and
+# capabilities (Store.set_agent_capabilities).
+AGENTS_ADDED = (("effort", "TEXT"), ("provider_sessions", "TEXT"), ("capabilities", "TEXT"))
 # notices columns added after its first version (desktop.py). route: whom the notice is left
 # to ('window', 'helper', 'page', 'banner', 'waiting'; 'osascript' or 'linux' when shown at
 # once, 'quiet' when the environment says nothing is shown; both claimed at once; NULL:
@@ -530,6 +538,7 @@ class RunMeta:
     checked: int = 0
     auto: int = 0  # 1: an automatic compaction
     stopping: int = 0  # 1: a stop signalled its runner
+    capabilities: str | None = None  # JSON: what the turn had (runner.note_capabilities)
     known: bool = True  # False: queued by code from before run metadata
 
     @classmethod
@@ -815,8 +824,8 @@ class Store:
         with self._conn() as conn:
             conn.execute(
                 "INSERT INTO agents (id, project, parent_id, name, role, provider, model, cwd,"
-                " branch, base_ref, session_id, permission, created_at, effort)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " branch, base_ref, session_id, permission, created_at, effort, capabilities)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     agent.id,
                     agent.project,
@@ -832,6 +841,7 @@ class Store:
                     agent.permission,
                     agent.created_at,
                     agent.effort,
+                    agent.capabilities,
                 ),
             )
         return agent
@@ -900,6 +910,13 @@ class Store:
                 f"UPDATE agents SET {assignments} WHERE id = ?",
                 (*(changes[key] for key in columns), agent_id),
             )
+
+    def set_agent_capabilities(self, agent_id: str, data: dict[str, bool] | None) -> None:
+        """Replace the agent's own capabilities ({name: bool}; None or empty: none). Only
+        that column is written."""
+        stored = json.dumps(data) if data else None
+        with self._conn() as conn:
+            conn.execute("UPDATE agents SET capabilities = ? WHERE id = ?", (stored, agent_id))
 
     def delete_agent(self, agent_id: str) -> None:
         """Delete the agent with its runs; what they spent stays in spent_removed (one
@@ -1158,6 +1175,14 @@ class Store:
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM run_meta WHERE run_id = ?", (run_id,)).fetchone()
         return from_row(RunMeta, row) if row else RunMeta.legacy()
+
+    def set_run_capabilities(self, run_id: int, data: dict[str, Any]) -> None:
+        """Record what the run's turn has of the capabilities (a run without a run_meta row,
+        queued by older code, keeps none)."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE run_meta SET capabilities = ? WHERE run_id = ?", (json.dumps(data), run_id)
+            )
 
     def meta_of(self, agent_id: str) -> dict[int, RunMeta]:
         """Metadata of an agent's runs, by run id. Runs without a row are absent."""

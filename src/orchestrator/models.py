@@ -55,6 +55,8 @@ class Agent:
     permission: str | None = None
     created_at: str = ""
     effort: str | None = None  # explicit override; otherwise from settings
+    # The agent's own capabilities, JSON {"<name>": true|false} (capabilities.py); None: none.
+    capabilities: str | None = None
     # Not stored: what choosing the provider had to tell (a fallback, a lead that already
     # runs on another one), for the reply to the request that created or found the agent.
     provider_note: str | None = field(default=None, repr=False, compare=False)
