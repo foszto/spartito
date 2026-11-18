@@ -353,12 +353,18 @@ def test_the_home_can_inherit_mcp_and_a_project_can_restrict_it(home: Path, tmp_
     assert warnings == []
 
 
+@pytest.mark.parametrize("source", ["worker", "default", "role file"])
 def test_a_turn_reports_an_ignored_project_inherit_and_stays_strict(
-    orch: Orchestrator, project: str, repo: Path
+    orch: Orchestrator, project: str, repo: Path, source: str
 ) -> None:
-    (repo / ".orch").mkdir()
-    (repo / ".orch" / "loadout.toml").write_text('[default]\nmcp = "inherit"\n')
-    agent, run = orch.spawn(project, "hello", worktree=False)
+    if source == "role file":
+        write_role(repo / ".orch" / "roles", "custom", DECLARED)
+        role, where = "custom", f"{repo / '.orch' / 'roles' / 'custom.md'} (frontmatter)"
+    else:
+        (repo / ".orch").mkdir()
+        (repo / ".orch" / "loadout.toml").write_text(f'[{source}]\nmcp = "inherit"\n')
+        role, where = "worker", f"{repo / '.orch' / 'loadout.toml'} [{source}]"
+    agent, run = orch.spawn(project, "hello", role=role, worktree=False)
 
     done, (view,) = orch.wait([agent.id], timeout=30)
 
@@ -366,4 +372,4 @@ def test_a_turn_reports_an_ignored_project_inherit_and_stays_strict(
     seen = json.loads((config.run_dir(run.id) / "ctx.json").read_text())
     assert "--strict-mcp-config" in seen["loadout_flags"]
     info = [event.text for event in orch.store.events(agent.id) if event.kind == "info"]
-    assert ignored_inherit(f"{repo / '.orch' / 'loadout.toml'} [default]") in info
+    assert ignored_inherit(where) in info
