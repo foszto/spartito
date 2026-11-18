@@ -31,18 +31,20 @@ FAKE_MISSING_CLI=<name> makes the command line start with <name> instead of Pyth
 provider whose CLI is not installed.
 
 FakeClaude is Claude's own provider (ClaudeProvider: its command line, its private MCP
-configuration file, its parser) with a script in place of the `claude` executable; register
-it as `claude` (fake_claude_provider). The script runs the SessionStart hooks of
-`--settings` (the memory canary), reads the prompt (as stream-json with
-`--input-format stream-json`), and appends to `fake-claude.jsonl` in the run's scratch
-directory what it saw as it ran: `argv` (without the executable), `prompt`, and for an
-`--mcp-config` file its `config_path`, parsed `config`, `mode` and `dir_mode` (octal
-strings); `env` has the values of the variables FAKE_CLAUDE_ENV (names, comma separated)
-names. It then reports, like Claude Code, a `system`/`init` line whose `mcp_servers` lists
-every server of its configuration as `connected`, changed by FAKE_MCP_STATUS (JSON
-{"<name>": "<status>"}; null leaves a server out); FAKE_MCP_STATUS=none: no `mcp_servers`.
-`SLEEP <s>` delays, `FAIL` ends with an error result, a `/compact` prompt compacts.
-FAKE_CLAUDE_MISSING=1: the executable is not there.
+configuration file, its parser) with the fake CLI of tests/fakecli in place of the `claude`
+executable, in its claude dialect; register it as `claude`. FakeCodex is the same for Codex
+(CodexProvider, the codex dialect). The fake CLI reads the provider's own options and input
+(Claude: the SessionStart hooks of `--settings`, the memory canary; the prompt as stream-json
+with `--input-format stream-json`), appends what it saw to `fake-claude.jsonl` or
+`fake-codex.jsonl` in the run's scratch directory (`claude_runs`, `codex_runs`: `argv`
+without the executable, `prompt`, `env` with the variables FAKE_CLAUDE_ENV or FAKE_CODEX_ENV
+names, and Claude's `--mcp-config` file as `config_path`, `config`, `mode`, `dir_mode`), and
+answers in the CLI's own output lines. Claude's `system`/`init` line lists the servers of its
+MCP configuration as `connected`, changed by FAKE_MCP_STATUS (JSON {"<name>": "<status>"};
+null leaves a server out); FAKE_MCP_STATUS=none: no `mcp_servers`. `SLEEP <s>` delays,
+`TOKENS <n>` reports usage, `FAIL` ends with an error result, a `/compact` prompt compacts
+(fakecli/__init__.py). FAKE_CLAUDE_MISSING=1 (FAKE_CODEX_MISSING=1): the executable is not
+there.
 
 Every turn reports the session `fake-session` (FirstTurnFake: `fake-codex-session`), and
 `ctx.json` notes the session it was asked to resume (`session_id`, null: a new one).
@@ -76,9 +78,12 @@ import json
 import os
 import sys
 
+import fakecli
+
 from orchestrator.models import Agent, Event, Usage
 from orchestrator.providers.base import NOTIFICATION_RESULT, Invocation, RunContext
 from orchestrator.providers.claude import ClaudeProvider, loadout_flags, stream_json_prompt
+from orchestrator.providers.codex import CodexProvider
 
 SCRIPT = r"""
 import json, os, pathlib, signal, subprocess, sys, time
@@ -288,79 +293,31 @@ class FirstTurnFake(FakeProvider):
         return super().invocation(ctx)
 
 
-CLAUDE_SCRIPT = r"""
-import json, os, pathlib, subprocess, sys, time
-argv = sys.argv[1:]
-def option(name):
-    return argv[argv.index(name) + 1] if name in argv else None
-seen = {"argv": argv}
-config = option("--mcp-config")
-servers = {}
-if config is not None and config.startswith("{"):
-    servers = json.loads(config)["mcpServers"]
-elif config is not None:
-    path = pathlib.Path(config)
-    seen["config_path"] = config
-    seen["config"] = json.loads(path.read_text())
-    seen["mode"] = oct(path.stat().st_mode & 0o777)
-    seen["dir_mode"] = oct(path.parent.stat().st_mode & 0o777)
-    servers = seen["config"]["mcpServers"]
-names = [name for name in os.environ.get("FAKE_CLAUDE_ENV", "").split(",") if name]
-seen["env"] = {name: os.environ.get(name) for name in names}
-if option("--settings"):  # its SessionStart hooks: the memory canary
-    for group in json.loads(option("--settings"))["hooks"].get("SessionStart", []):
-        for hook in group["hooks"]:
-            subprocess.run(hook["command"], shell=True, check=True)
-raw = sys.stdin.read()
-if option("--input-format") == "stream-json":
-    raw = json.loads(raw.splitlines()[0])["message"]["content"][0]["text"]
-seen["prompt"] = raw
-with open(os.environ["FAKE_CLAUDE_LOG"], "a") as log:
-    log.write(json.dumps(seen) + "\n")
-init = {"type": "system", "subtype": "init", "session_id": "fake-claude-session",
-        "model": "fake-model-1"}
-if os.environ.get("FAKE_MCP_STATUS") != "none":
-    statuses = {name: "connected" for name in servers}
-    statuses.update(json.loads(os.environ.get("FAKE_MCP_STATUS") or "{}"))
-    init["mcp_servers"] = [{"name": n, "status": s} for n, s in statuses.items() if s]
-print(json.dumps(init), flush=True)
-words = raw.split()
-for flag, value in zip(words, words[1:]):
-    if flag == "SLEEP":
-        time.sleep(float(value))
-def result(text, error=False):
-    print(json.dumps({"type": "result", "subtype": "error_during_execution" if error else "success",
-                      "is_error": error, "result": text, "session_id": "fake-claude-session"}))
-if raw.startswith("/compact"):
-    meta = {"trigger": "manual", "pre_tokens": 48450, "post_tokens": 901}
-    print(json.dumps({"type": "system", "subtype": "compact_boundary", "compact_metadata": meta}))
-    result("")
-elif "FAIL" in words:
-    result("boom", error=True)
-else:
-    result(f"done: {raw}")
-"""
-
-
 class FakeClaude(ClaudeProvider):
-    """Claude's provider with CLAUDE_SCRIPT in place of the `claude` executable."""
+    """Claude's provider with the fake CLI (fakecli, its claude dialect) in place of `claude`."""
 
     def models(self) -> list[str]:
         return ["fake-model-1"]
 
     def invocation(self, ctx: RunContext) -> Invocation:
-        invocation = super().invocation(ctx)
-        assert invocation.argv[0] == "claude"
-        missing = os.environ.get("FAKE_CLAUDE_MISSING") == "1"
-        start = ["fake-claude-not-installed"] if missing else [sys.executable, "-c", CLAUDE_SCRIPT]
-        return dataclasses.replace(
-            invocation,
-            argv=[*start, *invocation.argv[1:]],
-            env={**invocation.env, "FAKE_CLAUDE_LOG": str(ctx.scratch / "fake-claude.jsonl")},
-        )
+        return fakecli.launch(super().invocation(ctx), "claude", ctx.scratch)
+
+
+class FakeCodex(CodexProvider):
+    """Codex's provider with the fake CLI (fakecli, its codex dialect) in place of `codex`."""
+
+    def models(self) -> list[str]:
+        return ["fake-codex-model"]
+
+    def invocation(self, ctx: RunContext) -> Invocation:
+        return fakecli.launch(super().invocation(ctx), "codex", ctx.scratch)
 
 
 def claude_runs(scratch) -> list[dict]:
-    """What FakeClaude's script saw, one entry per launch (fake-claude.jsonl)."""
-    log = scratch / "fake-claude.jsonl"
-    return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+    """What FakeClaude's CLI saw, one entry per launch (fake-claude.jsonl)."""
+    return fakecli.runs(scratch, "claude")
+
+
+def codex_runs(scratch) -> list[dict]:
+    """What FakeCodex's CLI saw, one entry per launch (fake-codex.jsonl)."""
+    return fakecli.runs(scratch, "codex")
