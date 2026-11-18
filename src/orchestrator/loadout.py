@@ -7,7 +7,8 @@ every request. Keys, in a role's frontmatter or a loadout.toml table:
   tools              comma-separated built-in tools (Claude `--tools`); `default` = the CLI's
                      default set, `none` = no built-in tools. MCP tools are not affected.
   mcp                `strict` = only the orchestrator's own server (`--strict-mcp-config`);
-                     `inherit` = also user, project, plugin and claude.ai connector servers
+                     `inherit` = also user, project, plugin and claude.ai connector servers;
+                     ignored (with a warning) from a project's own files, see resolve()
   setting_sources    Claude setting sources (`--setting-sources`); `project,local` drops the
                      user level (user plugins, skills, commands, hooks) but keeps the
                      project's CLAUDE.md and .claude/; `user,project,local` = inherit
@@ -175,6 +176,20 @@ def load_file(path: Path) -> dict[str, dict[str, Any]]:
     return data
 
 
+def _ignored(
+    key: str, value: Any, where: str, project: bool, warn: Callable[[str], None] | None
+) -> bool:
+    """True for `mcp = inherit` from a project's own file, reported through `warn`."""
+    if not (project and key == "mcp" and value == "inherit"):
+        return False
+    if warn:
+        warn(
+            f"{where}: ignoring `mcp = inherit`: a project's own files cannot give its agents "
+            f"more MCP servers; set it in {config.home() / FILENAME}"
+        )
+    return True
+
+
 def resolve(
     role: Role,
     project_path: str | Path | None = None,
@@ -206,9 +221,18 @@ def resolve(
             layers.append((f"{path} [{name}]", tables.get(name, {})))
     layers.append((f"{role.source} (frontmatter)", role.loadout))
     layers.append(("fallback", FALLBACK))
+    # A repository grants nothing: `mcp = inherit` from its own files (the project's
+    # loadout.toml, a role file in its .orch/roles/) is skipped as if the key were absent.
+    project_layers = {0, 1} if project_path else set()
+    if project_path and Path(role.source).is_relative_to(Path(project_path) / ".orch"):
+        project_layers.add(len(layers) - 2)
     values: dict[str, Any] = {}
     for key in KEYS:
-        where, layer = next((where, layer) for where, layer in layers if key in layer)
+        where, layer = next(
+            (where, layer)
+            for index, (where, layer) in enumerate(layers)
+            if key in layer and not _ignored(key, layer[key], where, index in project_layers, warn)
+        )
         try:
             values[key] = _value(key, layer[key])
         except LoadoutError as exc:

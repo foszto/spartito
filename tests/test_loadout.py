@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
 import pytest
 
-from orchestrator import roles
+from orchestrator import config, roles
 from orchestrator.loadout import Loadout, LoadoutError, resolve
+from orchestrator.providers.claude import loadout_flags
 from orchestrator.service import Orchestrator
 
 DECLARED = """---
@@ -89,10 +91,10 @@ def test_overrides_win_per_key_project_role_first(home: Path, tmp_path: Path) ->
     (project / ".orch").mkdir(parents=True)
     home.mkdir()
     (project / ".orch" / "loadout.toml").write_text(
-        '[worker]\ntools = ["Read"]\n\n[default]\ntools = "Bash"\nmcp = "inherit"\n'
+        '[worker]\ntools = ["Read"]\n\n[default]\ntools = "Bash"\nmcp = "strict"\n'
     )
     (home / "loadout.toml").write_text(
-        '[worker]\nmcp = "strict"\nsetting_sources = "user,project,local"\n\n'
+        '[worker]\nmcp = "inherit"\nsetting_sources = "user,project,local"\n\n'
         '[default]\nsetting_sources = "project"\nslash_commands = false\n'
     )
 
@@ -103,13 +105,13 @@ def test_overrides_win_per_key_project_role_first(home: Path, tmp_path: Path) ->
     # project [worker] > project [default] > home [worker] > home [default] > frontmatter
     assert worker == Loadout(
         tools=("Read",),
-        strict_mcp=False,
+        strict_mcp=True,
         setting_sources=None,
         slash_commands=False,
         codex_user_config=False,
     )
     assert reviewer.tools == ("Bash",) and reviewer.setting_sources == ("project",)
-    assert no_project.tools == roles_tools("worker") and no_project.strict_mcp
+    assert no_project.tools == roles_tools("worker") and not no_project.strict_mcp
     assert no_project.setting_sources is None  # user,project,local = inherit everything
 
 
@@ -285,3 +287,83 @@ def test_packaged_prompts_bound_review_rounds_and_scope(home: Path) -> None:
     assert "conventions" not in reviewer
     assert "Choose the simplest change that meets the brief" in worker
     assert "stop and report instead of building it" in worker
+
+
+def ignored_inherit(where: object) -> str:
+    return (
+        f"{where}: ignoring `mcp = inherit`: a project's own files cannot give its agents more "
+        f"MCP servers; set it in {config.home() / 'loadout.toml'}"
+    )
+
+
+@pytest.mark.parametrize("table", ["worker", "default"])
+def test_a_project_loadout_file_cannot_inherit_mcp(home: Path, tmp_path: Path, table: str) -> None:
+    project = tmp_path / "my-app"
+    (project / ".orch").mkdir(parents=True)
+    (project / ".orch" / "loadout.toml").write_text(f'[{table}]\nmcp = "inherit"\n')
+    warnings: list[str] = []
+
+    loadout = resolve(roles.load("worker", project), project, warn=warnings.append)
+
+    assert loadout.strict_mcp and "--strict-mcp-config" in loadout_flags(loadout)
+    assert warnings == [ignored_inherit(f"{project / '.orch' / 'loadout.toml'} [{table}]")]
+
+
+def test_a_project_role_file_cannot_inherit_mcp(home: Path, tmp_path: Path) -> None:
+    project = tmp_path / "my-app"
+    write_role(project / ".orch" / "roles", "custom", DECLARED)
+    warnings: list[str] = []
+
+    role = roles.load("custom", project)
+    loadout = resolve(role, project, warn=warnings.append)
+
+    assert loadout.strict_mcp and "--strict-mcp-config" in loadout_flags(loadout)
+    assert loadout.tools == ("Read", "Grep")  # the role's other keys still apply
+    assert warnings == [ignored_inherit(f"{role.source} (frontmatter)")]
+
+
+def test_an_ignored_project_inherit_falls_through_to_the_home(home: Path, tmp_path: Path) -> None:
+    project = tmp_path / "my-app"
+    (project / ".orch").mkdir(parents=True)
+    (project / ".orch" / "loadout.toml").write_text('[worker]\nmcp = "inherit"\n')
+    home.mkdir()
+    (home / "loadout.toml").write_text('[default]\nmcp = "inherit"\n')
+    warnings: list[str] = []
+
+    loadout = resolve(roles.load("worker", project), project, warn=warnings.append)
+
+    assert not loadout.strict_mcp and "--strict-mcp-config" not in loadout_flags(loadout)
+    assert len(warnings) == 1  # the project's value was skipped, the home's applies
+
+
+def test_the_home_can_inherit_mcp_and_a_project_can_restrict_it(home: Path, tmp_path: Path) -> None:
+    write_role(home / "roles", "custom", DECLARED)
+    home.joinpath("loadout.toml").write_text('[worker]\nmcp = "inherit"\n')
+    project = tmp_path / "my-app"
+    (project / ".orch").mkdir(parents=True)
+    (project / ".orch" / "loadout.toml").write_text('[default]\nmcp = "strict"\n')
+    warnings: list[str] = []
+
+    # the home's loadout.toml and a role file in the home may widen
+    assert not resolve(roles.load("worker"), warn=warnings.append).strict_mcp
+    assert not resolve(roles.load("custom"), warn=warnings.append).strict_mcp
+    # a project's own `strict` still wins over both
+    assert resolve(roles.load("worker", project), project, warn=warnings.append).strict_mcp
+    assert resolve(roles.load("custom", project), project, warn=warnings.append).strict_mcp
+    assert warnings == []
+
+
+def test_a_turn_reports_an_ignored_project_inherit_and_stays_strict(
+    orch: Orchestrator, project: str, repo: Path
+) -> None:
+    (repo / ".orch").mkdir()
+    (repo / ".orch" / "loadout.toml").write_text('[default]\nmcp = "inherit"\n')
+    agent, run = orch.spawn(project, "hello", worktree=False)
+
+    done, (view,) = orch.wait([agent.id], timeout=30)
+
+    assert done and view["status"] == "done"
+    seen = json.loads((config.run_dir(run.id) / "ctx.json").read_text())
+    assert "--strict-mcp-config" in seen["loadout_flags"]
+    info = [event.text for event in orch.store.events(agent.id) if event.kind == "info"]
+    assert ignored_inherit(f"{repo / '.orch' / 'loadout.toml'} [default]") in info
