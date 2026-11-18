@@ -588,9 +588,11 @@ def test_the_cli_in_an_agents_turn_turns_on_for_no_scope(
     assert not {"capabilities", "role_capabilities"} & (
         orch.settings().keys() | orch.settings(project).keys()
     )
-    for state in ("off", "inherit"):  # turning off and removing stay allowed
+    for state in ("inherit", "off"):  # removing nothing and turning off stay allowed
         allowed = as_agent(me.id, "capabilities", state, "chrome", *scope)
         assert allowed.exit_code == 0, allowed.output
+    lifting = as_agent(me.id, "capabilities", "inherit", "chrome", *scope)  # removes an off
+    assert lifting.exit_code == 1 and f"{me.id} cannot lift the off of chrome" in lifting.output
 
 
 def test_the_cli_in_the_orchestrators_turn_and_the_owners_give_any(
@@ -610,6 +612,92 @@ def test_the_cli_in_the_orchestrators_turn_and_the_owners_give_any(
         orch.update_settings({"capabilities": {}, "role_capabilities": {}})
         orch.update_settings({"capabilities": {}}, project)
     assert own(orch, worker.id) == {"chrome": True}
+
+
+# Removing an off (inherit) turns on what a level above has on: the same as turning on.
+
+LIFTS = {  # scope -> (its options, where the message says, the off it removes)
+    "global": ([], "globally", {}),
+    "project": (["--project", "{project}"], "for this project", {"project": "{project}"}),
+    "role": (["--role", "worker"], "for role worker", {"role": "worker"}),
+    "project-role": (
+        ["--project", "{project}", "--role", "worker"],
+        "for role worker",
+        {"project": "{project}", "role": "worker"},
+    ),
+}
+
+
+@pytest.mark.parametrize("scope", list(LIFTS))
+def test_an_agent_cannot_lift_an_off_of_a_scope(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch, scope: str
+) -> None:
+    """fake-tool is on by default here: each off decides it, and removing it would turn it on."""
+    monkeypatch.setattr(capabilities, "DEFAULT_ON", frozenset({"fake-tool"}))
+    args, where, level = LIFTS[scope]
+    options = [arg.format(project=project) for arg in args]
+    level = {key: value.format(project=project) for key, value in level.items()}
+    orch.orchestrator()
+    me = orch.create_agent(project, worktree=False)
+    orch.set_capability("fake-tool", False, **level)
+    before = (orch.agent_capabilities(me.id), orch.settings(), orch.settings(project))
+    assert "fake-tool" not in before[0]["on"]
+    message = (
+        f"{me.id} cannot lift the off of fake-tool {where}: only the owner or the orchestrator"
+        " removes an off globally, for a project or for a role"
+    )
+
+    with pytest.raises(OrchestratorError, match=message):
+        orch.set_capability("fake-tool", None, **level, granter=orch.agent(me.id))
+    refused = as_agent(me.id, "capabilities", "inherit", "fake-tool", *options)
+    assert refused.exit_code == 1 and message in refused.output
+    assert (orch.agent_capabilities(me.id), orch.settings(), orch.settings(project)) == before
+
+    for caller in (ORCHESTRATOR_ID, None):  # the orchestrator and the owner can
+        lifted = as_agent(caller, "capabilities", "inherit", "fake-tool", *options)
+        assert lifted.exit_code == 0, lifted.output
+        assert "fake-tool" in orch.agent_capabilities(me.id)["on"]
+        orch.set_capability("fake-tool", False, **level)
+    orch.set_capability("fake-tool", True, **level)
+    for _ in range(2):  # removing an on, then removing nothing: allowed
+        removed = as_agent(me.id, "capabilities", "inherit", "fake-tool", *options)
+        assert removed.exit_code == 0, removed.output
+
+
+def test_an_agent_cannot_lift_an_off_of_an_agents_own_setting(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(capabilities, "DEFAULT_ON", frozenset({"fake-tool"}))
+    orch.orchestrator()
+    me = orch.create_agent(project, worktree=False)
+    other = orch.create_agent(project, worktree=False)
+    for agent in (me, other):
+        orch.set_agent_capabilities(agent.id, {"fake-tool": False})
+    before = {agent.id: orch.agent_capabilities(agent.id) for agent in (me, other)}
+
+    for target in (me, other):
+        message = (
+            f"cannot lift the off of fake-tool for {target.id}: it was turned off for it, and only"
+            " the owner or the orchestrator can lift it"
+        )
+        with pytest.raises(OrchestratorError, match=message):
+            orch.set_agent_capabilities(target.id, {"fake-tool": None}, orch.agent(me.id))
+        refused = as_agent(me.id, "capabilities", "inherit", "fake-tool", "--agent", target.id)
+        assert refused.exit_code == 1 and message in refused.output
+    assert {agent.id: orch.agent_capabilities(agent.id) for agent in (me, other)} == before
+    assert own(orch, me.id) == own(orch, other.id) == {"fake-tool": False}
+
+    for caller, target in ((ORCHESTRATOR_ID, me), (None, other)):
+        lifted = as_agent(caller, "capabilities", "inherit", "fake-tool", "--agent", target.id)
+        assert lifted.exit_code == 0, lifted.output
+        assert (
+            own(orch, target.id) is None and "fake-tool" in orch.agent_capabilities(target.id)["on"]
+        )
+    orch.set_agent_capabilities(other.id, {"fake-tool": True})
+    for _ in range(2):  # removing an on, then removing nothing: allowed
+        removed = as_agent(me.id, "capabilities", "inherit", "fake-tool", "--agent", other.id)
+        assert removed.exit_code == 0, removed.output
+    assert own(orch, other.id) is None
 
 
 def test_unreadable_stored_values_block_no_other_settings_write(orch: Orchestrator) -> None:

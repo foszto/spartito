@@ -6,9 +6,10 @@ Who may turn a capability on for an agent (its own setting, at spawn_agent or se
 or the command run in an agent's turn): the owner's surfaces (CLI, dashboard, the interactive
 session: no granting agent) and the orchestrator agent (the one agent without a project) may
 give any; any other agent only one its own next turn has, and not to an agent whose own
-setting turned it off. Turning one off or dropping it is always allowed. Nobody turns on what
-the agent's role turns off. Only the owner and the orchestrator agent turn one on globally,
-for a project or for a role.
+setting turned it off. Turning one off is always allowed, and so is removing a setting
+(inherit) unless that setting is an off: removing an off is turning on as well. Nobody turns
+on what the agent's role turns off. Only the owner and the orchestrator agent turn one on, or
+remove an off, globally, for a project or for a role.
 
 A guard rail against agents doing it by accident or on a page's instruction, not a sandbox:
 an agent with a shell can still write the home's database or call the dashboard's API.
@@ -122,10 +123,8 @@ def set_capability(
     scope = orch.project(project).name if project else settings.GLOBAL
     if role is not None and (not isinstance(role, str) or not role.strip()):
         raise OrchestratorError("role must be a role name")
+    where = f"for role {role.strip()}" if role else "for this project" if project else "globally"
     if state and _agent(granter):
-        where = (
-            f"for role {role.strip()}" if role else "for this project" if project else "globally"
-        )
         raise OrchestratorError(
             f"{granter.id} cannot turn {name} on {where}: only the owner or the orchestrator"
             " turns a capability on globally, for a project or for a role"
@@ -135,10 +134,17 @@ def set_capability(
         per_role = data.get(settings.ROLE_CAPABILITIES)
         per_role = dict(per_role) if isinstance(per_role, dict) else {}
         values = capabilities.role_flags(per_role, role.strip())
+    else:
+        values = capabilities.flags(data.get(settings.CAPABILITIES))
+    if state is None and values.get(name) is False and _agent(granter):
+        raise OrchestratorError(
+            f"{granter.id} cannot lift the off of {name} {where}: only the owner or the"
+            " orchestrator removes an off globally, for a project or for a role"
+        )
+    if role:
         per_role[role.strip()] = _changed(values, name, state)
         data[settings.ROLE_CAPABILITIES] = per_role
     else:
-        values = capabilities.flags(data.get(settings.CAPABILITIES))
         data[settings.CAPABILITIES] = _changed(values, name, state)
     orch.update_settings(data, project)
     return orch.capability_list(project)
@@ -216,9 +222,15 @@ def granted(
         _flag(value, name)
         if value is None:
             try:
-                own.pop(capabilities.check_name(name), None)
+                capabilities.check_name(name)
             except ValueError as exc:
                 raise OrchestratorError(str(exc)) from None
+            if _agent(granter) and before.get(name) is False:
+                raise OrchestratorError(
+                    f"cannot lift the off of {name} for {agent.id}: it was turned off for it,"
+                    " and only the owner or the orchestrator can lift it"
+                )
+            own.pop(name, None)
             continue
         _known(name)
         if value:
