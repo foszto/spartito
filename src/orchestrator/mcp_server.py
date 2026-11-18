@@ -103,7 +103,7 @@ def add_project(
     path: str, name: str | None = None, default_provider: str | None = None
 ) -> dict[str, Any]:
     """Register a git repository as a project. `path` may be any directory inside the repo.
-    `default_provider`: `claude` or `codex`, if available here; default: the first available.
+    `default_provider`: a provider available here; default: the first available.
     """
     orch = _orch()
     if Caller.from_env(orch).scoped():
@@ -149,7 +149,7 @@ def spawn_agent(
       (combine with `after`); text is cut at 4000 chars, `{{result:<agent-id>:full}}` is not.
     name: short label, becomes part of the agent id and branch (`orch/<name>-xxxx`).
     role: see list_roles. `lead` agents can spawn their own sub-agents.
-    provider: `claude` or `codex`; default: the role's, else the project's.
+    provider: any provider's name; default: the role's, else the project's.
     model, effort: leave unset to use the configured defaults for the agent's tier; set them
       only when the user asks or the task clearly needs a stronger or cheaper setting.
     capabilities: "chrome" adds one, "-chrome" drops it.
@@ -652,7 +652,7 @@ _without_titles("dispatch_board")
 
 @server.tool(structured_output=False)
 def set_project_provider(project: str, provider: str) -> dict[str, Any]:
-    """Set the provider (`claude`, `codex`) of a project's new agents; it must be available.
+    """Set the provider of a project's new agents; it must be available here.
     Existing agents keep theirs."""
     orch = _orch()
     if Caller.from_env(orch).scoped():

@@ -18,7 +18,7 @@ from . import __version__, autostart, capabilities, config, loadout, providers, 
 from . import mcp as mcp_servers
 from .core.access import Caller
 from .models import Agent
-from .providers import locate
+from .providers import McpServer, kit, locate
 from .providers.claude import loadout_flags, tool_search
 from .service import (
     ORCHESTRATOR_ID,
@@ -249,14 +249,10 @@ CHAT_ENV = "ORCH_CHAT_SESSION"
 
 
 def mcp_config() -> str:
-    servers = {
-        "orch": {
-            "command": sys.executable,
-            "args": ["-m", "orchestrator.mcp_server"],
-            "env": {"ORCH_HOME": str(config.home())},
-        }
-    }
-    return json.dumps({"mcpServers": servers})
+    own = McpServer(
+        sys.executable, ["-m", "orchestrator.mcp_server"], {"ORCH_HOME": str(config.home())}
+    )
+    return json.dumps({"mcpServers": {kit.OWN_SERVER: kit.own_server_entry(own)}})
 
 
 # -- orchestrator session ---------------------------------------------------
