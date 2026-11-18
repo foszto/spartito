@@ -28,13 +28,13 @@ can act on every project.
 | `add_project(path, name, default_provider)` | register a repository; `default_provider` must be available (default: the first available one) (orchestrator only) |
 | `set_project_provider(project, provider)` | the provider of a project's new agents; it must be available, existing agents keep theirs (orchestrator only) |
 | `list_roles(project)` | roles available, with `lead` and `worktree` flags |
-| `spawn_agent(task, project, name, role, provider, model, effort, worktree, share_worktree_with, base, after, output_schema, freeform, notify)` | start an agent; returns at once |
+| `spawn_agent(task, project, name, role, provider, model, effort, worktree, share_worktree_with, base, after, output_schema, freeform, notify, capabilities)` | start an agent; returns at once |
 | `ask_project_lead(project, message, notify, provider)` | message a project's lead, creating it; `provider` applies to a new lead only (orchestrator only) |
-| `send_message(agent_id, message, after, output_schema, freeform, notify)` | follow-up to an agent; queued if busy |
+| `send_message(agent_id, message, after, output_schema, freeform, notify, capabilities)` | follow-up to an agent; queued if busy |
 | `withdraw_message(run_id, replacement)` | withdraw a message you sent that has not started, or replace its text |
 | `wait_for_agents(agent_ids, timeout_seconds, result_chars)` | block until the agents and their sub-agents are idle (default 120 s, at most 1800 s) |
-| `list_agents(project, archived)` | agents with status, parent, branch, model/effort, context, `cost_usd`, short `tokens` |
-| `get_agent(agent_id, result_chars, result_offset, run_id, max_commits, max_status)` | one agent in detail: result, commits, changes, overrides, queue, usage of the last 10 turns |
+| `list_agents(project, archived)` | agents with status, parent, branch, model/effort, context, `cost_usd`, short `tokens`, `capabilities` (the names that are on) |
+| `get_agent(agent_id, result_chars, result_offset, run_id, max_commits, max_status)` | one agent in detail: result, commits, changes, overrides, queue, usage of the last 10 turns, `capabilities` |
 | `agent_log(agent_id, tail, event_chars, max_chars, event_id)` | recent events, one line each |
 | `stop_agent(agent_id)` | stop running and queued turns |
 | `archive_agent(agent_id, confirm, restore)` | archive (unmerged work only with `confirm`), or restore |
@@ -61,6 +61,18 @@ tell. Those of `add_project` (a default provider that is not available, a reposi
 commits) and `set_project_provider` (existing agents on another provider) always have it,
 `null` when there is nothing to tell. Details:
 [providers.md](providers.md#how-a-provider-is-chosen).
+
+`capabilities` in `spawn_agent` and `send_message` changes the agent's own setting of
+[capabilities](capabilities.md), comma-separated: `"chrome"` turns one on, `"-chrome"` off.
+Unset, the configured levels apply. In `send_message` the change is made before the message is
+queued and stays for the agent's later turns; a refused change queues nothing. An agent can
+turn on only a capability that its own next turn has; the orchestrator and `spartito chat` can
+give any, turning one off is always allowed, and nobody turns on one that the agent's role
+turns off ([capabilities.md](capabilities.md#giving-capabilities-from-agents)). A capability
+that the agent's provider does not support is kept and skipped in its turns; `spawn_agent`'s
+`note` says so. `get_agent` shows each capability's state for the next turn (`capabilities`:
+`on`, and per capability `state`, `source`, `override`, `final` and `note`); `list_agents`
+only the names that are on.
 
 ## Turns and the queue
 

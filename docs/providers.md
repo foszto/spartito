@@ -74,18 +74,19 @@ More on these: [agents.md](agents.md#context-and-compaction),
 default: the first available one, which a new project gets. For example:
 
 ```
-  NAME    STATUS         VERSION     REASON
-* claude  available      2.4.1       found on PATH; login not checked
-  codex   not_installed  -           `codex` was not found on PATH or in the usual install locations
+  NAME    STATUS         VERSION     CAPABILITIES  REASON
+* claude  available      2.4.1       chrome        found on PATH; login not checked
+  codex   not_installed  -           -             `codex` was not found on PATH or in the usual install locations
 
 A background service or launcher keeps the PATH of its install: after installing a CLI, run `spartito service install` or `spartito app install` again.
 ```
 
 The line below the table appears only when a provider is `not_installed`, and not with
-`--json`.
+`--json`. `CAPABILITIES` lists the [capabilities](capabilities.md) the provider supports (`-`:
+none); an agent on a provider that does not support one skips it.
 
 `spartito providers --json` adds each provider's label, description, efforts, features,
-limits and models. The dashboard shows the same in every provider choice: one that is not
+limits and models, and `capabilities`, the names of the capabilities it supports. The dashboard shows the same in every provider choice: one that is not
 available is disabled, with the reason as its tooltip, and when the provider that would apply
 is not available a hint says so, with a **Check again** button that checks once more. The JSON API: `GET /api/providers` (`?refresh=1` checks again).
 

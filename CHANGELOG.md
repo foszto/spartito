@@ -32,6 +32,17 @@ chosen is in the
   conversation or starts a new one; the dashboard's `provider` select asks the same way.
 - `spartito ask --provider` (and `provider` in the MCP tool `ask_project_lead`) chooses the
   provider of a new project lead.
+- Agent capabilities: extras an agent's CLI gets for its turns, turned on and off globally,
+  per project, per role and per agent; a role's `off` is final. The first one is `chrome`,
+  Claude in Chrome's browser tools for Claude agents. It is off by default:
+  `spartito capabilities on chrome` turns it on for every agent, `off` turns it off again, and
+  `inherit` goes back to the default. It drives your real, signed-in browser, so read
+  [the capabilities guide](https://github.com/foszto/spartito/blob/master/docs/capabilities.md)
+  first. `spartito capabilities` lists them with their status, `spartito capabilities show`
+  and `spartito status` show what an agent's next turn gets, `spartito spawn --capabilities`
+  and `capabilities` in the MCP tools `spawn_agent` and `send_message` set an agent's own (an
+  agent can give only what its own turns have), and `spartito providers` has a `CAPABILITIES`
+  column. More capabilities can be registered with `ORCH_CAPABILITIES`.
 
 ### Changed
 
@@ -47,6 +58,8 @@ chosen is in the
   default provider, or `spartito ask --provider`). The Maestro runs on the first available
   provider unless another is chosen.
 - A role's `model` applies only to agents of the role's own provider.
+- Every Claude turn runs with `CLAUDE_CODE_ENABLE_CFC=0` unless `chrome` is on for it, so that
+  your own Claude in Chrome setting does not reach agents.
 
 ### Fixed
 

@@ -82,6 +82,8 @@ starting with `-`.
 | `keep_awake` | `spartito config keep-awake on\|off` | global | `on` |
 | `desktop_notifications` | `spartito config desktop-notifications on\|off` | global | `on` |
 | `bot_coauthor` | `spartito config bot-coauthor on\|off` | global | `on` |
+| `capabilities` | `spartito capabilities on\|off\|inherit <name> [-p <project>]` | global, project | none: each capability's default (off) |
+| `role_capabilities` | `spartito capabilities on\|off\|inherit <name> --role <role> [-p <project>]` | global, project | none |
 
 A project value overrides the global one. An empty value (`""`) clears a setting, so that the
 global value or the default applies; `0` or `off` turns compaction and archiving off.
@@ -180,6 +182,16 @@ A Codex agent gets its role prompt and the section only in the first turn of its
 keeps that version: an existing Codex agent goes on as it started, and new agents follow the
 new value. A running `spartito chat` session keeps the section it started with; start the
 session again for the new value.
+
+### Capabilities: `capabilities` and `role_capabilities`
+
+Which capabilities agents get, such as `chrome` (Claude in Chrome): `capabilities` is a
+`{"chrome": true}` object, `role_capabilities` one such object per role
+(`{"reviewer": {"chrome": false}}`); `false` turns one off, a name that is missing inherits.
+The levels apply per capability, from the default over the global and the project's setting
+to the role's (the project's entry for a role before the global one) and the agent's own, and a
+role's `false` is final. `spartito capabilities` lists them;
+`spartito config show` does not. All of it: [capabilities.md](capabilities.md).
 
 ### Review rounds
 
@@ -443,6 +455,7 @@ no declarative pipeline layer.
 |---|---|
 | `ORCH_HOME` | state directory (default `~/.orchestrator`) |
 | `ORCH_PROVIDERS` | extra providers, `name=package.module:Class`, comma-separated |
+| `ORCH_CAPABILITIES` | extra capabilities, `package.module:attribute`, comma-separated ([capabilities.md](capabilities.md#adding-a-capability)) |
 | `ORCH_NOTIFY_DELAY` | seconds a notification turn waits to collect results (default 5) |
 | `ORCH_DESKTOP_NOTIFICATIONS` | `off` (or `0`, `false`, `no`): no desktop notification by any path; notices are still recorded, with the reason, in `spartito notices` ([desktop.md](desktop.md#notifications-with-click-through)). For CI and manual runs of a checkout |
 | `ORCH_TURN_HOME` | set by the runner for an agent's turn: the home of the instance it belongs to. A process with it that works on another home shows no desktop notification |

@@ -18,6 +18,7 @@ lists as `#12`. *Project lead* or *lead* is the agent with role `lead` of a proj
 | `spartito project add/list/rm` | register, list and unregister projects |
 | `spartito project provider <project> <provider>` | the provider of a project's new agents |
 | `spartito providers` | which provider CLIs (Claude Code, Codex) this machine can run |
+| `spartito capabilities` | capabilities such as Claude in Chrome: list, `on`/`off`/`inherit` per level, `show` an agent's |
 | `spartito chat` | interactive orchestrator session (Claude Code) |
 | `spartito web` | dashboard |
 | `spartito app` | dashboard in its own window |
@@ -25,10 +26,10 @@ lists as `#12`. *Project lead* or *lead* is the agent with role `lead` of a proj
 | `spartito service install/uninstall/status/logs` | dashboard as a background service |
 | `spartito notices` | how the recent desktop notifications were shown, and why |
 | `spartito ask <project> "…"` | message the project lead (creates it; `--provider` for a new one) |
-| `spartito spawn -p <project> "…"` | start an agent (`-r` role, `-n` name, `--provider`, `--after`, `--share`, `--base`) |
+| `spartito spawn -p <project> "…"` | start an agent (`-r` role, `-n` name, `--provider`, `--after`, `--share`, `--base`, `--capabilities`) |
 | `spartito send <agent> "…"` | follow-up message, queued if the agent is busy |
 | `spartito ps` | tree of projects and agents: state, model/effort, context, tokens, cost |
-| `spartito status <agent>` | one agent: last result, queue, context, commits and changes |
+| `spartito status <agent>` | one agent: last result, queue, context, capabilities, commits and changes |
 | `spartito logs <agent> -f` | activity: messages, tool calls, errors |
 | `spartito wait <agent>…` | block until idle; exit code 0 done, 1 failed, 2 timeout |
 | `spartito withdraw <run>`, `spartito edit <run> "…"` | withdraw or rewrite a queued message |
@@ -82,13 +83,39 @@ spartito providers [--json]
 ```
 
 - `providers` checks now which provider CLIs this machine can run, one line each: name,
-  status (`available`, `not_installed`, `not_logged_in`, `unknown`), version and the reason,
-  such as `found on PATH; login not checked`. `*` marks the first available one, which a new
+  status (`available`, `not_installed`, `not_logged_in`, `unknown`), version, the
+  capabilities it supports (`CAPABILITIES`: `chrome` for `claude`, `-` for none) and the
+  reason, such as `found on PATH; login not checked`. `*` marks the first available one, which a new
   project gets. It runs only each CLI's `--version`: no agent turn, no login check, no network.
   When a provider is `not_installed`, a line below the table says to run
   `spartito service install` or `spartito app install` again after installing a CLI.
   `--json` adds each provider's description, features, limits and models, without that line. The statuses, where
   the CLIs are looked for and what is not checked: [providers.md](providers.md#availability).
+
+### Capabilities
+
+```sh
+spartito capabilities [-p PROJECT] [--json]
+spartito capabilities on|off|inherit NAME [-p PROJECT] [--role|-r ROLE]
+spartito capabilities on|off|inherit NAME --agent|-a AGENT
+spartito capabilities show AGENT
+```
+
+- `capabilities` lists the capabilities: the providers that support each one, the global
+  setting (with `-p` the project's too), the status (`unknown`, `unavailable`, `available`)
+  with its reason, and below the table the roles' settings. It checks the providers' versions
+  first. `--json` adds each one's label, description, what it reaches and what it requires.
+- `on` and `off` turn a capability on or off globally, for a project (`-p`), for a role
+  (`--role`, globally or with `-p` in a project) or for one agent (`--agent`, not combined with
+  the others); `inherit` removes the setting at that level. A role's `off` is final: an
+  agent's own setting cannot turn it back on. An unknown name is refused. Each prints the
+  listing of its scope, or with `--agent` the agent's capabilities. Changes apply from each
+  agent's next turn.
+- `show` prints what the agent's next turn gets: per capability its state (`on`, `off` or
+  `skipped`), the level that decided it and a note, such as `codex does not support it`.
+
+The levels, the safety of `chrome` and what is not verified yet:
+[capabilities.md](capabilities.md).
 
 ### Orchestrator
 
@@ -155,7 +182,7 @@ Details: [desktop.md](desktop.md).
 ```sh
 spartito spawn TASK -p PROJECT [-n NAME] [-r ROLE] [--provider P] [--model M] [--effort E]
            [--worktree|--no-worktree] [--share AGENT] [--base REF_OR_AGENT]
-           [--after AGENT_OR_RUN ...] [--permission MODE]
+           [--after AGENT_OR_RUN ...] [--permission MODE] [--capabilities LIST]
 spartito ask PROJECT MESSAGE [--provider P]
 spartito send AGENT MESSAGE [--after AGENT_OR_RUN ...]
 ```
@@ -170,7 +197,10 @@ spartito send AGENT MESSAGE [--after AGENT_OR_RUN ...]
   worktree; `--base` branches from a ref or from another agent's branch; `--after`
   (repeatable) waits until those agents or turns (by run id) have finished successfully, and
   skips this agent if one fails. `--permission` is the Claude permission mode or the Codex
-  sandbox mode (defaults: `auto`, `workspace-write`).
+  sandbox mode (defaults: `auto`, `workspace-write`). `--capabilities` sets the agent's own
+  capabilities, comma-separated: `"chrome"` turns one on, `"-chrome"` off
+  ([capabilities.md](capabilities.md#turning-them-on-and-off)); one its provider does not
+  support is kept, skipped in its turns, and `spawn` prints a `note: …` line about it.
 - `ask` sends a message to the project's lead, creating it on first use. `--provider` is the
   lead's provider when this message creates it (default: as for `spawn`); an existing lead
   keeps its own, and `ask` prints a `note: …` line about it, as for a fallback.
@@ -205,9 +235,11 @@ spartito wait AGENT... [--timeout 3600]
   sub-agents are working (it is notified when they finish); `running·3↓` means its own turn
   runs meanwhile; `failed·3↓` that its last turn failed while they work; `+2` that two more
   turns are queued. `--archived` lists the archive instead.
-- `status` shows one agent: state, model and effort (and whether set on the agent), usage,
-  context and automatic compaction state, the last compaction, the queue (with run ids), the
-  commits and uncommitted changes in its worktree, and the last turn's result or error.
+- `status` shows one agent: state, model and effort (and whether set on the agent), the
+  capabilities its next turn has (`capabilities chrome`, or
+  `capabilities none  (skipped: chrome; spartito capabilities show AGENT)`), usage, context and
+  automatic compaction state, the last compaction, the queue (with run ids), the commits and
+  uncommitted changes in its worktree, and the last turn's result or error.
 - `logs` prints the agent's events (messages, tool calls, errors, info); `-f` follows.
 - `wait` blocks until the agents and their sub-agents are idle and prints their results. Exit
   code: 0 all done, 1 at least one did not succeed, 2 timeout.
@@ -516,6 +548,9 @@ notifications globally. Under **Notifications**, **Allow in this browser** lets 
 the notifications itself, so that a click opens the agent or decision (see
 [desktop.md](desktop.md#notifications-with-click-through)).
 
+**Capabilities.** The dashboard's settings and an agent's setup panel show and change them
+([capabilities.md](capabilities.md)).
+
 **Decisions** window: every open decision across projects with its project, agent, question,
 options, recommendation and age; answer with an option or free text.
 
@@ -546,6 +581,16 @@ convenient from scripts:
   orchestrator on a fallback provider.
 - `POST /api/projects/<name>/provider` with `{"provider": "codex"}`: the project's default
   provider; the reply has the project and a `note`.
+- `GET /api/capabilities` (`?project=<name>` adds the project's settings): every capability
+  with its settings and status, as `spartito capabilities --json`. `POST /api/capabilities`
+  with `{"name": "chrome", "state": true, "project": "<name>", "role": "<role>"}` (`state`
+  `false`: off, `null`: inherit; `project` and `role` optional) sets one and returns the
+  listing of that scope.
+- `POST /api/agents/<id>/capabilities` with `{"chrome": true}` (`false`: off, `null`: inherit):
+  the agent's own setting; the reply has the agent's `capabilities` and `running`, whether a
+  turn runs now (the change applies from the next one). `POST /api/agents` takes
+  `"capabilities": {"chrome": true}` for a new agent. A refused change is a 400 with
+  `{"error": "…"}`.
 - `POST /api/agents/<id>/compact` with `{"instructions": "..."}`.
 - `GET /api/cost?by=project|day|agent|model|role&since=YYYY-MM-DD&until=YYYY-MM-DD&project=<name>`:
   the cost report (with `days`, every local day of the range, and `series`, the spend per day
