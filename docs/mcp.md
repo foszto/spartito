@@ -56,7 +56,10 @@ added docs-db (stdio): runs docs-db-mcp on this machine as you, with your files,
 it is off until a level turns it on: `spartito mcp on docs-db` (globally; --project P, --role R or --agent A for less)
 ```
 
-- **The name**: letters, digits, `_` and `-`, at most 64 characters. The name of Spartito's own
+- **The name**: letters, digits, `_` and `-`, at most 64 characters, starting and ending with
+  a letter or digit and without `__` (`docs_db` and `docs-db` work; `_docs`, `docs_` and
+  `docs__db` do not). Claude Code reads a tool name `mcp__<server>__<tool>` up to the second
+  `__`, so no server's tools can then pass for another server's. The name of Spartito's own
   `orch` server and the names Claude Code reserves (`claude-in-chrome`, `computer-use`,
   `workspace`) are refused, and so is a name in use: remove that server first. The server's
   tools are `mcp__<name>__<tool>` in the agent's turn.
@@ -64,19 +67,24 @@ it is off until a level turns it on: `spartito mcp on docs-db` (globally; --proj
   `--arg` (repeatable, in order) and `--env NAME='${VAR}'` (repeatable). `--url` is a remote
   server over HTTP (`http://` or `https://`, without a user name or password in it), with
   `--header 'Name: ${VAR}'` (repeatable).
-- **Arguments** are stored and shown as written, so keep secrets out of them. One that starts
-  with `-` is taken as the value: `--arg --read-only` and `--arg=--read-only` both work.
-- **No secret is stored.** Every `--env` and `--header` value must be exactly one `${VAR}`
-  reference. A literal value is refused (`put the value in an environment variable of the
+- **Arguments** are stored and shown as written. One that starts with `-` is taken as the
+  value: `--arg --read-only` and `--arg=--read-only` both work.
+- **No secret is stored.** Three things are checked: every `--env` value, every `--header`
+  value and every query parameter value of the URL (`?team=${DOCS_TEAM}`) must be exactly one
+  `${VAR}` reference. A literal value is refused (`put the value in an environment variable of the
   service and write ${VAR}`), and so are `${VAR:-default}` and text around the reference.
   For a header such as `Authorization: Bearer …`, put the whole value, `Bearer` included, into
-  the variable. Where the variable must be set: [The variables](#the-variables).
+  the variable. The command, the arguments and the URL's path are stored as given and not
+  checked: keep secrets out of them. Where the variable must be set:
+  [The variables](#the-variables).
 - **`--reaches`** adds your own line on what the server reaches, after the one Spartito
   writes; one line, at most 300 characters.
 - **A new server is off** at every level until you turn it on.
 - **Only you add and remove servers.** `spartito mcp add` and `spartito mcp remove` are
-  refused in every agent's turn, the orchestrator agent's included, and agents have no MCP
-  tool for them: a server decides what code runs, and with whose credentials.
+  refused in every agent's turn, the orchestrator agent's included, and in a `spartito chat`
+  session, whose model may run `spartito` commands without asking: run them in your own
+  shell. Agents have no MCP tool for them: a server decides what code runs, and with whose
+  credentials.
 
 A server cannot be edited: remove it and add it again (its levels go with the removal).
 
@@ -235,8 +243,9 @@ What works today:
   be trusted, and prefer read-only servers and accounts.
 - **The permission mode decides.** No MCP tool is pre-approved. Do not combine MCP servers
   with `bypassPermissions`.
-- **No escalation.** Adding and removing are yours alone; turning on follows the capability
-  rules ([capabilities.md](capabilities.md#giving-capabilities-from-agents)).
+- **No escalation.** Adding and removing are yours alone, in your own shell: refused in
+  agents' turns and in a `spartito chat` session; turning on follows the capability rules
+  ([capabilities.md](capabilities.md#giving-capabilities-from-agents)).
 - **A guard rail, not a sandbox.** An agent with a shell can still edit Spartito's home or your
   Claude Code configuration, as it can every other setting.
 

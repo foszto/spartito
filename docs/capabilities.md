@@ -327,8 +327,10 @@ as `spartito capabilities on|off|inherit mcp:docs-db`.
 | default | off |
 | reaches | for a command, that it runs on this machine as you, with your files, your network and the environment it is given; for a URL, that the agent's tool calls go to its origin; and your own `--reaches` line |
 
-Only you add and remove servers; agents cannot, the orchestrator agent included. Env and
-header values are `${VAR}` references only: Spartito stores no secret. A turn whose
+Only you add and remove servers; agents cannot, the orchestrator agent included. Env values,
+header values and the URL's query values are `${VAR}` references only, so Spartito stores no
+secret in them; the command, arguments and the URL's path are stored as given and must hold
+none. A turn whose
 environment lacks a referenced variable leaves the server out, and the background service
 passes such variables on to no turn
 ([mcp.md](mcp.md#the-variables)). On a Claude turn, the

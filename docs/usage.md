@@ -150,18 +150,24 @@ spartito mcp serve
   definition as shown, what it reaches and `agents`, the agents whose own setting names it.
 - `show` prints one server: its definition (a URL as its origin only), what it reaches, its
   levels, its last status and the agents with their own setting for it. `NAME` may be written
-  `docs-db` or `mcp:docs-db`, here and in `on`, `off`, `inherit` and `remove`.
+  `docs-db` or `mcp:docs-db`, here and in `on`, `off`, `inherit` and `remove`. A name has
+  letters, digits, `_` and `-` (at most 64), starts and ends with a letter or digit, and holds
+  no `__`.
 - `add` adds a server, off until a level turns it on, and prints the command that does.
   `--command` is a local server on stdio, with `--arg` (repeatable, in order; a value starting
   with `-` works: `--arg --read-only`) and `--env` (repeatable). `--url` is a remote server
   over HTTP, with `--header` (repeatable). Exactly one of `--command` and `--url`. Every
-  `--env` and `--header` value must be exactly one `${VAR}` reference, read from the
-  environment of the process that queued the turn: a literal value is refused. A turn where
+  `--env` value, `--header` value and query parameter value of the URL must be exactly one
+  `${VAR}` reference, read from the environment of the process that queued the turn: a
+  literal value is refused. The command, the arguments and the URL's path are stored as
+  given: keep secrets out of them. A turn where
   a referenced variable is not set leaves the server out, and the background service passes
   no such variable on ([mcp.md](mcp.md#the-variables)). `--reaches` is your own line on what
   it reaches.
 - `remove` removes a server and its setting at every level, and says where there was one.
-- `add` and `remove` are the owner's alone: refused when run in any agent's turn.
+- `add` and `remove` are the owner's alone: refused when run in any agent's turn and in a
+  `spartito chat` session (its model may run `spartito` commands without asking); run them in
+  your own shell.
 - `on`, `off` and `inherit` are `spartito capabilities on|off|inherit mcp:NAME`, with the same
   options, rules and output.
 - `serve` runs Spartito's own `orch` MCP server on stdio. `spartito chat` and the agents with a

@@ -53,12 +53,15 @@ chosen is in the
   until turned on with `spartito mcp on NAME` (or `spartito capabilities on mcp:NAME`) at the
   same levels as `chrome`. A Claude agent's turn with a server on gets it, with the `orch`
   server, in one private MCP configuration file (mode `0600`, removed when the turn ends),
-  still under `--strict-mcp-config`; Codex agents skip it with a note. Env and header values
-  must be `${VAR}` references: Spartito stores no secret, and Claude Code reads the values
-  from the turn's environment. A turn where a referenced variable is not set leaves the
+  still under `--strict-mcp-config`; Codex agents skip it with a note. Env values, header
+  values and the URL's query values must be `${VAR}` references, so Spartito stores no secret
+  in them (the command, arguments and URL path are stored as given and must hold none), and
+  Claude Code reads the values from the turn's environment. A server name starts and ends
+  with a letter or digit and holds no `__`. A turn where a referenced variable is not set leaves the
   server out with a note such as `DOCS_DB_URL is not set`; the background service passes no
   such variable on, so its turns skip those servers (`docs/mcp.md#the-variables`). Only the
-  owner adds and removes servers, never an agent. `spartito mcp` lists them with their
+  owner adds and removes servers, in their own shell: never an agent, nor a `spartito chat`
+  session. `spartito mcp` lists them with their
   levels and the status the last turn recorded, `spartito mcp show` gives one,
   `spartito mcp remove` removes one and its settings, `spartito capabilities` lists them in a
   section of their own, `spartito capabilities show` gives each one's last status, and
