@@ -329,7 +329,7 @@ Sources:
      - Claude: flags, a stream-json prompt with a hooks canary, a private MCP file.
      - Codex: `-c` TOML overrides that must follow `resume <id>`.
      - opencode: a config file in an environment variable and `$PWD`.
-   - The spec would grow fields that are really code hooks, and argv order (which golden tests pin) would be dictated by the builder. **Rejected.**
+   - The spec would grow fields that are really code hooks, and argv order would be dictated by the builder. **Rejected.**
 2. **A template-method base class** (`invocation()` assembled from overridable steps).
    - It saves little: each step is two lines, and the order of steps differs per CLI.
    - It hides the real differences behind hook names. **Rejected for `invocation()`**, accepted for self-description.
@@ -383,7 +383,7 @@ providers/
 
 **Attribution (planned)**:
 - `roles.attribution(provider_name)` looks up `providers.get(name).credit`.
-- The texts stay word for word: golden test G4 pins them.
+- The texts stay word for word.
 - Codex's rule ("when you add a trailer, keep its email…") becomes a named constant that opencode reuses.
 
 **Loadout**: no key changes in the refactor. For a provider-neutral "user configuration" key, see question Q3.
@@ -466,20 +466,9 @@ Plus:
 
 ### 3.5 Migration with no behaviour change
 
-Each step ships alone. Every step keeps G1–G6 green.
+Each step ships alone. The refactor relies on the existing tests that already pin argv, env and parsed events (`tests/test_providers.py`, `tests/test_mcp_wiring.py`, `tests/test_tool_search.py`, `tests/test_runner_memory.py`, `tests/test_context.py`, `tests/test_costs.py`, `tests/test_usage_totals.py` and the others below) and on the normal review.
 
-**Golden tests (planned, captured before any refactor)**:
-- **G1** `invocation()` for a matrix of contexts, per built-in provider:
-  - the contexts vary fresh/resumed, lead or not, `tools` default/list/none, `memory`, `tool_search` auto/always/never, `chrome` on/off, an `mcp:` server stdio/remote, output schema, model/effort, compaction (`compact_below` for Codex).
-  - recorded: argv, stdin, env, `unset_env`, canary (as a relative name), `private_files` (paths relative, content parsed), and files written to scratch (Codex's schema).
-  - `uuid.uuid4` and the scratch path are fixed.
-- **G2** `parse()` of every `tests/fixtures/*.jsonl`, as `Event` dicts.
-- **G3** `availability.describe()` of each provider (the JSON surface of `providers --json` and the dashboard).
-- **G4** `roles.attribution(p, bot_coauthor=…)` and `core/setup.cache_hint(p)`.
-- **G5** `capabilities.resolve` wirings for each provider with `chrome` and an `mcp:` server on.
-- **G6** `MCP_PASSED_ENV` and `autostart.ENV_NAMES`.
-
-**Already pinned elsewhere**:
+**What the existing tests pin**:
 - `test_providers.py`: argv on fresh and resumed turns, loadout flags, `--ignore-user-config`, memory, parsing, usage.
 - `test_tool_search.py`, `test_mcp_wiring.py`: `ToolSearch`, `alwaysLoad`, the private file.
 - `test_runner_memory.py`: the canary.
@@ -488,13 +477,10 @@ Each step ships alone. Every step keeps G1–G6 green.
 - `test_attribution.py`, `test_availability.py`, `test_dashboard_providers.py`, `test_docs_providers.py`, `test_architecture.py`.
 
 **Steps**:
-1. Goldens (phase 0).
-2. Kit and porting `claude.py`/`codex.py` onto it (phase 1).
-3. Provider metadata instead of tables outside `providers/` (phase 2).
-4. The stream hook in the runner (phase 3).
-5. The fake-CLI harness (phase 4).
-
-The goldens are compared byte for byte. A step that changes one must say why in its pull request, and needs the owner's approval.
+1. Kit and porting `claude.py`/`codex.py` onto it (phase 1).
+2. Provider metadata instead of tables outside `providers/` (phase 2).
+3. The stream hook in the runner (phase 3).
+4. The fake-CLI harness (phase 4).
 
 ---
 
@@ -584,18 +570,17 @@ Sizes are per worker, tests and docs included: **S** about half a day, **M** abo
 
 | # | phase | owns | depends on | size |
 |---|---|---|---|---|
-| 0 | Golden tests G1–G6 | `tests/test_provider_golden.py`, `tests/golden/` | the in-flight provider work merged | M |
-| 1 | Kit; `claude.py`/`codex.py` ported; provider attributes added (data only) | `providers/*`, `providers/locate.py` | 0 | M |
+| 1 | Kit; `claude.py`/`codex.py` ported; provider attributes added (data only) | `providers/*`, `providers/locate.py` | the in-flight provider work merged | M |
 | 2 | Consumers read the attributes: `roles.py`, `core/setup.py`, `autostart.py`, `core/availability.py` (`min_version` too), `capabilities.py`, `mcp_server.py` docstrings, `cli.py` (help texts; `chat` uses `kit.own_server_entry`), `web/static/*` (a neutral avatar colour) | those files | 1 | M |
 | 3 | The stream hook and `Invocation.notes` in the runner; `MCP_PASSED_ENV` from `config_env` | `runner.py`, `providers/base.py` | 1 | S |
 | 4 | Fake-CLI harness; Claude and Codex dialects; `PROVIDER_CLIS` from the registry | `tests/fakecli/`, `tests/conftest.py`, `tests/fakeprovider.py` | 1 | M |
-| 5a | Live checks V1–V19 with the owner | notes for this document | the owner's go-ahead; can run during 0–4 | S |
+| 5a | Live checks V1–V19 with the owner | notes for this document | the owner's go-ahead; can run during 1–4 | S |
 | 5b | `providers/opencode.py`: invocation, turn config, loadout mapping, MCP translation; registered last in `BUILTIN`; a fake `opencode` on `PATH` in the same change | `providers/opencode.py`, `providers/__init__.py`, `tests/test_opencode.py` | 2, 3, 4, 5a | M |
 | 5c | opencode stream: usage, context, structured answers, the dialect | same owner as 5b | 5b | M |
 | 5d | Model list, availability, docs (`providers.md`, `configuration.md`, `capabilities.md`, `mcp.md`, `architecture.md`), `CHANGELOG.md` | docs, small code | 5b | M |
 
-- **Total**: about 8 worker-days.
-- **Critical path**: 0 → 1 → 3 → 5b → 5c → 5d, about 5.5 days.
+- **Total**: about 7.5 worker-days.
+- **Critical path**: 1 → 2 (or 4) → 5b → 5c (5d alongside), about 4 days with three workers.
 - **In parallel**: 2, 3 and 4 run alongside each other after 1.
 
 **Risks**:
@@ -604,7 +589,7 @@ Sizes are per worker, tests and docs included: **S** about half a day, **M** abo
 - **Isolation**: moving `XDG_CONFIG_HOME` leaks into the agent's commands (V15).
 - **Shared database**: concurrent standalone processes share one SQLite database (V14), as does the user's own opencode.
 - **Silent new session**: a missing `PWD` sends the turn to the wrong directory; a lost session id silently starts a new one.
-- **Refactor drift**: mitigated by G1–G6 and phase-by-phase pull requests.
+- **Refactor drift**: mitigated by the existing tests, the normal review and phase-by-phase pull requests.
 
 **Live verification (each needs the owner's go-ahead).**
 - Every check uses temporary `XDG_DATA_HOME`/`XDG_CONFIG_HOME`/`XDG_STATE_HOME`/`XDG_CACHE_HOME` and a throwaway git repository.
@@ -639,13 +624,15 @@ Sizes are per worker, tests and docs included: **S** about half a day, **M** abo
 
 **Open questions for the owner**:
 
+Decided: no golden tests for now; the existing tests and the normal review carry the refactor.
+
 1. **Q1 Live checks**: run V1–V19 with the installed 2.3.2, temporary state, and a local model (plus one API-key provider for V8)? *Recommendation:* yes, about 25 short turns.
 2. **Q2 Versions**: support only opencode 2.2.3 or later, and refuse 1.x? *Recommendation:* yes.
 3. **Q3 A provider-neutral "user configuration" loadout key** in place of `codex_user_config`? *Recommendation:* not now. Map opencode onto `setting_sources`, keep `codex_user_config`, and decide when a fourth provider needs it.
 4. **Q4 Default permission mode** for opencode: no `--auto` (asks rejected), or `--auto`? *Recommendation:* no `--auto`.
 5. **Q5 Structured answers** asked for in the prompt, not enforced: acceptable for planner, reviewer and tester roles? *Recommendation:* yes, listed as a limit.
 6. **Q6 Server model**: one process per turn now, `serve` or ACP later? *Recommendation:* per turn, revisited after V12.
-7. **Q7 Order of work**: refactor (0–4) before opencode, or opencode first on today's structure? *Recommendation:* 0 → 1 → 3 first; opencode on top, so it costs one module.
+7. **Q7 Order of work**: refactor (1–4) before opencode, or opencode first on today's structure? *Recommendation:* 1 → 3 first; opencode on top, so it costs one module.
 8. **Q8 MCP servers on opencode** without an approval gate (as decided for Codex in `mcp.md#phases`): allow them only when the owner marks a server for it, or in general? *Recommendation:* the same rule as for Codex.
 9. **Q9 Global opencode config**: if V15 shows the leak, accept that the user's global `opencode.json` applies to agents (listed), or deny opencode agents some of it through policies only? *Recommendation:* accept and list it. Revisit if a cleaner switch appears.
 
