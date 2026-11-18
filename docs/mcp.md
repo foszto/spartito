@@ -276,7 +276,16 @@ start, by a size that fits one new entry in a list of connector names. Other ses
 write the file, so this is inferred from timing, not proven **[observed]**. A connector under
 a new key may therefore leave a trace in your Claude Code configuration.
 
-Still **[unverified]**: a tool call through such an entry, and the tool names a turn sees.
+A call through such an entry works. Observed once with Claude Code 2.1.322, in one headless
+model turn **[observed]**:
+
+- The flags were `--strict-mcp-config`, one `claudeai-proxy` entry under the key `docs`,
+  `--tools ToolSearch`, `--permission-mode default`, and `--allowedTools` naming one
+  read-only tool of the connector.
+- The turn's `system`/`init` event listed the connector as `connected`, and its tools as
+  `mcp__docs__<tool>`: the key, then the connector's own tool names.
+- The allowed tool was called once, without an error, and returned text. No other MCP tool
+  was called, and no permission was denied.
 
 **Same name and URL.** Claude Code stores OAuth sign-ins per endpoint. **[documented]**
 Spartito keeps the server's name and its `type`, `url` and `headers` exactly as configured,
@@ -851,7 +860,8 @@ this list:
   [the probe](#tools-and-token-cost-the-probe)); the context-usage request remains.
 - That `--mcp-config` expands `${VAR}` and `${VAR:-default}`, that stdio servers inherit the
   CLI's environment, and that a connector entry works under a key of your choice, were
-  observed once with Claude Code 2.1.322, without a model turn (see
+  observed once with Claude Code 2.1.322, without a model turn; a tool call through such an
+  entry, and the tool names a turn sees, were observed in one model turn (see
   [Where added servers live](#where-added-servers-live) and
   [claude.ai connectors](#claudeai-connectors)).
 
@@ -862,20 +872,20 @@ this list:
    directory.
 3. The control request for context usage over stream-json, without a user message, and its
    answer. Probe.
-4. A connector given alone as a `claudeai-proxy` entry: whether a tool call through it
-   works, and which tool names a turn sees. One minimal real turn; a read-only tool.
-5. That the probe's token counting is not billed, or is acceptable, for the owner's login.
-6. Whether a resumed conversation (a new process with `--resume`) keeps the cache when a
+4. That the probe's token counting is not billed, or is acceptable, for the owner's login.
+5. Whether a resumed conversation (a new process with `--resume`) keeps the cache when a
    server is added or removed, with deferred tools. Real turns.
-7. Whether a disallowed MCP tool leaves the deferred list too. Probe with context usage.
-8. How the `auto` classifier treats writing or destructive MCP tools. Real turns.
-9. Whether `claude mcp login` works without a terminal when the browser redirect succeeds.
+6. Whether a disallowed MCP tool leaves the deferred list too. Probe with context usage.
+7. How the `auto` classifier treats writing or destructive MCP tools. Real turns.
+8. Whether `claude mcp login` works without a terminal when the browser redirect succeeds.
    Visible (it opens a browser): the owner does it.
-10. Whether `claude mcp list` writes to `~/.claude.json`, and how long it takes with stdio
-    servers; and what sessions with servers in `--mcp-config` write there. The file changed
-    within a second of the start of such sessions, but other sessions also write it. Needs
-    a quiet machine, or a way to see which process writes.
-11. Codex: whether a token is found for a `-c`-defined server under
+9. Whether `claude mcp list` writes to `~/.claude.json`, and how long it takes with stdio
+   servers; and what sessions with servers in `--mcp-config` write there. The file changed
+   within a second of the start of such sessions, but other sessions also write it. Needs
+   a quiet machine, or a way to see which process writes. A model turn with
+   `--no-session-persistence` also created an empty project directory under
+   `~/.claude/projects` for its working directory **[observed]**.
+10. Codex: whether a token is found for a `-c`-defined server under
     `--ignore-user-config`, and how `enabled_tools` and the approval modes behave in
     `exec`. Real Codex turns.
 
