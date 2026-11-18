@@ -1223,6 +1223,28 @@ def test_a_request_from_before_the_window_is_not_applied(webview: FakeWebview):
     assert app_open.answered(earlier) is None
 
 
+def test_a_request_from_just_after_the_lock_is_answered(webview: FakeWebview, monkeypatch):
+    """A second `spartito app` that finds the lock taken while the window is still starting:
+    its request comes after the window's baseline, so the window answers it."""
+    numbers: list[int] = []
+    monkeypatch.setattr(window, "cut_app_log", lambda: numbers.append(app_open.request()))
+    webview.open_for = None
+    replies = []
+
+    def meanwhile() -> None:
+        deadline = time.monotonic() + 10
+        while (reply := app_open.answered(numbers[0])) is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        replies.append(reply)
+        webview.windows[-1].destroy()
+
+    webview.on_start = lambda: threading.Thread(target=meanwhile, daemon=True).start()
+    assert run_app().exit_code == 0
+    (win,) = webview.windows
+    assert win.url == f"{win.base}?app=0&native=1"  # the page applies the request, too
+    assert replies == [{"raised": True, "detail": "brought it to the front"}]
+
+
 @pytest.mark.parametrize(
     ("args", "fragment"),
     [
@@ -1263,10 +1285,12 @@ def test_targets_are_checked(webview: FakeWebview, args, error):
 
 
 def answering(raised: bool, detail: str = ""):
-    """The open window's `spartito app`, from a thread: answers the next request."""
+    """The open window's `spartito app`, from a thread: answers the next request. Its baseline
+    is read here, before the thread starts: read in the thread, it could already be the id of
+    the request it is to answer, which it would then never answer."""
+    before = app_open.last_id()
 
     def answer() -> None:
-        before = app_open.last_id()
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             if (request := app_open.latest()) and request["id"] > before:

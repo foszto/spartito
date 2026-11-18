@@ -1038,6 +1038,9 @@ def run(
     this home's). AppError when no server can be had."""
     app_open.check_target(target)
     bundled, own_bundle = take_bundle_identity()
+    # The baseline from before the lock: a second `spartito app` that finds the lock taken
+    # writes its request after it, and this window answers it.
+    baseline = app_open.last_id()
     lock = single_instance()
     if lock is None:
         return forward(target)
@@ -1069,7 +1072,7 @@ def run(
     session = Session(lock, close_after, target=target, echo_location=echo_location)
     session.launcher_installed, session.bundled = installed, bundled
     session.own_bundle = own_bundle
-    session.baseline = app_open.last_id()
+    session.baseline = baseline
     try:
         with stopped_by_signals(session):
             session.url = locate.running_server() or ""
