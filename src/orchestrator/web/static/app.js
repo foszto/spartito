@@ -1121,7 +1121,7 @@ function capabilityLine(data, item) {
   line.append(el('span', 'key', item.label || item.name), select, el('span', `cap-state ${item.state}`, item.state),
     el('span', 'cap-source', `from ${item.source === 'agent' ? 'its own setting' : item.source}`));
   const note = item.note || blocked;
-  if (note) line.append(el('span', 'cap-note', note));
+  if (note) line.append(el('span', 'cap-note', `· ${note}`));
   return line;
 }
 

@@ -179,7 +179,7 @@ out({ plain, final, own: lines() });
         "hidden": False,
         "lines": [
             "Claude in Chromeinherit (off)onoffofffrom default",
-            "Fake toolinheritonoffskippedfrom its own settingcodex does not support it",
+            "Fake toolinheritonoffskippedfrom its own setting· codex does not support it",
         ],
         "values": [
             ["", [["inherit (off)", False], ["on", False], ["off", False]]],
@@ -189,14 +189,14 @@ out({ plain, final, own: lines() });
     assert result["final"] == {
         "lines": [
             "Claude in Chromeinherit (off)onoffofffrom role"
-            "off for role worker: its own setting cannot turn it on"
+            "· off for role worker: its own setting cannot turn it on"
         ],
         "on": True,
         "title": "off for role worker: its own setting cannot turn it on",
     }
     assert result["own"] == [
         "Claude in Chromeinheritonoffskippedfrom its own setting"
-        "off for role reviewer: the role's setting wins over the agent's"
+        "· off for role reviewer: the role's setting wins over the agent's"
     ]
 
 
