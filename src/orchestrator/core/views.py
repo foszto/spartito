@@ -9,7 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
-from .. import config, git, notify, settings
+from .. import capabilities, config, git, notify, settings
 from ..models import MESSAGE, Agent, Project, RunStatus, Usage
 from ..store import Store
 from ..timeline import AgentRuns
@@ -93,6 +93,8 @@ def view(
     `last_run.result_file` (the full final answer on disk) and `queue` (the waiting
     runs: id, kind, sender, created_at, prompt preview).
     `children_running` is how many descendants have a queued or running turn.
+    `capabilities`: the names the next turn has (with `detail` the breakdown of each one:
+    capabilities.Resolution.breakdown).
     `context`: how full the conversation is (see context_view and _context: with the
     automatic compaction threshold), null when unknown.
     A compaction run is never `last_run` nor the status (see agent_state); with
@@ -111,6 +113,7 @@ def view(
     if result and result_limit and len(result) > result_limit:
         result = result[:result_limit] + "… [truncated]"
     totals = timeline.totals()
+    granted = capabilities.resolve(orch.store, agent)
     view = {
         "id": agent.id,
         "project": agent.project,
@@ -130,6 +133,7 @@ def view(
         "cost_usd": totals.cost or 0,
         "tokens": totals.tokens(),
         "context": orch._context(agent, timeline),
+        "capabilities": granted.breakdown() if detail else granted.on,
         "last_run": shown
         and {
             "id": shown.id,

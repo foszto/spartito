@@ -44,6 +44,7 @@ CONTRACT = {
     "models_note",
     "features",
     "limits",
+    "capabilities",
     "status",
     "usable",
     "version",

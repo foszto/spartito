@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from .. import providers, roles
+from .. import capabilities, providers, roles
 from ..errors import OrchestratorError
 from ..providers import locate
 from ..providers.base import Provider, model_choices
@@ -140,6 +140,12 @@ def describe(provider: Provider) -> dict[str, Any]:
             "attribution": bool(roles.attribution(provider.name, bot_coauthor=False)),
         },
         "limits": list(getattr(provider, "limits", None) or ()),
+        # The registered capabilities it carries (capabilities.py).
+        "capabilities": [
+            entry.name
+            for entry in capabilities.REGISTRY.values()
+            if provider.name in entry.providers
+        ],
     }
 
 
@@ -191,6 +197,16 @@ def listing(refresh: bool = False, wait: bool = True, models: bool = True) -> li
     if first is not None:
         first["default"] = True
     return entries
+
+
+def checked() -> list[dict[str, Any]]:
+    """Every registered provider as the last check left it, starting none: what was not
+    checked yet is `unknown` ("not checked yet")."""
+    with _lock:
+        found = dict(_checked)
+    return [
+        _entry(name, provider, found.get(name)) for name, provider in providers.PROVIDERS.items()
+    ]
 
 
 def status(name: str, refresh: bool = False, wait: bool = True) -> dict[str, Any]:

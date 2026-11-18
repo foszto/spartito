@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, Protocol
 
-from .. import providers, roles, settings
+from .. import capabilities, providers, roles, settings
 from ..errors import NeedsConfirmation, OrchestratorError
 from ..models import Agent, Project
 from ..store import Store
@@ -121,7 +121,8 @@ def setup(orch: Facade, agent_id: str, wait: bool = True) -> dict[str, Any]:
     what applies without them (`inherited`); `running`: a turn is running (a change
     applies from the next one); `cache_effect`: per setting, what switching it in an
     existing session does to the prompt cache (`restarts`, `may restart`, `keeps`) and
-    `cache_hint` says it in words. The orchestrator is shown before its first use too
+    `cache_hint` says it in words; `capabilities`: what its next turn gets of them
+    (capabilities.Resolution.breakdown). The orchestrator is shown before its first use too
     (`exists` false), without creating anything; `wait=False` shows it on the provider it
     would get without waiting for an availability check. The replies of set_overrides and
     set_provider add `note` when they created the orchestrator on a fallback provider."""
@@ -141,6 +142,7 @@ def setup(orch: Facade, agent_id: str, wait: bool = True) -> dict[str, Any]:
         "running": orch.store.running_run(agent.id) is not None,
         "cache_effect": cache_effect(agent.provider),
         "cache_hint": cache_hint(agent.provider),
+        "capabilities": capabilities.resolve(orch.store, agent).breakdown(),
     }
 
 

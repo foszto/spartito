@@ -3,6 +3,7 @@ turns with dependencies, and withdrawing or editing a queued message."""
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from dataclasses import replace
@@ -13,7 +14,7 @@ from ..errors import OrchestratorError
 from ..models import COMPACT, MESSAGE, NOTIFICATION, NOTIFY_MODES, Agent, Project, Run, RunStatus
 from ..store import ANYONE, Store
 from ..timeline import AgentRuns
-from . import availability
+from . import availability, grants
 
 
 class Facade(Protocol):
@@ -39,6 +40,8 @@ class Facade(Protocol):
         base: str | None = None,
         parent_id: str | None = None,
         permission: str | None = None,
+        capabilities: dict[str, bool] | None = None,
+        granter: Agent | None = None,
     ) -> Agent: ...
 
     def send(
@@ -50,6 +53,8 @@ class Facade(Protocol):
         role_schema: bool = False,
         sender: str | None = None,
         notify: str = "each",
+        capabilities: dict[str, bool | None] | None = None,
+        granter: Agent | None = None,
     ) -> Run: ...
 
     def _cause(self, sender: str | None) -> int | None: ...
@@ -97,8 +102,14 @@ def create_agent(
     base: str | None = None,
     parent_id: str | None = None,
     permission: str | None = None,
+    capabilities: dict[str, bool] | None = None,
+    granter: Agent | None = None,
 ) -> Agent:
-    """Register an agent. Its worktree is created lazily, when its first run starts."""
+    """Register an agent. Its worktree is created lazily, when its first run starts.
+
+    `capabilities`: the agent's own setting ({name: bool}), given by `granter` (the agent
+    that starts it; None: the owner), checked as grants.granted does; one its provider does
+    not support is kept, and `provider_note` says so."""
     project = orch.project(project_name)
     try:
         role_def = roles.load(role, project.path)
@@ -122,6 +133,8 @@ def create_agent(
         raise OrchestratorError(f"{provider_name} has no effort '{effort}' (use: {allowed})")
     if parent_id:
         orch.agent(parent_id)
+    draft = Agent(id="", project=project.name, name="", role=role, provider=provider_name, cwd="")
+    own = grants.granted(orch, draft, capabilities or {}, granter)
 
     agent_id = f"{slug(name or role)}-{uuid.uuid4().hex[:4]}"
     branch = base_ref = None
@@ -148,9 +161,13 @@ def create_agent(
             branch=branch,
             base_ref=base_ref,
             permission=permission,
+            capabilities=json.dumps(own) if own else None,
         )
     )
-    return _noted(agent, choice.note)
+    agent = _noted(agent, choice.note)
+    if unsupported := grants.unsupported_note(provider_name, own):  # the runner notes it too
+        agent.provider_note = "; ".join(filter(None, (agent.provider_note, unsupported)))
+    return agent
 
 
 def _noted(agent: Agent, note: str | None) -> Agent:
@@ -170,6 +187,8 @@ def send(
     role_schema: bool = False,
     sender: str | None = None,
     notify: str = "each",
+    capabilities: dict[str, bool | None] | None = None,
+    granter: Agent | None = None,
 ) -> Run:
     """Queue a turn for an agent and start its runner. Returns immediately.
 
@@ -177,16 +196,22 @@ def send(
     `sender` is the agent that sends it (None: the user); when that is the agent's
     parent, `notify` says when it is woken: `each` once this agent is done, `all` once
     all its agents are. The sender's running turn is recorded as the run's cause.
+    `capabilities`: changes to the agent's own setting ({name: True|False|None}) made by
+    `granter` (None: the owner) before the message is queued, so they hold from this turn
+    on (grants.set_agent_capabilities); a refused change queues nothing.
     """
     agent = orch.agent(agent_id)
     orch._check_notify(notify)
     if output_schema is None and role_schema:
         project = orch.store.get_project(agent.project) if agent.project else None
         output_schema = orch.role_schema(agent.role, project.path if project else None)
+    depends_on = orch._resolve_after(after)
+    if capabilities:
+        grants.set_agent_capabilities(orch, agent.id, capabilities, granter)
     run = orch.store.add_run(
         agent.id,
         message,
-        orch._resolve_after(after),
+        depends_on,
         output_schema,
         kind=MESSAGE,
         sender=sender,

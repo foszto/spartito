@@ -16,6 +16,7 @@ from .core import (
     costs,
     delivery,
     dispatch,
+    grants,
     launcher,
     lifecycle,
     reads,
@@ -336,6 +337,13 @@ class Orchestrator:
     set_overrides = agent_setup.set_overrides
     set_provider = agent_setup.set_provider
     _agent_or_orchestrator_draft = agent_setup._agent_or_orchestrator_draft
+
+    # -- capabilities: listing, settings, an agent's own (core/grants.py) --
+
+    capability_list = grants.capability_list
+    set_capability = grants.set_capability
+    agent_capabilities = grants.agent_capabilities
+    set_agent_capabilities = grants.set_agent_capabilities
 
     # -- observation (core/views.py) --------------------------------------
 

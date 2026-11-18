@@ -202,6 +202,15 @@ def role_flags(value: Any, role: str) -> dict[str, bool]:
     return flags(value.get(role)) if isinstance(value, dict) else {}
 
 
+def parse(text: str) -> dict[str, bool]:
+    """`chrome,-other` as {"chrome": True, "other": False}; "" is {}. Raises ValueError."""
+    result = {}
+    for part in filter(None, (part.strip() for part in text.split(","))):
+        name = part.removeprefix("-").strip()
+        result[check_name(name)] = not part.startswith("-")
+    return result
+
+
 def clean(value: Any, key: str = SETTING) -> dict[str, bool]:
     """A `capabilities` setting to store: {name: bool}; None drops a name (inherit).
     Raises ValueError."""
@@ -286,6 +295,19 @@ class Resolution:
 def _settings(store: Store, scope: str) -> dict[str, Any]:
     data = store.get_settings(scope)
     return data if isinstance(data, dict) else {}
+
+
+def role_values(store: Store, project: str | None, role: str) -> dict[str, tuple[bool, str]]:
+    """The role level for `role`: per name its value and the scope that decides it (the
+    project's name, whose entry wins, or GLOBAL_SCOPE)."""
+    found = {
+        name: (on, GLOBAL_SCOPE)
+        for name, on in role_flags(_settings(store, GLOBAL_SCOPE).get(ROLE_SETTING), role).items()
+    }
+    if project:
+        stored = _settings(store, project).get(ROLE_SETTING)
+        found.update({name: (on, project) for name, on in role_flags(stored, role).items()})
+    return found
 
 
 def resolve(store: Store, agent: Agent) -> Resolution:
