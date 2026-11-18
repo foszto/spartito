@@ -14,6 +14,7 @@ from typing import Annotated
 import typer
 
 from . import __version__, autostart, capabilities, config, loadout, providers, roles
+from .core.access import Caller
 from .models import Agent
 from .providers import locate
 from .providers.claude import loadout_flags
@@ -1182,11 +1183,12 @@ def spawn(
         own = capabilities.parse(granted or "")
     except ValueError as exc:
         raise fail(exc) from None
+    o = orch()
     try:
-        agent, run = orch().spawn(
+        agent, run = o.spawn(
             project, task, name=name, role=role, provider=provider, model=model, effort=effort,
             worktree=worktree, share_with=share, base=base, after=after, permission=permission,
-            capabilities=own,
+            capabilities=own, granter=calling_agent(o) if own else None,
         )  # fmt: skip
     except OrchestratorError as exc:
         raise fail(exc) from None
@@ -1780,10 +1782,11 @@ def set_capability(
         raise fail("--agent cannot be combined with --project or --role")
     o = orch()
     try:
+        granter = calling_agent(o)
         if agent:
-            print_breakdown(o.set_agent_capabilities(agent, {name: state}))
+            print_breakdown(o.set_agent_capabilities(agent, {name: state}, granter))
             return
-        o.set_capability(name, state, project, role)
+        o.set_capability(name, state, project, role, granter)
         print_capabilities(o.capability_list(project, wait=True), project)
     except OrchestratorError as exc:
         raise fail(exc) from None
@@ -1813,6 +1816,12 @@ def capabilities_inherit(
 ) -> None:
     """Remove the setting at that level: the one above applies."""
     set_capability(None, name, project, role, agent)
+
+
+def calling_agent(o: Orchestrator) -> Agent | None:
+    """The agent whose turn runs this command (ORCH_AGENT_ID, as for its MCP tools): it gives
+    capabilities as that agent; None for the owner."""
+    return Caller.from_env(o).agent()
 
 
 def print_breakdown(found: dict) -> None:

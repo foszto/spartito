@@ -2,10 +2,16 @@
 resolution): the listing with each one's status, setting them globally, per project and per
 role, an agent's own setting, and who may give which.
 
-Who may turn a capability on for an agent (its own setting, at spawn_agent or send_message):
-the owner's surfaces (CLI, dashboard, the interactive session: no granting agent) and the
-orchestrator agent (the one agent without a project) may give any; any other agent only one its own next turn has. Turning
-one off or dropping it is always allowed. Nobody turns on what the agent's role turns off.
+Who may turn a capability on for an agent (its own setting, at spawn_agent or send_message,
+or the command run in an agent's turn): the owner's surfaces (CLI, dashboard, the interactive
+session: no granting agent) and the orchestrator agent (the one agent without a project) may
+give any; any other agent only one its own next turn has, and not to an agent whose own
+setting turned it off. Turning one off or dropping it is always allowed. Nobody turns on what
+the agent's role turns off. Only the owner and the orchestrator agent turn one on globally,
+for a project or for a role.
+
+A guard rail against agents doing it by accident or on a page's instruction, not a sandbox:
+an agent with a shell can still write the home's database or call the dashboard's API.
 """
 
 from __future__ import annotations
@@ -103,17 +109,28 @@ def set_capability(
     state: bool | None,
     project: str | None = None,
     role: str | None = None,
+    granter: Agent | None = None,
 ) -> list[dict[str, Any]]:
     """Turn a capability on (True) or off (False) globally or for `project`, with `role`
     for that role in that scope; None removes the setting (inherit). Applies from each
-    agent's next turn. Returns capability_list(project)."""
+    agent's next turn. `granter`: the agent that asks (None: the owner); only the
+    orchestrator agent may turn one on. Unreadable entries of the scope's capability
+    settings are dropped (as reading ignores them). Returns capability_list(project)."""
     _flag(state, name)
     if state is not None or name not in _stored_names(orch, project):
         _known(name)
     scope = orch.project(project).name if project else settings.GLOBAL
     if role is not None and (not isinstance(role, str) or not role.strip()):
         raise OrchestratorError("role must be a role name")
-    data = orch.store.get_settings(scope)
+    if state and _agent(granter):
+        where = (
+            f"for role {role.strip()}" if role else "for this project" if project else "globally"
+        )
+        raise OrchestratorError(
+            f"{granter.id} cannot turn {name} on {where}: only the owner or the orchestrator"
+            " turns a capability on globally, for a project or for a role"
+        )
+    data = _readable(orch.store.get_settings(scope))
     if role:
         per_role = data.get(settings.ROLE_CAPABILITIES)
         per_role = dict(per_role) if isinstance(per_role, dict) else {}
@@ -125,6 +142,28 @@ def set_capability(
         data[settings.CAPABILITIES] = _changed(values, name, state)
     orch.update_settings(data, project)
     return orch.capability_list(project)
+
+
+def _agent(granter: Agent | None) -> bool:
+    """True for a granting agent other than the orchestrator (the one without a project)."""
+    return granter is not None and granter.project is not None
+
+
+def _readable(data: dict[str, Any]) -> dict[str, Any]:
+    """The scope's settings with only the readable entries of its capability settings."""
+    data = dict(data)
+    if settings.CAPABILITIES in data:
+        data[settings.CAPABILITIES] = capabilities.flags(data[settings.CAPABILITIES])
+    if settings.ROLE_CAPABILITIES in data:
+        per_role = data[settings.ROLE_CAPABILITIES]
+        roles = per_role if isinstance(per_role, dict) else {}
+        data[settings.ROLE_CAPABILITIES] = {
+            role: values
+            for role in roles
+            if isinstance(role, str) and role.strip()
+            if (values := capabilities.role_flags(roles, role))
+        }
+    return data
 
 
 def _stored_names(orch: Facade, project: str | None) -> set[str]:
@@ -187,6 +226,7 @@ def granted(
     if not isinstance(changes, dict):
         raise OrchestratorError("expected an object of capability names and true, false or null")
     own = capabilities.flags(agent.capabilities)
+    before = dict(own)
     role: dict[str, tuple[bool, str]] | None = None
     granter_has: list[str] | None = None
     for name, value in changes.items():
@@ -208,7 +248,12 @@ def granted(
                     f" turn it on; change the role's: `{config.CLI_NAME} capabilities on {name}"
                     f" --role {agent.role}{where}`"
                 )
-            if granter is not None and granter.project is not None:  # not the orchestrator
+            if _agent(granter) and before.get(name) is False:
+                raise OrchestratorError(
+                    f"cannot give {name}: it was turned off for {agent.id}, and only the owner"
+                    " or the orchestrator can turn it on again"
+                )
+            if _agent(granter):
                 if granter_has is None:
                     granter_has = on_names(orch, granter)
                 if name not in granter_has:

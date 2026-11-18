@@ -84,6 +84,7 @@ def update_settings(orch: Facade, data: Any, project: str | None = None) -> dict
         if project and key in cleaned:
             raise OrchestratorError(f"{key} can only be set globally")
     scope = orch.project(project).name if project else settings.GLOBAL
+    _registered(cleaned, orch.store.get_settings(scope))
     # Kept when not named (the settings dialog sends only its own fields; a page from
     # before a key existed does not send that one).
     kept = (
@@ -98,6 +99,28 @@ def update_settings(orch: Facade, data: Any, project: str | None = None) -> dict
             cleaned.update({} if stored is None else {key: stored})
     orch.store.set_settings(scope, cleaned)
     return cleaned
+
+
+def _registered(cleaned: dict[str, Any], stored: dict[str, Any]) -> None:
+    """Refuse a capability setting the request names for a capability that is not registered
+    (it would be skipped on every turn); one stored with the same value already (a plugin
+    that is gone) stays, and removing one is always possible."""
+    stored_roles = stored.get(settings.ROLE_CAPABILITIES)
+    pairs = [
+        (
+            cleaned.get(settings.CAPABILITIES, {}),
+            capabilities.flags(stored.get(settings.CAPABILITIES)),
+        )
+    ]
+    for role, values in cleaned.get(settings.ROLE_CAPABILITIES, {}).items():
+        pairs.append((values, capabilities.role_flags(stored_roles, role)))
+    for values, before in pairs:
+        for name, on in values.items():
+            if name not in capabilities.REGISTRY and before.get(name) is not on:
+                try:
+                    capabilities.known(name)
+                except ValueError as exc:
+                    raise OrchestratorError(str(exc)) from None
 
 
 def effective(orch: Facade, agent: Agent) -> dict[str, str | None]:

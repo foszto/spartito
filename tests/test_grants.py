@@ -3,9 +3,12 @@ role, an agent's own setting, who may give which, and the CLI, HTTP and MCP inte
 
 from __future__ import annotations
 
+import functools
 import json
 
+import anyio
 import click
+import click.testing
 import pytest
 from fakecapability import FAKE_TOOL
 from starlette.testclient import TestClient
@@ -13,6 +16,7 @@ from typer.testing import CliRunner
 
 from orchestrator import capabilities, cli, config, mcp_server
 from orchestrator.core import availability
+from orchestrator.models import RunStatus
 from orchestrator.providers import locate
 from orchestrator.service import ORCHESTRATOR_ID, Orchestrator, OrchestratorError
 from orchestrator.web.app import app
@@ -151,11 +155,58 @@ def test_a_setting_that_cannot_be_made_is_refused(
 
 
 def test_a_name_whose_plugin_is_gone_can_still_be_removed(orch: Orchestrator) -> None:
-    orch.update_settings({"capabilities": {"gone": True}})
+    orch.store.set_settings("", {"capabilities": {"gone": True}})  # stored while it was there
 
     orch.set_capability("gone", None)
 
     assert "capabilities" not in orch.settings()
+
+
+@pytest.mark.parametrize(
+    "data",
+    [{"capabilities": {"jira": True}}, {"role_capabilities": {"tester": {"jira": False}}}],
+)
+def test_the_settings_refuse_a_capability_that_is_not_registered(
+    orch: Orchestrator, client: TestClient, project: str, data: dict
+) -> None:
+    message = "unknown capability 'jira' (known: chrome, fake-tool)"
+    with pytest.raises(OrchestratorError, match=r"unknown capability 'jira' \(known"):
+        orch.update_settings(data, project)
+    response = client.post("/api/settings", json={"data": data}, headers=ORIGIN)
+    assert response.status_code == 400 and response.json() == {"error": message}
+    assert orch.settings() == {} and orch.settings(project) == {}
+
+
+def test_the_settings_keep_and_remove_a_name_whose_plugin_is_gone(orch: Orchestrator) -> None:
+    stored = {"capabilities": {"gone": True}, "role_capabilities": {"tester": {"gone": False}}}
+    orch.store.set_settings("", stored)
+
+    orch.update_settings({"capabilities": {"gone": True, "chrome": True}})  # unchanged: kept
+    orch.update_settings({"archive_after_hours": 2})  # not named: kept as stored
+    assert orch.settings()["capabilities"] == {"gone": True, "chrome": True}
+    assert orch.settings()["role_capabilities"] == {"tester": {"gone": False}}
+    with pytest.raises(OrchestratorError, match="unknown capability 'gone'"):
+        orch.update_settings({"role_capabilities": {"tester": {"gone": True}}})
+
+    orch.update_settings({"capabilities": {"gone": None, "chrome": True}, "role_capabilities": {}})
+    assert orch.settings()["capabilities"] == {"chrome": True}
+    assert "role_capabilities" not in orch.settings()
+
+
+def test_unreadable_stored_values_do_not_block_a_change(orch: Orchestrator) -> None:
+    """Reading ignores them; a change drops them, which repairs the scope."""
+    orch.store.set_settings(
+        "", {"capabilities": "garbage", "role_capabilities": {"tester": {"chrome": "yes"}}}
+    )
+
+    orch.set_capability("chrome", True)
+    orch.set_capability("chrome", False, role="reviewer")
+
+    assert orch.settings()["capabilities"] == {"chrome": True}
+    assert orch.settings()["role_capabilities"] == {"reviewer": {"chrome": False}}
+    orch.store.set_settings("", {"role_capabilities": {"tester": "garbage", " ": {}}})
+    orch.set_capability("chrome", None, role="tester")
+    assert "role_capabilities" not in orch.settings()
 
 
 # -- an agent's own setting ---------------------------------------------------------------
@@ -279,14 +330,45 @@ def test_send_message_changes_the_setting_under_the_same_rule(
         mcp_server.send_message(worker.id, "go", capabilities="fake-tool")
     assert orch.store.runs_of(worker.id) == [] and own(orch, worker.id) is None
 
-    mcp_server.send_message(worker.id, "go", capabilities="-fake-tool")
-    assert own(orch, worker.id) == {"fake-tool": False}
     orch.set_agent_capabilities(lead.id, {"fake-tool": True})
-    mcp_server.send_message(worker.id, "again", capabilities="fake-tool")
+    mcp_server.send_message(worker.id, "go", capabilities="fake-tool")
     assert own(orch, worker.id) == {"fake-tool": True}
+    mcp_server.send_message(worker.id, "again", capabilities="-fake-tool")
+    assert own(orch, worker.id) == {"fake-tool": False}
     mcp_server.send_message(worker.id, "and again")  # empty: no change
-    assert own(orch, worker.id) == {"fake-tool": True}
+    assert own(orch, worker.id) == {"fake-tool": False}
     assert len(orch.store.runs_of(worker.id)) == 3
+
+
+def test_an_agent_cannot_give_back_what_was_turned_off_for_an_agent(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The owner turned it off for the lead: a child of the lead that has it cannot turn it
+    back on; a lead that dropped it for its worker cannot either; the orchestrator can."""
+    lead = orch.lead(project)
+    child = orch.create_agent(project, worktree=False, parent_id=lead.id)
+    worker = orch.create_agent(project, worktree=False, parent_id=lead.id)
+    orch.set_agent_capabilities(child.id, {"fake-tool": True})
+    orch.set_agent_capabilities(lead.id, {"fake-tool": False})
+
+    as_caller(monkeypatch, child.id)
+    refused = f"cannot give fake-tool: it was turned off for {lead.id}, and only the owner"
+    with pytest.raises(OrchestratorError, match=refused):
+        mcp_server.send_message(lead.id, "go", capabilities="fake-tool")
+    assert own(orch, lead.id) == {"fake-tool": False} and orch.store.runs_of(lead.id) == []
+
+    orch.set_agent_capabilities(lead.id, {"fake-tool": True})
+    as_caller(monkeypatch, lead.id)
+    mcp_server.send_message(worker.id, "go", capabilities="-fake-tool")
+    with pytest.raises(OrchestratorError, match=f"it was turned off for {worker.id}"):
+        mcp_server.send_message(worker.id, "go", capabilities="fake-tool")
+    assert own(orch, worker.id) == {"fake-tool": False}
+
+    orch.orchestrator()
+    as_caller(monkeypatch, ORCHESTRATOR_ID)
+    mcp_server.send_message(worker.id, "go", capabilities="fake-tool")
+    mcp_server.send_message(lead.id, "go", capabilities="fake-tool")
+    assert own(orch, worker.id) == own(orch, lead.id) == {"fake-tool": True}
 
 
 @pytest.mark.parametrize("caller", [ORCHESTRATOR_ID, None], ids=["maestro", "chat"])
@@ -341,6 +423,28 @@ def test_the_views_carry_the_capabilities(
     assert detail["on"] == ["fake-tool"] and detail["error"] is None
     assert listed["capabilities"] == ["fake-tool"]
     assert orch.setup(agent.id)["capabilities"] == detail
+
+
+def test_wait_and_dispatch_replies_carry_no_breakdown(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The breakdown is for get_agent and the dashboard's agent detail only."""
+    as_caller(monkeypatch, None)
+    reply = mcp_server.spawn_agent("x", project, worktree=False, capabilities="fake-tool")
+    assert "capabilities" not in reply
+    assert "capabilities" not in mcp_server.send_message(reply["id"], "go")
+
+    def wait() -> dict:
+        call = functools.partial(mcp_server.wait_for_agents, [reply["id"]], timeout_seconds=1)
+        return anyio.run(call)
+
+    waiting = wait()  # queued, never run: statuses only
+    assert waiting["finished"] is False and "items" not in json.dumps(waiting)
+    for queued in orch.store.runs_of(reply["id"]):
+        orch.store.finish_run(queued.id, RunStatus.DONE, result="ok")
+    done = wait()
+    assert done["finished"] is True and "items" not in json.dumps(done)
+    assert "capabilities" not in json.dumps(done)
 
 
 # -- CLI ----------------------------------------------------------------------------------
@@ -417,6 +521,95 @@ def test_spawn_takes_capabilities_on_the_command_line(orch: Orchestrator, projec
     assert "capabilities fake-tool" in status
     bad = CliRunner().invoke(cli.app, ["spawn", "x", "-p", project, "--capabilities", "Bad"])
     assert bad.exit_code == 1 and "invalid capability name" in bad.output
+
+
+# The command run in an agent's turn (ORCH_AGENT_ID, set by the runner) gives as that agent.
+
+
+def as_agent(agent_id: str | None, *args: str) -> click.testing.Result:
+    env = {"ORCH_AGENT_ID": agent_id} if agent_id else {}
+    return CliRunner().invoke(cli.app, list(args), env=env)
+
+
+SPAWN = ["spawn", "x", "-p", "{project}", "--no-worktree", "--capabilities"]
+
+
+@pytest.mark.parametrize(
+    ("args", "dropping"),
+    [
+        (["capabilities", "on", "chrome", "--agent", "{me}"], ["capabilities", "off"]),
+        (["capabilities", "on", "chrome", "--agent", "{other}"], ["capabilities", "inherit"]),
+        ([*SPAWN, "chrome"], [*SPAWN, "-chrome"]),
+    ],
+    ids=["itself", "another", "spawn"],
+)
+def test_the_cli_in_an_agents_turn_gives_only_what_that_agent_has(
+    orch: Orchestrator, project: str, args: list[str], dropping: list[str]
+) -> None:
+    me = orch.create_agent(project, worktree=False)
+    other = orch.create_agent(project, worktree=False)
+    filled = [arg.format(me=me.id, other=other.id, project=project) for arg in args]
+
+    result = as_agent(me.id, *filled)
+
+    assert result.exit_code == 1
+    assert f"cannot give chrome: {me.id} does not have it itself" in result.output
+    assert own(orch, me.id) is None and own(orch, other.id) is None
+    assert len(orch.agents(project)) == 2  # nothing spawned
+    if dropping[0] == "capabilities":
+        dropping = [*dropping, *filled[2:]]
+    allowed = as_agent(me.id, *[arg.format(project=project) for arg in dropping])
+    assert allowed.exit_code == 0, allowed.output  # dropping is always allowed
+
+
+@pytest.mark.parametrize(
+    ("args", "where"),
+    [
+        ([], "globally"),
+        (["--project", "{project}"], "for this project"),
+        (["--role", "worker"], "for role worker"),
+    ],
+    ids=["global", "project", "role"],
+)
+def test_the_cli_in_an_agents_turn_turns_on_for_no_scope(
+    orch: Orchestrator, project: str, args: list[str], where: str
+) -> None:
+    me = orch.create_agent(project, worktree=False)
+    orch.set_agent_capabilities(me.id, {"chrome": True})  # having it is not enough
+    scope = [arg.format(project=project) for arg in args]
+
+    result = as_agent(me.id, "capabilities", "on", "chrome", *scope)
+
+    assert result.exit_code == 1
+    assert (
+        f"{me.id} cannot turn chrome on {where}: only the owner or the orchestrator turns a"
+        " capability on globally, for a project or for a role"
+    ) in result.output
+    assert not {"capabilities", "role_capabilities"} & (
+        orch.settings().keys() | orch.settings(project).keys()
+    )
+    for state in ("off", "inherit"):  # turning off and removing stay allowed
+        allowed = as_agent(me.id, "capabilities", state, "chrome", *scope)
+        assert allowed.exit_code == 0, allowed.output
+
+
+def test_the_cli_in_the_orchestrators_turn_and_the_owners_give_any(
+    orch: Orchestrator, project: str
+) -> None:
+    orch.orchestrator()
+    worker = orch.create_agent(project, worktree=False)
+    for caller in (ORCHESTRATOR_ID, None):
+        for scope in ([], ["--project", project], ["--role", "worker"], ["--agent", worker.id]):
+            result = as_agent(caller, "capabilities", "on", "chrome", *scope)
+            assert result.exit_code == 0, result.output
+        spawned = as_agent(
+            caller, "spawn", "x", "-p", project, "--no-worktree", "--capabilities", "chrome"
+        )
+        assert spawned.exit_code == 0, spawned.output
+        assert own(orch, spawned.output.split()[0]) == {"chrome": True}
+        orch.update_settings({"capabilities": {}, "role_capabilities": {}})
+        orch.update_settings({"capabilities": {}}, project)
+    assert own(orch, worker.id) == {"chrome": True}
 
 
 def test_status_names_what_is_skipped(orch: Orchestrator, project: str) -> None:

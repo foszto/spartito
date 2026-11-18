@@ -251,7 +251,7 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
         open(scratch / "stream.jsonl", "w", encoding="utf-8") as raw,
         open(stderr_path, "w", encoding="utf-8") as stderr,
     ):
-        child = _start(invocation, agent.cwd, token, stderr)
+        child = _start(invocation, agent, token, stderr)
         if invocation.canary is not None:
             try:
                 outcome = wait_for_canary(child, invocation.canary)
@@ -274,7 +274,7 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
                     if pipe:
                         pipe.close()
                 invocation = _plain(provider, plain_ctx)
-                child = _start(invocation, agent.cwd, token, stderr)
+                child = _start(invocation, agent, token, stderr)
         assert child.stdin and child.stdout
         lines: queue.Queue[str | None] = queue.Queue()
         reader = threading.Thread(target=_pump, args=(child.stdout, lines), daemon=True)
@@ -482,9 +482,13 @@ class CliNotFound(RuntimeError):
     """The provider's CLI is not there; its text is the run's error as it is."""
 
 
-def _start(invocation: Invocation, cwd: str, token: str, stderr: Any) -> subprocess.Popen[str]:
+def _start(invocation: Invocation, agent: Agent, token: str, stderr: Any) -> subprocess.Popen[str]:
+    cwd = agent.cwd
     env = {k: v for k, v in os.environ.items() if k not in invocation.unset_env}
     env.update(invocation.env)
+    # Who runs the commands of this turn, for the command (grants: what it may give); a
+    # sub-agent's runner inherits its lead's id from the lead's MCP server.
+    env["ORCH_AGENT_ID"] = agent.id
     # A runner started by a service or launcher may have a thin PATH: the usual install
     # directories after it, where the CLI (and the `node` of its `#!/usr/bin/env node`) is.
     env["PATH"] = locate.search_path(env.get("PATH"))
