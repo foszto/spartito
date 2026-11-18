@@ -19,6 +19,13 @@ every request. Keys, in a role's frontmatter or a loadout.toml table:
                      are proven to run (runner.py); otherwise the turn runs without it.
                      No effect when `tools` already grants a file-writing tool (`default`
                      does), in `spartito chat`, or for Codex. Bash is not confined.
+  tool_search        whether Claude loads MCP tools on demand (its tool `ToolSearch`) instead
+                     of sending every schema with every request; only a restricted `tools`
+                     list needs it (`default` has it, `none` gets it under the same rule):
+                     `auto` = add ToolSearch on a turn with a capability that brings MCP
+                     tools, keeping the `orch` server's tools loaded upfront; `always` = add
+                     it on every turn with MCP tools (the `orch` server's too);
+                     `never` = never add it. No effect for Codex.
 
 Resolved per key, first hit wins:
   <project>/.orch/loadout.toml [<role>] -> [default] -> $ORCH_HOME/loadout.toml [<role>]
@@ -43,7 +50,16 @@ from . import config
 if TYPE_CHECKING:
     from .roles import Role
 
-KEYS = ("tools", "mcp", "setting_sources", "slash_commands", "codex_user_config", "memory")
+KEYS = (
+    "tools",
+    "mcp",
+    "setting_sources",
+    "slash_commands",
+    "codex_user_config",
+    "memory",
+    "tool_search",
+)
+TOOL_SEARCH = ("auto", "always", "never")
 SOURCES = ("user", "project", "local")
 FILENAME = "loadout.toml"
 DEFAULT_TABLE = "default"
@@ -56,6 +72,7 @@ FALLBACK: dict[str, Any] = {
     "slash_commands": True,
     "codex_user_config": False,
     "memory": False,
+    "tool_search": "auto",
 }
 TOOL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -74,6 +91,7 @@ class Loadout:
     slash_commands: bool = True
     codex_user_config: bool = True
     memory: bool = False  # Write/Edit confined to the memory directory
+    tool_search: str = "auto"  # TOOL_SEARCH; matters only with a restricted `tools`
 
 
 def _items(value: Any, key: str) -> list[str]:
@@ -118,6 +136,10 @@ def _value(key: str, value: Any) -> Any:
                 f"`setting_sources` takes a non-empty list of {', '.join(SOURCES)}, not {value!r}"
             )
         return None if set(sources) == set(SOURCES) else tuple(dict.fromkeys(sources))
+    if key == "tool_search":
+        if value not in TOOL_SEARCH:
+            raise LoadoutError(f"`tool_search` must be `auto`, `always` or `never`, not {value!r}")
+        return value
     if key in ("slash_commands", "codex_user_config", "memory"):
         return _flag(value, key)
     raise LoadoutError(f"unknown loadout key `{key}` (use: {', '.join(KEYS)})")
@@ -198,4 +220,5 @@ def resolve(
         slash_commands=values["slash_commands"],
         codex_user_config=values["codex_user_config"],
         memory=values["memory"],
+        tool_search=values["tool_search"],
     )

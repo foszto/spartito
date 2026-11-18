@@ -113,6 +113,23 @@ def test_overrides_win_per_key_project_role_first(home: Path, tmp_path: Path) ->
     assert no_project.setting_sources is None  # user,project,local = inherit everything
 
 
+def test_tool_search_is_auto_unless_a_level_says_otherwise(home: Path, tmp_path: Path) -> None:
+    project = tmp_path / "repo"
+    (project / ".orch").mkdir(parents=True)
+    write_role(home / "roles", "browser", "---\ntools: Read\ntool_search: never\n---\nLook.\n")
+    packaged = {name: resolve(roles.load(name)) for name in ("worker", "lead", "orchestrator")}
+
+    assert {loadout.tool_search for loadout in packaged.values()} == {"auto"}
+    assert Loadout().tool_search == "auto"
+    assert resolve(roles.load("browser")).tool_search == "never"  # the frontmatter
+    (home / "loadout.toml").write_text('[default]\ntool_search = "always"\n')
+    assert resolve(roles.load("worker")).tool_search == "always"
+    assert resolve(roles.load("browser")).tool_search == "always"  # the file wins
+    (project / ".orch" / "loadout.toml").write_text('[worker]\ntool_search = "never"\n')
+    assert resolve(roles.load("worker"), project).tool_search == "never"
+    assert resolve(roles.load("lead"), project).tool_search == "always"
+
+
 def roles_tools(name: str) -> tuple[str, ...]:
     return tuple(roles.load(name).loadout["tools"].split(","))
 
@@ -131,6 +148,12 @@ def roles_tools(name: str) -> tuple[str, ...]:
         ("[default]\nmcp = true", "`mcp` must be `strict` or `inherit`, not True"),
         ('[worker]\nmemory = "yes"', "`memory` must be true or false, not 'yes'"),
         ("[worker]\nmemory = 1", "`memory` must be true or false, not 1"),
+        (
+            '[worker]\ntool_search = "sometimes"',
+            "`tool_search` must be `auto`, `always` or `never`",
+        ),
+        ("[worker]\ntool_search = true", "`tool_search` must be .* not True"),
+        ('[worker]\ntool_search = "Auto"', "not 'Auto'"),
     ],
 )
 def test_a_malformed_loadout_file_is_an_error_naming_the_file(

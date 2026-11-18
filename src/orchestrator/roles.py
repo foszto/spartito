@@ -13,9 +13,10 @@ Frontmatter keys (all optional):
                (MCP spawn_agent/send_message); looked up like roles, first hit wins.
                `none` or absent: free text
 
-Loadout keys (`tools`, `mcp`, `setting_sources`, `slash_commands`, `codex_user_config`)
-declare what the agent loads besides this prompt; see loadout.py. A role that declares none
-gets the fallback there: no user-level settings, plugins, skills or MCP servers.
+Loadout keys (`tools`, `mcp`, `setting_sources`, `slash_commands`, `codex_user_config`,
+`memory`, `tool_search`) declare what the agent loads besides this prompt; see loadout.py.
+A role that declares none gets the fallback there: no user-level settings, plugins, skills
+or MCP servers.
 """
 
 from __future__ import annotations
