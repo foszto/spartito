@@ -267,12 +267,60 @@ def test_a_cli_below_the_minimum_version_is_not_usable(bare_path: Path, version:
     assert not availability.usable(found)
 
 
-def test_a_cli_without_a_readable_version_is_not_judged_by_it(bare_path: Path) -> None:
-    script(bare_path, "mycli", 'echo "mycli (development build)"')
+@pytest.mark.parametrize(
+    ("minimum", "printed", "usable"),
+    [
+        ((2, 2, 0), "mycli 2.2", True),  # missing parts count as 0: 2.2 = 2.2.0
+        ((2, 2), "mycli 2.2.0", True),
+        ((2, 2, 1), "mycli 2.2", False),
+        ((2, 2), "mycli 2.1.9", False),
+        ((2, 2, 3), "mycli 2.2.4", True),
+        ((2, 2, 3), "mycli v2.3.2", True),  # a leading v
+        ((2, 2, 3), "mycli v2.2.2", False),
+        ("2.2.3", "mycli 2.2.2", False),  # a dotted string as well as a tuple
+        ("2.2.3", "mycli 2.2.3", True),
+        ("v2.2", "mycli 2.2.0", True),
+    ],
+)
+def test_versions_compare_part_by_part(
+    bare_path: Path, minimum: object, printed: str, usable: bool
+) -> None:
+    script(bare_path, "mycli", f'echo "{printed}"')
+    provider = OldestSupported()
+    provider.min_version = minimum
+
+    assert availability.usable(availability.probe(provider)) is usable
+
+
+@pytest.mark.parametrize(
+    "printed", ["mycli (development build)", "mycli version three", "mycli 7", "mycli"]
+)
+def test_a_cli_without_a_readable_version_is_not_judged_by_it(
+    bare_path: Path, printed: str
+) -> None:
+    script(bare_path, "mycli", f'echo "{printed}"')
 
     found = availability.probe(OldestSupported())
 
     assert (found.status, found.version) == ("available", None)
+
+
+@pytest.mark.parametrize(
+    "minimum", ["", "latest", 2.2, 3, (2, "2"), ("2", "2"), (True,), (), None, object()]
+)
+def test_a_wrong_minimum_version_is_ignored_and_breaks_no_listing(
+    orch: Orchestrator, bare_path: Path, monkeypatch: pytest.MonkeyPatch, minimum: object
+) -> None:
+    """One plugin's wrong declaration affects at most that plugin: it stays usable."""
+    script(bare_path, "mycli", 'echo "mycli 1.0.0"')
+    provider = OldestSupported()
+    provider.min_version = minimum
+    monkeypatch.setitem(providers.PROVIDERS, "mycli", provider)
+
+    listed = {entry["name"]: entry for entry in orch.provider_list()}
+
+    assert listed["claude"]["usable"] and listed["codex"]["usable"]
+    assert (listed["mycli"]["status"], listed["mycli"]["usable"]) == ("available", True)
 
 
 def test_an_old_cli_is_listed_as_not_usable(

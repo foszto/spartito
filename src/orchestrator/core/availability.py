@@ -8,6 +8,7 @@ the command line, the service and the MCP servers can each see a different one.
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ MODELS_LOADING = "model list loading"
 MODELS_UNAVAILABLE = "the CLI is not available"
 USABLE = (locate.AVAILABLE, locate.UNKNOWN)
 DOCS = "docs/providers.md"
+VERSION_TEXT = re.compile(r"\d+(?:\.\d+)*")  # in a declared min_version or a CLI's version
 
 
 class Facade(Protocol):
@@ -65,8 +67,9 @@ def probe(provider: Provider) -> locate.Probe:
         tuple(getattr(provider, "version_args", None) or ("--version",)),
         getattr(provider, "login_args", None),
     )
-    minimum = getattr(provider, "min_version", None)
-    if minimum and found.version and _version(found.version) < tuple(minimum):
+    minimum = _version(getattr(provider, "min_version", None))
+    version = _version(found.version)
+    if minimum and version and _older(version, minimum):
         where = found.reason.partition("; ")[0]
         oldest = ".".join(str(part) for part in minimum)
         reason = f"{where}; version {found.version} is older than {oldest}, the oldest supported"
@@ -74,9 +77,23 @@ def probe(provider: Provider) -> locate.Probe:
     return found
 
 
-def _version(text: str) -> tuple[int, ...]:
-    """A version as locate.VERSION finds it, `2.10.1` -> (2, 10, 1)."""
-    return tuple(int(part) for part in text.split("."))
+def _version(value: Any) -> tuple[int, ...] | None:
+    """A version as numbers: a tuple of ints as declared, or the first `2.10.1` in a text
+    (`v2.10.1` too) -> (2, 10, 1). None for anything else: the min_version rule is skipped,
+    so a wrong declaration or an unreadable version never makes a provider unusable."""
+    if isinstance(value, str):
+        match = VERSION_TEXT.search(value)
+        return tuple(int(part) for part in match.group().split(".")) if match else None
+    numbers = isinstance(value, tuple | list) and value
+    if numbers and all(isinstance(part, int) and not isinstance(part, bool) for part in value):
+        return tuple(value)
+    return None
+
+
+def _older(version: tuple[int, ...], minimum: tuple[int, ...]) -> bool:
+    """Whether `version` is below `minimum`, missing parts counting as 0 (2.2 = 2.2.0)."""
+    width = max(len(version), len(minimum))
+    return version + (0,) * (width - len(version)) < minimum + (0,) * (width - len(minimum))
 
 
 def usable(entry: dict[str, Any] | locate.Probe) -> bool:
