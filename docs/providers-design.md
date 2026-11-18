@@ -729,14 +729,16 @@ See also [mcp.md](mcp.md#wiring-per-provider) for how MCP servers are wired per 
 
 ## 6. Google Antigravity and Gemini CLI (research, not built)
 
-> **Status: research only; decided against a direct provider.** Nothing here is built, and
-> neither Antigravity nor Gemini CLI becomes a provider of its own. Antigravity may come up only
-> through the generic ACP provider on the roadmap (6.7). Facts were checked on 2026-11-18
-> against the pages linked; the quotes of the Antigravity FAQ and terms and of Gemini CLI's
-> terms page were re-checked on 2026-11-19. Google's doc pages carry no dates. Marks: **[documented]** in Google's docs or
-> repositories; **[unverified; …]** from a third-party page, a forum, or absent from the docs;
-> **[observed]** seen on the research machine. An `agy` executable is installed there; it was
-> not run, so its version is unknown. `gemini` is not installed.
+> **Status: research only; no Google integration now.** Nothing here is built. Neither
+> Antigravity (`agy -p`) nor Gemini CLI becomes a provider, not even with an API key. The only
+> possible route is the generic ACP provider on the roadmap, and only after a written answer
+> from Google (6.7). Facts were checked on 2026-11-18 against the pages linked. On 2026-11-19
+> the quotes of the Antigravity FAQ and terms and of Gemini CLI's terms page were re-checked,
+> and the quote of the "Other editors (ACP)" page in 6.5 was checked. Google's doc pages carry
+> no dates. Marks: **[documented]** in Google's docs or repositories; **[unverified; …]** from
+> a third-party page, a forum, or absent from the docs; **[observed]** seen on the research
+> machine. An `agy` executable is installed there; it was not run, so its version is unknown.
+> `gemini` is not installed.
 
 ### 6.1 Antigravity: what it offers for headless use
 
@@ -818,7 +820,7 @@ A Gemini CLI provider would take the same phases and sizes, but without an enfor
 
 ### 6.4 Licensing and terms
 
-- **Antigravity FAQ**: "Antigravity CLI headless mode (`agy -p`) is intended for direct scripting and CI workflows." The same entry says that "Wrapping `agy` inside third-party coding agents or applications" … "is not supported under consumer plans". **[documented]** <https://antigravity.google/docs/faq>
+- **Antigravity FAQ**: "Antigravity CLI headless mode (`agy -p`) is intended for direct scripting and CI workflows. Wrapping `agy` inside third-party coding agents or applications, or automating account rotation, is not supported under consumer plans." **[documented]** <https://antigravity.google/docs/faq>
 - **Same FAQ, third-party software**: "Using third-party software, tools, or services to access Antigravity is a violation of our Terms of Service". It recommends "a Gemini Enterprise or Google AI Studio API key" instead. **[documented]** (same page)
 - **Terms §6**: "Using third party software, tools, or services to access the Service" … "may be grounds for suspension or termination of your Antigravity and/or Gemini CLI accounts." **[documented]** <https://antigravity.google/terms>
 - **Forum replies say the opposite** ("Yes, your described pattern is compliant"). The answerers are not marked as Google staff, and the FAQ contradicts them. **[unverified; forum]** <https://discuss.ai.google.dev/t/is-it-allowed-for-an-open-source-tool-to-call-the-official-agy-cli-in-headless-mode/183429>, <https://discuss.ai.google.dev/t/clarification-request-is-local-ipc-pty-wrapping-of-agy-cli-for-open-standard-editor-bridges-e-g-acp-tos-compliant/175905>
@@ -833,8 +835,8 @@ A Gemini CLI provider would take the same phases and sizes, but without an enfor
 
 ### 6.5 Recommendation and outcome
 
-- **Outcome: not built as a direct provider** (6.7). Neither Antigravity nor Gemini CLI gets a per-turn adapter of its own.
-- **Antigravity is a candidate only through ACP**: if the roadmap's generic provider ([ACP as a generic provider](../ROADMAP.md#acp-as-a-generic-provider)) is built, `agy acp` may be considered for it, subject to Google's terms. Whether a client that is not an editor may use it under a consumer plan is the open point.
+- **Outcome: no Google integration now** (6.7). Neither `agy -p` nor Gemini CLI gets a provider, not even with an API key or an enterprise plan.
+- **ACP is the only possible route, and the written answer comes first.** Google's page "Other editors (ACP)" offers `agy acp` to third-party editors, "so any editor can run it". **[documented]** <https://antigravity.google/docs/ide/extensions/acp/> That is why the roadmap's generic provider ([ACP as a generic provider](../ROADMAP.md#acp-as-a-generic-provider)) is the only route. It is not confirmed for Spartito, for two reasons: Spartito is not an editor, and its agents run unattended; and §6 of the terms is general (third-party software accessing the service, 6.4). Hence the condition of A5.
 - **The research's recommendation** was the same in substance: integrate no Google harness now, because with a personal Google login, Spartito running `agy` is what the FAQ calls unsupported and the terms call grounds for suspension; prefer Antigravity CLI to Gemini CLI, which is closed to consumers and kept for enterprise; reconsider through ACP.
 
 ### 6.6 Proposed live checks (none run)
@@ -853,8 +855,8 @@ None of these is planned. They would only matter if the ACP provider is built an
 ### 6.7 Decided questions
 
 1. **A1 A direct provider**: integrate Antigravity at all, given the FAQ and §6 of the terms? Decided: no direct provider, neither for Antigravity nor for Gemini CLI.
-2. **A2 Sign-ins** (API key or enterprise only?): moot after A1.
-3. **A3 Gemini CLI as a provider**: moot after A1 (no direct provider).
+2. **A2 Sign-ins** (API key or enterprise only?): Decided: none; not with an API key or an enterprise plan either.
+3. **A3 Gemini CLI as a provider**: Decided: no.
 4. **A4 Per-turn or ACP?** Decided: only via ACP, through the generic ACP provider on the roadmap ([ACP as a generic provider](../ROADMAP.md#acp-as-a-generic-provider)), never a per-turn adapter of its own.
-5. **A5 A written answer from Google** on a local orchestrator calling `agy -p` or `agy acp`: moot after A1.
-6. **A6 Live checks L1–L6 now**: moot after A1.
+5. **A5 A written answer from Google**: Decided: a condition. Before any `agy` work, even through the ACP provider, the owner must have a written answer from Google for this exact case: a local orchestrator that is not an editor and runs agents unattended, driving `agy acp`.
+6. **A6 Live checks L1–L6 now**: moot after A1 (no live checks now).

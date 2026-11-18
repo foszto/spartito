@@ -196,6 +196,8 @@ change inside a running process. How mature are the adapters? Would it replace t
 providers, or sit beside them? Google Antigravity (`agy acp`) is a candidate only through
 this provider, and only subject to its terms of use: whether third-party use is allowed on
 consumer plans is the open point ([research](docs/providers-design.md#6-google-antigravity-and-gemini-cli-research-not-built)).
+Before any work with `agy`, also through this provider, a written answer from Google is
+needed for this exact case: a client that is not an editor, with agents running unattended.
 
 #### GitHub automations
 
