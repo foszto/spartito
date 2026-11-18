@@ -55,7 +55,8 @@ chosen is in the
   server, in one private MCP configuration file (mode `0600`, removed when the turn ends),
   still under `--strict-mcp-config`; Codex agents skip it with a note. Env values, header
   values and the URL's query values must be `${VAR}` references, so Spartito stores no secret
-  in them (the command, arguments and URL path are stored as given and must hold none), and
+  in them (the command, arguments and URL path are stored as given and must hold none; a URL
+  with a fragment is refused), and
   Claude Code reads the values from the turn's environment. A server name starts and ends
   with a letter or digit and holds no `__`. A turn where a referenced variable is not set leaves the
   server out with a note such as `DOCS_DB_URL is not set`; the background service passes no

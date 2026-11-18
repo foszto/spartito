@@ -258,6 +258,18 @@ def test_query_values_that_are_references_and_the_path_are_kept() -> None:
     assert mcp.server("x", url=URL + "?").entry()["url"] == URL + "?"
 
 
+@pytest.mark.parametrize("fragment", ["#token=abc123", "#x?token=abc", "#"])
+def test_a_url_with_a_fragment_is_refused(fragment: str) -> None:
+    with pytest.raises(ValueError, match="takes no fragment"):
+        mcp.server("x", url=URL + fragment)
+
+
+def test_a_url_without_a_fragment_takes_references_in_host_path_and_query() -> None:
+    url = "https://${DOCS_HOST}/${DOCS_PATH}/mcp?team=${DOCS_TEAM}"
+
+    assert mcp.server("x", url=url).entry()["url"] == url
+
+
 def test_a_server_needs_a_command_or_a_url() -> None:
     with pytest.raises(ValueError, match="either a command"):
         mcp.server("docs-db")
@@ -295,6 +307,7 @@ def test_servers_are_stored_read_and_removed(store: Store) -> None:
         ("spartito", "ws", STDIO_ENTRY),
         ("spartito", "stdio", {**STDIO_ENTRY, "env": {"DOCS_DB_URL": "postgres://docs"}}),
         ("spartito", "http", {"url": "https://user:pw@mcp.example.com", "headers": {}}),
+        ("spartito", "http", {"url": "https://mcp.example.com/mcp#token=abc123", "headers": {}}),
         ("spartito", "stdio", ["not", "an", "object"]),
     ],
 )

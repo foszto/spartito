@@ -204,6 +204,12 @@ def _url(value: Any) -> str:
         )
     if not parts.hostname:
         raise ValueError(f"url {url!r} has no host")
+    if "#" in url:  # also an empty fragment; a "?" after "#" is no query and goes unchecked
+        raise ValueError(
+            "url: an MCP server URL takes no fragment (#…); a value that must stay out of"
+            " Spartito goes into an environment variable, written as ${VAR} in the query or a"
+            " header"
+        )
     for parameter in filter(None, parts.query.split("&")):
         name, has_value, value = parameter.partition("=")
         if not has_value or not REFERENCE.match(value):

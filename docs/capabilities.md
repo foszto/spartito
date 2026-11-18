@@ -330,7 +330,7 @@ as `spartito capabilities on|off|inherit mcp:docs-db`.
 Only you add and remove servers; agents cannot, the orchestrator agent included. Env values,
 header values and the URL's query values are `${VAR}` references only, so Spartito stores no
 secret in them; the command, arguments and the URL's path are stored as given and must hold
-none. A turn whose
+none; a URL with a fragment (`#…`) is refused. A turn whose
 environment lacks a referenced variable leaves the server out, and the background service
 passes such variables on to no turn
 ([mcp.md](mcp.md#the-variables)). On a Claude turn, the

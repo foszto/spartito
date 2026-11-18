@@ -75,7 +75,8 @@ it is off until a level turns it on: `spartito mcp on docs-db` (globally; --proj
   service and write ${VAR}`), and so are `${VAR:-default}` and text around the reference.
   For a header such as `Authorization: Bearer …`, put the whole value, `Bearer` included, into
   the variable. The command, the arguments and the URL's path are stored as given and not
-  checked: keep secrets out of them. Where the variable must be set:
+  checked: keep secrets out of them. A URL with a fragment (`#…`) is refused. Where the
+  variable must be set:
   [The variables](#the-variables).
 - **`--reaches`** adds your own line on what the server reaches, after the one Spartito
   writes; one line, at most 300 characters.

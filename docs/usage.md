@@ -160,7 +160,7 @@ spartito mcp serve
   `--env` value, `--header` value and query parameter value of the URL must be exactly one
   `${VAR}` reference, read from the environment of the process that queued the turn: a
   literal value is refused. The command, the arguments and the URL's path are stored as
-  given: keep secrets out of them. A turn where
+  given: keep secrets out of them, and a URL with a fragment (`#…`) is refused. A turn where
   a referenced variable is not set leaves the server out, and the background service passes
   no such variable on ([mcp.md](mcp.md#the-variables)). `--reaches` is your own line on what
   it reaches.
