@@ -16,7 +16,7 @@ from minimalprovider import MinimalProvider
 from orchestrator import autostart, providers, roles, runner
 from orchestrator.core import setup
 from orchestrator.models import Agent, Event, RunStatus
-from orchestrator.providers import McpServer, RunContext, kit, locate
+from orchestrator.providers import McpServer, RunContext, claude, kit, locate
 from orchestrator.providers.base import Wiring
 from orchestrator.service import Orchestrator
 
@@ -84,32 +84,87 @@ def test_run_cli_kills_its_process_group_on_a_timeout(tmp_path: Path) -> None:
 # -- ModelCatalog -----------------------------------------------------------------------------
 
 
-def test_a_model_catalog_looks_up_once_and_keeps_an_answer_it_need_not_retry() -> None:
-    asked: list[int] = []
-    catalog = kit.ModelCatalog(
-        lambda: asked.append(1) or (["m"], None), retry_when=lambda models, note: False
-    )
+def catalog_of(*answers: kit.Models, retry_when=lambda models, note: False):
+    """A provider object whose class has a ModelCatalog, and its answers in order."""
+    pending = list(answers)
 
-    assert catalog.models() == catalog.models() == ["m"] and catalog.note is None
-    catalog.at -= kit.MODEL_LIST_RETRY_SECONDS
-    assert catalog.models() == ["m"] and len(asked) == 1
+    class Provider:
+        catalog = kit.ModelCatalog(lambda: pending.pop(0), retry_when=retry_when)
+
+        def models(self) -> list:
+            return self.catalog.models(self)
+
+    return Provider, pending
+
+
+def test_a_model_catalog_looks_up_once_and_keeps_an_answer_it_need_not_retry() -> None:
+    provider_class, pending = catalog_of((["m"], None))
+    provider = provider_class()
+
+    assert provider.models() == provider.models() == ["m"] and provider.models_note is None
+    provider._models_at -= kit.MODEL_LIST_RETRY_SECONDS
+    assert provider.models() == ["m"] and not pending
 
 
 def test_a_model_catalog_asks_again_by_its_rule_once_the_answer_is_old() -> None:
-    answers = iter([([], "none yet"), (["m"], None)])
     asked: list[tuple] = []
 
     def retry_when(models: list, note: str | None) -> bool:
         asked.append((models, note))
         return note is not None
 
-    catalog = kit.ModelCatalog(lambda: next(answers), retry_when=retry_when)
+    provider = catalog_of(([], "none yet"), (["m"], None), retry_when=retry_when)[0]()
 
-    assert catalog.models() == [] and catalog.note == "none yet"
-    assert catalog.models() == []  # too young to ask again
-    catalog.at -= kit.MODEL_LIST_RETRY_SECONDS
-    assert catalog.models() == ["m"] and catalog.note is None
+    assert provider.models() == [] and provider.models_note == "none yet"
+    assert provider.models() == []  # too young to ask again
+    provider._models_at -= kit.MODEL_LIST_RETRY_SECONDS
+    assert provider.models() == ["m"] and provider.models_note is None
     assert asked[-1] == ([], "none yet")
+
+
+def test_a_model_catalog_reads_the_kits_interval_when_it_needs_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_class, pending = catalog_of(
+        ([], None), (["m"], None), retry_when=lambda models, note: not models
+    )
+    provider = provider_class()
+    assert provider.models() == []
+
+    monkeypatch.setattr(kit, "MODEL_LIST_RETRY_SECONDS", 0)
+
+    assert provider.models() == ["m"] and not pending
+
+
+def test_each_provider_object_has_its_own_list() -> None:
+    """As before the kit: a new object (each test's provider) looks up afresh."""
+    provider_class, pending = catalog_of((["a"], None), (["b"], None))
+
+    assert provider_class().models() == ["a"] and provider_class().models() == ["b"]
+    assert not pending
+
+
+class OwnInit(claude.ClaudeProvider):
+    """A plugin's subclass with an `__init__` of its own that does not call super()."""
+
+    def __init__(self) -> None:
+        self.models_note = "set by the plugin"
+
+
+def test_a_subclass_without_super_init_lists_models_and_sets_its_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing() -> str:
+        raise FileNotFoundError("claude")
+
+    monkeypatch.setattr(claude, "request_model_list", missing)
+    provider = OwnInit()
+    assert provider.models_note == "set by the plugin"
+
+    assert provider.models() == list(claude.FALLBACK_MODELS)
+    assert provider.models_note == claude.UNAVAILABLE_NOTE
+    provider.models_note = None  # assignable, as before the kit
+    assert provider.models_note is None
 
 
 # -- JsonLines --------------------------------------------------------------------------------

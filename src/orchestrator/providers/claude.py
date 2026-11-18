@@ -95,8 +95,6 @@ def server_statuses(data: dict) -> dict[str, str] | None:
 # The picker's fallback when the installed CLI cannot say what it offers.
 FALLBACK_MODELS = ("fable", "opus", "sonnet", "haiku")
 MODEL_LIST_TIMEOUT = 20
-# A fallback or generic list is asked for again after this long; a full one is kept.
-MODEL_LIST_RETRY_SECONDS = kit.MODEL_LIST_RETRY_SECONDS
 UNAVAILABLE_NOTE = "model list unavailable: showing aliases"
 GENERIC_NOTE = "model list may be incomplete"
 _INIT_ID = "orch-models"
@@ -315,24 +313,18 @@ class ClaudeProvider:
     cache_effect = {"model": "restarts", "effort": "may restart"}
     config_env = ("CLAUDE_CONFIG_DIR",)
 
-    def __init__(self) -> None:
-        # A fallback or generic list (one with a note) is asked for again.
-        self.catalog = kit.ModelCatalog(
-            _lookup_models, retry_when=lambda models, note: note is not None
-        )
-
-    @property
-    def models_note(self) -> str | None:
-        """Set when the list is the fallback or looks generic."""
-        return self.catalog.note
+    models_note: str | None = None  # set when the list is the fallback or looks generic
+    # A fallback or generic list (one with a note) is asked for again; a full one is kept.
+    catalog = kit.ModelCatalog(_lookup_models, retry_when=lambda models, note: note is not None)
 
     def models(self) -> list[tuple[str, str]] | list[str]:
         """What Claude Code's own `/model` picker offers, as (value for --model, label).
 
         Asked from the installed CLI once per process; the aliases when that fails. A
-        fallback or generic answer is asked for again once it is MODEL_LIST_RETRY_SECONDS old.
+        fallback or generic answer is asked for again once it is
+        kit.MODEL_LIST_RETRY_SECONDS old.
         """
-        return self.catalog.models()
+        return self.catalog.models(self)
 
     def invocation(self, ctx: RunContext) -> Invocation:
         agent = ctx.agent

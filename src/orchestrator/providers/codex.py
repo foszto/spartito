@@ -25,8 +25,6 @@ COMPACT_PROMPT = (
     " Reply with the single word: compacted"
 )
 MODEL_LIST_TIMEOUT = 15
-# An empty model list (the CLI missing or failing) is asked for again after this long.
-MODEL_LIST_RETRY_SECONDS = kit.MODEL_LIST_RETRY_SECONDS
 
 
 def request_model_list() -> str:
@@ -92,14 +90,13 @@ class CodexProvider:
     cache_effect = {"model": "restarts", "effort": "keeps"}
     config_env = ("CODEX_HOME",)
 
-    def __init__(self) -> None:
-        # An empty list is asked for again.
-        self.catalog = kit.ModelCatalog(_lookup_models, retry_when=lambda models, note: not models)
+    # An empty list (the CLI missing or failing) is asked for again.
+    catalog = kit.ModelCatalog(_lookup_models, retry_when=lambda models, note: not models)
 
     def models(self) -> list[str]:
         """The models the installed Codex offers for this account. Asked once per process;
-        an empty answer is asked for again once it is MODEL_LIST_RETRY_SECONDS old."""
-        return self.catalog.models()
+        an empty answer is asked for again once it is kit.MODEL_LIST_RETRY_SECONDS old."""
+        return self.catalog.models(self)
 
     def invocation(self, ctx: RunContext) -> Invocation:
         agent = ctx.agent

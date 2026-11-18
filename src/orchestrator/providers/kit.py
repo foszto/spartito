@@ -30,33 +30,39 @@ MODEL_LIST_RETRY_SECONDS = 600
 
 
 class ModelCatalog:
-    """A provider's model list, looked up once per process behind a lock. `lookup()` gives
-    the list and its note, and handles its own failures; `retry_when(models, note)` says
-    whether that answer is asked for again once it is `retry_seconds` old."""
+    """How a provider class looks up its model list: once per provider object, behind the
+    catalog's lock (one per class that declares it). `lookup()` gives the list and its note,
+    and handles its own failures; `retry_when(models, note)` says whether that answer is
+    asked for again once it is `retry_seconds` old (None: MODEL_LIST_RETRY_SECONDS).
+
+    The answer is kept on the provider object: `_models`, `_models_at` (time.monotonic() of
+    the lookup) and `models_note` (read by base.model_choices)."""
 
     def __init__(
         self,
         lookup: Callable[[], Models],
         retry_when: Callable[[list[Any], str | None], bool],
-        retry_seconds: float = MODEL_LIST_RETRY_SECONDS,
+        retry_seconds: float | None = None,
     ) -> None:
         self.lookup = lookup
         self.retry_when = retry_when
         self.retry_seconds = retry_seconds
-        self.note: str | None = None
-        self.at = 0.0  # time.monotonic() of the lookup
-        self._models: list[Any] | None = None
         self._lock = threading.Lock()
 
-    def models(self) -> list[Any]:
+    def models(self, owner: Any) -> list[Any]:
+        """`owner`'s model list."""
         with self._lock:
-            age = time.monotonic() - self.at
-            if self._models is None or (
-                self.retry_when(self._models, self.note) and age >= self.retry_seconds
+            models = getattr(owner, "_models", None)
+            age = time.monotonic() - getattr(owner, "_models_at", 0.0)
+            interval = self.retry_seconds
+            if interval is None:
+                interval = MODEL_LIST_RETRY_SECONDS
+            if models is None or (
+                self.retry_when(models, getattr(owner, "models_note", None)) and age >= interval
             ):
-                self.at = time.monotonic()
-                self._models, self.note = self.lookup()
-            return self._models
+                owner._models_at = time.monotonic()
+                owner._models, owner.models_note = self.lookup()
+            return owner._models
 
 
 class JsonLines:
