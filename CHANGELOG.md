@@ -94,6 +94,11 @@ chosen is in the
   search when their role restricts the built-in tools: the browser tools' schemas are loaded on
   demand instead of being sent with every request, which takes the extra prompt tokens of
   `chrome` from about 11,600 to about 2,900 per request.
+- `mcp = "inherit"` in a project's own files (its `.orch/loadout.toml`, `[<role>]` or
+  `[default]`, and the role files in its `.orch/roles/`) is ignored, with an `info` event on
+  the turn naming the file: a repository could otherwise give its agents every MCP server
+  Claude Code would load, with your credentials. It still works from
+  `~/.orchestrator/loadout.toml` and the role files in `~/.orchestrator/roles/`.
 
 ### Fixed
 

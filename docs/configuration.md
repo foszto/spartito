@@ -262,7 +262,7 @@ ignores `~/.codex/config.toml`. If you rely on `~/.claude/settings.json` or on C
 | key | values | CLI flag |
 |---|---|---|
 | `tools` | comma-separated built-in tools; `default` = the CLI's default set; `none` = no built-in tools. MCP tools are not affected. | `--tools` |
-| `mcp` | `strict` = only the `orch` server (lead roles) and the [MCP servers added in Spartito](mcp.md) that are on for the turn; `inherit` = also user, project, plugin and claude.ai connector servers | `--strict-mcp-config` |
+| `mcp` | `strict` = only the `orch` server (lead roles) and the [MCP servers added in Spartito](mcp.md) that are on for the turn; `inherit` = also user, project, plugin and claude.ai connector servers (not from a project's own files, see [below](#overrides-loadouttoml)) | `--strict-mcp-config` |
 | `setting_sources` | `project,local` = without the user level (user plugins, skills, commands, hooks), keeping the project's `CLAUDE.md` and `.claude/`; `user,project,local` = everything | `--setting-sources` |
 | `slash_commands` | `false` = no skills or slash commands at all, the project's included | `--disable-slash-commands` |
 | `codex_user_config` | `false` = Codex does not read `$CODEX_HOME/config.toml` (the login is kept) | `--ignore-user-config` |
@@ -309,6 +309,15 @@ A malformed file or value makes the turn fail with the file and the error named.
 an unknown role (for example a misspelt `[wroker]`) is ignored and reported as an `info`
 event.
 
+**`mcp = "inherit"` is honoured only from your own files**: `~/.orchestrator/loadout.toml`,
+a role file in `~/.orchestrator/roles/` and the packaged roles. It gives an agent every MCP
+server Claude Code would load, with your credentials: your own servers, plugin servers,
+claude.ai connectors and the servers of the repository's `.mcp.json`. A repository must not
+be able to grant that to itself, so from the project's `.orch/loadout.toml` (`[<role>]` and
+`[default]`) and from a role file in `<project>/.orch/roles/` the value is skipped, as if the
+key were not there, and the next level decides. The turn's log gets an `info` event naming
+the file. `mcp = "strict"` from a project's files still applies.
+
 **Authentication and model settings.** Dropping the `user` setting source drops all of
 `~/.claude/settings.json`, not only plugins: also `env` (for example Bedrock, Vertex or proxy
 routing), `apiKeyHelper`, `model`, permissions and hooks. With Codex,
@@ -325,13 +334,19 @@ codex_user_config = true                 # Codex: ~/.codex/config.toml applies a
 A model can also be set with `spartito config set` instead.
 
 **User-level plugins and skills.** A project that needs them turns the three layers back on;
-`tools` is set per role, so `Skill` must be added to every role that uses skills:
+`tools` is set per role, so `Skill` must be added to every role that uses skills. The MCP
+servers of plugins, your user level and connectors can only be turned on in your home's file:
+
+```toml
+# ~/.orchestrator/loadout.toml
+[default]
+mcp = "inherit"                          # plugin, user and connector MCP servers
+```
 
 ```toml
 # <project>/.orch/loadout.toml
 [default]
 setting_sources = "user,project,local"   # user plugins, skills, commands
-mcp = "inherit"                          # plugin, user and connector MCP servers
 slash_commands = true
 
 [worker]

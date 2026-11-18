@@ -12,7 +12,9 @@ An *MCP server* gives a coding agent a set of tools, such as a ticket tracker's 
 database's. Every Claude agent runs with `--strict-mcp-config`. It gets Spartito's own `orch`
 server (lead roles), the servers you added in Spartito and turned on for it, and nothing else.
 Your own Claude Code MCP servers, plugin servers and claude.ai connectors never reach agents.
-The loadout's `mcp = inherit` would give all of them at once.
+The loadout's `mcp = inherit` would give all of them at once; it is honoured only from your
+own files (the home's `loadout.toml`, home role files and the packaged roles), never from a
+project's own files ([Overrides](configuration.md#overrides-loadouttoml)).
 
 Each MCP server is a [capability](capabilities.md) of its own, named `mcp:<name>`. You turn it
 on and off at the same levels as `chrome`: globally, per project, per role and per agent.
@@ -170,12 +172,12 @@ For a Claude agent whose next turn has at least one server on:
 - **One MCP configuration, in a private file.** The turn's servers, and the `orch` server
   where the agent has it, go into one file, `<home>/run/private/mcp-<run id>.json`, passed
   with `--mcp-config <file>`. `--strict-mcp-config` stays (unless the loadout sets
-  `mcp = inherit`, which drops it as before), so nothing else loads. The directory has mode
-  `0700`, and the file is created with mode `0600`. It is removed when the turn ends, however
-  it ends; files left by runs that are no longer active (a killed runner) are removed the
-  next time such a file is written. Empty `args`, `env` and `headers` are left out. A turn
-  without servers runs exactly as before, with the `orch` server's configuration on the
-  command line.
+  `mcp = inherit` from your own files, which drops it as before), so nothing else loads.
+  The directory has mode `0700`, and the file is created with mode `0600`. It is removed
+  when the turn ends, however it ends; files left by runs that are no longer active (a
+  killed runner) are removed the next time such a file is written. Empty `args`, `env` and
+  `headers` are left out. A turn without servers runs exactly as before, with the `orch`
+  server's configuration on the command line.
 - **`${VAR}` unexpanded.** The file holds the references as you wrote them, never their
   values, and Claude Code expands them from the turn's environment (observed once with
   Claude Code 2.1.322).
@@ -1097,9 +1099,10 @@ Any of them can still change during implementation, but only with the owner.
 13. **Codex.** It has no approval gate in `exec`. *Decided:* support a server for
     Codex only when the owner marks it *runs without approval for Codex*.
 14. **Repositories and `mcp = inherit`.** A repository's `.orch/loadout.toml` or
-    `.orch/roles/*.md` can set `mcp = inherit` today, which gives agents every server,
+    `.orch/roles/*.md` could set `mcp = inherit`, which gives agents every server,
     including the repository's own `.mcp.json`. *Decided:* a separate fix that
-    ignores `mcp = inherit` from project files. Not built yet.
+    ignores `mcp = inherit` from project files. Built: it is honoured only from the home's
+    `loadout.toml`, home role files and the packaged roles.
 
 ## Not verified yet
 

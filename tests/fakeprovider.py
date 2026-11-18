@@ -21,7 +21,8 @@ it answers like Claude with `--disable-slash-commands` instead (with `CODEX` as 
 Codex model, `compacted`). FAKE_NEEDS_SIZE=1 makes the provider ask for the context size
 before a compaction, like Codex; FAKE_COMPACT_NOOP=1 adds `NOOP` to every compaction. `invocation` writes what the
 runner passed it (prompt, system_prompt, slash_commands, tool_search, output_schema,
-compact_below, the capabilities' wirings) to `ctx.json` in the run's scratch directory.
+compact_below, the capabilities' wirings, and as `loadout_flags` the loadout flags a Claude
+turn would get) to `ctx.json` in the run's scratch directory.
 
 `ENVCHILD` has a child process (like a command the agent runs) write its environment to
 `.fake-env.json` in the working directory, complete when it appears.
@@ -77,7 +78,7 @@ import sys
 
 from orchestrator.models import Agent, Event, Usage
 from orchestrator.providers.base import NOTIFICATION_RESULT, Invocation, RunContext
-from orchestrator.providers.claude import ClaudeProvider, stream_json_prompt
+from orchestrator.providers.claude import ClaudeProvider, loadout_flags, stream_json_prompt
 
 SCRIPT = r"""
 import json, os, pathlib, signal, subprocess, sys, time
@@ -235,6 +236,7 @@ class FakeProvider:
             "compact_below": ctx.compact_below,
             "session_id": ctx.agent.session_id,
             "wirings": [{"argv": list(w.argv), "env": dict(w.env)} for w in ctx.wirings],
+            "loadout_flags": loadout_flags(ctx.loadout),
         }
         (ctx.scratch / "ctx.json").write_text(json.dumps(seen))
         env = {"FAKE_SESSION": self.session}
