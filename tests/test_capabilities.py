@@ -225,10 +225,33 @@ def test_the_breakdown_lists_every_item() -> None:
                 "override": True,
                 "final": False,
                 "note": None,
+                "kind": "builtin",
             }
         ],
         "error": None,
     }
+
+
+def test_role_values_and_the_agent_column_read_mcp_names(store: Store) -> None:
+    """MCP servers are named mcp:<server>; the colon reads like any other name."""
+    store.set_settings(
+        settings.GLOBAL, {"role_capabilities": {"worker": {"mcp:docs-db": True, "chrome": True}}}
+    )
+    store.set_settings("my-app", {"role_capabilities": {"worker": {"mcp:docs-db": False}}})
+
+    assert capabilities.role_values(store, "my-app", "worker") == {
+        "mcp:docs-db": (False, "my-app"),
+        "chrome": (True, ""),
+    }
+    own = agent(own={"mcp:docs-db": True, "chrome": False})
+    assert capabilities.flags(own.capabilities) == {"mcp:docs-db": True, "chrome": False}
+
+
+def test_the_static_registry_serves_where_no_store_is() -> None:
+    assert capabilities.registry(None) == capabilities.REGISTRY
+    assert capabilities.known("chrome") is capabilities.CHROME
+    with pytest.raises(ValueError, match="unknown MCP server 'docs-db' \\(added: none\\)"):
+        capabilities.known("mcp:docs-db")
 
 
 # -- settings -----------------------------------------------------------------------------

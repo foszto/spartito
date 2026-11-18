@@ -37,11 +37,15 @@ class Wiring:
     environment variables. Each provider decides where the arguments go on its command
     line; the environment is set for the CLI's process. `mcp_tools`: what it adds brings
     MCP tools (Claude in Chrome's browser tools do), which a provider may load on demand
-    rather than with every request (Claude: tool search, loadout `tool_search`)."""
+    rather than with every request (Claude: tool search, loadout `tool_search`).
+    `mcp_servers`: MCP servers it brings, name -> the server's entry as Claude Code's
+    `mcpServers` takes it (mcp.Server.entry), which the provider adds to the turn's MCP
+    configuration. A plain mapping like `env`: wirings are compared, never hashed."""
 
     argv: tuple[str, ...] = ()
     env: Mapping[str, str] = field(default_factory=dict)
     mcp_tools: bool = False
+    mcp_servers: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

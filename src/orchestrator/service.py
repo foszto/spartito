@@ -25,6 +25,7 @@ from .core import (
 )
 from .core import archive as archiving
 from .core import code_view as code_views
+from .core import mcp as mcp_entries
 from .core import notices as notice_reads
 from .core import setup as agent_setup
 from .core import state as state_backups
@@ -344,6 +345,14 @@ class Orchestrator:
     set_capability = grants.set_capability
     agent_capabilities = grants.agent_capabilities
     set_agent_capabilities = grants.set_agent_capabilities
+
+    # -- MCP servers added in Spartito, each the capability mcp:<name> (core/mcp.py) --
+    # Turning one on, off or back to inherit: set_capability / set_agent_capabilities.
+
+    mcp_list = mcp_entries.listing
+    mcp_show = mcp_entries.show
+    mcp_add = mcp_entries.add
+    mcp_remove = mcp_entries.remove
 
     # -- observation (core/views.py) --------------------------------------
 

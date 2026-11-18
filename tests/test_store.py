@@ -9,9 +9,10 @@ from pathlib import Path
 import pytest
 
 from orchestrator import board, decisions
-from orchestrator.models import RunStatus, Usage
+from orchestrator import store as store_module
+from orchestrator.models import Agent, Project, RunStatus, Usage
 from orchestrator.service import Orchestrator
-from orchestrator.store import Store, known_schema
+from orchestrator.store import Store, check_database, known_schema
 
 # The schema as released before per-run usage existed, with one agent and one finished run.
 OLD_SCHEMA = """
@@ -267,3 +268,55 @@ def test_a_master_era_database_gets_every_new_table_and_column(tmp_path: Path) -
     assert decisions.listing(store) == [decision] and board.listing(store, "p") == [item]
     Store(path)  # opening it again changes nothing
     assert len(decisions.listing(store)) == len(board.listing(store, "p")) == 1
+
+
+MCP_ROW = ("docs-db", "spartito", "stdio", {"command": "docs-db-mcp", "args": [], "env": {}}, None)
+
+
+def test_an_old_database_gets_the_mcp_servers_table(old_db: Path) -> None:
+    tables = {row[0] for row in sqlite3.connect(old_db).execute("SELECT name FROM sqlite_master")}
+    assert "mcp_servers" not in tables
+
+    store = Store(old_db)
+
+    assert store.mcp_servers() == []
+    row = store.add_mcp_server(*MCP_ROW)
+    assert (row["name"], row["tools"], row["pin"]) == ("docs-db", None, None)
+    assert columns(old_db, "mcp_servers") == [
+        "name", "origin", "transport", "definition", "reaches", "tools", "pin",
+        "created_at", "updated_at",
+    ]  # fmt: skip
+    assert columns(old_db, "agents")[-1] == "capabilities"  # nothing else changed for it
+    Store(old_db)  # opening it again keeps the row
+    assert [row["name"] for row in Store(old_db).mcp_servers()] == ["docs-db"]
+    assert "mcp_servers" in known_schema()
+
+
+def test_code_from_before_the_table_keeps_working_on_a_new_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Older code opens a database with the table (it creates only what it knows, and
+    never reads this one) and works as before; the servers stay."""
+    path = tmp_path / "new.db"
+    new = Store(path)
+    new.add_mcp_server(*MCP_ROW)
+    start = store_module.SCHEMA.index("-- MCP servers")
+    end = store_module.SCHEMA.index("\n);", start) + 3
+    monkeypatch.setattr(
+        store_module, "SCHEMA", store_module.SCHEMA[:start] + store_module.SCHEMA[end:]
+    )
+
+    old = Store(path)
+    old.add_project(Project("p", "/repo", "main", "claude"))
+    run = old.add_run(
+        old.add_agent(
+            Agent(id="a-1", project="p", name="a", role="worker", provider="claude", cwd="/w")
+        ).id,
+        "one",
+    )
+    old.set_settings("", {"capabilities": {"mcp:docs-db": True}})
+
+    assert old.get_run(run.id).prompt == "one"
+    assert old.get_settings("") == {"capabilities": {"mcp:docs-db": True}}
+    assert [row["name"] for row in new.mcp_servers()] == ["docs-db"]
+    assert check_database(path) == ["mcp_servers"]  # what older code would call unknown

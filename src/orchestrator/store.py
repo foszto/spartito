@@ -320,6 +320,23 @@ CREATE TABLE IF NOT EXISTS budgets (
 );
 -- The spend of a period (Store.spent_since) reads the usage records from a time on.
 CREATE INDEX IF NOT EXISTS run_usage_created ON run_usage(created_at);
+-- MCP servers (mcp.py, core/mcp.py), each the capability mcp:<name>. origin: 'spartito'
+-- (added in Spartito; the only one so far); transport: 'stdio' | 'http'; definition: JSON,
+-- stdio {"command", "args", "env"}, http {"url", "headers"}, never with a secret (env and
+-- header values are ${VAR} references); reaches: the owner's line on what it reaches (NULL:
+-- none given); tools (a JSON allowlist) and pin: NULL, not used yet. A table of its own,
+-- unknown to older code.
+CREATE TABLE IF NOT EXISTS mcp_servers (
+    name TEXT PRIMARY KEY,
+    origin TEXT NOT NULL,
+    transport TEXT NOT NULL,
+    definition TEXT,
+    reaches TEXT,
+    tools TEXT,
+    pin TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 ANYONE = object()  # withdraw_queued/replace_queued: whoever queued the run
@@ -1692,6 +1709,57 @@ class Store:
                 ).rowcount
                 == 1
             )
+
+    # -- MCP servers (table mcp_servers) ---------------------------------
+
+    def mcp_servers(self) -> list[dict[str, Any]]:
+        """Every row, by name."""
+        with self._conn() as conn:
+            rows = conn.execute("SELECT * FROM mcp_servers ORDER BY name").fetchall()
+        return [dict(row) for row in rows]
+
+    def get_mcp_server(self, name: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM mcp_servers WHERE name = ?", (name,)).fetchone()
+        return dict(row) if row else None
+
+    def add_mcp_server(
+        self,
+        name: str,
+        origin: str,
+        transport: str,
+        definition: dict[str, Any],
+        reaches: str | None,
+    ) -> dict[str, Any]:
+        """Insert a server; ValueError when the name is taken."""
+        stamp = now()
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "INSERT INTO mcp_servers (name, origin, transport, definition, reaches,"
+                    " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (name, origin, transport, json.dumps(definition), reaches, stamp, stamp),
+                )
+        except sqlite3.IntegrityError:
+            raise ValueError(f"an MCP server named {name!r} exists already") from None
+        found = self.get_mcp_server(name)
+        assert found is not None
+        return found
+
+    def remove_mcp_server(self, name: str) -> bool:
+        with self._conn() as conn:
+            return conn.execute("DELETE FROM mcp_servers WHERE name = ?", (name,)).rowcount > 0
+
+    def recent_run_capabilities(self, containing: str, limit: int = 500) -> list[str]:
+        """The capability records (run_meta.capabilities) of the latest runs whose record
+        holds `containing`, newest first, at most `limit`."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT capabilities FROM run_meta WHERE instr(capabilities, ?) > 0"
+                " ORDER BY run_id DESC LIMIT ?",
+                (containing, limit),
+            ).fetchall()
+        return [row[0] for row in rows]
 
     # -- deliveries -------------------------------------------------------
 

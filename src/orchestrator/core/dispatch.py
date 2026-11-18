@@ -165,7 +165,7 @@ def create_agent(
         )
     )
     agent = _noted(agent, choice.note)
-    if unsupported := grants.unsupported_note(provider_name, own):  # the runner notes it too
+    if unsupported := grants.unsupported_note(provider_name, own, orch.store):  # the runner too
         agent.provider_note = "; ".join(filter(None, (agent.provider_note, unsupported)))
     return agent
 
