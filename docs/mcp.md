@@ -267,9 +267,16 @@ your user-scope servers (as `claude mcp list` does). Its `url` and `id` are acco
 are handled like a definition from `~/.claude.json`: copied into the turn's private file,
 never logged or shown.
 
-Still **[unverified]**: a tool call through such an entry; the tool names a turn sees; and
-whether a key other than the reported name works, which matters because Spartito's names
-allow no spaces or dots.
+The key need not be the reported name. Observed once with Claude Code 2.1.322, without a
+model turn: the same entry under a key with no spaces or dots (`docs`) connects too, with
+the same tools **[observed]**. Spartito's own name can therefore be the key.
+
+That session most likely wrote to `~/.claude.json`: the file changed within a second of its
+start, by a size that fits one new entry in a list of connector names. Other sessions also
+write the file, so this is inferred from timing, not proven **[observed]**. A connector under
+a new key may therefore leave a trace in your Claude Code configuration.
+
+Still **[unverified]**: a tool call through such an entry, and the tool names a turn sees.
 
 **Same name and URL.** Claude Code stores OAuth sign-ins per endpoint. **[documented]**
 Spartito keeps the server's name and its `type`, `url` and `headers` exactly as configured,
@@ -510,9 +517,23 @@ Rules for added servers:
   not a secret store.
 - The variable must reach the process that runs the turns. For the background service, that
   is the environment it was installed with ([desktop.md](desktop.md#background-service)).
-- Whether `--mcp-config` expands `${VAR}` as `.mcp.json` does is **[unverified]**. If it does
-  not, the runner expands it into the private file at turn start, and keeps nothing.
-- Arguments are literal. The form warns against putting secrets in them.
+- `--mcp-config` expands variables, observed once with Claude Code 2.1.322, for a
+  configuration file and without a model turn **[observed]**:
+  - `${VAR}` and `${VAR:-default}` in a stdio entry's `command`, `args` and `env` values;
+  - `${VAR}` in a remote entry's `url` and header values.
+
+  Not checked: a variable that is not set and has no default, and inline JSON instead of a
+  file.
+- A stdio server inherits the CLI's whole environment, and an entry's `env` adds to it; it
+  does not replace it **[observed]**, in the same check. Every variable of the turn reaches
+  every stdio server of that turn.
+- Phase 1 therefore writes `${VAR}` references into the private file unexpanded and lets
+  Claude Code expand them from the turn's environment. The file then holds no secret value.
+  Proposal, as unset variables are not checked: before the turn, the runner checks that
+  every referenced variable without a default is set, and skips the server with a note
+  (`DOCS_DB_URL is not set`) if not.
+- Arguments are stored as given, and Claude Code expands `${VAR}` in them too. The form
+  warns against putting secrets in them.
 - Names must not collide with the `orch` server, with Claude Code's reserved names
   (`claude-in-chrome`, `computer-use`, `workspace`, …) or with a server discovered in your
   configuration.
@@ -684,8 +705,12 @@ This phase is built as a separate, small change, ahead of the rest of this desig
   - docs: this page, `capabilities.md`, `configuration.md`, `usage.md`, `agents.md`,
     `CHANGELOG.md`
 - Tasks: (a) domain, store and registry; (b) wiring and the runner; (c) command and docs.
-- Risky: `${VAR}` expansion in `--mcp-config`, and whether stdio servers inherit the turn's
-  environment (and thereby the turn mark the runner ends processes by) **[unverified]**.
+- Wiring: `${VAR}` references stay unexpanded in the private file, for Claude Code to expand
+  (see [Where added servers live](#where-added-servers-live)). A stdio server inherits the
+  turn's environment (observed once), so it should carry the `ORCH_TURN` mark, and the
+  runner's cleanup by that mark should reach it; the cleanup itself is not tested.
+- Risky: a variable that is not set and has no default **[unverified]**; every variable of
+  the turn's environment reaches every stdio server.
 
 **2. Discovering your servers and their status**
 
@@ -755,8 +780,8 @@ The connector part is a proposal made after the checks, not decided yet
 
 - Scope, connectors: read each connector's `claudeai-proxy` entry from the MCP status of a
   session without strict mode; turning one on copies the entry, under its reported name,
-  into the turn's private file (see [claude.ai connectors](#claudeai-connectors)); a
-  `spartito mcp` name without spaces maps to it; a check that strict mode still keeps
+  into the turn's private file (see [claude.ai connectors](#claudeai-connectors)), keyed by
+  its `spartito mcp` name, which works as a key; a check that strict mode still keeps
   connectors out and that a single entry still connects, per Claude Code version.
 - Scope, plugin servers: only if a verification shows a way: `${CLAUDE_PLUGIN_ROOT}`
   resolved by Spartito.
@@ -824,17 +849,21 @@ this list:
   [claude.ai connectors](#claudeai-connectors)).
 - The MCP status control request itself was observed then (see
   [the probe](#tools-and-token-cost-the-probe)); the context-usage request remains.
+- That `--mcp-config` expands `${VAR}` and `${VAR:-default}`, that stdio servers inherit the
+  CLI's environment, and that a connector entry works under a key of your choice, were
+  observed once with Claude Code 2.1.322, without a model turn (see
+  [Where added servers live](#where-added-servers-live) and
+  [claude.ai connectors](#claudeai-connectors)).
 
 1. Whether a copied definition finds an OAuth token: same name and URL; another name.
    Probe against a signed-in server.
-2. Whether `--mcp-config` expands `${VAR}`, and whether stdio servers inherit the CLI's
-   environment. Probe with a fake local stdio server that records its environment, in a
-   temporary directory.
+2. What `--mcp-config` does with a `${VAR}` that is not set and has no default, and whether
+   inline JSON expands like a file. Probe with a fake local stdio server, in a temporary
+   directory.
 3. The control request for context usage over stream-json, without a user message, and its
    answer. Probe.
 4. A connector given alone as a `claudeai-proxy` entry: whether a tool call through it
-   works, which tool names a turn sees, and whether a key other than its reported name
-   works. One minimal real turn; a read-only tool.
+   works, and which tool names a turn sees. One minimal real turn; a read-only tool.
 5. That the probe's token counting is not billed, or is acceptable, for the owner's login.
 6. Whether a resumed conversation (a new process with `--resume`) keeps the cache when a
    server is added or removed, with deferred tools. Real turns.
@@ -843,7 +872,9 @@ this list:
 9. Whether `claude mcp login` works without a terminal when the browser redirect succeeds.
    Visible (it opens a browser): the owner does it.
 10. Whether `claude mcp list` writes to `~/.claude.json`, and how long it takes with stdio
-    servers. Compare the file's modification time; time a run.
+    servers; and what sessions with servers in `--mcp-config` write there. The file changed
+    within a second of the start of such sessions, but other sessions also write it. Needs
+    a quiet machine, or a way to see which process writes.
 11. Codex: whether a token is found for a `-c`-defined server under
     `--ignore-user-config`, and how `enabled_tools` and the approval modes behave in
     `exec`. Real Codex turns.
