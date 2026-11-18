@@ -525,7 +525,7 @@ def without_unset_servers(
 
 
 PRIVATE_FILE_MODE = 0o600
-PRIVATE_RUN_FILE = re.compile(r"^mcp-(\d+)\.json$")  # config.mcp_config_file
+PRIVATE_RUN_FILE = re.compile(r"^mcp-(\d+)\.json\Z")  # config.mcp_config_file
 
 
 class PrivateFiles:
@@ -542,7 +542,11 @@ class PrivateFiles:
         self.paths: set[Path] = set()
 
     def __enter__(self) -> PrivateFiles:
-        self.write(self.files)
+        try:
+            self.write(self.files)
+        except BaseException:  # the `with` body never runs, nor __exit__: remove them here
+            self.__exit__()
+            raise
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -561,7 +565,12 @@ class PrivateFiles:
             with os.fdopen(os.open(path, flags, PRIVATE_FILE_MODE), "w", encoding="utf-8") as out:
                 out.write(content)
         if files:
-            self.sweep()
+            try:
+                self.sweep()
+            except Stopped:
+                raise
+            except Exception as exc:  # leftovers wait for the next turn; this one goes on
+                print(f"removing other runs' private files failed: {exc!r}", file=sys.stderr)
 
     def sweep(self) -> None:
         """Remove the files of other runs that are not active (their runner was killed)."""

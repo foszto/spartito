@@ -245,6 +245,7 @@ def resolution(*wirings: Wiring, chrome: bool = False) -> capabilities.Resolutio
         ({"command": "docs-db-mcp", "args": ["${A}", "${B:-x}", "${C}"]}, {}, "A, C are not set"),
         ({"type": "http", "url": "https://${DOCS_HOST}/mcp"}, {}, "DOCS_HOST is not set"),
         (REMOTE, {}, "DOCS_TOKEN is not set"),
+        ({"type": "http", "url": URL + "?team=${DOCS_TEAM}"}, {}, "DOCS_TEAM is not set"),
     ],
 )
 def test_a_server_whose_variable_is_not_set_is_left_out(
@@ -317,6 +318,33 @@ def test_the_file_is_private_replaces_a_leftover_and_is_removed(
         assert path.parent.stat().st_mode & 0o777 == 0o700
         assert not gone.exists() and kept.exists()
     assert not path.exists() and kept.exists()
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("database is locked"), runner.Stopped()])
+def test_the_turns_file_is_removed_when_the_sweep_fails(
+    orch: Orchestrator, monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    """The sweep of other runs' leftovers runs as the file is written, before the `with`
+    body: a failure there must not leave the turn's own file behind. A stop still stops the
+    turn; any other failure only leaves the leftovers for the next turn."""
+    path = config.mcp_config_file(41)
+    config.private_dir()
+    leftover = config.mcp_config_file(42)
+    leftover.write_text("{}")
+
+    def lookup(run_id: int):
+        raise failure
+
+    monkeypatch.setattr(orch.store, "get_run", lookup)
+    files = {path: '{"mcpServers": {}}'}
+
+    if isinstance(failure, runner.Stopped):
+        with pytest.raises(runner.Stopped), runner.PrivateFiles(orch.store, 41, files):
+            pytest.fail("the turn goes on after a stop")
+    else:
+        with runner.PrivateFiles(orch.store, 41, files):
+            assert path.exists()  # the turn goes on
+    assert not path.exists() and leftover.exists()
 
 
 def test_no_file_no_directory_without_servers(orch: Orchestrator) -> None:
@@ -463,6 +491,30 @@ def test_a_server_whose_variable_is_not_set_is_skipped_with_a_note(
         "capabilities for this turn: mcp:remote-docs; skipped: mcp:docs-db (DOCS_DB_URL is not set)"
     ) in notes
     assert last_statuses(view)["mcp:docs-db"] == "skipped: DOCS_DB_URL is not set"
+
+
+def test_the_check_reads_the_environment_the_cli_gets(
+    orch: Orchestrator, claude_turns: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not the runner's own: a variable the provider removes for the CLI is not set for it,
+    and one the invocation sets for the CLI is (FakeClaude sets FAKE_CLAUDE_LOG)."""
+    monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "cli")  # removed for every Claude turn
+    monkeypatch.delenv("FAKE_CLAUDE_LOG", raising=False)
+    orch.mcp_add("entry", command="entry-mcp", env={"ENTRY": "${CLAUDE_CODE_ENTRYPOINT}"})
+    orch.mcp_add("logged", command="log-mcp", env={"LOG": "${FAKE_CLAUDE_LOG}"})
+    orch.set_capability("mcp:entry", True)
+    orch.set_capability("mcp:logged", True)
+
+    agent, run = orch.spawn(claude_turns, "hello", provider="claude", worktree=False)
+    finished(orch, agent.id)
+
+    (seen,) = claude_runs(config.run_dir(run.id))
+    assert "entry" not in seen["config"]["mcpServers"]
+    assert seen["config"]["mcpServers"]["logged"] == {
+        "command": "log-mcp",
+        "env": {"LOG": "${FAKE_CLAUDE_LOG}"},
+    }
+    assert record(orch, run.id)["skipped"] == {"mcp:entry": "CLAUDE_CODE_ENTRYPOINT is not set"}
 
 
 def test_all_servers_skipped_runs_the_turn_without_them(
