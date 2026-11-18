@@ -14,7 +14,7 @@ from test_dashboard_providers import HARNESS, STATIC, page_functions
 NAMES = (
     "TIER_INFO", "el", "button", "avatar", "choices", "options", "provider", "providerLabel", "canRun",
     "isUsable", "pickProvider", "providerTitle", "unavailableText", "modelLabel", "modelOptions",
-    "providerChoices", "providerViews", "providerHint", "inherited", "openAgentDialog", "renderSettings",
+    "providerChoices", "providerViews", "providersChanged", "providerHint", "inherited", "openAgentDialog", "renderSettings",
     "defaultProviderBox", "setupSlot", "setupBusy", "bumpSetup", "inherits", "settingLabel",
     "renderSetup", "buildProviderControl", "setupRequest", "describe", "markOwn", "markExtras",
     "buildControl", "triValue", "triState", "onOff", "capabilityLabel", "capabilityItems",
@@ -353,6 +353,151 @@ out({ global, project, setup, listed, field, asked: posted.map(p => p.path), sen
         "sent": False,
         "badges": 0,
     }
+
+
+def test_a_save_answers_a_focused_choice_at_once() -> None:
+    result = run_page(
+        """
+// a <select> keeps the focus after a pick: the answer shows anyway
+renderSetup(agentSetup([item({ source: 'role', final: true })], { role: 'reviewer' }));
+document.activeElement = capSelect();
+replies.push(new Error('chrome is off for role reviewer'));
+capSelect().value = 'on';
+capSelect().onchange();
+await settle();
+const refused = { value: capSelect().value, notes: setupCaps.querySelectorAll('.cap-note.error').map(texts) };
+renderSetup(agentSetup([item()]));
+document.activeElement = capSelect();
+replies.push({ capabilities: { on: ['chrome'], items: [item({ state: 'on', source: 'agent', override: true })],
+  error: null }, running: true });
+capSelect().value = 'on';
+capSelect().onchange();
+await settle();
+out({ refused, saved: lines(), value: capSelect().value });
+"""
+    )
+    assert result["refused"] == {"value": "", "notes": ["chrome is off for role reviewer"]}
+    assert result["saved"] == [
+        "Claude in Chromeinheritonoffonfrom its own setting",
+        "A turn is running: the change applies from the next one.",
+    ]
+    assert result["value"] == "on"
+
+
+def test_a_refusal_note_goes_with_its_cause() -> None:
+    result = run_page(
+        """
+const final = [item({ source: 'role', final: true })];
+renderSetup(agentSetup(final, { role: 'reviewer' }));
+replies.push(new Error('chrome is off for role reviewer'));
+capSelect().value = 'on';
+capSelect().onchange();
+await settle();
+const errors = () => setupCaps.querySelectorAll('.cap-note.error').length;
+renderSetup(agentSetup(final, { role: 'reviewer' }));  // a poll: the same breakdown
+const polled = errors();
+renderSetup(agentSetup([item()], { role: 'reviewer' }));  // the role's setting was changed
+const changed = errors();
+replies.push(new Error('chrome is off for role reviewer'));
+renderSetup(agentSetup(final, { role: 'reviewer' }));
+capSelect().value = 'on';
+capSelect().onchange();
+await settle();
+renderSetup({ ...agentSetup(final), id: 'docs-7c1d' });  // another agent
+const other = errors();
+renderSetup(agentSetup(final, { role: 'reviewer' }));  // and back
+const back = errors();
+out({ polled, changed, other, back });
+"""
+    )
+    assert result == {"polled": 1, "changed": 0, "other": 0, "back": 0}
+
+
+def test_a_poll_leaves_a_setup_choice_alone_while_it_is_used() -> None:
+    result = run_page(
+        """
+const poll = () => renderSetup(agentSetup([item({ state: 'on', source: 'global' })]));
+renderSetup(agentSetup([item()]));
+const chosen = capSelect(), answer = later();
+replies.push(answer.promise);
+chosen.value = 'on';
+chosen.onchange();
+poll();  // the pick still settles
+const settling = [capSelect() === chosen, capSelect().value];
+await settle();
+poll();  // the pick is on its way
+const saving = [capSelect() === chosen, capSelect().value];
+answer.answer({ capabilities: { on: ['chrome'], items: [item({ state: 'on', source: 'agent', override: true })],
+  error: null }, running: false });
+await settle();
+const answered = capSelect().value;
+const focused = capSelect();
+document.activeElement = focused;
+renderSetup(agentSetup([item({ state: 'off', source: 'agent', override: false })]));
+const kept = [capSelect() === focused, capSelect().value];
+document.activeElement = null;
+renderSetup(agentSetup([item({ state: 'off', source: 'agent', override: false })]));
+out({ settling, saving, answered, kept, left: [capSelect() === focused, capSelect().value] });
+"""
+    )
+    assert result == {
+        "settling": [True, "on"],
+        "saving": [True, "on"],
+        "answered": "on",
+        "kept": [True, "on"],
+        "left": [False, "off"],
+    }
+
+
+def test_a_poll_redraws_the_settings_box_but_not_a_row_in_use() -> None:
+    result = run_page(
+        """
+settingsDialog.open = true;
+renderSettings();
+const box = settingsBox(), statusOf = () => box.querySelector('.cap-status-line').textContent;
+const poll = fields => { state.capabilities = [{ ...CHROME, ...fields }]; providersChanged(); };
+poll({ status: 'available', reason: 'found' });
+const later_status = statusOf();
+document.activeElement = radios(box)[0];
+poll({ status: 'unavailable', reason: 'needs Claude' });
+const focused = statusOf();
+document.activeElement = null;
+const answer = later();
+replies.push(answer.promise);
+radios(box)[0].checked = false; radios(box)[1].checked = true;  // as the browser does on a click
+radios(box)[1].onchange({ target: radios(box)[1] });
+poll({ status: 'unknown', reason: 'not checked' });  // the pick still settles
+const settling = radioView(box);
+await settle();
+const saving = radioView(box);
+poll({ status: 'available', reason: 'found again' });  // the pick is on its way
+const polled = radioView(box);
+answer.answer(Promise.reject(new Error('refused by server')));
+await settle();
+out({ later_status, focused, settling, saving, polled, after: radioView(box), status: statusOf(),
+  error: box.querySelector('.cap-status').textContent });
+"""
+    )
+    assert result["later_status"] == "Status: available (found)"
+    assert result["focused"] == "Status: available (found)"
+    assert result["settling"] == [
+        ["inherit (off)", False, False],
+        ["on", True, False],
+        ["off", False, False],
+    ]
+    assert result["saving"] == [
+        ["inherit (off)", False, True],
+        ["on", True, True],
+        ["off", False, True],
+    ]
+    assert result["polled"] == result["saving"]
+    assert result["after"] == [
+        ["inherit (off)", True, False],
+        ["on", False, False],
+        ["off", False, False],
+    ]
+    assert result["status"] == "Status: available (found again)"
+    assert result["error"] == "refused by server"
 
 
 def test_the_page_scripts_parse() -> None:

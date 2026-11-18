@@ -458,7 +458,7 @@ function buildView() {
     finally { send.disabled = false; input.focus(); }
   };
   view.append(top, details, code, log, queue, busy, form);
-  shown = selected; lastEvent = 0; toolGroup = null; setupData = null; codeShown = null;
+  shown = selected; lastEvent = 0; toolGroup = null; setupData = null; codeShown = null; capabilityNote = null;
   input.focus();
 }
 
@@ -1066,28 +1066,44 @@ const onOff = value => (value ? 'on' : 'off');
 const capabilityLabel = name => (state.capabilities || []).find(c => c.name === name)?.label || name;
 // The items of an agent's breakdown ({on, items, error}); none from an older server.
 const capabilityItems = holder => (Array.isArray(holder?.capabilities?.items) ? holder.capabilities.items : []);
-let capabilityNote = null;  // {id, text, error}: the answer to the last change, kept across redraws
+// The answer to the last change, kept across redraws: {id, text, error, items}. Dropped when
+// the view is built anew (buildView), for another agent, and on the next answer; a refusal also
+// once the agent's breakdown is no longer the one it was refused against (`items`), the hint of
+// a running turn once no turn runs.
+let capabilityNote = null;
 
-// One line per capability under the setup, rebuilt only when it changed and never while the
-// user is on one of its choices or a choice of it is on its way.
-function renderCapabilitySetup(box, data) {
+// One line per capability under the setup, rebuilt when it changed. A poll leaves a line alone
+// while the user is on its choice or a choice of it is on its way; `own`: the capability whose
+// save has just answered, whose line is redrawn even while focused (the answer shows at once).
+function renderCapabilitySetup(box, data, own) {
   const items = capabilityItems(data), error = data?.capabilities?.error || null;
-  // a hint that a turn keeps what it started with goes once that turn has ended
-  if (capabilityNote && !capabilityNote.error && !data?.running) capabilityNote = null;
-  const note = data && capabilityNote?.id === data.id ? capabilityNote : null;
+  const current = capabilityNote, seen = JSON.stringify(items);
+  if (current && (current.id !== data?.id || (current.error ? current.items !== seen : !data.running))) capabilityNote = null;
+  const note = capabilityNote;
   const key = JSON.stringify([data?.id, data?.role, items, error, note]);
-  if (box.dataset.key === key || box.contains(document.activeElement)) return;
-  if (data && items.some(item => setupBusy(data.id, `cap:${item.name}`))) return;
-  box.dataset.key = key;
-  box.replaceChildren(...items.map(item => capabilityLine(data, item)));
+  if (box.dataset.key === key) return;
+  const before = new Map([...box.querySelectorAll('[data-control]')].map(line => [line.dataset.control, line]));
+  let kept = false, refocus = null;
+  const lines = items.map(item => {
+    const slot = `cap:${item.name}`, old = before.get(slot), focused = Boolean(old?.contains(document.activeElement));
+    if (old && (setupBusy(data.id, slot) || (focused && item.name !== own))) { kept = true; return old; }
+    const line = capabilityLine(data, item);
+    if (focused) refocus = line.querySelector('select');
+    return line;
+  });
+  box.replaceChildren(...lines);
   for (const [text, failed] of [[error, true], [note?.text, note?.error]]) {
     if (text) box.append(el('div', `cap-note${failed ? ' error' : ''}`, text));
   }
   box.hidden = !box.childElementCount;
+  // a line left alone is redrawn by a later pass (focusout, the next poll)
+  if (kept) delete box.dataset.key; else box.dataset.key = key;
+  refocus?.focus();
 }
 
 function capabilityLine(data, item) {
   const line = el('label', `setting cap-line${item.override != null ? ' own' : ''}`), select = el('select', 'input compact');
+  line.dataset.control = `cap:${item.name}`;
   // what "inherit" gives, known when the agent has no setting of its own
   const inherits = item.override == null ? ` (${item.state === 'off' ? 'off' : 'on'})` : '';
   options(select, [['', `inherit${inherits}`], ['on', 'on'], ['off', 'off']], triValue(item.override));
@@ -1121,12 +1137,13 @@ async function saveCapability(id, item, value, keepalive) {
       setupData = { ...setupData, capabilities: reply.capabilities, running: setupData.running || Boolean(reply.running) };
     }
   } catch (error) {
-    capabilityNote = { id, text: error.message, error: true };
+    capabilityNote = { id, text: error.message, error: true, items: JSON.stringify(capabilityItems(setupData)) };
   }
   if (setupData?.id !== id) return;
   const box = $('setupCaps');
   if (box) delete box.dataset.key;  // after a refusal: the stored value again
   renderSetup(setupData);
+  if (box) renderCapabilitySetup(box, setupData, item.name);  // also while its choice has the focus
   refresh();
 }
 
@@ -1935,8 +1952,9 @@ const providerViews = new Map();
 let providersSeen = '';
 function providersChanged() {
   // only what the dialogs show: a re-check with the same result (a new checked_at) redraws nothing
-  const key = JSON.stringify(state.providers.map(p => [p.name, p.label, p.usable, p.status, p.reason, p.models,
-    p.models_note, p.efforts]));
+  // (the capabilities too: their status follows the providers, and the settings show them)
+  const key = JSON.stringify([state.providers.map(p => [p.name, p.label, p.usable, p.status, p.reason, p.models,
+    p.models_note, p.efforts]), state.capabilities || []]);
   if (key === providersSeen) return;
   providersSeen = key;
   for (const [dialog, redraw] of providerViews) if (dialog.open) redraw();
@@ -2225,7 +2243,7 @@ function renderSettings() {
   box.append(row);
   rows.append(box);
   rows.append(compactAtBox(scope, data));
-  if (state.capabilities?.length) rows.append(capabilitiesBox(scope));
+  if (state.capabilities?.length) rows.append(capabilitiesBox(scope, redraws));
   if (!scope) rows.append(...SWITCHES.map(switchBox));
   if (!scope) rows.append(versionBox(state));
 }
@@ -2280,8 +2298,10 @@ function defaultProviderBox(project, redraws) {
 
 // The capabilities, globally or for a project: one row each, with what it is and reaches, its
 // status, an inherit / on / off choice set at once (apart from Save), sent once it rests, and
-// the role settings, read-only (a role's "off" is final). A project's listing is loaded.
-function capabilitiesBox(scope) {
+// the role settings, read-only (a role's "off" is final). A project's listing is loaded. A
+// choice stays on screen while it settles and is saved; later polls redraw the other rows
+// (`redraws`), never one the user is on or has a choice of on its way.
+function capabilitiesBox(scope, redraws) {
   const box = el('div', 'tier'), list = el('div', 'cap-rows'), status = el('p', 'about cap-status');
   status.setAttribute('role', 'status');
   box.append(el('h4', '', 'Capabilities'), el('p', 'about', scope
@@ -2289,10 +2309,16 @@ function capabilitiesBox(scope) {
     : 'Extra tools agents can be given; projects, roles and agents may set their own. From each agent’s next turn.'),
   list, status);
   let entries = scope ? null : state.capabilities, busy = false;
-  const timers = new Map();
-  const draw = focusName => {
+  const timers = new Map(), chosen = new Map();  // name -> the choice settling or being saved
+  // `poll`: a redraw for a later /api/state, which keeps the row the user is on or has chosen in
+  const draw = (focusName, poll) => {
     if (!entries) return;
-    list.replaceChildren(...entries.map(entry => capabilityRow(entry, scope, busy, change)));
+    const before = new Map([...list.children].map(row => [row.dataset.capability, row]));
+    list.replaceChildren(...entries.map(entry => {
+      const row = before.get(entry.name);
+      if (poll && row && (row.contains(document.activeElement) || chosen.has(entry.name))) return row;
+      return capabilityRow(entry, scope, busy, change, chosen.has(entry.name) ? chosen.get(entry.name) : undefined);
+    }));
     if (focusName) list.querySelector(`[name=capability-${focusName}]:checked`)?.focus();
   };
   const save = async (entry, value) => {
@@ -2307,12 +2333,22 @@ function capabilitiesBox(scope) {
     } catch (error) {
       status.textContent = error.message;
     }
-    busy = false; draw(focused);
+    busy = false; chosen.delete(entry.name); draw(focused);  // after an error: the stored value again
   };
   const change = (entry, value) => {
+    chosen.set(entry.name, value);
     clearTimeout(timers.get(entry.name));
     timers.set(entry.name, setTimeout(() => { timers.delete(entry.name); save(entry, value); }, SETUP_SETTLE_MS));
   };
+  // A later poll's listing: status, reason and the global values (a project keeps its own).
+  redraws.push(() => {
+    if (!entries) return;
+    entries = entries.map(entry => {
+      const now = (state.capabilities || []).find(c => c.name === entry.name);
+      return now ? { ...now, ...(scope ? { project: entry.project, project_roles: entry.project_roles } : {}) } : entry;
+    });
+    draw(null, true);
+  });
   if (scope) {
     list.append(el('p', 'about', 'Loading…'));
     call(`/api/capabilities?project=${encodeURIComponent(scope)}`).then(reply => { entries = reply.capabilities; draw(); },
@@ -2321,8 +2357,10 @@ function capabilitiesBox(scope) {
   return box;
 }
 
-function capabilityRow(entry, scope, busy, change) {
+// `shown`: the choice to show instead of the stored one (one settling or being saved).
+function capabilityRow(entry, scope, busy, change, shown) {
   const row = el('div', 'cap-row'), head = el('div', 'cap-head'), group = el('div', 'segmented');
+  row.dataset.capability = entry.name;
   const label = entry.label || entry.name, name = el('b', '', label);
   name.title = entry.description || '';
   const statusText = String(entry.status || 'unknown').replace(/_/g, ' ');
@@ -2331,7 +2369,7 @@ function capabilityRow(entry, scope, busy, change) {
   const inherited = scope && entry.global != null ? entry.global : Boolean(entry.default);
   const from = scope && entry.global != null ? 'the global setting' : 'the default';
   choices(group, 'radio', `capability-${entry.name}`, [['', `inherit (${onOff(inherited)})`], ['on', 'on'], ['off', 'off']],
-    triValue(scope ? entry.project : entry.global), event => change(entry, triState(event.target.value)));
+    triValue(shown !== undefined ? shown : scope ? entry.project : entry.global), event => change(entry, triState(event.target.value)));
   group.setAttribute('role', 'radiogroup');
   group.setAttribute('aria-label', `${label} ${scope ? `for ${scope}` : 'globally'}`);
   group.children[0].title = `Takes ${from}: ${onOff(inherited)}`;
