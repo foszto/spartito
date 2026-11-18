@@ -145,8 +145,9 @@ When a turn's set differs from the agent's previous turn's, the agent's log gets
 first turn gets one only when something is on or skipped. Every turn's set is recorded with the
 turn in the database.
 
-Changing the set of an agent that has a conversation changes the tools its model sees, so
-expect its next turn to start a fresh prompt cache. Capabilities apply to agents' turns only:
+Changing the set of an agent that has a conversation changes the tools its model sees from its
+next turn. For `chrome`, one measurement showed no fresh prompt cache when it was turned off for
+a resumed session. Capabilities apply to agents' turns only:
 `spartito chat` and `spartito attach` are your own sessions and run with your own CLI settings.
 
 ## Giving capabilities from agents
@@ -221,6 +222,10 @@ Its status is `unavailable` when Claude Code is not usable here, or when one of
 `CLAUDE_CODE_USE_VERTEX` is set in the process that asks; otherwise it is `unknown`: the
 extension, the browser and the login cannot be seen from outside.
 
+A session must call the browser tool `tabs_context_mcp` with `createIfEmpty: true` before any
+other browser tool; calling `tabs_create_mcp` first failed with an error that says so. Agents
+normally follow that error; a prompt that asks for browser work can say it up front.
+
 To turn it on for every agent, and off again:
 
 ```sh
@@ -233,7 +238,8 @@ spartito capabilities off chrome
 - It drives your real, signed-in browser: an agent with `chrome` acts with your sessions on any
   site you are logged in to. It can read mail, submit forms and change settings as you.
 - Its windows and tabs appear on your desktop.
-- Agents that run at the same time share the one browser.
+- Agents that run at the same time share the one browser; each session works in its own tab
+  group and sees only its own tabs.
 - Web pages can carry instructions aimed at the agent (prompt injection).
 - It adds context to every turn of every agent that has it.
 - No browser tool is pre-approved: the agent's permission mode decides each call (`auto` unless
@@ -246,21 +252,37 @@ rail, not a sandbox. They stop an agent from widening its tools by accident or b
 page told it to; an agent with a shell on your machine can still reach Spartito's home, the
 dashboard's API or the command without its identity, as it can for every other setting.
 
+### Checked so far
+
+Checked once with Claude Code 2.1.322, with real headless turns, a running Chrome with the
+extension and a claude.ai login; each point is a single measurement:
+
+- In a headless turn (`-p --output-format stream-json`) with `--chrome`, the browser tools
+  (`mcp__claude-in-chrome__…`, 20 of them) are listed and the built-in `claude-in-chrome` server
+  reports `connected`. Without the flag, and with `CLAUDE_CODE_ENABLE_CFC=0`, they are absent.
+- They stay with a strict MCP configuration (the loadout's `mcp = strict`), with a restricted
+  tool list (the loadout's `tools`) and in the `auto` permission mode. A turn started by
+  Spartito with `chrome` on got them.
+- Resuming a session with `--chrome` keeps them; resuming it without (the capability turned off)
+  works without an error, and they are gone.
+- A turn opened its own new tab, read a page and closed the tab: in the `default` mode with the
+  tools allowed, and in the `auto` mode with nothing pre-approved, where the classifier let these
+  calls through.
+- Two turns at the same time each used their own tab and both finished (one pair, not a stress
+  test).
+- A turn with `--chrome` used about 2,400 more prompt tokens than the same turn without it.
+
 ### Not verified yet
 
-The Claude Code documentation describes `--chrome` for interactive sessions. It has not been
-tested with a real session:
+- how a turn behaves when the browser is closed, or the extension is missing or disabled
+- whether the `auto` classifier also lets riskier browser tools through (JavaScript execution,
+  screenshots, form input, uploads); only tab handling, navigation and reading a page were tried
+- more than two agents at once, and long sessions
+- an organization-managed MCP configuration: the Claude Code documentation says `claude --chrome`
+  can exit at startup there; if it does, turn `chrome` off for the agents concerned
 
-- whether the browser tools appear in a headless turn (`-p --output-format stream-json`), which
-  is how Spartito runs every turn
-- how a turn behaves when the extension is missing or the browser is closed
-- how it interacts with a strict MCP configuration (the loadout's `mcp = strict`) and a
-  restricted tool list (the loadout's `tools`)
-- how it interacts with resuming a session
-- how it behaves with several agents at once
-
-This is why the default is off. An organization-managed MCP configuration can also make
-`claude --chrome` exit at startup; if it does, turn `chrome` off for the agents concerned.
+The default stays off: `chrome` reaches your signed-in browser, it costs context on every turn
+of an agent that has it, and the cases above are untested.
 
 ## Adding a capability
 
