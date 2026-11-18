@@ -304,7 +304,7 @@ function renderNav() {
 
   const orch = state.orchestrator;
   const top = navItem(ORCH, ORCH, orch ? stateOf(orch).cls : '', state.orchestrator_name,
-    orch ? `${stateOf(orch).label} · talks to every project` : 'Tell it what you want built', 0, orch?.context);
+    orch ? `${stateOf(orch).label} · talks to every project` : 'Tell it what you want built', 0, orch?.context, orch?.capabilities);
   top.classList.add('orchestrator');
   nav.append(top);
   if (window.BoardView) nav.append(BoardView.navEntry(selected));
@@ -346,7 +346,8 @@ function renderNav() {
         total++;
         if (isActive(agent)) busy++;
         const now = stateOf(agent);
-        agents.append(navItem(agent.id, agent.provider, now.cls, agent.id, `${agent.role} · ${now.label}`, depth, agent.context));
+        agents.append(navItem(agent.id, agent.provider, now.cls, agent.id, `${agent.role} · ${now.label}`, depth, agent.context,
+          agent.capabilities));
         add(agent.id, depth + 1);
       }
     };
@@ -370,7 +371,8 @@ function renderNav() {
   $('summary').textContent = `${total} agents · ${busy} active · ${count(used[0] + used[1])} tokens · ${cost} spent`;
 }
 
-function navItem(id, providerName, status, name, sub, depth, context) {
+// `capabilities`: the names its next turn has, each a small badge (none from an older server).
+function navItem(id, providerName, status, name, sub, depth, context, capabilities) {
   const row = el('button', `nav-item${id === selected ? ' selected' : ''}`);
   row.type = 'button';
   row.style.paddingLeft = `${8 + depth * 16}px`;
@@ -378,9 +380,11 @@ function navItem(id, providerName, status, name, sub, depth, context) {
   // One small field: the context's fill (or `compacted`), in a warning colour from CONTEXT_WARN.
   const fill = context && (context.compacted ? 'compacted' : context.percent != null ? `ctx ${context.percent}%` : '');
   if (fill) subLine.append(' · ', el('span', `ctx${contextWarn(context) ? ' warn' : ''}`, fill));
+  const caps = (Array.isArray(capabilities) ? capabilities : []).map(capabilityLabel);
+  for (const cap of caps) subLine.append(' ', el('span', 'cap-badge', cap));
   label.append(el('span', 'name', name), subLine);
   row.append(avatar(providerName, status), label);
-  row.title = `${name}\n${sub}${fill ? `\n${contextTitle(context)}` : ''}`;
+  row.title = `${name}\n${sub}${fill ? `\n${contextTitle(context)}` : ''}${caps.length ? `\nwith ${caps.join(', ')}` : ''}`;
   row.onclick = () => select(id);
   return row;
 }
@@ -396,11 +400,13 @@ function buildView() {
   // The model/effort controls live in their own slot, so rebuilding the chips around them
   // never takes away a control the user is using.
   const chips = el('div', 'chips'), lead = el('span', 'chip-group'), tail = el('span', 'chip-group');
-  const setup = el('span', 'setup'), note = el('div', 'setup-note');
+  const setup = el('span', 'setup'), note = el('div', 'setup-note'), caps = el('div', 'setup-caps');
   lead.id = 'chips'; tail.id = 'chipsTail'; setup.id = 'setup'; note.id = 'setupNote'; note.hidden = true;
+  caps.id = 'setupCaps'; caps.hidden = true;
   setup.addEventListener('focusout', () => setTimeout(() => renderSetup(setupData)));
+  caps.addEventListener('focusout', () => setTimeout(() => renderSetup(setupData)));
   chips.append(lead, setup, tail);
-  who.append(title, chips, note);
+  who.append(title, chips, note, caps);
   const detailsButton = button('ghost', 'info', 'Details', () => { $('details').hidden = !$('details').hidden; });
   const codeButton = button('ghost', 'code', 'Code', () => toggleCode());
   codeButton.id = 'codeButton'; codeButton.hidden = true;
@@ -539,11 +545,11 @@ function renderHeader(agent, setupFreshness = true) {
     id: agent.id, provider: agent.provider, effective: agent.effective || {}, inherited: agent.inherited || {},
     own: { model: agent.model_override, effort: agent.effort_override },
     session: Boolean(agent.session_id), running: agent.status === 'running', cacheHint: agent.cache_hint,
-    resolved: agent.last_run?.usage?.model || null,
+    resolved: agent.last_run?.usage?.model || null, role: agent.role, capabilities: agent.capabilities,
   } : draft && {
     id: ORCH, provider: draft.provider, effective: draft.effective, inherited: draft.inherited,
     own: { model: draft.model_override, effort: draft.effort_override }, session: false, running: false,
-    cacheHint: draft.cache_hint,
+    cacheHint: draft.cache_hint, role: ORCH, capabilities: draft.capabilities,
   }, setupFreshness);
   if (!agent) return;
   const chip = (text, iconName, parent) => {
@@ -785,6 +791,8 @@ function renderSetup(data, fresh = true) {
   // A stale answer does not touch controls that are there; a view without any still gets them.
   if (!box || (!fresh && box.childElementCount)) return;
   setupData = data;
+  const caps = $('setupCaps');
+  if (caps) renderCapabilitySetup(caps, data);
   if (!data) { box.replaceChildren(); note.replaceChildren(); note.dataset.key = ''; note.hidden = true; return; }
   const notes = [];
   if (data.running) notes.push('A change applies from the next turn; the running one is not changed.');
@@ -1042,6 +1050,82 @@ async function saveSetup(id, key, value, keepalive) {
   if (setupData?.id !== id) return;
   const control = $('setup')?.querySelector(`[data-control=${key}]`);
   if (failed && control) delete control.dataset.built;  // show the stored value again
+  renderSetup(setupData);
+  refresh();
+}
+
+// -- capabilities of the selected agent ---------------------------------------
+// Named extra tool sets a turn can have (state.capabilities). Per name the last level that
+// says something wins: default, global, project, role, the agent's own; a role's "off" is
+// final. A server older than this page sends none of them: then nothing of this is shown.
+
+// A setting as the inherit / on / off choice ('' is inherit), and back.
+const triValue = value => (value === true ? 'on' : value === false ? 'off' : '');
+const triState = value => (value === 'on' ? true : value === 'off' ? false : null);
+const onOff = value => (value ? 'on' : 'off');
+const capabilityLabel = name => (state.capabilities || []).find(c => c.name === name)?.label || name;
+// The items of an agent's breakdown ({on, items, error}); none from an older server.
+const capabilityItems = holder => (Array.isArray(holder?.capabilities?.items) ? holder.capabilities.items : []);
+let capabilityNote = null;  // {id, text, error}: the answer to the last change, kept across redraws
+
+// One line per capability under the setup, rebuilt only when it changed and never while the
+// user is on one of its choices or a choice of it is on its way.
+function renderCapabilitySetup(box, data) {
+  const items = capabilityItems(data), error = data?.capabilities?.error || null;
+  // a hint that a turn keeps what it started with goes once that turn has ended
+  if (capabilityNote && !capabilityNote.error && !data?.running) capabilityNote = null;
+  const note = data && capabilityNote?.id === data.id ? capabilityNote : null;
+  const key = JSON.stringify([data?.id, data?.role, items, error, note]);
+  if (box.dataset.key === key || box.contains(document.activeElement)) return;
+  if (data && items.some(item => setupBusy(data.id, `cap:${item.name}`))) return;
+  box.dataset.key = key;
+  box.replaceChildren(...items.map(item => capabilityLine(data, item)));
+  for (const [text, failed] of [[error, true], [note?.text, note?.error]]) {
+    if (text) box.append(el('div', `cap-note${failed ? ' error' : ''}`, text));
+  }
+  box.hidden = !box.childElementCount;
+}
+
+function capabilityLine(data, item) {
+  const line = el('label', `setting cap-line${item.override != null ? ' own' : ''}`), select = el('select', 'input compact');
+  // what "inherit" gives, known when the agent has no setting of its own
+  const inherits = item.override == null ? ` (${item.state === 'off' ? 'off' : 'on'})` : '';
+  options(select, [['', `inherit${inherits}`], ['on', 'on'], ['off', 'off']], triValue(item.override));
+  const blocked = item.final ? `off for role ${data.role || 'of this agent'}: its own setting cannot turn it on` : '';
+  select.options[1].disabled = Boolean(item.final);
+  select.dataset.setup = `cap:${item.name}`;
+  select.setAttribute('aria-label', `${item.label || item.name} for ${data.id}`);
+  select.title = blocked || 'Its own setting; “inherit” takes the role’s, project’s or global one';
+  select.onchange = () => {
+    const id = data.id, slot = setupSlot(id, `cap:${item.name}`), value = triState(select.value);
+    clearTimeout(pendingSetup.get(slot)?.timer);
+    const save = keepalive => { pendingSetup.delete(slot); saveCapability(id, item, value, keepalive); };
+    pendingSetup.set(slot, { timer: setTimeout(save, SETUP_SETTLE_MS), save });
+  };
+  line.append(el('span', 'key', item.label || item.name), select, el('span', `cap-state ${item.state}`, item.state),
+    el('span', 'cap-source', `from ${item.source === 'agent' ? 'its own setting' : item.source}`));
+  const note = item.note || blocked;
+  if (note) line.append(el('span', 'cap-note', note));
+  return line;
+}
+
+async function saveCapability(id, item, value, keepalive) {
+  const label = item.label || item.name;
+  try {
+    const reply = await setupRequest(id, `cap:${item.name}`,
+      () => call(`/api/agents/${encodeURIComponent(id)}/capabilities`, { [item.name]: value }, keepalive));
+    const now = capabilityItems(reply).find(i => i.name === item.name)?.state || (value === null ? 'inherited' : onOff(value));
+    toast(`${label} of ${id}: ${now}, from its next turn`);
+    capabilityNote = reply.running ? { id, text: 'A turn is running: the change applies from the next one.' } : null;
+    if (setupData?.id === id) {
+      setupData = { ...setupData, capabilities: reply.capabilities, running: setupData.running || Boolean(reply.running) };
+    }
+  } catch (error) {
+    capabilityNote = { id, text: error.message, error: true };
+  }
+  if (setupData?.id !== id) return;
+  const box = $('setupCaps');
+  if (box) delete box.dataset.key;  // after a refusal: the stored value again
   renderSetup(setupData);
   refresh();
 }
@@ -2006,6 +2090,28 @@ function openAgentDialog(project) {
   dialog.querySelector('form').reset();
   dialog.querySelector('[data-project]').textContent = project.name;
   const current = name => dialog.querySelector(`[name=${name}]:checked`)?.value;
+  // Per capability inherit / on / off; only a changed one is sent. A provider that does not
+  // support one is named under it: the agent would start with it skipped.
+  const capsBox = dialog.querySelector('[data-capabilities]');
+  const capChoices = (capsBox ? state.capabilities || [] : []).map(entry => {
+    const row = el('label', 'cap-choice'), select = el('select', 'input compact'), hint = el('span', 'help provider-hint');
+    options(select, [['', 'inherit'], ['on', 'on'], ['off', 'off']], '');
+    select.dataset.capability = entry.name;
+    select.setAttribute('aria-label', entry.label || entry.name);
+    row.title = entry.description || '';
+    row.append(el('span', 'key', entry.label || entry.name), select, hint);
+    const update = providerName => {
+      const skipped = select.value !== 'off' && !(entry.providers || []).includes(providerName);
+      hint.textContent = skipped ? `not supported on ${providerLabel(providerName)}: skipped there if on` : '';
+      hint.hidden = !skipped;
+    };
+    select.onchange = () => update(current('provider'));
+    return { entry, select, row, update };
+  });
+  if (capsBox) {
+    capsBox.replaceChildren(...capChoices.map(choice => choice.row));
+    dialog.querySelector('[data-capabilities-field]').hidden = !capChoices.length;
+  }
   const sync = () => {
     const role = state.roles.find(r => r.name === current('role')), chosen = provider(current('provider'));
     const tier = role?.lead ? 'lead' : 'worker';
@@ -2019,6 +2125,7 @@ function openAgentDialog(project) {
     options(field('effort'), [['', effort ? `${effort} (from settings)` : 'default'], ...chosen.efforts.map(e => [e, e])],
       chosen.efforts.includes(kept) ? kept : '');
     providerHint($('agentProviderHint'), wanted(), chosen.name, drawProviders);
+    for (const choice of capChoices) choice.update(chosen.name);
   };
   // The provider: the one the user picked, else the role's (a server older than this page names
   // none), else the project's default; the first of these that can run here, else any that can.
@@ -2043,12 +2150,14 @@ function openAgentDialog(project) {
   sync();
   openDialog(dialog, async data => {
     const workspace = data.get('workspace');
+    const capabilities = Object.fromEntries(capChoices.filter(choice => choice.select.value)
+      .map(choice => [choice.entry.name, choice.select.value === 'on']));
     const result = await call('/api/agents', {
       project: project.name, task: data.get('task'), name: data.get('name'), role: data.get('role'),
       provider: data.get('provider'), model: data.get('model'), effort: data.get('effort'),
       worktree: workspace === 'own' ? true : workspace === 'main' ? false : null,
       share_with: workspace.startsWith('share:') ? workspace.slice(6) : null,
-      after: data.getAll('after'),
+      after: data.getAll('after'), ...(Object.keys(capabilities).length ? { capabilities } : {}),
     });
     toast(result.note ? `Agent started. ${result.note}` : 'Agent started', false, result.note ? 12000 : 0);
     select(result.agent_id);
@@ -2116,6 +2225,7 @@ function renderSettings() {
   box.append(row);
   rows.append(box);
   rows.append(compactAtBox(scope, data));
+  if (state.capabilities?.length) rows.append(capabilitiesBox(scope));
   if (!scope) rows.append(...SWITCHES.map(switchBox));
   if (!scope) rows.append(versionBox(state));
 }
@@ -2166,6 +2276,76 @@ function defaultProviderBox(project, redraws) {
     + 'Agents that exist keep theirs. Applies at once.'), group, hint, status);
   draw();
   return box;
+}
+
+// The capabilities, globally or for a project: one row each, with what it is and reaches, its
+// status, an inherit / on / off choice set at once (apart from Save), sent once it rests, and
+// the role settings, read-only (a role's "off" is final). A project's listing is loaded.
+function capabilitiesBox(scope) {
+  const box = el('div', 'tier'), list = el('div', 'cap-rows'), status = el('p', 'about cap-status');
+  status.setAttribute('role', 'status');
+  box.append(el('h4', '', 'Capabilities'), el('p', 'about', scope
+    ? `Extra tools for the agents of ${scope}; “inherit” takes the global setting. From each agent’s next turn.`
+    : 'Extra tools agents can be given; projects, roles and agents may set their own. From each agent’s next turn.'),
+  list, status);
+  let entries = scope ? null : state.capabilities, busy = false;
+  const timers = new Map();
+  const draw = focusName => {
+    if (!entries) return;
+    list.replaceChildren(...entries.map(entry => capabilityRow(entry, scope, busy, change)));
+    if (focusName) list.querySelector(`[name=capability-${focusName}]:checked`)?.focus();
+  };
+  const save = async (entry, value) => {
+    const focused = list.contains(document.activeElement) ? entry.name : null;
+    busy = true; draw(); status.textContent = '';
+    try {
+      const reply = await call('/api/capabilities', { name: entry.name, state: value, ...(scope ? { project: scope } : {}) });
+      entries = reply.capabilities;
+      status.textContent = `${entry.label || entry.name}: ${value === null ? 'inherited' : onOff(value)}`
+        + `${scope ? ` for ${scope}` : ' globally'}, from each agent’s next turn.`;
+      refresh();
+    } catch (error) {
+      status.textContent = error.message;
+    }
+    busy = false; draw(focused);
+  };
+  const change = (entry, value) => {
+    clearTimeout(timers.get(entry.name));
+    timers.set(entry.name, setTimeout(() => { timers.delete(entry.name); save(entry, value); }, SETUP_SETTLE_MS));
+  };
+  if (scope) {
+    list.append(el('p', 'about', 'Loading…'));
+    call(`/api/capabilities?project=${encodeURIComponent(scope)}`).then(reply => { entries = reply.capabilities; draw(); },
+      error => { list.replaceChildren(); status.textContent = error.message; });
+  } else draw();
+  return box;
+}
+
+function capabilityRow(entry, scope, busy, change) {
+  const row = el('div', 'cap-row'), head = el('div', 'cap-head'), group = el('div', 'segmented');
+  const label = entry.label || entry.name, name = el('b', '', label);
+  name.title = entry.description || '';
+  const statusText = String(entry.status || 'unknown').replace(/_/g, ' ');
+  head.append(name, el('span', 'cap-providers', (entry.providers || []).map(providerLabel).join(', ') || 'no provider'));
+  // what "inherit" gives: the global setting for a project, else the product's default
+  const inherited = scope && entry.global != null ? entry.global : Boolean(entry.default);
+  const from = scope && entry.global != null ? 'the global setting' : 'the default';
+  choices(group, 'radio', `capability-${entry.name}`, [['', `inherit (${onOff(inherited)})`], ['on', 'on'], ['off', 'off']],
+    triValue(scope ? entry.project : entry.global), event => change(entry, triState(event.target.value)));
+  group.setAttribute('role', 'radiogroup');
+  group.setAttribute('aria-label', `${label} ${scope ? `for ${scope}` : 'globally'}`);
+  group.children[0].title = `Takes ${from}: ${onOff(inherited)}`;
+  if (busy) for (const input of group.querySelectorAll('input')) input.disabled = true;
+  const status = el('p', 'about cap-status-line', `Status: ${statusText}${entry.reason ? ` (${entry.reason})` : ''}`);
+  status.title = entry.reason || '';
+  row.append(head);
+  if (entry.reaches) row.append(el('p', 'about cap-reaches', `Reaches ${entry.reaches}`));
+  row.append(status, group);
+  // the role settings, read-only; a project's own role entry wins over the global one
+  const roleLine = (role, on, where) => el('p', 'about cap-role', `role ${role}${where ? ` (${where})` : ''}: ${on ? 'on' : 'off (final)'}`);
+  for (const [role, on] of Object.entries(entry.roles || {})) row.append(roleLine(role, on));
+  for (const [role, on] of Object.entries(scope ? entry.project_roles || {} : {})) row.append(roleLine(role, on, scope));
+  return row;
 }
 
 // The installed version (from /api/state); checking for a newer one is a command, never the page.
