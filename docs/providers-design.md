@@ -25,6 +25,7 @@
 3. Target design
 4. The opencode adapter
 5. Phases, risks, verification, decided questions
+6. Google Antigravity and Gemini CLI (research, not built)
 
 ---
 
@@ -722,3 +723,132 @@ Decided: no golden tests for now; the existing tests and the normal review carry
 See also [mcp.md](mcp.md#wiring-per-provider) for how MCP servers are wired per provider,
 [configuration.md](configuration.md#model-and-effort) for model and effort, and
 [architecture.md](architecture.md) for the layers.
+
+---
+
+## 6. Google Antigravity and Gemini CLI (research, not built)
+
+> **Status: research only.** Nothing here is built. Facts were checked on 2026-11-18 against the
+> pages linked; Google's doc pages carry no dates. Marks: **[documented]** in Google's docs or
+> repositories; **[unverified; …]** from a third-party page, a forum, or absent from the docs;
+> **[observed]** seen on the research machine. An `agy` executable is installed there; it was
+> not run, so its version is unknown. `gemini` is not installed.
+
+### 6.1 Antigravity: what it offers for headless use
+
+- **Products.** The Antigravity app (Agent Manager) and the Antigravity IDE are desktop apps with no headless mode. **[documented by absence]** <https://codelabs.developers.google.com/getting-started-agy-ide>
+  The scriptable surface is the separate **Antigravity CLI**, command `agy`, written in Go, on its own version line (1.5.11 at the time of writing). **[documented]** <https://antigravity.google/docs/changelog>, <https://github.com/google-gemini/gemini-cli/discussions/27274>
+- **One process per turn**: `agy -p` "Run a single prompt non-interactively in headless mode and print the response." **[documented]** <https://antigravity.google/docs/cli/reference>
+- **Prompt**: the value of `-p`, or one `{"event":"user","message":{"content":…}}` line on stdin with `--input-format stream-json`. That needs `--output-format stream-json`; closing stdin ends the run after the turn, with exit 0. **[documented]** <https://antigravity.google/docs/cli/headless>
+- **Events**: `--output-format text|json|stream-json`. In stream-json: `init` (cwd, tools, permission_mode, model), `step_update` (conversation_id, step_type, text_delta, tool_info, usage, subagent_info), and a final `result` with status `SUCCESS|ERROR|CANCELED|INTERRUPTED|…`. **[documented]** (same page)
+- **Session**: `--conversation <id>` resumes; the id is `conversation_id` in the stream. It is chosen by `agy`, not by the caller. **[documented]** (same page)
+- **Usage**: `input_tokens`, `output_tokens`, `thinking_tokens`, `cache_read_tokens`, `total_tokens`. There is **no cost** and no context-window field. In a stdin session, usage is cumulative across turns. **[documented]** (same page)
+- **Structured answers**: `--json-schema <string|file>` **enforces** the schema; the result carries `structured_output`. **[documented]** (same page)
+- **Exit codes**: 0 on success. Failures are non-zero (an unknown model gives 1; a slash command on stdin gives 2), with `status`/`error` in the JSON. **[documented]** (same page)
+- **Model and effort**: `--model` (list them with `agy models`), `--effort low|medium|high|xhigh|max` depending on the model. An unknown model fails and does not fall back. **[documented]** (same page) The output format of `agy models` is **[unverified]**.
+- **Permissions**:
+  - `--mode accept-edits|auto|plan`, `--sandbox`, `--dangerously-skip-permissions`. **[documented]** <https://antigravity.google/docs/cli/reference>
+  - Allow/ask/deny rules (`command(git)`, `write_file(src/)`, `mcp(server/*)`) are documented only in the global `~/.gemini/antigravity-cli/settings.json`; no per-run flag or variable is documented. **[documented]** <https://antigravity.google/docs/permissions?tab=cli>
+  - In headless mode an action that needs approval is **soft-denied**: the run goes on, exits 0, and names the tool on stderr. **[documented]** <https://antigravity.google/docs/cli/headless>
+  - `auto` became the default mode for `-p` in 1.5.7. **[unverified; third-party release tracker]** <https://www.havoptic.com/releases/antigravity-cli/2026/11>
+- **MCP**:
+  - Servers are read from `~/.gemini/config/mcp_config.json` or `<workspace>/.agents/mcp_config.json`, with fields `command`/`args`/`env`/`cwd` or `serverUrl` (Streamable HTTP only), and `enabledTools`/`disabledTools`/`timeoutSeconds`. **[documented]** <https://antigravity.google/docs/mcp?tab=cli>
+  - The default tool-call timeout is 180 s; `timeoutSeconds` < 0 turns it off. **[documented]** (same page)
+  - There is no per-run MCP file or flag, and nothing says whether `-p` loads the servers. **[unverified]**
+- **Isolation**: no documented variable moves the config home, and there is no flag to ignore the user's settings, plugins or hooks. **[documented by absence]**
+- **ACP**: `agy acp` is an ACP server over stdio. It supports session load/resume/list/close, permission requests, and a model and thinking-level picker. `--process-per-session` is "required for HTTP MCP servers that your editor configures". **[documented]** <https://antigravity.google/docs/ide/extensions/acp/> It was added in 1.5.0. **[unverified; third-party release tracker]**
+- **SDK**: a Python SDK (`google-antigravity`) with API key or Vertex auth, MCP, policies and session persistence. It is not a per-turn CLI. **[documented]** <https://antigravity.google/docs/sdk/overview>
+
+### 6.2 Gemini CLI on the same points
+
+- **Status**:
+  - Free-tier and Google AI Pro/Ultra users lost Gemini CLI on 2026-06-18. It "will remain accessible via paid Gemini and Gemini Enterprise Agent Platform API keys". **[documented]** <https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/>
+  - It is "maintained for enterprise Gemini Code Assist workflows" and is not tuned for Gemini 4 models. **[documented]** <https://github.com/google-gemini/gemini-cli>
+- **Prompt**: `-p` "Appended to stdin input if provided. Forces non-interactive mode." **[documented]** <https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/cli-reference.md>
+- **Events**: `-o text|json|stream-json` with events `init`, `message`, `tool_use`, `tool_result`, `error`, `result`. The field names are not documented. **[documented; fields unverified]** <https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/headless.md>
+- **Session**: `-r latest|<index>`, and the examples resume by id. **[documented]** (cli-reference)
+- **Permissions**:
+  - `--approval-mode default|auto_edit|yolo|plan`. **[documented]** (cli-reference)
+  - `--allowed-tools` is deprecated in favour of the Policy Engine. **[documented]** (cli-reference)
+- **MCP**:
+  - `mcpServers` in the user or project `settings.json`, with `includeTools`/`excludeTools`, `trust` and `${VAR}`. **[documented]** <https://geminicli.com/docs/tools/mcp-server>
+  - Tool names are `mcp_<server>_<tool>`. **[documented]** (same page)
+  - `--allowed-mcp-server-names` limits which servers load. **[documented]** (cli-reference)
+- **Model and effort**: `-m` (default `auto`); no effort flag. **[documented by absence]**
+- **Usage and output**:
+  - Per-model token stats, no cost, no output-schema flag. **[documented by absence]** (headless.md)
+  - Exit codes: 0 success, 1 error, 42 input error, 53 turn limit. **[documented]** (headless.md)
+- **ACP**: `--experimental-acp`, "Experimental feature." **[documented]** (cli-reference)
+- **Account and config relation**:
+  - Both CLIs keep their configuration under `~/.gemini`. `agy` imports Gemini CLI extensions and settings and moves session tokens to the OS keyring. **[documented]** <https://antigravity.google/docs/cli/gcli-migration>
+  - Both read `GEMINI.md` and `AGENTS.md`. **[documented]** (same page)
+  - The Antigravity terms sanction "your Antigravity and/or Gemini CLI accounts" together. **[documented]** <https://antigravity.google/terms>
+  - Whether one sign-in serves both is **[unverified]**.
+
+### 6.3 Fit with the kit
+
+Technically, `agy -p` is closer to Claude Code than Codex is: it has stream-json, an enforced schema, resume by id, model and effort flags. A per-turn module, `providers/antigravity.py` (planned), would contain:
+
+- **Invocation**: `agy -p --input-format stream-json --output-format stream-json --disable-slash-commands [--conversation <id>] [--model …] [--effort …] [--mode …] [--json-schema <kit.schema_file>] [--add-dir <.git>]`, with the prompt on stdin.
+- **Role prompt**: `kit.with_role_prefix`, because there is no system-prompt flag.
+- **MCP servers**: the `orch` MCP server and the `mcp:` servers in a `.agents/mcp_config.json` written into the worktree and kept out of git, with `timeoutSeconds: -1` for the `orch` MCP server.
+- **Stream**: a `kit.JsonLines` stream that maps `step_update` deltas and tools, and `result` with usage and `structured_output`.
+
+| # | phase | depends on | size |
+|---|---|---|---|
+| G0 | Live checks L1–L6 | the owner's go-ahead | S |
+| G1 | Adapter and config: invocation, stdin prompt, MCP file, mode mapping, fake `agy` on `PATH` | opencode phases 3–4 (stream hook, fake-CLI harness) | M |
+| G2 | Stream parser, usage (per run or cumulative), soft-deny notices, structured output | G1 | M |
+| G3 | Model list, availability (`--version` not documented), API-key-only check, docs | G1 | S |
+
+A Gemini CLI provider would take the same phases and sizes, but without an enforced schema. An ACP route is the roadmap's generic provider ([ROADMAP.md](../ROADMAP.md#acp-as-a-generic-provider)), L or more for the runner; `agy acp` then costs S on top. That is cheaper only when it serves several harnesses.
+
+**Gaps a user would notice (agy) compared with Claude Code**:
+- **Structured answers**: these do work; the schema is enforced.
+- **Not available**: `chrome`, `memory`, and compaction (no headless compact, no compaction event; `spartito compact` refuses).
+- **Cost**: not reported. Tokens only, so costs show as unknown.
+- **Per-role tool restriction**: not possible. Only global rules exist; per turn there are only `--mode` and `--sandbox`.
+- **Denied tools**: a denied tool does not fail the turn (soft-deny, exit 0).
+- **Isolation**: the user's global settings, MCP servers, plugins, hooks and `GEMINI.md` apply to agents. No config-home variable is documented.
+- **Sessions**: they live in the user's own Antigravity state.
+
+### 6.4 Licensing and terms
+
+- **Antigravity FAQ**: "Antigravity CLI headless mode (`agy -p`) is intended for direct scripting and CI workflows." The same entry lists "wrapping `agy` inside third-party coding agents or applications" as not supported under consumer plans. **[documented]** <https://antigravity.google/docs/faq>
+- **Same FAQ, third-party software**: "Using third-party software, tools, or services to access Antigravity is a violation of our Terms of Service". It recommends "a Gemini Enterprise or Google AI Studio API key" instead. **[documented]** (same page)
+- **Terms §6**: "Using third party software, tools, or services to access the Service" … "may be grounds for suspension or termination of your Antigravity and/or Gemini CLI accounts." **[documented]** <https://antigravity.google/terms>
+- **Forum replies say the opposite** ("Yes, your described pattern is compliant"). The answerers are not marked as Google staff, and the FAQ contradicts them. **[unverified; forum]** <https://discuss.ai.google.dev/t/is-it-allowed-for-an-open-source-tool-to-call-the-official-agy-cli-in-headless-mode/183429>, <https://discuss.ai.google.dev/t/clarification-request-is-local-ipc-pty-wrapping-of-agy-cli-for-open-standard-editor-bridges-e-g-acp-tos-compliant/175905>
+- **Gemini CLI**:
+  - The code is Apache 2.0. Using third-party software with its OAuth login "is a violation of applicable terms and policies". **[documented]** <https://geminicli.com/docs/resources/tos-privacy>
+  - With an API key, the Gemini API terms apply. **[documented]** (same page)
+- **Not found**:
+  - redistribution clauses;
+  - the `agy` binary's licence;
+  - rate limits beyond "Refer to the Plans documentation";
+  - whether a client that is not an editor may use `agy acp` with a personal login.
+
+### 6.5 Recommendation
+
+- **Integrate no Google harness now.** With a personal Google login, Spartito running `agy` is what the FAQ calls unsupported and the terms call grounds for suspension.
+- **If integrated at all, Antigravity CLI is the route, not Gemini CLI**: Gemini CLI is closed to consumers and kept for enterprise. Make it a per-turn provider, after opencode, limited to API-key or enterprise sign-ins.
+- **Reconsider through ACP** when the roadmap's generic provider is built, if Google confirms that a client which is not an editor may use it.
+
+### 6.6 Proposed live checks (none run; each needs the owner's go-ahead)
+
+| # | check | touches |
+|---|---|---|
+| L1 | `agy --help` and `agy -p --help`: is the installed `agy` the CLI, which version, which flags | `HOME` pointed at an empty temporary directory; it may still read the OS keyring |
+| L2 | whether a temporary `HOME` isolates `settings.json` and `mcp_config.json` | same, no model turn |
+| L3 | one headless turn with `GEMINI_API_KEY`: events, `conversation_id`, usage, exit codes, soft-deny | temporary `HOME`, an API key, a few cents |
+| L4 | `--conversation` across processes: context kept, usage per run or cumulative | as L3 |
+| L5 | a workspace `.agents/mcp_config.json` stdio server under `-p`: loaded, tool names, timeout | as L3, a throwaway repository |
+| L6 | `agy models`: format, offline | temporary `HOME`; possibly an account |
+
+### 6.7 Open questions for the owner
+
+1. **A1** Integrate Antigravity at all, given the FAQ and §6 of the terms? Recommend: not now; revisit after opencode.
+2. **A2** If yes, which sign-ins? Recommend: API key or enterprise only, with the terms risk stated in providers.md.
+3. **A3** Gemini CLI as a provider? Recommend: no; consumers lost it, and it is kept for enterprise.
+4. **A4** Per-turn or ACP? Recommend: per-turn if built before the ACP provider; otherwise through ACP.
+5. **A5** Ask Google for a written answer on a local orchestrator calling `agy -p` or `agy acp`? Recommend: yes, posted by the owner, before any work.
+6. **A6** Run L1–L2 (no account) now? Recommend: only if A1 is yes; L3–L6 after A2.
