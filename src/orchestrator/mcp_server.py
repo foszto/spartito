@@ -15,7 +15,7 @@ from typing import Any
 import anyio
 from mcp.server.mcpserver import MCPServer
 
-from . import board, roles
+from . import board, capabilities, roles
 from .core.access import Caller
 from .core.delivery import delivery_floor as _delivery_floor  # noqa: F401 (old import path)
 from .core.delivery import wait_for_agents as _wait  # noqa: F401 (old import path)
@@ -140,6 +140,7 @@ def spawn_agent(
     output_schema: dict[str, Any] | None = None,
     freeform: bool = False,
     notify: str = "each",
+    capabilities: str = "",
 ) -> dict[str, Any]:
     """Start a new agent on a task. Returns immediately; end your turn, you are notified.
 
@@ -149,8 +150,8 @@ def spawn_agent(
     name: short label, becomes part of the agent id and branch (`orch/<name>-xxxx`).
     role: see list_roles. `lead` agents can spawn their own sub-agents.
     provider: `claude` or `codex`; default: the role's, else the project's.
-    model, effort: leave unset to use the configured defaults for the agent's tier; set them
-      only when the user asks or the task clearly needs a stronger or cheaper setting.
+    model, effort, capabilities: unset = the configured defaults; set them only when the user
+      asks or the task needs it. capabilities: "chrome" adds one, "-chrome" drops it.
     worktree: own git worktree and branch (default for most roles) or the main checkout.
     share_worktree_with: agent id whose worktree to work in instead (review, test, fix).
     base: branch/ref, or an agent id whose branch to start from; default is the project's
@@ -182,8 +183,18 @@ def spawn_agent(
         parent_id=caller.id if caller else None,
         sender=caller.id if caller else None,
         notify=notify,
+        capabilities=_granted(capabilities),
+        granter=caller,
     )
     return _queued(orch, agent.id, run.id, notify, agent.provider_note)
+
+
+def _granted(text: str) -> dict[str, bool]:
+    """`chrome,-other` as the changes it makes to an agent's own capabilities."""
+    try:
+        return capabilities.parse(text or "")
+    except ValueError as exc:
+        raise OrchestratorError(str(exc)) from None
 
 
 @server.tool()
@@ -214,11 +225,12 @@ def send_message(
     output_schema: dict[str, Any] | None = None,
     freeform: bool = False,
     notify: str = "each",
+    capabilities: str = "",
 ) -> dict[str, Any]:
     """Send a follow-up to an existing agent; it continues its conversation with full memory.
 
     Messages to a busy agent queue up and run in order. Returns immediately.
-    `output_schema`/`freeform`/`notify` as in spawn_agent.
+    `output_schema`/`freeform`/`notify`/`capabilities` as in spawn_agent; capabilities stay.
     """
     orch = _orch()
     access = Caller.from_env(orch)
@@ -230,6 +242,8 @@ def send_message(
         not freeform,
         sender=access.sender(),
         notify=notify,
+        capabilities=_granted(capabilities),
+        granter=access.agent(),
     )
     return _queued(orch, agent_id, run.id, notify)
 
@@ -648,6 +662,8 @@ def set_project_provider(project: str, provider: str) -> dict[str, Any]:
 
 _without_titles("set_project_provider")
 _lean("add_project", "default_provider")
+_lean("spawn_agent", "capabilities")
+_lean("send_message", "capabilities")
 _lean("ask_project_lead", "provider")
 
 
