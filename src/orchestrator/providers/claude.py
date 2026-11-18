@@ -19,7 +19,7 @@ from .. import memory_guard
 from ..loadout import Loadout
 from ..models import Agent, Event, Usage
 from . import locate
-from .base import NOTIFICATION_RESULT, Invocation, RunContext, brief
+from .base import NOTIFICATION_RESULT, Invocation, RunContext, Support, Wiring, brief, wired
 
 # Set by a parent Claude Code session; a child must not believe it is that session.
 PARENT_SESSION_ENV = [
@@ -40,6 +40,12 @@ DEFAULT_PERMISSION = "auto"
 # (verified with Claude Code 2.1.322). Set for leads: a background command keeps the CLI
 # alive after its answer, and a lead must stay reachable between turns.
 NO_BACKGROUND_ENV = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}
+
+# The capability `chrome` (capabilities.py): Claude in Chrome's browser tools. On: the CLI's
+# `--chrome`. Off: CLAUDE_CODE_ENABLE_CFC=0, so the user's own `claudeInChromeDefaultEnabled`
+# does not reach agents; a CLI too old to know it ignores the variable (and `--no-chrome`
+# would make it fail). Not verified: whether a headless `-p` turn gets the tools.
+CHROME = Support(on=Wiring(argv=("--chrome",)), off=Wiring(env={"CLAUDE_CODE_ENABLE_CFC": "0"}))
 
 
 # The picker's fallback when the installed CLI cannot say what it offers.
@@ -287,6 +293,8 @@ class ClaudeProvider:
             argv += ["--model", ctx.model]
         if ctx.effort:
             argv += ["--effort", ctx.effort]
+        extra_argv, extra_env = wired(ctx.wirings)
+        argv += extra_argv
         if ctx.system_prompt:
             argv += ["--append-system-prompt", ctx.system_prompt]
         if ctx.mcp:
@@ -305,7 +313,7 @@ class ClaudeProvider:
             argv=argv,
             stdin=stdin,
             canary=canary,
-            env=dict(NO_BACKGROUND_ENV) if ctx.lead else {},
+            env={**extra_env, **(NO_BACKGROUND_ENV if ctx.lead else {})},
             unset_env=PARENT_SESSION_ENV,
         )
 

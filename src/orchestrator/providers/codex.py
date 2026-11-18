@@ -16,7 +16,7 @@ from pathlib import Path
 
 from ..models import Agent, Event, Usage
 from . import locate
-from .base import Invocation, RunContext, brief
+from .base import Invocation, RunContext, brief, wired
 
 DEFAULT_SANDBOX = "workspace-write"
 ROLLOUT_TAIL_BYTES = 2 << 20  # where the last token_count of a rollout file is looked for
@@ -134,12 +134,14 @@ class CodexProvider:
             schema_file = ctx.scratch / "output-schema.json"
             schema_file.write_text(json.dumps(ctx.output_schema), encoding="utf-8")
             argv += ["--output-schema", str(schema_file)]
+        extra_argv, extra_env = wired(ctx.wirings)  # no capability has a Codex wiring yet
+        argv += extra_argv
         argv.append("-")
         # Codex has no system-prompt flag for exec; the role opens the first turn instead.
         prompt = ctx.prompt
         if ctx.system_prompt and not agent.session_id:
             prompt = f"{ctx.system_prompt}\n\n---\n\n{ctx.prompt}"
-        return Invocation(argv=argv, stdin=prompt)
+        return Invocation(argv=argv, stdin=prompt, env=extra_env)
 
     def parse(self, line: str) -> list[Event]:
         try:
