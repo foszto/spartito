@@ -290,6 +290,22 @@ def test_a_roles_off_is_final_for_the_agents_own_on(orch: Orchestrator, project:
     assert own(orch, agent.id) is None
 
 
+def test_capabilities_show_gives_an_mcp_servers_last_status(
+    orch: Orchestrator, project: str
+) -> None:
+    run(*ADD_DOCS_DB)
+    agent = orch.create_agent(project, worktree=False, provider="claude")
+    orch.set_agent_capabilities(agent.id, {"mcp:docs-db": True})
+    assert run("capabilities", "show", agent.id)[1].split() == ["mcp:docs-db", "on", "agent"]
+
+    record = {"on": ["mcp:docs-db"], "skipped": {}, "mcp": {"docs-db": "needs-auth"}}
+    orch.store.set_run_capabilities(orch.store.add_run(agent.id, "go").id, record)
+
+    lines = run("capabilities", "show", agent.id)
+    assert lines[1].split() == ["mcp:docs-db", "on", "agent", "last", "status:", "needs-auth"]
+    assert lines[0].split()[0] == "chrome" and "last status" not in lines[0]
+
+
 # -- the capabilities listing and spawn ------------------------------------------------------
 
 

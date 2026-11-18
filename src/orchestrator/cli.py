@@ -1832,10 +1832,14 @@ def calling_agent(o: Orchestrator) -> Agent | None:
 
 
 def print_breakdown(found: dict) -> None:
-    """One line per capability: name, state, the level that decided it, and a note."""
+    """One line per capability: name, state, the level that decided it, and a note; an MCP
+    server's also its status at the agent's last turn."""
     width = max([len(item["name"]) for item in found["items"]] + [4]) + 2
     for item in found["items"]:
-        note = f"  {item['note']}" if item["note"] else ""
+        notes = [item["note"]] if item["note"] else []
+        if item.get("kind") == capabilities.MCP_KIND and item.get("last_status"):
+            notes.append(f"last status: {item['last_status']}")
+        note = f"  {'; '.join(notes)}" if notes else ""
         typer.echo(f"{item['name']:<{width}}{item['state']:<9}{item['source']}{note}")
 
 
