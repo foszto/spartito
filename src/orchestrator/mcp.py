@@ -26,11 +26,17 @@ STDIO, HTTP = "stdio", "http"
 TRANSPORTS = (STDIO, HTTP)
 OWN_SERVER = "orch"  # Spartito's own MCP server, in every lead's turn
 RESERVED = ("claude-in-chrome", "computer-use", "workspace")  # names Claude Code keeps
-NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-NAME_RULE = "letters, digits, '_' and '-', at most 64 characters"
-REFERENCE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
-ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-HEADER_NAME = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")  # an HTTP header's token
+# Starts and ends with a letter or digit, and holds no `__`: Claude Code reads a tool name
+# mcp__<server>__<tool> as the server up to the second `__`, so no name may make a tool name
+# that reads as another server's (`orch__x` would pass as `orch`).
+NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_-]{0,62}[A-Za-z0-9])?\Z")
+NAME_RULE = (
+    "letters, digits, '_' and '-', at most 64 characters, starting and ending with a letter"
+    " or digit, without '__'"
+)
+REFERENCE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}\Z")
+ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z")  # an HTTP header's token
 LITERAL = "put the value in an environment variable of the service and write ${VAR}"
 REACHES_LIMIT = 300
 
@@ -116,7 +122,7 @@ def server_name(name: str) -> str:
 def check_name(name: Any) -> str:
     """A name for a new server: NAME, and not one Spartito or Claude Code keeps. Raises
     ValueError. (Whether it is taken is the store's to say.)"""
-    if not isinstance(name, str) or not NAME.match(name):
+    if not isinstance(name, str) or not NAME.match(name) or "__" in name:
         raise ValueError(f"invalid MCP server name {name!r}: {NAME_RULE}")
     if name.lower() == OWN_SERVER:
         raise ValueError(f"{name!r} is the name of Spartito's own MCP server; choose another")
@@ -198,6 +204,13 @@ def _url(value: Any) -> str:
         )
     if not parts.hostname:
         raise ValueError(f"url {url!r} has no host")
+    for parameter in filter(None, parts.query.split("&")):
+        name, has_value, value = parameter.partition("=")
+        if not has_value or not REFERENCE.match(value):
+            raise ValueError(
+                f"url: the query parameter {name!r} must have a ${{VAR}} reference as its"
+                f" value. Spartito stores no secret and refuses literal values: {LITERAL}"
+            )
     return url
 
 

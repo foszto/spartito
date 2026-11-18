@@ -50,8 +50,8 @@ from .store import Store
 SETTING = "capabilities"
 ROLE_SETTING = "role_capabilities"
 # A registered entry's name (PLAIN_NAME), or an MCP server's: mcp:<server name>.
-PLAIN_NAME = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
-NAME = re.compile(r"^(?:[a-z][a-z0-9-]{0,31}|mcp:[A-Za-z0-9_-]{1,64})$")
+PLAIN_NAME = re.compile(r"^[a-z][a-z0-9-]{0,31}\Z")
+NAME = re.compile(r"^(?:[a-z][a-z0-9-]{0,31}|mcp:[A-Za-z0-9_-]{1,64})\Z")
 PLUGINS_ENV = "ORCH_CAPABILITIES"
 GLOBAL_SCOPE = ""  # settings.GLOBAL (settings imports this module)
 

@@ -81,10 +81,13 @@ def test_a_command_server_is_an_entry_with_its_reach() -> None:
 
 
 def test_a_url_server_shows_its_origin_only() -> None:
-    server = remote(url="https://mcp.example.com:8443/mcp/v1?team=docs")
+    server = remote(url="https://mcp.example.com:8443/mcp/v1?team=${DOCS_TEAM}")
 
     assert server.transport == "http"
-    assert server.entry() == {**HTTP_ENTRY, "url": "https://mcp.example.com:8443/mcp/v1?team=docs"}
+    assert server.entry() == {
+        **HTTP_ENTRY,
+        "url": "https://mcp.example.com:8443/mcp/v1?team=${DOCS_TEAM}",
+    }
     assert server.shown() == {
         "url": "https://mcp.example.com:8443",
         "headers": {"Authorization": "${DOCS_TOKEN}"},
@@ -116,10 +119,50 @@ def test_env_and_headers_may_be_given_as_typed() -> None:
     assert mcp.server("plain", url=URL).entry() == {"type": "http", "url": URL, "headers": {}}
 
 
-@pytest.mark.parametrize("name", ["", "a" * 65, "with space", "a.b", "mcp:docs", "naïve", None])
+@pytest.mark.parametrize(
+    "name",
+    ["", "a" * 65, "with space", "a.b", "mcp:docs", "naïve", None, "docs\n", "docs\n\n"],
+)
 def test_invalid_names_are_refused(name: object) -> None:
     with pytest.raises(ValueError, match="invalid MCP server name"):
         mcp.server(name, command="x")
+
+
+@pytest.mark.parametrize("name", ["orch__tools", "orch_", "orch-", "_x", "-x", "x_", "a__b"])
+def test_no_name_makes_a_tool_name_that_reads_as_another_server(name: str) -> None:
+    """Claude Code reads mcp__<server>__<tool> as the server up to the second `__`: a name
+    starting or ending with '_' or holding '__' could pass as another server (`orch`)."""
+    with pytest.raises(ValueError, match="starting and ending with a letter or digit"):
+        mcp.server(name, command="x")
+
+
+@pytest.mark.parametrize("name", ["docs_db", "docs-db", "a", "A1", "a_b-c", "a" * 64])
+def test_names_with_single_underscores_and_dashes_inside_are_accepted(name: str) -> None:
+    assert mcp.server(name, command="x").capability == f"mcp:{name}"
+
+
+def test_a_stored_row_with_a_name_that_shadows_a_server_is_no_server(store: Store) -> None:
+    store.add_mcp_server("orch__tools", "spartito", "stdio", STDIO_ENTRY, None)
+
+    assert mcp.servers(store) == [] and "mcp:orch__tools" not in capabilities.registry(store)
+
+
+@pytest.mark.parametrize(
+    "check",
+    [
+        lambda: capabilities.check_name("mcp:docs\n"),
+        lambda: capabilities.check_name("chrome\n"),
+        lambda: mcp.server("x", command="x", env={"DOCS_DB_URL": "${DOCS_DB_URL}\n"}),
+        lambda: mcp.server("x", command="x", env={"DOCS_DB_URL\n": "${DOCS_DB_URL}"}),
+        lambda: mcp.server("x", url=URL, headers={"X-Key": "${KEY}\n"}),
+        lambda: mcp.server("x", url=URL, headers={"X-Key\n": "${KEY}"}),
+    ],
+    ids=["capability", "plain-capability", "reference", "env-name", "header-ref", "header-name"],
+)
+def test_a_trailing_newline_passes_no_check(check) -> None:
+    with pytest.raises(ValueError):
+        check()
+    assert capabilities.flags({"chrome\n": True, "mcp:docs\n": True}) == {}
 
 
 @pytest.mark.parametrize("name", ["orch", "ORCH"])
@@ -198,6 +241,21 @@ def test_a_command_server_that_cannot_be_made_is_refused(fields: dict, message: 
 def test_a_url_server_that_cannot_be_made_is_refused(fields: dict, message: str) -> None:
     with pytest.raises(ValueError, match=re.escape(message)):
         remote(**fields)
+
+
+@pytest.mark.parametrize(
+    "query", ["token=abc123", "team=${DOCS_TEAM}&token=abc123", "abc123", "t=Bearer%20${T}", "t="]
+)
+def test_a_literal_query_value_is_refused(query: str) -> None:
+    with pytest.raises(ValueError, match="query parameter .* Spartito stores no secret"):
+        mcp.server("x", url=f"{URL}?{query}")
+
+
+def test_query_values_that_are_references_and_the_path_are_kept() -> None:
+    url = "https://mcp.example.com/v1/docs-team?team=${DOCS_TEAM}&key=${DOCS_KEY}"
+
+    assert mcp.server("x", url=url).entry()["url"] == url
+    assert mcp.server("x", url=URL + "?").entry()["url"] == URL + "?"
 
 
 def test_a_server_needs_a_command_or_a_url() -> None:
@@ -288,7 +346,8 @@ def test_the_released_name_rule_reads_mcp_entries_as_absent() -> None:
     drops what fails it: for it every mcp: entry is off."""
     released = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 
-    assert released.pattern == capabilities.PLAIN_NAME.pattern
+    # The same rule, anchored at the very end now (`$` also matched before a final newline).
+    assert released.pattern.removesuffix("$") == capabilities.PLAIN_NAME.pattern.removesuffix(r"\Z")
     assert not released.match("mcp:docs-db")
 
 
@@ -475,7 +534,9 @@ def test_the_owner_adds_and_lists_a_server(orch: Orchestrator) -> None:
 
 
 def test_a_url_server_is_listed_without_its_path(orch: Orchestrator) -> None:
-    added = orch.mcp_add("remote-docs", url=URL + "?team=docs", headers=["X-Key: ${DOCS_KEY}"])
+    added = orch.mcp_add(
+        "remote-docs", url=URL + "?team=${DOCS_TEAM}", headers=["X-Key: ${DOCS_KEY}"]
+    )
 
     assert added["transport"] == "http"
     assert added["definition"] == {
