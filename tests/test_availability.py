@@ -234,6 +234,69 @@ def test_a_declared_login_check_reports_not_logged_in(bare_path: Path) -> None:
     assert found.reason == "found on PATH; not logged in: Not logged in"
 
 
+class OldestSupported(FakeProvider):
+    """A provider whose CLI is `mycli` and must be 2.2.3 or later."""
+
+    executable = "mycli"
+    min_version = (2, 2, 3)
+
+
+@pytest.mark.parametrize("version", ["2.2.3", "2.10.0", "3.0"])
+def test_a_cli_at_or_above_the_minimum_version_is_available(bare_path: Path, version: str) -> None:
+    path = script(bare_path, "mycli", f'echo "mycli {version}"')
+
+    found = availability.probe(OldestSupported())
+
+    assert found == locate.Probe(
+        "available", version, str(path), "found on PATH; login not checked"
+    )
+
+
+@pytest.mark.parametrize("version", ["2.2.2", "1.9.9", "2.1"])
+def test_a_cli_below_the_minimum_version_is_not_usable(bare_path: Path, version: str) -> None:
+    path = script(bare_path, "mycli", f'echo "mycli {version}"')
+
+    found = availability.probe(OldestSupported())
+
+    assert found == locate.Probe(
+        "not_installed",
+        version,
+        str(path),
+        f"found on PATH; version {version} is older than 2.2.3, the oldest supported",
+    )
+    assert not availability.usable(found)
+
+
+def test_a_cli_without_a_readable_version_is_not_judged_by_it(bare_path: Path) -> None:
+    script(bare_path, "mycli", 'echo "mycli (development build)"')
+
+    found = availability.probe(OldestSupported())
+
+    assert (found.status, found.version) == ("available", None)
+
+
+def test_an_old_cli_is_listed_as_not_usable(
+    orch: Orchestrator, bare_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script(bare_path, "mycli", 'echo "mycli 1.4.0"')
+    monkeypatch.setitem(providers.PROVIDERS, "mycli", OldestSupported())
+
+    entry = next(e for e in orch.provider_list() if e["name"] == "mycli")
+
+    assert (entry["status"], entry["usable"], entry["version"]) == ("not_installed", False, "1.4.0")
+    assert (
+        entry["reason"] == "found on PATH; version 1.4.0 is older than 2.2.3, the oldest supported"
+    )
+    assert entry["models_note"] == availability.MODELS_UNAVAILABLE and not entry["default"]
+
+
+def test_the_context_size_flag_is_the_providers_own() -> None:
+    reports = type("Reports", (FakeProvider,), {"reports_context": True})()
+
+    assert availability.describe(reports)["features"]["context_size"] is True
+    assert availability.describe(FakeProvider())["features"]["context_size"] is None
+
+
 # -- the self-description ------------------------------------------------------------------
 
 

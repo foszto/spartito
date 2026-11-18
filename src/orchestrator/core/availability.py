@@ -55,15 +55,28 @@ def reset() -> None:
 
 
 def probe(provider: Provider) -> locate.Probe:
-    """The availability check of one provider; runs its CLI's version command only."""
+    """The availability check of one provider; runs its CLI's version command only. A CLI
+    older than the provider's `min_version` is not installed in a usable version."""
     executable = getattr(provider, "executable", None)
     if not executable:
         return locate.Probe(locate.UNKNOWN, None, None, NO_EXECUTABLE)
-    return locate.probe(
+    found = locate.probe(
         executable,
         tuple(getattr(provider, "version_args", None) or ("--version",)),
         getattr(provider, "login_args", None),
     )
+    minimum = getattr(provider, "min_version", None)
+    if minimum and found.version and _version(found.version) < tuple(minimum):
+        where = found.reason.partition("; ")[0]
+        oldest = ".".join(str(part) for part in minimum)
+        reason = f"{where}; version {found.version} is older than {oldest}, the oldest supported"
+        return locate.Probe(locate.NOT_INSTALLED, found.version, found.path, reason)
+    return found
+
+
+def _version(text: str) -> tuple[int, ...]:
+    """A version as locate.VERSION finds it, `2.10.1` -> (2, 10, 1)."""
+    return tuple(int(part) for part in text.split("."))
 
 
 def usable(entry: dict[str, Any] | locate.Probe) -> bool:
@@ -124,7 +137,6 @@ def describe(provider: Provider) -> dict[str, Any]:
             instructions = True
         except ValueError:
             pass
-    builtin = isinstance(provider, providers.BUILTIN)
     return {
         "name": provider.name,
         "label": getattr(provider, "label", None) or provider.name,
@@ -135,7 +147,7 @@ def describe(provider: Provider) -> dict[str, Any]:
             "cost": getattr(provider, "reports_cost", None),
             "compaction": compact_prompt is not None,
             "compaction_instructions": instructions,
-            "context_size": True if builtin else None,
+            "context_size": getattr(provider, "reports_context", None),
             "role_prompt": getattr(provider, "role_prompt", None),
             "attribution": bool(roles.attribution(provider.name, bot_coauthor=False)),
         },
