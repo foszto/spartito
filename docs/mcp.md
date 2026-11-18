@@ -85,8 +85,10 @@ Every rule of [capabilities.md](capabilities.md) applies unchanged:
 - A server that is on but that the agent's provider cannot carry is skipped with a note, as
   for `chrome` (`codex does not support it` until the Codex phase).
 - claude.ai connectors and plugin servers are listed with their status, but turning one on
-  is refused (`connector servers cannot be given to agents yet`) until the verifications in
-  [Not verified yet](#not-verified-yet) show a way.
+  is refused (`connector servers cannot be given to agents yet`) until phase 9. For
+  connectors there is a way, observed once: one connector given alone as a copied entry (see
+  [claude.ai connectors](#claudeai-connectors)). For plugin servers no way has been checked
+  yet.
 
 ## Discovery and status
 
@@ -98,7 +100,7 @@ Every rule of [capabilities.md](capabilities.md) applies unchanged:
 | `claude-user`, `claude-local` | `~/.claude.json` (`mcpServers` at the top level; per project under `projects.<path>.mcpServers`), honouring `CLAUDE_CONFIG_DIR` | `claude mcp list` |
 | `claude-project` | `.mcp.json` in the project's main checkout | `claude mcp list` |
 | `plugin` | names `plugin:<plugin>:<server>` in `claude mcp list` | `claude mcp list` |
-| `connector` | names `claude.ai <Name>` in `claude mcp list` | `claude mcp list` |
+| `connector` | names `claude.ai <Name>` in `claude mcp list`; the entry (`type`, `url`, `id`) only in the MCP status of a session without strict mode | `claude mcp list` |
 
 The file locations and scopes are **[documented]**. Spartito reads these files only for the
 names, the transport and the field *names*. It keeps no values. Lists and API answers show
@@ -164,7 +166,22 @@ control requests, then closes stdin:
    token-counting API requests, which are not in the message stream and not billed on the
    Anthropic API. **[documented]** for the SDK.
 
-The wire names of requests 2 and 3 are **[unverified]**: the CLI docs do not list them.
+The CLI docs list neither request. Request 2 was observed with Claude Code 2.1.322, once,
+with no user message and no model request **[observed]**:
+
+- The request is `{"type": "control_request", "request_id": "…", "request": {"subtype":
+  "mcp_status"}}` on stdin, after `initialize`.
+- The answer is a `control_response` whose `response.mcpServers` holds one entry per server,
+  with the keys `name`, `status`, `scope`, `source`, `transport`, `config`,
+  `sessionProxied`, and for a connected server `serverInfo` and `tools`. A tool had the keys
+  `name` and `annotations`, and no description.
+- A server still connecting is `pending`; asking again a few seconds later gives its final
+  status.
+- Without a user message no `system`/`init` event arrives, so the probe relies on the
+  control requests, not on the init event.
+
+The wire name of request 3 is **[unverified]**: the SDK's source sends it as
+`get_context_usage`, and it was not tried.
 
 What the probe gives per server:
 
@@ -222,6 +239,37 @@ literal secrets: `claude mcp add -e KEY=value` stores the value in `~/.claude.js
 command line is visible to every process on the machine, so the configuration goes into a
 private file. Spartito does not store it, log it or show it. Configurations with the `orch`
 server only stay inline, as today.
+
+### claude.ai connectors
+
+Observed once with Claude Code 2.1.322, through the control requests of the probe, with no
+user message and no model request, in a headless session with the agents' flags
+(`--setting-sources project,local`) **[observed]**:
+
+- Without `--strict-mcp-config`, every claude.ai connector of the account is in the MCP
+  status, with `scope` `claudeai`, `config.type` `claudeai-proxy` and the config keys
+  `type`, `url` and `id`. Connected ones list their tools; the others are `needs-auth`.
+- With `--strict-mcp-config`, and no `--mcp-config` or one with other servers only, no
+  connector is present. Strict mode keeps connectors out of agents' turns, as wired today.
+- With `--strict-mcp-config` and an `--mcp-config` holding one entry, a connected
+  connector's `claudeai-proxy` entry copied as reported and under its reported name
+  (`claude.ai <Name>`), that connector is the only server: `connected`, with `scope`
+  `dynamic` and all its tools listed. None of its tools was called.
+
+Neither behaviour is in the docs. They describe `--strict-mcp-config` only for configured
+servers, and they name `ENABLE_CLAUDEAI_MCP_SERVERS=false` and the setting
+`disableClaudeAiConnectors` as the switches that stop Claude Code from fetching connectors
+(**[documented]**, not tested). Phase 9 therefore checks the behaviour again for each new
+Claude Code version.
+
+The entry is read from the MCP status of a session without strict mode, which also starts
+your user-scope servers (as `claude mcp list` does). Its `url` and `id` are account data and
+are handled like a definition from `~/.claude.json`: copied into the turn's private file,
+never logged or shown.
+
+Still **[unverified]**: a tool call through such an entry; the tool names a turn sees; and
+whether a key other than the reported name works, which matters because Spartito's names
+allow no spaces or dots.
 
 **Same name and URL.** Claude Code stores OAuth sign-ins per endpoint. **[documented]**
 Spartito keeps the server's name and its `type`, `url` and `headers` exactly as configured,
@@ -598,7 +646,7 @@ a day, **L** about two days. Every phase ships alone.
 | 6 | Adding from the page | 4 | M |
 | 7 | Signing in | 2, 4 | M |
 | 8 | Codex | 1, 5 | M + S |
-| 9 | claude.ai connectors and plugin servers | owner's verifications | not estimated |
+| 9 | claude.ai connectors and plugin servers | 2, 3; plugin servers: owner's verifications | connectors: M (estimate); plugin servers: not estimated |
 
 Phases 0 to 8 come to about 15 to 18 worker-days.
 
@@ -701,9 +749,16 @@ This phase is being built as a separate, small change, ahead of the rest of this
 
 **9. claude.ai connectors and plugin servers**
 
-- Scope: only if the verifications show a way: a `claudeai-proxy` entry in `--mcp-config`
-  for connectors; `${CLAUDE_PLUGIN_ROOT}` resolved by Spartito for plugin servers.
-- Not estimated.
+- Scope, connectors: read each connector's `claudeai-proxy` entry from the MCP status of a
+  session without strict mode; turning one on copies the entry, under its reported name,
+  into the turn's private file (see [claude.ai connectors](#claudeai-connectors)); a
+  `spartito mcp` name without spaces maps to it; a check that strict mode still keeps
+  connectors out and that a single entry still connects, per Claude Code version.
+- Scope, plugin servers: only if a verification shows a way: `${CLAUDE_PLUGIN_ROOT}`
+  resolved by Spartito.
+- Size: connectors M, an estimate; plugin servers not estimated.
+- Risky: both connector behaviours are observed, not documented, and may change with a
+  Claude Code version.
 
 ## Open questions
 
@@ -721,7 +776,10 @@ This phase is being built as a separate, small change, ahead of the rest of this
    later if needed.
 7. **`.mcp.json` servers from repositories.** *Recommendation:* list them and allow the
    owner's on, pinned by shape.
-8. **Connectors.** *Recommendation:* wait for verifications 1 and 2 below.
+8. **Connectors.** Strict mode keeps them out, and one can be given alone as a copied
+   `claudeai-proxy` entry (observed once, not documented). *Recommendation:* give them one
+   at a time this way in phase 9, keep strict mode, and check the behaviour per Claude Code
+   version; never through `mcp = inherit`.
 9. **How often the status is checked.** *Recommendation:* when the page opens and the cache
    is older than 10 minutes, and on **Check now**; never in the background.
 10. **`ToolSearch` always, or only with MCP tools.** *Recommendation:* only with MCP tools
@@ -742,32 +800,38 @@ This phase is being built as a separate, small change, ahead of the rest of this
 ## Not verified yet
 
 Each item says how to check it. None needs a model turn unless said; all need the owner's
-go-ahead, because they run the real CLI with the owner's login. That `ToolSearch` in
-`--tools` defers MCP tools for agents is no longer on this list: it was observed in real
-turns (see [Wiring per provider](#wiring-per-provider)).
+go-ahead, because they run the real CLI with the owner's login. Some items are no longer on
+this list:
 
-1. Whether `--strict-mcp-config` keeps claude.ai connectors out. Probe with strict mode and
-   no servers, and read the MCP status.
-2. Whether a connector can be given alone, as a `{"type": "claudeai-proxy", "url", "id"}`
-   entry in `--mcp-config`. Probe. (The SDK reports that type in status, but does not list
-   it among the configurations it accepts.)
-3. Whether a copied definition finds an OAuth token: same name and URL; another name.
+- That `ToolSearch` in `--tools` defers MCP tools for agents was observed in real turns (see
+  [Wiring per provider](#wiring-per-provider)).
+- That `--strict-mcp-config` keeps claude.ai connectors out, and that one connector can be
+  given alone as a `claudeai-proxy` entry in `--mcp-config`, were observed once with Claude
+  Code 2.1.322, through the MCP status control request and without a model turn (see
+  [claude.ai connectors](#claudeai-connectors)).
+- The MCP status control request itself was observed then (see
+  [the probe](#tools-and-token-cost-the-probe)); the context-usage request remains.
+
+1. Whether a copied definition finds an OAuth token: same name and URL; another name.
    Probe against a signed-in server.
-4. Whether `--mcp-config` expands `${VAR}`, and whether stdio servers inherit the CLI's
+2. Whether `--mcp-config` expands `${VAR}`, and whether stdio servers inherit the CLI's
    environment. Probe with a fake local stdio server that records its environment, in a
    temporary directory.
-5. The control requests for MCP status and context usage over stream-json, without a user
-   message, and their answers. Probe.
-6. That the probe's token counting is not billed, or is acceptable, for the owner's login.
-7. Whether a resumed conversation (a new process with `--resume`) keeps the cache when a
+3. The control request for context usage over stream-json, without a user message, and its
+   answer. Probe.
+4. A connector given alone as a `claudeai-proxy` entry: whether a tool call through it
+   works, which tool names a turn sees, and whether a key other than its reported name
+   works. One minimal real turn; a read-only tool.
+5. That the probe's token counting is not billed, or is acceptable, for the owner's login.
+6. Whether a resumed conversation (a new process with `--resume`) keeps the cache when a
    server is added or removed, with deferred tools. Real turns.
-8. Whether a disallowed MCP tool leaves the deferred list too. Probe with context usage.
-9. How the `auto` classifier treats writing or destructive MCP tools. Real turns.
-10. Whether `claude mcp login` works without a terminal when the browser redirect succeeds.
-    Visible (it opens a browser): the owner does it.
-11. Whether `claude mcp list` writes to `~/.claude.json`, and how long it takes with stdio
+7. Whether a disallowed MCP tool leaves the deferred list too. Probe with context usage.
+8. How the `auto` classifier treats writing or destructive MCP tools. Real turns.
+9. Whether `claude mcp login` works without a terminal when the browser redirect succeeds.
+   Visible (it opens a browser): the owner does it.
+10. Whether `claude mcp list` writes to `~/.claude.json`, and how long it takes with stdio
     servers. Compare the file's modification time; time a run.
-12. Codex: whether a token is found for a `-c`-defined server under
+11. Codex: whether a token is found for a `-c`-defined server under
     `--ignore-user-config`, and how `enabled_tools` and the approval modes behave in
     `exec`. Real Codex turns.
 
