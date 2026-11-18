@@ -38,6 +38,7 @@ LAYERS = {
     "board": "domain",  # self-contained feature owning its table
     "decisions": "domain",  # self-contained feature owning its table
     "capabilities": "domain",  # the registry of agent capabilities and their resolution
+    "mcp": "domain",  # MCP servers added in Spartito: entries, checks, what is shown
     "store": "infra",
     "git": "infra",
     "providers": "infra",

@@ -133,7 +133,7 @@ def view(
         "cost_usd": totals.cost or 0,
         "tokens": totals.tokens(),
         "context": orch._context(agent, timeline),
-        "capabilities": granted.breakdown() if detail else granted.on,
+        "capabilities": granted.breakdown(_statuses(timeline)) if detail else granted.on,
         "last_run": shown
         and {
             "id": shown.id,
@@ -179,6 +179,12 @@ def view(
             for run in [run for run in active if run.status is RunStatus.WAITING][:QUEUE_LISTED]
         ]
     return view
+
+
+def _statuses(timeline: AgentRuns) -> dict[str, str]:
+    """The MCP servers' statuses the agent's last recorded turn reported."""
+    meta = timeline.meta
+    return capabilities.last_statuses(meta[run_id].capabilities for run_id in sorted(meta))
 
 
 def _context(orch: Facade, agent: Agent, timeline: AgentRuns) -> dict[str, Any] | None:

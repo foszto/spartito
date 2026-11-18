@@ -67,6 +67,7 @@ for f in src/orchestrator/web/static/*.js; do node --check "$f"; done
 - `docs/providers.md`: the supported harnesses, availability, choosing and moving a provider.
 - `docs/agents.md`: MCP tools, dependencies, notifications, decisions, compaction.
 - `docs/capabilities.md`: agent capabilities (Claude in Chrome), their levels and safety.
+- `docs/mcp.md`: MCP servers as capabilities: what works today, and the design of later phases.
 - `docs/desktop.md`: background service, notifications, `spartito app`, launcher, menu bar.
 - `docs/board.md`: the task board.
 - `docs/state.md`: backup and restore of the state, moving a home.

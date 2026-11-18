@@ -25,7 +25,18 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from . import capabilities, config, git, keep_awake, loadout, notify, providers, roles, settings
+from . import (
+    capabilities,
+    config,
+    git,
+    keep_awake,
+    loadout,
+    mcp,
+    notify,
+    providers,
+    roles,
+    settings,
+)
 from .core import costs, lifecycle
 from .models import (
     COMPACT,
@@ -40,7 +51,13 @@ from .models import (
     Usage,
 )
 from .providers import McpServer, RunContext, locate
-from .providers.base import NOTIFICATION_RESULT, Invocation
+from .providers.base import (
+    NOTIFICATION_RESULT,
+    Invocation,
+    Wiring,
+    server_references,
+    wired_servers,
+)
 from .store import Store, now
 from .textfmt import kilo, one_line
 from .timeline import AgentRuns
@@ -211,7 +228,9 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
     # Every kind of turn, compactions too: one is a turn of the same session, and the same
     # tools keep its prompt cache (an "off" wiring must reach it as well).
     granted = capabilities.resolve(store, agent)
-    note_capabilities(store, run.id, agent.id, granted, timeline)
+    # Every process the CLI starts inherits this mark, also those that leave its session.
+    token = f"{run.id}-{uuid.uuid4().hex}"
+    mark = f"{TURN_ENV}={token}"
     ctx = RunContext(
         agent=agent,
         # A notification carries child output: data, never {{result:…}} references. A
@@ -228,15 +247,20 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
         loadout=resolved,
         compact_below=compact_limit(before) if compact else None,
         wirings=granted.wirings,
+        mcp_config=config.mcp_config_file(run.id),
         **settings.resolve(store, agent, role),
     )
     invocation = provider.invocation(ctx)
+    # Fail closed: a server whose variables the CLI would not get is left out of the turn.
+    granted, unset = without_unset_servers(granted, _child_env(invocation, agent, token))
+    if unset:
+        ctx = dataclasses.replace(ctx, wirings=granted.wirings)
+        invocation = provider.invocation(ctx)
+    record = note_capabilities(store, run.id, agent.id, granted, timeline, unset)
+    given = set(wired_servers(granted.wirings))  # the servers the turn has from capabilities
     plain_ctx = dataclasses.replace(ctx, loadout=dataclasses.replace(ctx.loadout, memory=False))
     if invocation.canary is not None and hooks_known_off(agent):
         invocation = _plain(provider, plain_ctx)
-    # Every process the CLI starts inherits this mark, also those that leave its session.
-    token = f"{run.id}-{uuid.uuid4().hex}"
-    mark = f"{TURN_ENV}={token}"
 
     stderr_path = scratch / "stderr.log"
     last_text, results, errors, reported_model, session_id = "", [], [], None, None
@@ -248,6 +272,8 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
     windows: dict[str, int] = {}
     answered = False  # a result answering the prompt (not a background-task notification)
     with (
+        # Removed when the block ends, however it ends: by then the turn's processes are.
+        PrivateFiles(store, run.id, invocation.private_files) as private,
         open(scratch / "stream.jsonl", "w", encoding="utf-8") as raw,
         open(stderr_path, "w", encoding="utf-8") as stderr,
     ):
@@ -274,6 +300,7 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
                     if pipe:
                         pipe.close()
                 invocation = _plain(provider, plain_ctx)
+                private.write(invocation.private_files)
                 child = _start(invocation, agent, token, stderr)
         assert child.stdin and child.stdout
         lines: queue.Queue[str | None] = queue.Queue()
@@ -309,6 +336,8 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
                         session_id = event.session_id
                     if event.kind == "session":
                         reported_model = event.model or reported_model
+                        if given and event.mcp is not None:
+                            record = note_server_statuses(store, run.id, record, given, event.mcp)
                         continue
                     if event.kind == "context":
                         context = event.usage
@@ -405,11 +434,18 @@ def note_capabilities(
     agent_id: str,
     granted: capabilities.Resolution,
     timeline: AgentRuns,
-) -> None:
+    unset: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Record what the turn has of the capabilities on the run; note it in the log when it
     differs from the agent's previous recorded turn (a first turn: when something is on
-    or skipped). `timeline`: the agent's runs as read before this one was recorded."""
+    or skipped). `timeline`: the agent's runs as read before this one was recorded.
+    `unset`: the MCP servers left out for a variable that is not set (without_unset_servers),
+    whose status is recorded at once under `mcp`; the others' come with the CLI's report
+    (note_server_statuses). Returns the record."""
     record = granted.record()
+    if unset or wired_servers(granted.wirings):
+        skipped = (unset or {}).items()
+        record[MCP_KEY] = {name: f"{capabilities.SKIPPED}: {why}" for name, why in skipped}
     store.set_run_capabilities(run_id, record)
     earlier = sorted(
         (other for other in timeline.runs if other.id != run_id and other.id in timeline.meta),
@@ -418,9 +454,134 @@ def note_capabilities(
     previous = capabilities.previous_record(
         timeline.meta[other.id].capabilities for other in earlier
     )
-    if previous == record or (previous is None and not (record["on"] or record["skipped"])):
-        return
+    # What was on and skipped, not the statuses the servers reported.
+    noted = {key: record[key] for key in ("on", "skipped")}
+    if previous is not None:
+        previous = {key: previous.get(key) for key in ("on", "skipped")}
+    if previous == noted or (previous is None and not (record["on"] or record["skipped"])):
+        return record
     store.add_event(run_id, agent_id, "info", capabilities.describe_record(record))
+    return record
+
+
+# The key of a turn's record (run_meta.capabilities) with its MCP servers' statuses:
+# {"<server name>": "<status>"} for each server it had from its capabilities, as the CLI
+# reported it when it started (Claude: `connected`, `failed`, `needs-auth`, …), or
+# `skipped: <why>` for one left out (without_unset_servers). A server the CLI did not
+# report (it failed first, or does not list it) has no entry.
+MCP_KEY = "mcp"
+
+
+def note_server_statuses(
+    store: Store, run_id: int, record: dict[str, Any], given: set[str], reported: dict[str, str]
+) -> dict[str, Any]:
+    """Add the statuses the CLI reported for the turn's servers `given` (not `orch`, not a
+    server of its own such as `claude-in-chrome`) to the run's record; returns the record."""
+    statuses = dict(record.get(MCP_KEY) or {})
+    statuses.update({name: status for name, status in reported.items() if name in given})
+    record = {**record, MCP_KEY: statuses}
+    store.set_run_capabilities(run_id, record)
+    return record
+
+
+def unset_note(names: list[str]) -> str:
+    """`DOCS_DB_URL is not set`; `A, B are not set`."""
+    return f"{', '.join(names)} {'is' if len(names) == 1 else 'are'} not set"
+
+
+def without_unset_servers(
+    granted: capabilities.Resolution, env: dict[str, str]
+) -> tuple[capabilities.Resolution, dict[str, str]]:
+    """The resolution without the MCP servers that reference a variable `env` (what the
+    CLI's process gets) does not have, and {server name: why} for those. Their capability
+    is skipped with the note why (the turn's log line says it); a wiring left without
+    servers brings no MCP tools (no ToolSearch for it), and one left with nothing is
+    dropped. Nothing changes when every server's variables are set."""
+    unset = {
+        name: unset_note(missing)
+        for name, entry in wired_servers(granted.wirings).items()
+        if (missing := [ref for ref in server_references(entry) if ref not in env])
+    }
+    if not unset:
+        return granted, {}
+    wirings = []
+    for wiring in granted.wirings:
+        kept = {name: e for name, e in wiring.mcp_servers.items() if name not in unset}
+        if len(kept) < len(wiring.mcp_servers):
+            wiring = dataclasses.replace(
+                wiring, mcp_servers=kept, mcp_tools=wiring.mcp_tools and bool(kept)
+            )
+        if wiring != Wiring():
+            wirings.append(wiring)
+    items = tuple(
+        dataclasses.replace(item, state=capabilities.SKIPPED, note=unset[server])
+        if item.kind == mcp.KIND
+        and item.state == capabilities.ON
+        and (server := mcp.server_name(item.name)) in unset
+        else item
+        for item in granted.items
+    )
+    return capabilities.Resolution(items, tuple(wirings)), unset
+
+
+PRIVATE_FILE_MODE = 0o600
+PRIVATE_RUN_FILE = re.compile(r"^mcp-(\d+)\.json\Z")  # config.mcp_config_file
+
+
+class PrivateFiles:
+    """Writes a turn's private files (Invocation.private_files) and removes them on exit.
+
+    Each is created with mode 0600 (set as it is created, never widened) in
+    config.private_dir (0700), after removing whatever is at its path: a leftover of a
+    runner that was killed (SIGKILL, a crash) is never reused. When one is written, the
+    leftovers of other runs that are no longer active are removed as well, so they cannot
+    pile up."""
+
+    def __init__(self, store: Store, run_id: int, files: dict[Path, str]) -> None:
+        self.store, self.run_id, self.files = store, run_id, files
+        self.paths: set[Path] = set()
+
+    def __enter__(self) -> PrivateFiles:
+        try:
+            self.write(self.files)
+        except BaseException:  # the `with` body never runs, nor __exit__: remove them here
+            self.__exit__()
+            raise
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        for path in self.paths:
+            with contextlib.suppress(OSError):
+                path.unlink(missing_ok=True)
+
+    def write(self, files: dict[Path, str]) -> None:
+        for path, content in files.items():
+            directory = config.private_dir()
+            if path.parent != directory:
+                path.parent.mkdir(mode=config.PRIVATE_DIR_MODE, parents=True, exist_ok=True)
+            self.paths.add(path)
+            path.unlink(missing_ok=True)
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+            with os.fdopen(os.open(path, flags, PRIVATE_FILE_MODE), "w", encoding="utf-8") as out:
+                out.write(content)
+        if files:
+            try:
+                self.sweep()
+            except Stopped:
+                raise
+            except Exception as exc:  # leftovers wait for the next turn; this one goes on
+                print(f"removing other runs' private files failed: {exc!r}", file=sys.stderr)
+
+    def sweep(self) -> None:
+        """Remove the files of other runs that are not active (their runner was killed)."""
+        with contextlib.suppress(OSError):
+            for path in config.private_dir().iterdir():
+                found = PRIVATE_RUN_FILE.match(path.name)
+                if not found or int(found.group(1)) == self.run_id:
+                    continue
+                other = self.store.get_run(int(found.group(1)))
+                if other is None or not other.status.active:
+                    path.unlink(missing_ok=True)
 
 
 CANARY_SECONDS = 15.0  # the CLI's SessionStart hooks run within about 0.2 s of its start
@@ -482,8 +643,8 @@ class CliNotFound(RuntimeError):
     """The provider's CLI is not there; its text is the run's error as it is."""
 
 
-def _start(invocation: Invocation, agent: Agent, token: str, stderr: Any) -> subprocess.Popen[str]:
-    cwd = agent.cwd
+def _child_env(invocation: Invocation, agent: Agent, token: str) -> dict[str, str]:
+    """The environment of the turn's CLI."""
     env = {k: v for k, v in os.environ.items() if k not in invocation.unset_env}
     env.update(invocation.env)
     # Who runs the commands of this turn, for the command (grants: what it may give); a
@@ -494,6 +655,12 @@ def _start(invocation: Invocation, agent: Agent, token: str, stderr: Any) -> sub
     env["PATH"] = locate.search_path(env.get("PATH"))
     env[TURN_ENV] = token
     env[config.TURN_HOME_ENV] = config.turn_home()
+    return env
+
+
+def _start(invocation: Invocation, agent: Agent, token: str, stderr: Any) -> subprocess.Popen[str]:
+    cwd = agent.cwd
+    env = _child_env(invocation, agent, token)
     if invocation.canary is not None:
         invocation.canary.unlink(missing_ok=True)
     # In the runner's process group (the runner leads its own session and group, see

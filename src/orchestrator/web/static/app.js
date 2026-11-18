@@ -2332,7 +2332,8 @@ function capabilitiesBox(scope, redraws) {
       if (poll && row && (row.contains(document.activeElement) || chosen.has(entry.name))) return row;
       return capabilityRow(entry, scope, busy, change, chosen.has(entry.name) ? chosen.get(entry.name) : undefined);
     }));
-    if (focusName) list.querySelector(`[name=capability-${focusName}]:checked`)?.focus();
+    // by comparison, not a selector: an MCP server's name (mcp:docs-db) has a colon
+    if (focusName) [...list.querySelectorAll('input:checked')].find(input => input.name === `capability-${focusName}`)?.focus();
   };
   const save = async (entry, value) => {
     const focused = list.contains(document.activeElement) ? entry.name : null;

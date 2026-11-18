@@ -13,14 +13,24 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 from .. import memory_guard
 from ..loadout import Loadout
 from ..models import Agent, Event, Usage
 from . import locate
-from .base import NOTIFICATION_RESULT, Invocation, RunContext, Support, Wiring, brief, wired
+from .base import (
+    NOTIFICATION_RESULT,
+    Invocation,
+    RunContext,
+    Support,
+    Wiring,
+    brief,
+    wired,
+    wired_servers,
+)
 
 # Set by a parent Claude Code session; a child must not believe it is that session.
 PARENT_SESSION_ENV = [
@@ -56,6 +66,36 @@ CHROME = Support(
 # tool's full schema with every request (verified with Claude Code 2.1.322). The CLI's
 # default set has it; ENABLE_TOOL_SEARCH, when inherited, still applies as the CLI reads it.
 TOOL_SEARCH = "ToolSearch"
+
+# Spartito's own MCP server (`mcp__orch__…`), in every lead's turn.
+OWN_SERVER = "orch"
+
+
+def config_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """An MCP server's entry as a turn's configuration file gets it: as given, `${NAME}`
+    references unexpanded (Claude Code expands them from its environment: in a stdio
+    entry's command, args and env values, a remote entry's url and header values; seen
+    with Claude Code 2.1.322), and without an empty `args`, `env` or `headers`."""
+    return {
+        key: dict(value) if isinstance(value, Mapping) else value
+        for key, value in entry.items()
+        if not (key in ("args", "env", "headers") and not value)
+    }
+
+
+def server_statuses(data: dict) -> dict[str, str] | None:
+    """The MCP servers' statuses of a `system`/`init` line: {"<name>": "connected", …}
+    from its `mcp_servers` [{"name", "status"}, …]; None when it has no such list."""
+    listed = data.get("mcp_servers")
+    if not isinstance(listed, list):
+        return None
+    return {
+        entry["name"]: entry["status"]
+        for entry in listed
+        if isinstance(entry, dict)
+        and isinstance(entry.get("name"), str)
+        and isinstance(entry.get("status"), str)
+    }
 
 
 # The picker's fallback when the installed CLI cannot say what it offers.
@@ -329,6 +369,7 @@ class ClaudeProvider:
         argv += extra_argv
         if ctx.system_prompt:
             argv += ["--append-system-prompt", ctx.system_prompt]
+        servers: dict[str, object] = {}
         if ctx.mcp:
             server: dict[str, object] = {
                 "command": ctx.mcp.command,
@@ -337,8 +378,22 @@ class ClaudeProvider:
             }
             if keep_own:  # a lead keeps using its own tools as without tool search
                 server["alwaysLoad"] = True
-            servers = {"orch": server}
+            servers[OWN_SERVER] = server
+        brought = {
+            name: config_entry(entry)
+            for name, entry in wired_servers(ctx.wirings).items()
+            if name != OWN_SERVER  # Spartito's own name: its own server only
+        }
+        private_files = {}
+        if brought:
+            if ctx.mcp_config is None:
+                raise ValueError("a turn with MCP servers needs a path for its configuration")
+            content = json.dumps({"mcpServers": {**servers, **brought}})
+            private_files[ctx.mcp_config] = content
+            argv += ["--mcp-config", str(ctx.mcp_config)]
+        elif servers:
             argv += ["--mcp-config", json.dumps({"mcpServers": servers})]
+        if ctx.mcp:
             argv += ["--allowedTools", "mcp__orch"]
         if ctx.output_schema:
             argv += ["--json-schema", json.dumps(ctx.output_schema)]
@@ -352,6 +407,7 @@ class ClaudeProvider:
             canary=canary,
             env={**extra_env, **(NO_BACKGROUND_ENV if ctx.lead else {})},
             unset_env=PARENT_SESSION_ENV,
+            private_files=private_files,
         )
 
     def parse(self, line: str) -> list[Event]:
@@ -361,7 +417,9 @@ class ClaudeProvider:
             return [Event("info", line.strip())] if line.strip() else []
         kind = data.get("type")
         if kind == "system" and data.get("subtype") == "init":
-            return [Event("session", session_id=data.get("session_id"), model=data.get("model"))]
+            session = Event("session", session_id=data.get("session_id"), model=data.get("model"))
+            session.mcp = server_statuses(data)
+            return [session]
         if kind == "system" and data.get("subtype") == "compact_boundary":
             return self._compaction(data)
         if kind == "assistant":

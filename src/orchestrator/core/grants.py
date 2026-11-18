@@ -11,6 +11,9 @@ setting turned it off. Turning one off is always allowed, and so is removing a s
 on what the agent's role turns off. Only the owner and the orchestrator agent turn one on, or
 remove an off, globally, for a project or for a role.
 
+MCP servers (`mcp:<name>`, core/mcp.py) follow the same rules; adding and removing one is the
+owner's alone.
+
 A guard rail against agents doing it by accident or on a page's instruction, not a sandbox:
 an agent with a shell can still write the home's database or call the dashboard's API.
 """
@@ -21,6 +24,7 @@ import json
 from typing import Any, Protocol
 
 from .. import capabilities, config, settings
+from .. import mcp as mcp_servers
 from ..errors import OrchestratorError
 from ..models import Agent, Project
 from ..store import Store
@@ -51,9 +55,9 @@ def _flag(value: Any, name: str) -> bool | None:
     return value
 
 
-def _known(name: Any) -> capabilities.Capability:
+def _known(name: Any, store: Store) -> capabilities.Capability:
     try:
-        return capabilities.known(capabilities.check_name(name))
+        return capabilities.known(capabilities.check_name(name), store)
     except ValueError as exc:
         raise OrchestratorError(str(exc)) from None
 
@@ -65,13 +69,18 @@ def capability_list(
     for this process (capabilities.status; from what the provider check knows, starting
     none; with `wait` it checks the versions of what it does not know yet), the default, the global setting (`global`: true, false,
     null: inherit) and the global role settings (`roles`: {role: bool}). With `project` also
-    `project` and `project_roles`, that project's."""
+    `project` and `project_roles`, that project's. `kind`: "builtin", or "mcp" for an MCP
+    server's, which also has `server`, `origin`, `transport`, `definition` (as shown:
+    mcp.Server.shown), `own_reaches` (the owner's line, or null), `tools` (null: all) and
+    `last_status` (what the latest turn that had it reported, or null)."""
     name = orch.project(project).name if project else None
     globally = orch.store.get_settings(settings.GLOBAL)
     scoped = orch.store.get_settings(name) if name else {}
     found = availability.listing(models=False) if wait else availability.checked()
+    servers = {server.capability: server for server in mcp_servers.servers(orch.store)}
+    statuses = _latest_statuses(orch.store) if servers else {}
     entries = []
-    for capability in capabilities.REGISTRY.values():
+    for capability in capabilities.registry(orch.store).values():
         status, reason = capabilities.status(capability, found)
         entry: dict[str, Any] = {
             "name": capability.name,
@@ -87,13 +96,37 @@ def capability_list(
             "roles": _roles(globally, capability.name),
             "plugin": capability.name in capabilities.PLUGINS,
             "docs": capability.docs,
+            "kind": capability.kind,
         }
+        if server := servers.get(capability.name):
+            entry |= {
+                "server": server.name,
+                "origin": server.origin,
+                "transport": server.transport,
+                "definition": server.shown(),
+                "own_reaches": server.own_reaches,
+                "tools": None,
+                "last_status": statuses.get(server.name),
+            }
         if name:
             own = capabilities.flags(scoped.get(settings.CAPABILITIES))
             entry["project"] = own.get(capability.name)
             entry["project_roles"] = _roles(scoped, capability.name)
         entries.append(entry)
     return entries
+
+
+def _latest_statuses(store: Store) -> dict[str, str]:
+    """Per MCP server, the status the latest turn that reported one for it recorded."""
+    found: dict[str, str] = {}
+    for stored in store.recent_run_capabilities('"mcp"'):
+        try:
+            record = json.loads(stored)
+        except ValueError:
+            continue
+        for server, status in mcp_servers.last_statuses(record).items():
+            found.setdefault(server, status)
+    return found
 
 
 def _roles(data: dict[str, Any], name: str) -> dict[str, bool]:
@@ -119,7 +152,7 @@ def set_capability(
     settings are dropped (as reading ignores them). Returns capability_list(project)."""
     _flag(state, name)
     if state is not None or name not in _stored_names(orch, project):
-        _known(name)
+        _known(name, orch.store)
     scope = orch.project(project).name if project else settings.GLOBAL
     if role is not None and (not isinstance(role, str) or not role.strip()):
         raise OrchestratorError("role must be a role name")
@@ -176,9 +209,16 @@ def _changed(values: dict[str, bool], name: str, state: bool | None) -> dict[str
 
 
 def breakdown(orch: Facade, agent: Agent) -> dict[str, Any]:
-    """What the agent's next turn gets (capabilities.Resolution.breakdown); works for an
-    agent not stored yet (the orchestrator before its first use)."""
-    return capabilities.resolve(orch.store, agent).breakdown()
+    """What the agent's next turn gets (capabilities.Resolution.breakdown), with the MCP
+    servers' statuses at its last turn; works for an agent not stored yet (the orchestrator
+    before its first use)."""
+    return capabilities.resolve(orch.store, agent).breakdown(last_statuses(orch.store, agent))
+
+
+def last_statuses(store: Store, agent: Agent) -> dict[str, str]:
+    """The MCP servers' statuses the agent's last recorded turn reported."""
+    meta = store.meta_of(agent.id)
+    return capabilities.last_statuses(meta[run_id].capabilities for run_id in sorted(meta))
 
 
 def on_names(orch: Facade, agent: Agent) -> list[str]:
@@ -232,7 +272,7 @@ def granted(
                 )
             own.pop(name, None)
             continue
-        _known(name)
+        _known(name, orch.store)
         if value:
             if role is None:
                 role = capabilities.role_values(orch.store, agent.project, agent.role)
@@ -260,14 +300,14 @@ def granted(
     return own
 
 
-def unsupported_note(provider: str, own: dict[str, bool]) -> str | None:
-    """What a new agent's own setting turns on that its provider does not support."""
+def unsupported_note(provider: str, own: dict[str, bool], store: Store | None = None) -> str | None:
+    """What a new agent's own setting turns on that its provider does not support (with a
+    store, its MCP servers count too)."""
+    entries = capabilities.registry(store)
     names = [
         name
         for name, on in own.items()
-        if on
-        and name in capabilities.REGISTRY
-        and provider not in capabilities.REGISTRY[name].providers
+        if on and name in entries and provider not in entries[name].providers
     ]
     if not names:
         return None

@@ -19,6 +19,7 @@ lists as `#12`. *Project lead* or *lead* is the agent with role `lead` of a proj
 | `spartito project provider <project> <provider>` | the provider of a project's new agents |
 | `spartito providers` | which provider CLIs (Claude Code, Codex) this machine can run |
 | `spartito capabilities` | capabilities such as Claude in Chrome: list, `on`/`off`/`inherit` per level, `show` an agent's |
+| `spartito mcp` | MCP servers added in Spartito: list, `show`, `add`, `remove`, `on`/`off`/`inherit` per level |
 | `spartito chat` | interactive orchestrator session (Claude Code) |
 | `spartito web` | dashboard |
 | `spartito app` | dashboard in its own window |
@@ -116,17 +117,71 @@ spartito capabilities show AGENT
   ([capabilities.md](capabilities.md#giving-capabilities-from-agents)). Run against another
   home than the turn's own, they act as that home's owner.
 - `show` prints what the agent's next turn gets: per capability its state (`on`, `off` or
-  `skipped`), the level that decided it and a note, such as `codex does not support it`.
+  `skipped`), the level that decided it and a note, such as `codex does not support it`; for
+  an MCP server also its status at the agent's last turn (`last status: connected`).
 
 The levels, the safety of `chrome` and what is not verified yet:
 [capabilities.md](capabilities.md).
+
+### MCP servers
+
+> **Changed:** `spartito mcp` without a subcommand now lists MCP servers; it used to run the
+> `orch` MCP server on stdio, which is now `spartito mcp serve`. Spartito's own agents and
+> `spartito chat` never started it through the command and need nothing. If you registered
+> `spartito mcp` as an MCP server's command in another tool (for example
+> `claude mcp add spartito -- spartito mcp`), change its arguments to `mcp serve`, or run
+> `<python> -m orchestrator.mcp_server` with the install's Python.
+
+```sh
+spartito mcp [-p PROJECT] [--json]
+spartito mcp show NAME [-p PROJECT] [--json]
+spartito mcp add NAME --command CMD [--arg ARG]… [--env 'NAME=${VAR}']… [--reaches TEXT]
+spartito mcp add NAME --url URL [--header 'Name: ${VAR}']… [--reaches TEXT]
+spartito mcp remove NAME
+spartito mcp on|off|inherit NAME [-p PROJECT] [--role|-r ROLE]
+spartito mcp on|off|inherit NAME --agent|-a AGENT
+spartito mcp serve
+```
+
+- `mcp` lists the MCP servers added in Spartito: name, transport, the command or the URL's
+  origin, the global setting (with `-p` the project's too) and the status the latest turn that
+  had the server reported (`-`: none), and below the table the roles' settings. Without
+  servers it says how to add one. `--json` gives each server's capability entry with its
+  definition as shown, what it reaches and `agents`, the agents whose own setting names it.
+- `show` prints one server: its definition (a URL as its origin only), what it reaches, its
+  levels, its last status and the agents with their own setting for it. `NAME` may be written
+  `docs-db` or `mcp:docs-db`, here and in `on`, `off`, `inherit` and `remove`. A name has
+  letters, digits, `_` and `-` (at most 64), starts and ends with a letter or digit, and holds
+  no `__`.
+- `add` adds a server, off until a level turns it on, and prints the command that does.
+  `--command` is a local server on stdio, with `--arg` (repeatable, in order; a value starting
+  with `-` works: `--arg --read-only`) and `--env` (repeatable). `--url` is a remote server
+  over HTTP, with `--header` (repeatable). Exactly one of `--command` and `--url`. Every
+  `--env` value, `--header` value and query parameter value of the URL must be exactly one
+  `${VAR}` reference, read from the environment of the process that queued the turn: a
+  literal value is refused. The command, the arguments and the URL's path are stored as
+  given: keep secrets out of them, and a URL with a fragment (`#…`) is refused. A turn where
+  a referenced variable is not set leaves the server out, and the background service passes
+  no such variable on ([mcp.md](mcp.md#the-variables)). `--reaches` is your own line on what
+  it reaches.
+- `remove` removes a server and its setting at every level, and says where there was one.
+- `add` and `remove` are the owner's alone: refused when run in any agent's turn and in a
+  `spartito chat` session (its model may run `spartito` commands without asking); run them in
+  your own shell.
+- `on`, `off` and `inherit` are `spartito capabilities on|off|inherit mcp:NAME`, with the same
+  options, rules and output.
+- `serve` runs Spartito's own `orch` MCP server on stdio. `spartito chat` and the agents with a
+  lead role start the same server themselves, as `<python> -m orchestrator.mcp_server` (not
+  through this command); there is no need to run it by hand.
+
+What an agent's turn gets, the variables, safety and what is not built yet:
+[mcp.md](mcp.md#what-works-today).
 
 ### Orchestrator
 
 ```sh
 spartito chat [--continue|-c] [--here] [--model MODEL] [--effort EFFORT]
 spartito web [--host 127.0.0.1] [--port 8787]
-spartito mcp
 ```
 
 - `chat` opens the orchestrator as an interactive Claude Code session (requires `claude`, also
@@ -138,9 +193,7 @@ spartito mcp
   Being interactive, it is never woken by notifications: use `wait_for_agents` there.
 - `web` serves the [dashboard](#dashboard). With a non-loopback `--host` it prints a warning:
   the dashboard has no authentication.
-- `mcp` runs the `orch` MCP server on stdio. `spartito chat` and the agents with a lead role
-  start the same server themselves, as `<python> -m orchestrator.mcp_server` (not through this
-  command); there is no need to run it by hand.
+- `spartito mcp serve` runs the `orch` MCP server by hand ([MCP servers](#mcp-servers)).
 
 ### Dashboard window, menu bar and background service
 

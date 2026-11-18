@@ -22,6 +22,11 @@ change applies from an agent's next message.
 ORCH_CAPABILITIES="package.module:attribute,..." registers more entries after the built-in
 ones; the attribute is a Capability or a sequence of them. Their capabilities are off until
 turned on.
+
+The MCP servers added in Spartito (mcp.py, the store's `mcp_servers`) join them as
+`mcp:<server name>`, one entry per server, built each time the registry is read with a store
+(`registry`). An `mcp:` name whose server does not exist (never added, or removed) is
+unknown: off, and not listed, whatever a level says.
 """
 
 from __future__ import annotations
@@ -35,7 +40,8 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import providers
+from . import config, providers
+from . import mcp as mcp_servers
 from .models import Agent
 from .providers.base import Support, Wiring
 from .providers.claude import CHROME as CLAUDE_CHROME
@@ -43,7 +49,9 @@ from .store import Store
 
 SETTING = "capabilities"
 ROLE_SETTING = "role_capabilities"
-NAME = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+# A registered entry's name (PLAIN_NAME), or an MCP server's: mcp:<server name>.
+PLAIN_NAME = re.compile(r"^[a-z][a-z0-9-]{0,31}\Z")
+NAME = re.compile(r"^(?:[a-z][a-z0-9-]{0,31}|mcp:[A-Za-z0-9_-]{1,64})\Z")
 PLUGINS_ENV = "ORCH_CAPABILITIES"
 GLOBAL_SCOPE = ""  # settings.GLOBAL (settings imports this module)
 
@@ -52,6 +60,7 @@ ON, OFF, SKIPPED = "on", "off", "skipped"
 DEFAULT, GLOBAL, PROJECT, ROLE, AGENT = "default", "global", "project", "role", "agent"
 UNKNOWN, UNAVAILABLE, AVAILABLE = "unknown", "unavailable", "available"
 NOT_REGISTERED = "not registered here"
+BUILTIN_KIND, MCP_KIND = "builtin", mcp_servers.KIND  # Capability.kind
 
 
 @dataclass(frozen=True)
@@ -66,6 +75,8 @@ class Capability:
     # file and runs nothing. None: UNKNOWN.
     check: Callable[[], tuple[str, str]] | None = None
     docs: str = ""
+    kind: str = BUILTIN_KIND  # MCP_KIND: an MCP server's (listed in a section of its own)
+    origin: str | None = None  # an MCP server's: where its definition comes from
 
 
 # Variables with which Claude Code does not use a claude.ai login (its docs: Claude in
@@ -126,7 +137,7 @@ def register(capability: Capability, plugin: bool = False) -> None:
     a provider that is not registered (it may be one that only another process loads)."""
     if not isinstance(capability, Capability):
         raise ValueError(f"not a Capability: {capability!r}")
-    if not NAME.match(capability.name):
+    if not PLAIN_NAME.match(capability.name):
         raise ValueError(
             f"invalid capability name {capability.name!r}: lower case letters, digits and"
             " '-', starting with a letter, at most 32 characters"
@@ -164,20 +175,60 @@ _load_plugins(os.environ.get(PLUGINS_ENV, ""))
 
 
 def check_name(name: Any) -> str:
-    """A capability name as stored: syntax only (a plugin may be gone). Raises ValueError."""
+    """A capability name as stored: syntax only (a plugin or a server may be gone). Raises
+    ValueError."""
     if not isinstance(name, str) or not NAME.match(name):
         raise ValueError(
             f"invalid capability name {name!r}: lower case letters, digits and '-',"
-            " starting with a letter"
+            " starting with a letter, or mcp: and an MCP server's name"
         )
     return name
 
 
-def known(name: str) -> Capability:
-    """A registered capability; ValueError naming the known ones otherwise."""
-    if name not in REGISTRY:
-        raise ValueError(f"unknown capability {name!r} (known: {', '.join(REGISTRY) or 'none'})")
-    return REGISTRY[name]
+def mcp_capability(server: mcp_servers.Server) -> Capability:
+    """An MCP server as a capability: Claude carries it (Codex not yet); on, the turn's MCP
+    configuration gets the server; off, nothing."""
+    where = "a command" if server.transport == mcp_servers.STDIO else "a URL"
+    return Capability(
+        name=server.capability,
+        label=server.name,
+        description=f"the MCP server {server.name} ({server.transport}: {where}, added in"
+        " Spartito) and its tools",
+        reaches=server.reaches,
+        providers={
+            "claude": Support(on=Wiring(mcp_servers={server.name: server.entry()}, mcp_tools=True))
+        },
+        docs="docs/mcp.md#what-works-today",
+        kind=MCP_KIND,
+        origin=server.origin,
+    )
+
+
+def registry(store: Store | None) -> dict[str, Capability]:
+    """The registered entries (REGISTRY) and, with a store, one per MCP server of it, built
+    now (a server added or removed since counts at once)."""
+    found = dict(REGISTRY)
+    if store is not None:
+        for server in mcp_servers.servers(store):
+            found.setdefault(server.capability, mcp_capability(server))
+    return found
+
+
+def known(name: str, store: Store | None = None) -> Capability:
+    """A registered capability (with a store, an MCP server's too); ValueError naming the
+    known ones otherwise."""
+    entries = registry(store)
+    if name in entries:
+        return entries[name]
+    if name.startswith(mcp_servers.PREFIX):
+        added = [entry.label for entry in entries.values() if entry.kind == MCP_KIND]
+        raise ValueError(
+            f"unknown MCP server {mcp_servers.server_name(name)!r} (added:"
+            f" {', '.join(added) or 'none'}); the owner adds one with"
+            f" `{config.CLI_NAME} mcp add`"
+        )
+    plain = [entry for entry in entries if not entry.startswith(mcp_servers.PREFIX)]
+    raise ValueError(f"unknown capability {name!r} (known: {', '.join(plain) or 'none'})")
 
 
 def flags(value: Any) -> dict[str, bool]:
@@ -275,9 +326,14 @@ class Item:
     override: bool | None  # the agent's own setting (None: none)
     final: bool  # the role turned it off: the agent's own setting cannot turn it on
     note: str | None = None
+    kind: str = BUILTIN_KIND
+    origin: str | None = None  # an MCP server's
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
+    def to_dict(self, statuses: Mapping[str, str] | None = None) -> dict[str, Any]:
+        """`statuses`: the MCP servers' statuses at the agent's last turn (mcp.last_statuses);
+        an MCP server's item has `origin`, `tools` (null: all of them) and `last_status`
+        (null: not reported)."""
+        found = {
             "name": self.name,
             "label": self.label,
             "state": self.state,
@@ -285,7 +341,16 @@ class Item:
             "override": self.override,
             "final": self.final,
             "note": self.note,
+            "kind": self.kind,
         }
+        if self.kind == MCP_KIND:
+            server = mcp_servers.server_name(self.name)
+            found |= {
+                "origin": self.origin,
+                "tools": None,
+                "last_status": (statuses or {}).get(server),
+            }
+        return found
 
 
 @dataclass(frozen=True)
@@ -305,9 +370,10 @@ class Resolution:
         """What run_meta.capabilities keeps of a turn."""
         return {"on": self.on, "skipped": self.skipped}
 
-    def breakdown(self) -> dict[str, Any]:
-        """The agent views' `capabilities`."""
-        return {"on": self.on, "items": [item.to_dict() for item in self.items], "error": None}
+    def breakdown(self, statuses: Mapping[str, str] | None = None) -> dict[str, Any]:
+        """The agent views' `capabilities`; `statuses`: see Item.to_dict."""
+        items = [item.to_dict(statuses) for item in self.items]
+        return {"on": self.on, "items": items, "error": None}
 
 
 def _settings(store: Store, scope: str) -> dict[str, Any]:
@@ -341,7 +407,8 @@ def resolve(store: Store, agent: Agent) -> Resolution:
         **role_flags(project.get(ROLE_SETTING), agent.role),
     }
     own = flags(agent.capabilities)
-    names = list(REGISTRY) + [
+    entries = registry(store)
+    names = list(entries) + [
         name for level in (*levels, (ROLE, role), (AGENT, own)) for name in level[1]
     ]
     items, wirings = [], []
@@ -357,9 +424,9 @@ def resolve(store: Store, agent: Agent) -> Resolution:
                 note = f"off for role {agent.role}: the role's setting wins over the agent's"
             else:
                 on, source = own[name], AGENT
-        capability = REGISTRY.get(name)
-        if capability is None and not on:
-            continue  # nothing to say about an unknown name that is off
+        capability = entries.get(name)
+        if capability is None and (not on or name.startswith(mcp_servers.PREFIX)):
+            continue  # nothing to say about an unknown name that is off, or a gone server
         support = capability.providers.get(agent.provider) if capability else None
         state = ON if on else OFF
         if note:
@@ -371,7 +438,8 @@ def resolve(store: Store, agent: Agent) -> Resolution:
         if support is not None:
             wirings.append(support.on if state == ON else support.off)
         label = capability.label if capability else name
-        items.append(Item(name, label, state, source, own.get(name), final, note))
+        kind, origin = (capability.kind, capability.origin) if capability else (BUILTIN_KIND, None)
+        items.append(Item(name, label, state, source, own.get(name), final, note, kind, origin))
     return Resolution(tuple(items), tuple(wiring for wiring in wirings if wiring != Wiring()))
 
 
@@ -383,6 +451,12 @@ def describe_record(record: Mapping[str, Any]) -> str:
     if skipped:
         text += "; skipped: " + ", ".join(f"{name} ({why})" for name, why in skipped.items())
     return text
+
+
+def last_statuses(records: Iterable[str | None]) -> dict[str, str]:
+    """The MCP servers' statuses at the last recorded turn of `records`
+    (run_meta.capabilities, oldest first): its record's `mcp` (mcp.last_statuses)."""
+    return mcp_servers.last_statuses(previous_record(records))
 
 
 def previous_record(records: Iterable[str | None]) -> dict[str, Any] | None:

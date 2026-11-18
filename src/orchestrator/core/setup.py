@@ -10,7 +10,7 @@ from .. import capabilities, providers, roles, settings
 from ..errors import NeedsConfirmation, OrchestratorError
 from ..models import Agent, Project
 from ..store import Store
-from . import availability
+from . import availability, grants
 from .dispatch import ORCHESTRATOR_ID
 
 
@@ -85,7 +85,7 @@ def update_settings(orch: Facade, data: Any, project: str | None = None) -> dict
     for key in settings.SWITCHES:
         if project and key in cleaned:
             raise OrchestratorError(f"{key} can only be set globally")
-    _registered(cleaned, stored)
+    _registered(cleaned, stored, orch.store)
     # Kept when not named (the settings dialog sends only its own fields; a page from
     # before a key existed does not send that one).
     kept = (
@@ -125,10 +125,12 @@ def _as_stored(data: Any, stored: dict[str, Any]) -> Any:
     return data
 
 
-def _registered(cleaned: dict[str, Any], stored: dict[str, Any]) -> None:
+def _registered(cleaned: dict[str, Any], stored: dict[str, Any], store: Store) -> None:
     """Refuse a capability setting the request names for a capability that is not registered
-    (it would be skipped on every turn); one stored with the same value already (a plugin
-    that is gone) stays, and removing one is always possible."""
+    (capabilities.registry, MCP servers included; it would be skipped on every turn); one
+    stored with the same value already (a plugin or an MCP server that is gone) stays, and
+    removing one is always possible."""
+    entries = capabilities.registry(store)
     stored_roles = stored.get(settings.ROLE_CAPABILITIES)
     pairs = [
         (
@@ -140,9 +142,9 @@ def _registered(cleaned: dict[str, Any], stored: dict[str, Any]) -> None:
         pairs.append((values, capabilities.role_flags(stored_roles, role)))
     for values, before in pairs:
         for name, on in values.items():
-            if name not in capabilities.REGISTRY and before.get(name) is not on:
+            if name not in entries and before.get(name) is not on:
                 try:
-                    capabilities.known(name)
+                    capabilities.known(name, store)
                 except ValueError as exc:
                     raise OrchestratorError(str(exc)) from None
 
@@ -189,7 +191,7 @@ def setup(orch: Facade, agent_id: str, wait: bool = True) -> dict[str, Any]:
         "running": orch.store.running_run(agent.id) is not None,
         "cache_effect": cache_effect(agent.provider),
         "cache_hint": cache_hint(agent.provider),
-        "capabilities": capabilities.resolve(orch.store, agent).breakdown(),
+        "capabilities": grants.breakdown(orch, agent),
     }
 
 

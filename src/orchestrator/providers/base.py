@@ -7,6 +7,7 @@ the class in providers/__init__.py. Nothing else in the orchestrator knows provi
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,11 +38,15 @@ class Wiring:
     environment variables. Each provider decides where the arguments go on its command
     line; the environment is set for the CLI's process. `mcp_tools`: what it adds brings
     MCP tools (Claude in Chrome's browser tools do), which a provider may load on demand
-    rather than with every request (Claude: tool search, loadout `tool_search`)."""
+    rather than with every request (Claude: tool search, loadout `tool_search`).
+    `mcp_servers`: MCP servers it brings, name -> the server's entry as Claude Code's
+    `mcpServers` takes it (mcp.Server.entry), which the provider adds to the turn's MCP
+    configuration. A plain mapping like `env`: wirings are compared, never hashed."""
 
     argv: tuple[str, ...] = ()
     env: Mapping[str, str] = field(default_factory=dict)
     mcp_tools: bool = False
+    mcp_servers: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -61,6 +66,38 @@ def wired(wirings: Sequence[Wiring]) -> tuple[list[str], dict[str, str]]:
         argv += wiring.argv
         env.update(wiring.env)
     return argv, env
+
+
+def wired_servers(wirings: Sequence[Wiring]) -> dict[str, Mapping[str, Any]]:
+    """The MCP servers of a turn's wirings, name -> entry, in order (a later one wins: two
+    wirings naming one server give it once, as the last says)."""
+    servers: dict[str, Mapping[str, Any]] = {}
+    for wiring in wirings:
+        servers.update(wiring.mcp_servers)
+    return servers
+
+
+# `${NAME}`, or `${NAME:-default}` (a default: the name need not be set), as Claude Code
+# expands them in an MCP server's entry.
+REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(:-[^}]*)?\}")
+
+
+def server_references(entry: Mapping[str, Any]) -> list[str]:
+    """The variables an MCP server's entry needs set, in order, once each: the `${NAME}`
+    references without a default in its command, args, env values, URL and header values."""
+    texts: list[Any] = [entry.get("command"), entry.get("url")]
+    texts += list(entry.get("args") or ())
+    for key in ("env", "headers"):
+        values = entry.get(key)
+        texts += list(values.values()) if isinstance(values, Mapping) else []
+    found = [
+        match.group(1)
+        for text in texts
+        if isinstance(text, str)
+        for match in REFERENCE.finditer(text)
+        if match.group(2) is None
+    ]
+    return list(dict.fromkeys(found))
 
 
 @dataclass
@@ -83,6 +120,9 @@ class RunContext:
     # wiring's argv on its command line and its env in the CLI's environment. A provider
     # that ignores them gets none of the capabilities.
     wirings: tuple[Wiring, ...] = ()
+    # Where the turn's MCP configuration goes when it has MCP servers from its wirings
+    # (Claude: a file, see Invocation.private_files); None: the caller writes no file.
+    mcp_config: Path | None = None
 
 
 @dataclass
@@ -94,6 +134,10 @@ class Invocation:
     # A file the CLI creates (SessionStart hook) as proof that its hooks run; the runner
     # sends stdin only after it appears, otherwise it relaunches without `memory`.
     canary: Path | None = None
+    # Files only the CLI may read, path -> content: the runner writes each as the CLI
+    # starts (mode 0600, created so, in config.private_dir) and removes it when the turn
+    # ends, however it ends. Their content is never logged or shown.
+    private_files: dict[Path, str] = field(default_factory=dict)
 
 
 class Provider(Protocol):

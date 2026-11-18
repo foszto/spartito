@@ -565,6 +565,33 @@ out({ detached: seen.detached, same: radios(box)[0].parentNode.parentNode.parent
     }
 
 
+def test_an_mcp_servers_name_with_a_colon_is_saved_and_its_choice_refocused() -> None:
+    """MCP servers are capabilities named mcp:<server>; the colon goes into no selector (a
+    real page refuses `[name=capability-mcp:docs-db]`), and the saved choice gets the focus."""
+    result = run_page(
+        """
+const DOCS = { ...FAKE, name: 'mcp:docs-db', label: 'docs-db', kind: 'mcp', providers: ['claude'] };
+state.capabilities = [CHROME, DOCS];
+renderSettings();
+const box = settingsBox(), mine = box.querySelectorAll('.cap-row')[1].querySelectorAll('input');
+const focused = [];
+Node.prototype.focus = function () { focused.push([this.name, this.value]); };
+document.activeElement = mine[1];
+replies.push({ capabilities: [CHROME, { ...DOCS, global: true }] });
+mine[1].onchange({ target: mine[1] });
+await settle();
+out({ names: mine.map(r => r.name), request: posted.at(-1), focused,
+  status: box.querySelector('.cap-status').textContent });
+"""
+    )
+    assert result == {
+        "names": ["capability-mcp:docs-db"] * 3,
+        "request": {"path": "/api/capabilities", "body": {"name": "mcp:docs-db", "state": True}},
+        "focused": [["capability-mcp:docs-db", "on"]],
+        "status": "docs-db: on globally, from each agent’s next turn.",
+    }
+
+
 def test_a_poll_from_before_a_save_leaves_the_saved_value() -> None:
     result = run_page(
         """
