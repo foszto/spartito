@@ -245,8 +245,8 @@ def test_the_provider_attributes_say_what_the_tables_say(name: str) -> None:
     provider = providers.get(name)
 
     assert (provider.credit.link, provider.credit.trailer_rule) == roles._CREDITS[name]
-    assert provider.cache_effect == setup.CACHE_EFFECT[name]
-    assert set(provider.config_env) <= set(runner.MCP_PASSED_ENV) & set(autostart.ENV_NAMES)
+    assert provider.cache_effect == setup.cache_effect(name)
+    assert set(provider.config_env) <= set(runner.MCP_PASSED_ENV) & set(autostart.env_names())
     assert provider.reports_context is isinstance(provider, providers.BUILTIN)
     assert provider.carries_mcp_servers is (name == "claude")  # capabilities.mcp_capability
     assert not hasattr(provider, "min_version")

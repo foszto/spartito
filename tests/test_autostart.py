@@ -24,7 +24,7 @@ import pytest
 from conftest import SYSTEM_COMMANDS, FakeSystem
 from typer.testing import CliRunner
 
-from orchestrator import autostart, cli
+from orchestrator import autostart, cli, providers
 
 UID = str(os.getuid())
 
@@ -231,6 +231,18 @@ def test_only_whitelisted_variables_reach_the_unit():
         "ORCH_PROVIDERS": "fake=mod:Cls",
         "PATH": "/opt/bin:/usr/bin",
     }
+
+
+def test_a_providers_config_variables_reach_the_unit(monkeypatch: pytest.MonkeyPatch):
+    """A registered provider's `config_env` is whitelisted; one without it adds nothing."""
+    with_config = type("WithConfig", (), {"config_env": ("MY_CLI_HOME",)})()
+    monkeypatch.setitem(providers.PROVIDERS, "my-cli", with_config)
+    monkeypatch.setitem(providers.PROVIDERS, "bare", object())
+    environ = {"PATH": "/usr/bin", "MY_CLI_HOME": "/cfg/my-cli", "OTHER_HOME": "/cfg/other"}
+
+    env = autostart.captured_env(Path("/srv/orch"), environ)
+
+    assert env == {"MY_CLI_HOME": "/cfg/my-cli", "ORCH_HOME": "/srv/orch", "PATH": "/usr/bin"}
 
 
 @pytest.mark.parametrize("platform", ["darwin", "linux"])

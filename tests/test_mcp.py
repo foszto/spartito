@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from orchestrator import capabilities, mcp, settings
+from orchestrator import capabilities, mcp, providers, settings
 from orchestrator.errors import OrchestratorError
 from orchestrator.models import Agent
 from orchestrator.providers import get as provider
@@ -387,6 +387,21 @@ def test_the_registry_holds_one_entry_per_server(store: Store) -> None:
     assert entry.providers["claude"].off == Wiring()
     assert capabilities.CHROME.kind == "builtin" and "mcp:docs-db" not in capabilities.REGISTRY
     assert capabilities.known("mcp:docs-db", store) == entry
+
+
+def test_every_provider_that_carries_mcp_servers_gets_the_entry(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Claude by its `carries_mcp_servers`; a plugin with it too, one without it not."""
+    carrier = type("Carrier", (), {"carries_mcp_servers": True})()
+    monkeypatch.setitem(providers.PROVIDERS, "my-cli", carrier)
+    monkeypatch.setitem(providers.PROVIDERS, "bare", object())
+    mcp.add(store, docs_db())
+
+    entry = capabilities.registry(store)["mcp:docs-db"]
+
+    on = Support(on=Wiring(mcp_servers={"docs-db": STDIO_ENTRY}, mcp_tools=True))
+    assert entry.providers == {"claude": on, "my-cli": on}
 
 
 def test_unknown_names_are_named_in_the_refusal(store: Store) -> None:

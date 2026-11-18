@@ -93,7 +93,7 @@ is not available a hint says so, with a **Check again** button that checks once 
 | status | meaning | can be chosen |
 |---|---|---|
 | `available` | the CLI was found and answered `--version` | yes |
-| `not_installed` | the CLI was not found, its `#!` interpreter (such as `node`) is missing, or it could not be started | no |
+| `not_installed` | the CLI was not found, its `#!` interpreter (such as `node`) is missing, it could not be started, or its version is older than the provider's `min_version` (no built-in provider has one) | no |
 | `not_logged_in` | the provider's own login check failed; the built-in providers have none, so they never show it | no |
 | `unknown` | the CLI was found but `--version` failed or did not answer within 5 seconds, the provider names no CLI, or the check has not run yet | yes |
 
@@ -276,6 +276,11 @@ protocol in `src/orchestrator/providers/base.py`. Its self-description is option
 | `reports_cost` | whether its turns report a cost | not said |
 | `role_prompt` | `every_turn` or `first_turn` | not said |
 | `limits` | what it does not support, one phrase each | none listed |
+| `min_version` | the oldest CLI version it supports, such as `(2, 2, 3)`; an older one is `not_installed` | any version |
+| `reports_context` | whether it reports the context size | not said |
+| `cache_effect` | what a model or effort switch does to the prompt cache: `{"model": …, "effort": …}`, each `restarts`, `may restart` or `keeps` | `may restart` |
+| `config_env` | the variables that point its CLI at its configuration, carried into the background service | none |
+| `carries_mcp_servers` | whether its turns get the [MCP servers](mcp.md) added in Spartito | no |
 
 Compaction (`compact_prompt`) and the context size (`context_after`) are optional too: a
 provider without `compact_prompt` cannot compact. A provider other than `claude` and `codex`
