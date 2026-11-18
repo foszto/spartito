@@ -27,11 +27,11 @@ ORCHESTRATOR_TEXT_CHARS = 1730
 # parameters (without title and default) and their words in the description.
 LEAD_EXTRA_CHARS: dict[str, int] = {}
 LEAD_EXTRA_CHARS["list_board"] = 64  # P3: `live`
-# 140 until the capabilities (6 left), raised by what they need beyond that (110 - 6).
-LEAD_EXTRA_BUDGET = 244
+# 140 until the capabilities (6 left), raised by what they need beyond that (164 - 6).
+LEAD_EXTRA_BUDGET = 298
 LEAD_EXTRA_CHARS["request_decision"] = 64  # P5: `item`
 LEAD_EXTRA_CHARS["spawn_agent"] = 6  # provider choice: the role's default
-LEAD_EXTRA_CHARS["spawn_agent"] += 40  # `capabilities`, its words shared with model/effort
+LEAD_EXTRA_CHARS["spawn_agent"] += 94  # `capabilities`, and how to add and drop one
 LEAD_EXTRA_CHARS["send_message"] = 70  # `capabilities`, and that it stays
 # Master's add_project and ask_project_lead as listed (560 + 712): only the orchestrator gets
 # them since the provider choice (they always refused other agents). Taken off master's

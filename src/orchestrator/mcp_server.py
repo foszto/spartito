@@ -150,8 +150,9 @@ def spawn_agent(
     name: short label, becomes part of the agent id and branch (`orch/<name>-xxxx`).
     role: see list_roles. `lead` agents can spawn their own sub-agents.
     provider: `claude` or `codex`; default: the role's, else the project's.
-    model, effort, capabilities: unset = the configured defaults; set them only when the user
-      asks or the task needs it. capabilities: "chrome" adds one, "-chrome" drops it.
+    model, effort: leave unset to use the configured defaults for the agent's tier; set them
+      only when the user asks or the task clearly needs a stronger or cheaper setting.
+    capabilities: "chrome" adds one, "-chrome" drops it.
     worktree: own git worktree and branch (default for most roles) or the main checkout.
     share_worktree_with: agent id whose worktree to work in instead (review, test, fix).
     base: branch/ref, or an agent id whose branch to start from; default is the project's
