@@ -413,7 +413,7 @@ def test_an_empty_codex_model_list_is_asked_for_again_later(
 
     assert provider.models() == [] and provider.models() == []
     assert len(asked) == 1
-    monkeypatch.setattr(codex, "MODEL_LIST_RETRY_SECONDS", 0)
+    monkeypatch.setattr(provider.catalog, "retry_seconds", 0)
     assert provider.models() == ["gpt-y"]
     assert provider.models() == ["gpt-y"] and len(asked) == 2  # a full list is kept
 

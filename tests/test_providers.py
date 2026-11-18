@@ -12,7 +12,7 @@ import pytest
 
 from orchestrator.loadout import Loadout
 from orchestrator.models import Agent, Event, Usage
-from orchestrator.providers import McpServer, RunContext, claude, get
+from orchestrator.providers import McpServer, RunContext, claude, get, kit
 from orchestrator.providers.claude import loadout_flags
 
 # The real lookup; conftest replaces the module attribute with a recorded answer.
@@ -450,13 +450,13 @@ def test_a_generic_or_failed_claude_list_is_asked_for_again_after_a_while(
     generic = provider.models()
     assert provider.models() is generic and provider.models_note == "model list may be incomplete"
     assert ("opus", "Opus · claude-opus-5-5") in generic
-    provider._models_at -= claude.MODEL_LIST_RETRY_SECONDS
+    provider._models_at -= kit.MODEL_LIST_RETRY_SECONDS
     assert provider.models() == list(claude.FALLBACK_MODELS)
     assert provider.models_note == "model list unavailable: showing aliases"
-    provider._models_at -= claude.MODEL_LIST_RETRY_SECONDS
+    provider._models_at -= kit.MODEL_LIST_RETRY_SECONDS
     full = provider.models()
     assert ("claude-mythos-5-1", "Mythos 5.1") in full and provider.models_note is None
-    provider._models_at -= claude.MODEL_LIST_RETRY_SECONDS
+    provider._models_at -= kit.MODEL_LIST_RETRY_SECONDS
     assert provider.models() is full and not answers  # a full list is kept
 
 

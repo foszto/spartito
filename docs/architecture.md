@@ -140,7 +140,8 @@ src/orchestrator/
   runner.py        one turn in its own detached process
   store.py         SQLite (WAL): the only shared state
   providers/       __init__.py (the registry, `BUILTIN`), base.py (protocol), claude.py,
-                   codex.py, locate.py (finding a CLI, the `--version` check)
+                   codex.py, locate.py (finding a CLI, the `--version` check),
+                   kit.py (building blocks the providers share)
   notify.py        notification turns to parents
   replies.py       results cut to a size budget for agents
   models.py        Project, Agent, Run (one turn), Event
