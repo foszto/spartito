@@ -68,6 +68,9 @@ chosen is in the
   section of their own, `spartito capabilities show` gives each one's last status, and
   `spawn --capabilities mcp:NAME` works. Read `docs/mcp.md` first: a server runs as you or
   receives the agent's tool calls.
+- Providers registered with `ORCH_PROVIDERS` can declare more optional attributes:
+  `min_version` (an older CLI is listed as `not_installed`), `reports_context`,
+  `cache_effect`, `config_env`, `carries_mcp_servers` and `credit` (`docs/providers.md`).
 
 ### Changed
 
