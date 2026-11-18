@@ -728,8 +728,11 @@ See also [mcp.md](mcp.md#wiring-per-provider) for how MCP servers are wired per 
 
 ## 6. Google Antigravity and Gemini CLI (research, not built)
 
-> **Status: research only.** Nothing here is built. Facts were checked on 2026-11-18 against the
-> pages linked; Google's doc pages carry no dates. Marks: **[documented]** in Google's docs or
+> **Status: research only; decided against a direct provider.** Nothing here is built, and
+> neither Antigravity nor Gemini CLI becomes a provider of its own. Antigravity may come up only
+> through the generic ACP provider on the roadmap (6.7). Facts were checked on 2026-11-18
+> against the pages linked; the quotes of the Antigravity FAQ and terms and of Gemini CLI's
+> terms page were re-checked on 2026-11-19. Google's doc pages carry no dates. Marks: **[documented]** in Google's docs or
 > repositories; **[unverified; …]** from a third-party page, a forum, or absent from the docs;
 > **[observed]** seen on the research machine. An `agy` executable is installed there; it was
 > not run, so its version is unknown. `gemini` is not installed.
@@ -787,7 +790,7 @@ See also [mcp.md](mcp.md#wiring-per-provider) for how MCP servers are wired per 
 
 ### 6.3 Fit with the kit
 
-Technically, `agy -p` is closer to Claude Code than Codex is: it has stream-json, an enforced schema, resume by id, model and effort flags. A per-turn module, `providers/antigravity.py` (planned), would contain:
+Technically, `agy -p` is closer to Claude Code than Codex is: it has stream-json, an enforced schema, resume by id, model and effort flags. A per-turn module, `providers/antigravity.py` (not to be built, 6.7), would contain:
 
 - **Invocation**: `agy -p --input-format stream-json --output-format stream-json --disable-slash-commands [--conversation <id>] [--model …] [--effort …] [--mode …] [--json-schema <kit.schema_file>] [--add-dir <.git>]`, with the prompt on stdin.
 - **Role prompt**: `kit.with_role_prefix`, because there is no system-prompt flag.
@@ -814,7 +817,7 @@ A Gemini CLI provider would take the same phases and sizes, but without an enfor
 
 ### 6.4 Licensing and terms
 
-- **Antigravity FAQ**: "Antigravity CLI headless mode (`agy -p`) is intended for direct scripting and CI workflows." The same entry lists "wrapping `agy` inside third-party coding agents or applications" as not supported under consumer plans. **[documented]** <https://antigravity.google/docs/faq>
+- **Antigravity FAQ**: "Antigravity CLI headless mode (`agy -p`) is intended for direct scripting and CI workflows." The same entry says that "Wrapping `agy` inside third-party coding agents or applications" … "is not supported under consumer plans". **[documented]** <https://antigravity.google/docs/faq>
 - **Same FAQ, third-party software**: "Using third-party software, tools, or services to access Antigravity is a violation of our Terms of Service". It recommends "a Gemini Enterprise or Google AI Studio API key" instead. **[documented]** (same page)
 - **Terms §6**: "Using third party software, tools, or services to access the Service" … "may be grounds for suspension or termination of your Antigravity and/or Gemini CLI accounts." **[documented]** <https://antigravity.google/terms>
 - **Forum replies say the opposite** ("Yes, your described pattern is compliant"). The answerers are not marked as Google staff, and the FAQ contradicts them. **[unverified; forum]** <https://discuss.ai.google.dev/t/is-it-allowed-for-an-open-source-tool-to-call-the-official-agy-cli-in-headless-mode/183429>, <https://discuss.ai.google.dev/t/clarification-request-is-local-ipc-pty-wrapping-of-agy-cli-for-open-standard-editor-bridges-e-g-acp-tos-compliant/175905>
@@ -827,13 +830,15 @@ A Gemini CLI provider would take the same phases and sizes, but without an enfor
   - rate limits beyond "Refer to the Plans documentation";
   - whether a client that is not an editor may use `agy acp` with a personal login.
 
-### 6.5 Recommendation
+### 6.5 Recommendation and outcome
 
-- **Integrate no Google harness now.** With a personal Google login, Spartito running `agy` is what the FAQ calls unsupported and the terms call grounds for suspension.
-- **If integrated at all, Antigravity CLI is the route, not Gemini CLI**: Gemini CLI is closed to consumers and kept for enterprise. Make it a per-turn provider, after opencode, limited to API-key or enterprise sign-ins.
-- **Reconsider through ACP** when the roadmap's generic provider is built, if Google confirms that a client which is not an editor may use it.
+- **Outcome: not built as a direct provider** (6.7). Neither Antigravity nor Gemini CLI gets a per-turn adapter of its own.
+- **Antigravity is a candidate only through ACP**: if the roadmap's generic provider ([ACP as a generic provider](../ROADMAP.md#acp-as-a-generic-provider)) is built, `agy acp` may be considered for it, subject to Google's terms. Whether a client that is not an editor may use it under a consumer plan is the open point.
+- **The research's recommendation** was the same in substance: integrate no Google harness now, because with a personal Google login, Spartito running `agy` is what the FAQ calls unsupported and the terms call grounds for suspension; prefer Antigravity CLI to Gemini CLI, which is closed to consumers and kept for enterprise; reconsider through ACP.
 
-### 6.6 Proposed live checks (none run; each needs the owner's go-ahead)
+### 6.6 Proposed live checks (none run)
+
+None of these is planned. They would only matter if the ACP provider is built and Antigravity is considered for it, and each would still need the owner's go-ahead.
 
 | # | check | touches |
 |---|---|---|
@@ -844,11 +849,11 @@ A Gemini CLI provider would take the same phases and sizes, but without an enfor
 | L5 | a workspace `.agents/mcp_config.json` stdio server under `-p`: loaded, tool names, timeout | as L3, a throwaway repository |
 | L6 | `agy models`: format, offline | temporary `HOME`; possibly an account |
 
-### 6.7 Open questions for the owner
+### 6.7 Decided questions
 
-1. **A1** Integrate Antigravity at all, given the FAQ and §6 of the terms? Recommend: not now; revisit after opencode.
-2. **A2** If yes, which sign-ins? Recommend: API key or enterprise only, with the terms risk stated in providers.md.
-3. **A3** Gemini CLI as a provider? Recommend: no; consumers lost it, and it is kept for enterprise.
-4. **A4** Per-turn or ACP? Recommend: per-turn if built before the ACP provider; otherwise through ACP.
-5. **A5** Ask Google for a written answer on a local orchestrator calling `agy -p` or `agy acp`? Recommend: yes, posted by the owner, before any work.
-6. **A6** Run L1–L2 (no account) now? Recommend: only if A1 is yes; L3–L6 after A2.
+1. **A1 A direct provider**: integrate Antigravity at all, given the FAQ and §6 of the terms? Decided: no direct provider, neither for Antigravity nor for Gemini CLI.
+2. **A2 Sign-ins** (API key or enterprise only?): moot after A1.
+3. **A3 Gemini CLI as a provider**: moot after A1 (no direct provider).
+4. **A4 Per-turn or ACP?** Decided: only via ACP, through the generic ACP provider on the roadmap ([ACP as a generic provider](../ROADMAP.md#acp-as-a-generic-provider)), never a per-turn adapter of its own.
+5. **A5 A written answer from Google** on a local orchestrator calling `agy -p` or `agy acp`: moot after A1.
+6. **A6 Live checks L1–L6 now**: moot after A1.

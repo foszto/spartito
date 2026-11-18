@@ -193,7 +193,9 @@ protocol in `providers/base.py` ([other providers](docs/providers.md#other-provi
 and recovering after a crash. The environment, the capabilities and the MCP configuration are
 set per turn today ([what a turn gets](docs/mcp.md#what-the-agents-turn-gets)) and cannot
 change inside a running process. How mature are the adapters? Would it replace the per-turn
-providers, or sit beside them?
+providers, or sit beside them? Google Antigravity (`agy acp`) is a candidate only through
+this provider, and only subject to its terms of use: whether third-party use is allowed on
+consumer plans is the open point ([research](docs/providers-design.md#6-google-antigravity-and-gemini-cli-research-not-built)).
 
 #### GitHub automations
 
