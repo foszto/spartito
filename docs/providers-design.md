@@ -3,7 +3,7 @@
 > **Status: a design, not built.** Nothing described here as new exists yet: the modules,
 > attributes and the `opencode` provider named below are planned. What exists today is
 > described in [providers.md](providers.md), [configuration.md](configuration.md#loadout),
-> [capabilities.md](capabilities.md) and `mcp.md`.
+> [capabilities.md](capabilities.md) and [mcp.md](mcp.md#what-works-today).
 >
 > Facts about opencode are marked:
 > - **[documented]**: in opencode's public docs (URL given);
@@ -22,14 +22,14 @@
 2. opencode: what it offers a headless orchestrator
 3. Target design
 4. The opencode adapter
-5. Phases, risks, verification, open questions
+5. Phases, risks, verification, decided questions
 
 ---
 
 ## 1. Current state
 
 Line numbers refer to the provider layer as it is once MCP servers have become
-capabilities (the change that added `mcp.md`). They shift with later edits.
+capabilities (the change that added [mcp.md](mcp.md#each-server-is-a-capability)). They shift with later edits.
 
 ### 1.1 The layer
 
@@ -386,7 +386,7 @@ providers/
 - The texts stay word for word.
 - Codex's rule ("when you add a trailer, keep its email…") becomes a named constant that opencode reuses.
 
-**Loadout**: no key changes in the refactor. For a provider-neutral "user configuration" key, see question Q3.
+**Loadout**: no key changes in the refactor. No provider-neutral "user configuration" key for now (Q3, decided).
 
 **Plugins (`ORCH_PROVIDERS`)**:
 - The four required members (`name`, `efforts`, `models()`, `invocation()`, `parse()`, `attach_command()`) and every optional attribute keep their meaning.
@@ -524,7 +524,7 @@ opencode run --standalone --format json --session <ses_id> [--archived --title <
   - `${NAME}` → `{env:NAME}`; `${NAME:-default}` → `{env:NAME}` when the turn's environment has it set, else the default written literally.
   - The pre-turn check of unset variables stays as it is.
   - Server statuses: the JSON output has none, so `mcp` statuses stay "not reported".
-  - Whether MCP servers run without an approval gate on opencode is question Q8.
+  - MCP servers on opencode follow the same marked-server rule as Codex (Q8, decided).
 - **The `orch` MCP server** (leads):
   - a local server with the runner's `McpServer`, `timeout.execution` well above the longest wait, allowed in policies and permissions.
   - its tools are named `orch_<tool>`. The role prompts name no tool by its full Claude name, so they need no change.
@@ -564,13 +564,13 @@ opencode run --standalone --format json --session <ses_id> [--archived --title <
 
 ---
 
-## 5. Phases, risks, verification, open questions
+## 5. Phases, risks, verification, decided questions
 
 Sizes are per worker, tests and docs included: **S** about half a day, **M** about a day, **L** about two days. At most three workers at a time, split by the files they own. There are no schema changes.
 
 | # | phase | owns | depends on | size |
 |---|---|---|---|---|
-| 1 | Kit; `claude.py`/`codex.py` ported; provider attributes added (data only) | `providers/*`, `providers/locate.py` | the in-flight provider work merged | M |
+| 1 | Kit; `claude.py`/`codex.py` ported; provider attributes added (data only) | `providers/*`, `providers/locate.py` | the in-flight provider work merged (done) | M |
 | 2 | Consumers read the attributes: `roles.py`, `core/setup.py`, `autostart.py`, `core/availability.py` (`min_version` too), `capabilities.py`, `mcp_server.py` docstrings, `cli.py` (help texts; `chat` uses `kit.own_server_entry`), `web/static/*` (a neutral avatar colour) | those files | 1 | M |
 | 3 | The stream hook and `Invocation.notes` in the runner; `MCP_PASSED_ENV` from `config_env` | `runner.py`, `providers/base.py` | 1 | S |
 | 4 | Fake-CLI harness; Claude and Codex dialects; `PROVIDER_CLIS` from the registry | `tests/fakecli/`, `tests/conftest.py`, `tests/fakeprovider.py` | 1 | M |
@@ -622,20 +622,22 @@ Sizes are per worker, tests and docs included: **S** about half a day, **M** abo
 
 **Installing opencode for these checks**: not needed. It is already installed (2.3.2). Upgrading would need the owner's go-ahead, because releases are frequent and the checks should run on one pinned version.
 
-**Open questions for the owner**:
+**Decided questions**:
+
+Any of them can still change during implementation, but only with the owner.
 
 Decided: no golden tests for now; the existing tests and the normal review carry the refactor.
 
-1. **Q1 Live checks**: run V1–V19 with the installed 2.3.2, temporary state, and a local model (plus one API-key provider for V8)? *Recommendation:* yes, about 25 short turns.
-2. **Q2 Versions**: support only opencode 2.2.3 or later, and refuse 1.x? *Recommendation:* yes.
-3. **Q3 A provider-neutral "user configuration" loadout key** in place of `codex_user_config`? *Recommendation:* not now. Map opencode onto `setting_sources`, keep `codex_user_config`, and decide when a fourth provider needs it.
-4. **Q4 Default permission mode** for opencode: no `--auto` (asks rejected), or `--auto`? *Recommendation:* no `--auto`.
-5. **Q5 Structured answers** asked for in the prompt, not enforced: acceptable for planner, reviewer and tester roles? *Recommendation:* yes, listed as a limit.
+1. **Q1 Live checks**: run V1–V19 with the installed 2.3.2, temporary state, and a local model (plus one API-key provider for V8)? Decided: run live checks V1–V19 on the installed 2.3.2 with temporary state (each run still needs the owner's go-ahead).
+2. **Q2 Versions**: support only opencode 2.2.3 or later, and refuse 1.x? Decided: support only opencode 2.2.3 or later; refuse 1.x.
+3. **Q3 A provider-neutral "user configuration" loadout key** in place of `codex_user_config`? Decided: no provider-neutral user-config key for now; map opencode onto `setting_sources`, keep `codex_user_config`.
+4. **Q4 Default permission mode** for opencode: no `--auto` (asks rejected), or `--auto`? Decided: no `--auto`.
+5. **Q5 Structured answers** asked for in the prompt, not enforced: acceptable for planner, reviewer and tester roles? Decided: structured answers are asked for in the prompt and listed as a limit.
 6. **Q6 Server model**: one process per turn now, `serve` or ACP later? Decided: one process per turn; ACP is on the roadmap ([ROADMAP.md](../ROADMAP.md)).
-7. **Q7 Order of work**: refactor (1–4) before opencode, or opencode first on today's structure? *Recommendation:* 1 → 3 first; opencode on top, so it costs one module.
-8. **Q8 MCP servers on opencode** without an approval gate (as decided for Codex in `mcp.md#phases`): allow them only when the owner marks a server for it, or in general? *Recommendation:* the same rule as for Codex.
-9. **Q9 Global opencode config**: if V15 shows the leak, accept that the user's global `opencode.json` applies to agents (listed), or deny opencode agents some of it through policies only? *Recommendation:* accept and list it. Revisit if a cleaner switch appears.
+7. **Q7 Order of work**: refactor (1–4) before opencode, or opencode first on today's structure? Decided: refactor first (phases 1–4), then opencode.
+8. **Q8 MCP servers on opencode** without an approval gate (as decided for Codex in [mcp.md](mcp.md#decisions)): allow them only when the owner marks a server for it, or in general? Decided: MCP servers on opencode follow the same marked-server rule as Codex.
+9. **Q9 Global opencode config**: if V15 shows the leak, accept that the user's global `opencode.json` applies to agents (listed), or deny opencode agents some of it through policies only? Decided: accept that the global `opencode.json` applies, and list it as a limit.
 
-See also `mcp.md#wiring-per-provider` for how MCP servers are wired per provider,
+See also [mcp.md](mcp.md#wiring-per-provider) for how MCP servers are wired per provider,
 [configuration.md](configuration.md#model-and-effort) for model and effort, and
 [architecture.md](architecture.md) for the layers.
