@@ -1,17 +1,28 @@
-"""The fake CLI (tests/fakecli): Codex's provider runs turns through the runner on it
-(FakeCodex), as Claude's does in test_mcp_wiring."""
+"""The fake CLI (tests/fakecli): every built-in provider has one, and Codex's provider runs
+turns through the runner on it (FakeCodex), as Claude's does in test_mcp_wiring."""
 
 from __future__ import annotations
 
 import os
+import shutil
+from pathlib import Path
 
+import fakecli
 import pytest
+from conftest import PROVIDER_CLIS
 from fakecli import codex as codex_dialect
 from fakeprovider import FakeCodex, codex_runs
 
 from orchestrator import config, providers
 from orchestrator.models import RunStatus
 from orchestrator.service import Orchestrator
+
+
+def test_every_builtin_provider_has_a_fake_cli(fake_provider_clis: Path) -> None:
+    for cls in providers.BUILTIN:
+        assert cls.executable in PROVIDER_CLIS
+        assert Path(shutil.which(cls.executable)).parent == fake_provider_clis
+        assert cls.executable in fakecli.DIALECTS, f"no dialect in tests/fakecli for {cls.name}"
 
 
 @pytest.fixture

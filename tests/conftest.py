@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -357,14 +358,15 @@ REAL_PROBE = availability.probe
 
 
 def faked_probe(provider) -> locate.Probe:
-    """claude and codex as available without running them; any other provider (fake, a
-    plugin) through the real check, which finds nothing to run for one without an executable."""
-    if getattr(provider, "executable", None) in ("claude", "codex"):
+    """The built-in providers (PROVIDER_CLIS) as available without running them; any other
+    provider (fake, a plugin) through the real check, which finds nothing to run for one
+    without an executable."""
+    if getattr(provider, "executable", None) in PROVIDER_CLIS:
         return locate.Probe(locate.AVAILABLE, "test", None, FAKED_PROBE)
     return REAL_PROBE(provider)
 
 
-# Stands in for `claude` and `codex` in every process of the suite, children included (a
+# Stands in for every built-in provider's CLI (`claude`, `codex`) in every process of the suite, children included (a
 # runner, an MCP server, a `spartito web` a test starts: none of them has this process's
 # patches). `--version` answers; anything else fails at once. Appends one line per call to
 # $FAKE_CLI_LOG when set: its path and arguments, each followed by \x1f.
@@ -379,13 +381,26 @@ fi
 echo "$(basename "$0"): a fake of the test suite, it answers only --version" >&2
 exit 1
 """
-PROVIDER_CLIS = ("claude", "codex")
+
+
+def builtin_executables() -> tuple[str, ...]:
+    """The executable of every registered built-in provider. One without an executable to
+    fake stops the suite: nothing could keep a test from running the real CLI."""
+    names = tuple(getattr(cls, "executable", None) for cls in providers.BUILTIN)
+    unfaked = [cls.__name__ for cls, name in zip(providers.BUILTIN, names, strict=True) if not name]
+    if unfaked:
+        raise RuntimeError(f"built-in providers without an executable to fake: {unfaked}")
+    return names
+
+
+PROVIDER_CLIS = builtin_executables()
 
 
 @pytest.fixture(scope="session", autouse=True)
 def fake_provider_clis(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Fake `claude` and `codex` first on PATH for the whole session (each xdist worker its
-    own); returns their directory. Set in os.environ, outside `monkeypatch`, as home_guard
+    """Fake CLIs of the built-in providers (PROVIDER_CLIS) first on PATH for the whole
+    session (each xdist worker its own); returns their directory; the session ends at once
+    if one of them is not the first found. Set in os.environ, outside `monkeypatch`, as home_guard
     sets the home: no test's undo removes it, and it is not undone at the end (a thread a
     test left behind keeps it). Every child that inherits or keeps PATH finds these first,
     so its search never reaches a real CLI further on PATH or in the usual install
@@ -398,6 +413,10 @@ def fake_provider_clis(tmp_path_factory: pytest.TempPathFactory) -> Path:
         path.write_text(FAKE_PROVIDER_CLI)
         path.chmod(0o755)
     os.environ["PATH"] = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+    for name in PROVIDER_CLIS:  # what a child searching PATH would start
+        found = shutil.which(name)
+        if found is None or Path(found).parent != bin_dir:
+            pytest.exit(f"`{name}` is not the suite's fake on PATH: {found}", returncode=3)
     return bin_dir
 
 
