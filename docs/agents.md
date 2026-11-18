@@ -78,7 +78,8 @@ that the agent's provider does not support is kept and skipped in its turns; `sp
 `on`, and per capability `state`, `source`, `override`, `final`, `note` and `kind`:
 `builtin`, or `mcp` for an MCP server, whose item also has `origin`, `tools`, `null` for all
 of them, and `last_status`, the server's status as the CLI reported it at the agent's last
-turn, such as `connected`, `failed` or `needs-auth`); `list_agents` only the names that are
+turn, such as `connected`, `failed` or `needs-auth`, `skipped: DOCS_DB_URL is not set` for a
+server left out, or `null`); `list_agents` only the names that are
 on. Agents have no MCP tool to add or remove MCP servers: that is the owner's alone.
 
 ## Turns and the queue

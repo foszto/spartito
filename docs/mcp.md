@@ -36,6 +36,11 @@ on and off at the same levels as `chrome`: globally, per project, per role and p
 Phase 1 of the [phases](#phases): servers added in Spartito, a local command (stdio) or a
 remote URL (HTTP), turned on and off as capabilities, and passed to Claude agents' turns.
 
+> **The background service does not pass your variables on.** A server whose definition
+> references a variable (`${DOCS_DB_URL}`) gets it only in turns started by a process that
+> has it set. The background service keeps a few variables only, so its turns skip such a
+> server. What works today, and why: [The variables](#the-variables).
+
 ### Adding a server
 
 ```sh
@@ -88,8 +93,10 @@ role tester (my-app): mcp:docs-db on
 
 `TARGET` is the command, or the URL's origin only (scheme, host and port: no path and no
 query). `GLOBAL` and `PROJECT` are the levels as in `spartito capabilities`, and the lines
-below the table are the roles' settings. `LAST STATUS` is what the latest turn that had the
-server reported for it (`-`: none yet). Without servers, the command says how to add one.
+below the table are the roles' settings. `LAST STATUS` is the server's status at the latest
+turn that recorded one for it ([Its status](#what-the-agents-turn-gets)), such as
+`connected`, `needs-auth` or `skipped: DOCS_DB_URL is not set`; `-`: none yet. Without
+servers, the command says how to add one.
 
 ```
 $ spartito mcp show docs-db --project my-app
@@ -151,25 +158,37 @@ each agent's own), so a later server of the same name starts with none.
 
 For a Claude agent whose next turn has at least one server on:
 
-- **One MCP configuration.** The turn's servers, and the `orch` server where the agent has it,
-  go into one private file (mode `0600`, in a runtime directory under the home, removed when
-  the turn ends), passed with `--mcp-config`. `--strict-mcp-config` stays, so nothing else
-  loads. A turn without servers runs with the same flags as before.
-- **`${VAR}` unexpanded.** The file holds the references as you wrote them, and Claude Code
-  expands them from the turn's environment (observed once with Claude Code 2.1.322), so it
-  holds no secret value. Before the turn, a server whose referenced variable is not set is
-  left out of that turn, with a note: `DOCS_DB_URL is not set`. Its status reads
-  `skipped: DOCS_DB_URL is not set`.
+- **One MCP configuration, in a private file.** The turn's servers, and the `orch` server
+  where the agent has it, go into one file, `<home>/run/private/mcp-<run id>.json`, passed
+  with `--mcp-config <file>`. `--strict-mcp-config` stays (unless the loadout sets
+  `mcp = inherit`, which drops it as before), so nothing else loads. The directory has mode
+  `0700`, and the file is created with mode `0600`. It is removed when the turn ends, however
+  it ends; files left by runs that are no longer active (a killed runner) are removed the
+  next time such a file is written. Empty `args`, `env` and `headers` are left out. A turn
+  without servers runs exactly as before, with the `orch` server's configuration on the
+  command line.
+- **`${VAR}` unexpanded.** The file holds the references as you wrote them, never their
+  values, and Claude Code expands them from the turn's environment (observed once with
+  Claude Code 2.1.322).
+- **A server whose variable is not set is left out.** Before the turn, every `${VAR}` in a
+  server's command, arguments, `env` values, URL and header values must be set in the
+  environment the CLI gets; an empty value counts as set. A server with one that is not is
+  left out of that turn, and the turn's log line says so:
+  `capabilities for this turn: mcp:remote-docs; skipped: mcp:docs-db (DOCS_DB_URL is not set)`
+  (with several: `A, B are not set`). When every server of a turn is left out, the turn runs
+  as one without servers.
 - **Tool search.** With the loadout's default [`tool_search = auto`](configuration.md#tool-search),
   the turn gets Claude Code's tool search: the server's tool schemas are loaded on demand,
-  and a lead's `orch` tools stay loaded upfront.
-- **No pre-approved tool.** Nothing is added to `--allowedTools` for a server: the agent's
-  permission mode decides each call, as for `chrome`.
+  and the `orch` tools of a lead stay loaded upfront (`"alwaysLoad": true` on that server).
+- **No pre-approved tool.** Nothing is added to `--allowedTools` for a server, and nothing to
+  `--disallowedTools`: the agent's permission mode decides each call, as for `chrome`.
 - **A failing server** does not fail the turn: Claude Code waits for it up to `MCP_TIMEOUT`
   (30 seconds by default) and goes on without its tools. **[documented]**
-- **Its status.** After the turn, `spartito mcp`, `spartito mcp show` and the MCP tool
-  `get_agent` show each server's status as the CLI reported it at the turn's start
-  (`last_status`, such as `connected`, `failed` or `needs-auth`).
+- **Its status.** The turn records, for its own servers, the status Claude Code reports when
+  it starts (`connected`, `failed`, `needs-auth`, …), and `skipped: DOCS_DB_URL is not set`
+  for a server left out. A server Claude Code does not report has no status. `spartito mcp`,
+  `spartito mcp show`, `spartito capabilities show AGENT` and the MCP tool `get_agent` show it
+  (`last_status`).
 
 A Codex agent skips every server with the note `codex does not support it`; the setting stays.
 The agent's log line `capabilities for this turn: …` and `spartito capabilities show AGENT`
@@ -177,14 +196,30 @@ name the servers like any other capability.
 
 ### The variables
 
-A `${VAR}` reference is read from the environment of the process that runs the turns. A turn
-started from a terminal (`spartito spawn`, `spartito send`, `spartito web` started there)
-inherits that terminal's environment. The background service keeps only a few variables of
-the shell it was installed from (`PATH`, `LANG`, `LC_*`, `ORCH_*`, `CLAUDE_CONFIG_DIR`,
-`CODEX_HOME`: [desktop.md](desktop.md#background-service)), so a variable such as
-`DOCS_DB_URL` does not reach the turns it starts, and they skip the server with the note
-above. The service's variables are written into its unit file, which other users of the
-machine can read: keep secrets out of them.
+A turn's CLI gets the environment of the process that queued the turn, and a `${VAR}` must be
+set there:
+
+- a message sent from the dashboard: the environment of the process that serves it, either
+  `spartito web` (the shell it was started from) or the background service
+- `spartito spawn`, `spartito send` or `spartito ask` in a shell: that shell's
+- what an agent starts or sends, and the notification its turn's end sends its parent: that
+  agent's turn's
+
+**The background service keeps only a few variables** of the shell it was installed from:
+`PATH`, `LANG`, `LC_*`, `ORCH_*`, `CLAUDE_CONFIG_DIR` and `CODEX_HOME`
+([desktop.md](desktop.md#background-service)). A variable such as `DOCS_DB_URL` therefore
+does not reach the turns it starts, nor the turns those agents start, and they leave the
+server out with the note `DOCS_DB_URL is not set`. Variables named `ORCH_…` are kept, but
+they are written into the service's unit file, which other users of the machine can read:
+keep secrets out of them. A way to give the service such variables is not built yet.
+
+What works today:
+
+- a server that references no variable, such as a local command that needs no credential,
+  in every turn
+- a server with variables in turns queued from a dashboard you started with `spartito web`
+  in a shell that has them set, or from such a shell with `spartito spawn`, `send` or `ask`
+  (and in what those agents start in turn)
 
 ### Safety in phase 1
 
@@ -216,6 +251,9 @@ machine can read: keep secrets out of them.
 - No dashboard page for MCP servers, and no HTTP endpoints to add or remove them (phases 4
   and 6).
 - Codex agents skip every server (phase 8).
+- The background service passes no variable other than its few on to turns, so a server
+  that references one is skipped in every turn it starts ([The variables](#the-variables)).
+  No way to give it such variables is built yet.
 
 ## Design of the later phases
 

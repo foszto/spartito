@@ -117,12 +117,20 @@ spartito capabilities show AGENT
   ([capabilities.md](capabilities.md#giving-capabilities-from-agents)). Run against another
   home than the turn's own, they act as that home's owner.
 - `show` prints what the agent's next turn gets: per capability its state (`on`, `off` or
-  `skipped`), the level that decided it and a note, such as `codex does not support it`.
+  `skipped`), the level that decided it and a note, such as `codex does not support it`; for
+  an MCP server also its status at the agent's last turn (`last status: connected`).
 
 The levels, the safety of `chrome` and what is not verified yet:
 [capabilities.md](capabilities.md).
 
 ### MCP servers
+
+> **Changed:** `spartito mcp` without a subcommand now lists MCP servers; it used to run the
+> `orch` MCP server on stdio, which is now `spartito mcp serve`. Spartito's own agents and
+> `spartito chat` never started it through the command and need nothing. If you registered
+> `spartito mcp` as an MCP server's command in another tool (for example
+> `claude mcp add spartito -- spartito mcp`), change its arguments to `mcp serve`, or run
+> `<python> -m orchestrator.mcp_server` with the install's Python.
 
 ```sh
 spartito mcp [-p PROJECT] [--json]
@@ -148,8 +156,10 @@ spartito mcp serve
   with `-` works: `--arg --read-only`) and `--env` (repeatable). `--url` is a remote server
   over HTTP, with `--header` (repeatable). Exactly one of `--command` and `--url`. Every
   `--env` and `--header` value must be exactly one `${VAR}` reference, read from the
-  environment of the process that runs the turns: a literal value is refused. `--reaches` is
-  your own line on what it reaches.
+  environment of the process that queued the turn: a literal value is refused. A turn where
+  a referenced variable is not set leaves the server out, and the background service passes
+  no such variable on ([mcp.md](mcp.md#the-variables)). `--reaches` is your own line on what
+  it reaches.
 - `remove` removes a server and its setting at every level, and says where there was one.
 - `add` and `remove` are the owner's alone: refused when run in any agent's turn.
 - `on`, `off` and `inherit` are `spartito capabilities on|off|inherit mcp:NAME`, with the same

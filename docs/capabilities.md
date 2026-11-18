@@ -137,7 +137,8 @@ chrome  skipped  global  codex does not support it
 
 One line per capability: its name, its state for the agent's next turn (`on`, `off`, or
 `skipped` with the reason), the level that decided it (`default`, `global`, `project`, `role` or
-`agent`) and a note. The same appears in:
+`agent`) and a note. An [MCP server](#mcp-servers)'s line also gives its status at the agent's
+last turn that recorded one, such as `last status: connected`. The same appears in:
 
 - `spartito status AGENT`, as one line:
   `capabilities none  (skipped: chrome; spartito capabilities show review-7b1c)`
@@ -327,7 +328,10 @@ as `spartito capabilities on|off|inherit mcp:docs-db`.
 | reaches | for a command, that it runs on this machine as you, with your files, your network and the environment it is given; for a URL, that the agent's tool calls go to its origin; and your own `--reaches` line |
 
 Only you add and remove servers; agents cannot, the orchestrator agent included. Env and
-header values are `${VAR}` references only: Spartito stores no secret. On a Claude turn, the
+header values are `${VAR}` references only: Spartito stores no secret. A turn whose
+environment lacks a referenced variable leaves the server out, and the background service
+passes such variables on to no turn
+([mcp.md](mcp.md#the-variables)). On a Claude turn, the
 servers that are on go into one private MCP configuration with the turn's tool search, and
 `get_agent` shows each one's status at the agent's last turn. All of it, with the safety
 notes and the limits of what is built: [mcp.md](mcp.md#what-works-today).

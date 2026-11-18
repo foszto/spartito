@@ -51,20 +51,27 @@ chosen is in the
 - MCP servers as capabilities: `spartito mcp add NAME --command CMD` (a local server) or
   `--url URL` (a remote one) adds an MCP server, which becomes the capability `mcp:NAME`, off
   until turned on with `spartito mcp on NAME` (or `spartito capabilities on mcp:NAME`) at the
-  same levels as `chrome`. A Claude agent's turn with a server on gets it in a private MCP
-  configuration, still under `--strict-mcp-config`; Codex agents skip it with a note. Env and
-  header values must be `${VAR}` references, read from the environment the turns run in:
-  Spartito stores no secret. Only the owner adds and removes servers, never an agent.
-  `spartito mcp` lists them with their levels and the status of the last turn, `spartito mcp
-  show` gives one, `spartito mcp remove` removes one and its settings, `spartito capabilities`
-  lists them in a section of their own, and `spawn --capabilities mcp:NAME` works. Read
-  `docs/mcp.md` first: a server runs as you or receives the agent's tool calls.
+  same levels as `chrome`. A Claude agent's turn with a server on gets it, with the `orch`
+  server, in one private MCP configuration file (mode `0600`, removed when the turn ends),
+  still under `--strict-mcp-config`; Codex agents skip it with a note. Env and header values
+  must be `${VAR}` references: Spartito stores no secret, and Claude Code reads the values
+  from the turn's environment. A turn where a referenced variable is not set leaves the
+  server out with a note such as `DOCS_DB_URL is not set`; the background service passes no
+  such variable on, so its turns skip those servers (`docs/mcp.md#the-variables`). Only the
+  owner adds and removes servers, never an agent. `spartito mcp` lists them with their
+  levels and the status the last turn recorded, `spartito mcp show` gives one,
+  `spartito mcp remove` removes one and its settings, `spartito capabilities` lists them in a
+  section of their own, `spartito capabilities show` gives each one's last status, and
+  `spawn --capabilities mcp:NAME` works. Read `docs/mcp.md` first: a server runs as you or
+  receives the agent's tool calls.
 
 ### Changed
 
-- `spartito mcp` without a subcommand lists the MCP servers; Spartito's own `orch` MCP server,
-  which it used to run, is now `spartito mcp serve`. Agents and `spartito chat` never started
-  it through the command, so they are not affected.
+- **Incompatible:** `spartito mcp` without a subcommand now lists the MCP servers instead of
+  running Spartito's own `orch` MCP server on stdio; `spartito mcp serve` runs it. Spartito's
+  agents and `spartito chat` never started it through the command and are not affected. If
+  another tool starts it as `spartito mcp`, change its arguments to `mcp serve`
+  (`docs/usage.md#mcp-servers`).
 - New projects and agents get a provider that is available here. `spartito project add`
   without `--provider` takes the first available one instead of always `claude`, and prints
   it. An explicit provider that is not available is refused, naming the available ones. When
