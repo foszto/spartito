@@ -19,6 +19,7 @@ lists as `#12`. *Project lead* or *lead* is the agent with role `lead` of a proj
 | `spartito project provider <project> <provider>` | the provider of a project's new agents |
 | `spartito providers` | which provider CLIs (Claude Code, Codex) this machine can run |
 | `spartito capabilities` | capabilities such as Claude in Chrome: list, `on`/`off`/`inherit` per level, `show` an agent's |
+| `spartito mcp` | MCP servers added in Spartito: list, `show`, `add`, `remove`, `on`/`off`/`inherit` per level |
 | `spartito chat` | interactive orchestrator session (Claude Code) |
 | `spartito web` | dashboard |
 | `spartito app` | dashboard in its own window |
@@ -121,12 +122,50 @@ spartito capabilities show AGENT
 The levels, the safety of `chrome` and what is not verified yet:
 [capabilities.md](capabilities.md).
 
+### MCP servers
+
+```sh
+spartito mcp [-p PROJECT] [--json]
+spartito mcp show NAME [-p PROJECT] [--json]
+spartito mcp add NAME --command CMD [--arg ARG]… [--env 'NAME=${VAR}']… [--reaches TEXT]
+spartito mcp add NAME --url URL [--header 'Name: ${VAR}']… [--reaches TEXT]
+spartito mcp remove NAME
+spartito mcp on|off|inherit NAME [-p PROJECT] [--role|-r ROLE]
+spartito mcp on|off|inherit NAME --agent|-a AGENT
+spartito mcp serve
+```
+
+- `mcp` lists the MCP servers added in Spartito: name, transport, the command or the URL's
+  origin, the global setting (with `-p` the project's too) and the status the latest turn that
+  had the server reported (`-`: none), and below the table the roles' settings. Without
+  servers it says how to add one. `--json` gives each server's capability entry with its
+  definition as shown, what it reaches and `agents`, the agents whose own setting names it.
+- `show` prints one server: its definition (a URL as its origin only), what it reaches, its
+  levels, its last status and the agents with their own setting for it. `NAME` may be written
+  `docs-db` or `mcp:docs-db`, here and in `on`, `off`, `inherit` and `remove`.
+- `add` adds a server, off until a level turns it on, and prints the command that does.
+  `--command` is a local server on stdio, with `--arg` (repeatable, in order; a value starting
+  with `-` works: `--arg --read-only`) and `--env` (repeatable). `--url` is a remote server
+  over HTTP, with `--header` (repeatable). Exactly one of `--command` and `--url`. Every
+  `--env` and `--header` value must be exactly one `${VAR}` reference, read from the
+  environment of the process that runs the turns: a literal value is refused. `--reaches` is
+  your own line on what it reaches.
+- `remove` removes a server and its setting at every level, and says where there was one.
+- `add` and `remove` are the owner's alone: refused when run in any agent's turn.
+- `on`, `off` and `inherit` are `spartito capabilities on|off|inherit mcp:NAME`, with the same
+  options, rules and output.
+- `serve` runs Spartito's own `orch` MCP server on stdio. `spartito chat` and the agents with a
+  lead role start the same server themselves, as `<python> -m orchestrator.mcp_server` (not
+  through this command); there is no need to run it by hand.
+
+What an agent's turn gets, the variables, safety and what is not built yet:
+[mcp.md](mcp.md#what-works-today).
+
 ### Orchestrator
 
 ```sh
 spartito chat [--continue|-c] [--here] [--model MODEL] [--effort EFFORT]
 spartito web [--host 127.0.0.1] [--port 8787]
-spartito mcp
 ```
 
 - `chat` opens the orchestrator as an interactive Claude Code session (requires `claude`, also
@@ -138,9 +177,7 @@ spartito mcp
   Being interactive, it is never woken by notifications: use `wait_for_agents` there.
 - `web` serves the [dashboard](#dashboard). With a non-loopback `--host` it prints a warning:
   the dashboard has no authentication.
-- `mcp` runs the `orch` MCP server on stdio. `spartito chat` and the agents with a lead role
-  start the same server themselves, as `<python> -m orchestrator.mcp_server` (not through this
-  command); there is no need to run it by hand.
+- `spartito mcp serve` runs the `orch` MCP server by hand ([MCP servers](#mcp-servers)).
 
 ### Dashboard window, menu bar and background service
 

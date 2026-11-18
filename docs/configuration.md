@@ -188,6 +188,8 @@ session again for the new value.
 Which capabilities agents get, such as `chrome` (Claude in Chrome): `capabilities` is a
 `{"chrome": true}` object, `role_capabilities` one such object per role
 (`{"reviewer": {"chrome": false}}`); `false` turns one off, a name that is missing inherits.
+An MCP server added in Spartito is named `mcp:<name>` there (`{"mcp:docs-db": true}`,
+[mcp.md](mcp.md)).
 The levels apply per capability, from the default over the global and the project's setting
 to the role's (the project's entry for a role before the global one) and the agent's own, and a
 role's `false` is final. `spartito capabilities` lists them;
@@ -260,7 +262,7 @@ ignores `~/.codex/config.toml`. If you rely on `~/.claude/settings.json` or on C
 | key | values | CLI flag |
 |---|---|---|
 | `tools` | comma-separated built-in tools; `default` = the CLI's default set; `none` = no built-in tools. MCP tools are not affected. | `--tools` |
-| `mcp` | `strict` = only the `orch` server (lead roles); `inherit` = also user, project, plugin and claude.ai connector servers | `--strict-mcp-config` |
+| `mcp` | `strict` = only the `orch` server (lead roles) and the [MCP servers added in Spartito](mcp.md) that are on for the turn; `inherit` = also user, project, plugin and claude.ai connector servers | `--strict-mcp-config` |
 | `setting_sources` | `project,local` = without the user level (user plugins, skills, commands, hooks), keeping the project's `CLAUDE.md` and `.claude/`; `user,project,local` = everything | `--setting-sources` |
 | `slash_commands` | `false` = no skills or slash commands at all, the project's included | `--disable-slash-commands` |
 | `codex_user_config` | `false` = Codex does not read `$CODEX_HOME/config.toml` (the login is kept) | `--ignore-user-config` |
@@ -352,7 +354,7 @@ tool's full schema goes with every request. The CLI's default set (`tools = defa
 
 | value | `ToolSearch` is added | the `orch` tools of a lead |
 |---|---|---|
-| `auto` (default) | on a turn with a capability that brings MCP tools, such as [`chrome`](capabilities.md#cost) | loaded upfront (`"alwaysLoad": true` in `--mcp-config` on such a turn), as without tool search |
+| `auto` (default) | on a turn with a capability that brings MCP tools, such as [`chrome`](capabilities.md#cost) or an [MCP server](mcp.md) | loaded upfront (`"alwaysLoad": true` in `--mcp-config` on such a turn), as without tool search |
 | `always` | on every turn with MCP tools: a lead's, the orchestrator's, or one with such a capability | loaded on demand too |
 | `never` | never: every MCP tool's schema is sent upfront | loaded upfront |
 

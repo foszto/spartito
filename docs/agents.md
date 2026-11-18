@@ -17,7 +17,7 @@ a role with `lead: true`: the orchestrator and the project leads.
 
 Lead roles get the `orch` MCP server. The CLI of each lead agent, and `spartito chat`, start it
 as `<python> -m orchestrator.mcp_server` with the tool's own Python, never through the command
-(`spartito mcp` runs the same server by hand; there is no need to). An agent's own id reaches the server in
+(`spartito mcp serve` runs the same server by hand; there is no need to). An agent's own id reaches the server in
 `ORCH_AGENT_ID`: agents it starts become its children, and a project lead is confined to its
 own project. The orchestrator (and the interactive `spartito chat` session, which has no agent id)
 can act on every project.
@@ -63,7 +63,8 @@ commits) and `set_project_provider` (existing agents on another provider) always
 [providers.md](providers.md#how-a-provider-is-chosen).
 
 `capabilities` in `spawn_agent` and `send_message` changes the agent's own setting of
-[capabilities](capabilities.md), comma-separated: `"chrome"` turns one on, `"-chrome"` off.
+[capabilities](capabilities.md), comma-separated: `"chrome"` turns one on, `"-chrome"` off; an
+MCP server added in Spartito is named `mcp:<name>` (`"mcp:docs-db"`, [mcp.md](mcp.md)).
 Unset, the configured levels apply. In `send_message` the change is made before the message is
 queued and stays for the agent's later turns; a refused change queues nothing. An agent can
 turn on only a capability that its own next turn has, and not one that the target's own setting
@@ -74,8 +75,11 @@ an agent's turn follows the same rules
 ([capabilities.md](capabilities.md#giving-capabilities-from-agents)). A capability
 that the agent's provider does not support is kept and skipped in its turns; `spawn_agent`'s
 `note` says so. `get_agent` shows each capability's state for the next turn (`capabilities`:
-`on`, and per capability `state`, `source`, `override`, `final` and `note`); `list_agents`
-only the names that are on.
+`on`, and per capability `state`, `source`, `override`, `final`, `note` and `kind`:
+`builtin`, or `mcp` for an MCP server, whose item also has `origin`, `tools`, `null` for all
+of them, and `last_status`, the server's status as the CLI reported it at the agent's last
+turn, such as `connected`, `failed` or `needs-auth`); `list_agents` only the names that are
+on. Agents have no MCP tool to add or remove MCP servers: that is the owner's alone.
 
 ## Turns and the queue
 

@@ -1,31 +1,227 @@
 # MCP servers
 
-> **Design: not built yet.** This page describes how Spartito would give agents MCP servers
-> as capabilities. Nothing on it exists in the code today. Facts are marked
-> **[documented]** (in the public Claude Code or Codex docs; sources at the end),
-> **[observed]** (seen on one machine with Claude Code 2.1.322) or **[unverified]**.
-> The owner has decided its open questions; see [Decisions](#decisions).
+> **Phase 1 is built; the rest is a design.** [What works today](#what-works-today) describes
+> what you can use now: MCP servers that you add in Spartito, given to Claude agents as
+> capabilities. Everything from [Design of the later phases](#design-of-the-later-phases) on
+> is **not built yet**: the commands, options, pages and endpoints it describes do not exist.
+> Facts are marked **[documented]** (in the public Claude Code or Codex docs; sources at the
+> end), **[observed]** (seen on one machine with Claude Code 2.1.322) or **[unverified]**.
+> The owner has decided the design's open questions; see [Decisions](#decisions).
 
 An *MCP server* gives a coding agent a set of tools, such as a ticket tracker's or a
-database's. Today every Claude agent runs with `--strict-mcp-config` and only Spartito's own
-`orch` server. Your own MCP servers, plugin servers and claude.ai connectors never reach
-agents. The loadout's `mcp = inherit` would give all of them at once.
+database's. Every Claude agent runs with `--strict-mcp-config`. It gets Spartito's own `orch`
+server (lead roles), the servers you added in Spartito and turned on for it, and nothing else.
+Your own Claude Code MCP servers, plugin servers and claude.ai connectors never reach agents.
+The loadout's `mcp = inherit` would give all of them at once.
 
-This design makes each MCP server a [capability](capabilities.md) of its own. You turn it on
-and off at the same levels as `chrome`: globally, per project, per role and per agent. You can
-also limit it to some of its tools.
+Each MCP server is a [capability](capabilities.md) of its own, named `mcp:<name>`. You turn it
+on and off at the same levels as `chrome`: globally, per project, per role and per agent.
 
-- [The model](#the-model)
-- [Discovery and status](#discovery-and-status)
-- [Wiring per provider](#wiring-per-provider)
-- [The MCP page, the command and the API](#the-mcp-page-the-command-and-the-api)
-- [Adding and signing in](#adding-and-signing-in)
-- [Safety](#safety)
-- [Storage](#storage)
-- [Phases](#phases)
-- [Decisions](#decisions)
-- [Not verified yet](#not-verified-yet)
-- [Sources](#sources)
+- [What works today](#what-works-today)
+- [Design of the later phases](#design-of-the-later-phases)
+  - [The model](#the-model)
+  - [Discovery and status](#discovery-and-status)
+  - [Wiring per provider](#wiring-per-provider)
+  - [The MCP page, the command and the API](#the-mcp-page-the-command-and-the-api)
+  - [Adding and signing in](#adding-and-signing-in)
+  - [Safety](#safety)
+  - [Storage](#storage)
+  - [Phases](#phases)
+  - [Decisions](#decisions)
+  - [Not verified yet](#not-verified-yet)
+  - [Sources](#sources)
+
+## What works today
+
+Phase 1 of the [phases](#phases): servers added in Spartito, a local command (stdio) or a
+remote URL (HTTP), turned on and off as capabilities, and passed to Claude agents' turns.
+
+### Adding a server
+
+```sh
+spartito mcp add docs-db --command docs-db-mcp --arg --read-only \
+  --env 'DOCS_DB_URL=${DOCS_DB_URL}' --reaches "the docs database, read-only"
+spartito mcp add remote-docs --url https://mcp.example.com/mcp \
+  --header 'Authorization: ${DOCS_TOKEN}'
+```
+
+```
+$ spartito mcp add docs-db --command docs-db-mcp --arg --read-only --env 'DOCS_DB_URL=${DOCS_DB_URL}' --reaches "the docs database, read-only"
+added docs-db (stdio): runs docs-db-mcp on this machine as you, with your files, your network and the environment it is given; the docs database, read-only
+it is off until a level turns it on: `spartito mcp on docs-db` (globally; --project P, --role R or --agent A for less)
+```
+
+- **The name**: letters, digits, `_` and `-`, at most 64 characters. The name of Spartito's own
+  `orch` server and the names Claude Code reserves (`claude-in-chrome`, `computer-use`,
+  `workspace`) are refused, and so is a name in use: remove that server first. The server's
+  tools are `mcp__<name>__<tool>` in the agent's turn.
+- **A command or a URL**, exactly one of them. `--command` runs a local server on stdio, with
+  `--arg` (repeatable, in order) and `--env NAME='${VAR}'` (repeatable). `--url` is a remote
+  server over HTTP (`http://` or `https://`, without a user name or password in it), with
+  `--header 'Name: ${VAR}'` (repeatable).
+- **Arguments** are stored and shown as written, so keep secrets out of them. One that starts
+  with `-` is taken as the value: `--arg --read-only` and `--arg=--read-only` both work.
+- **No secret is stored.** Every `--env` and `--header` value must be exactly one `${VAR}`
+  reference. A literal value is refused (`put the value in an environment variable of the
+  service and write ${VAR}`), and so are `${VAR:-default}` and text around the reference.
+  For a header such as `Authorization: Bearer …`, put the whole value, `Bearer` included, into
+  the variable. Where the variable must be set: [The variables](#the-variables).
+- **`--reaches`** adds your own line on what the server reaches, after the one Spartito
+  writes; one line, at most 300 characters.
+- **A new server is off** at every level until you turn it on.
+- **Only you add and remove servers.** `spartito mcp add` and `spartito mcp remove` are
+  refused in every agent's turn, the orchestrator agent's included, and agents have no MCP
+  tool for them: a server decides what code runs, and with whose credentials.
+
+A server cannot be edited: remove it and add it again (its levels go with the removal).
+
+### Listing and showing
+
+```
+$ spartito mcp --project my-app
+  NAME         TRANSPORT  TARGET                   GLOBAL         PROJECT  LAST STATUS
+  docs-db      stdio      docs-db-mcp              off (default)  on       connected
+  remote-docs  http       https://mcp.example.com  off (default)  inherit  -
+role reviewer: mcp:docs-db off (final)
+role tester (my-app): mcp:docs-db on
+```
+
+`TARGET` is the command, or the URL's origin only (scheme, host and port: no path and no
+query). `GLOBAL` and `PROJECT` are the levels as in `spartito capabilities`, and the lines
+below the table are the roles' settings. `LAST STATUS` is what the latest turn that had the
+server reported for it (`-`: none yet). Without servers, the command says how to add one.
+
+```
+$ spartito mcp show docs-db --project my-app
+name         docs-db  (capability mcp:docs-db)
+transport    stdio
+command      docs-db-mcp
+args         --read-only
+env          DOCS_DB_URL=${DOCS_DB_URL}
+reaches      runs docs-db-mcp on this machine as you, with your files, your network and the environment it is given; the docs database, read-only
+global       off (default)
+project      on
+last status  connected
+roles        reviewer off (final), tester (my-app) on
+agents       fix-login-3f2a on
+```
+
+`agents` lists the agents whose own setting names the server. `--json`, on the list and on
+`show`, gives each server's capability entry (as in `spartito capabilities --json`) with
+`kind: "mcp"`, `server`, `origin` (`spartito`), `transport` (`stdio` or `http`),
+`definition` as shown above (stdio: `command`, `args`, `env`; HTTP: `url`, the origin only,
+and `headers`), `reaches`, `own_reaches` (your line, or `null`), `tools` (`null`: all of
+them), `last_status`, the levels (`global`, `roles`, and with `--project` `project` and
+`project_roles`) and `agents` (`{agent id: true|false}`).
+
+`spartito capabilities` lists the servers too, in a section of their own under their
+capability names (`mcp:docs-db`).
+
+### Turning a server on
+
+```sh
+spartito mcp on docs-db                                # every agent
+spartito mcp on docs-db --project my-app               # the agents of my-app
+spartito mcp off docs-db --role reviewer               # reviewers never get it
+spartito mcp on docs-db --role tester --project my-app # the testers of my-app
+spartito mcp on docs-db --agent fix-login-3f2a         # this agent
+spartito mcp inherit docs-db                           # back to the level above
+```
+
+`spartito mcp on|off|inherit NAME` is `spartito capabilities on|off|inherit mcp:NAME`, with the
+same options and output; `NAME` may be written `docs-db` or `mcp:docs-db`. Every rule of
+[capabilities.md](capabilities.md#turning-them-on-and-off) applies: the levels default, global,
+project, role and agent; a role's `off` is final; an agent gives only what its own turn has,
+also through a `spartito` command run in its turn; only you and the orchestrator agent turn a
+server on globally, for a project or for a role. A new agent gets one with
+`spartito spawn --capabilities mcp:docs-db`, or with `capabilities="mcp:docs-db"` in the MCP
+tools `spawn_agent` and `send_message`. The dashboard's capability controls (the
+**Capabilities** box, an agent's setup panel, the new-agent dialog) list each server like any
+other capability; adding and removing are on the command line only.
+
+```
+$ spartito mcp remove docs-db
+removed docs-db; its settings were removed from: global, role reviewer, project my-app
+```
+
+Removing a server removes its setting at every level too (global, each project, their roles,
+each agent's own), so a later server of the same name starts with none.
+
+### What the agent's turn gets
+
+For a Claude agent whose next turn has at least one server on:
+
+- **One MCP configuration.** The turn's servers, and the `orch` server where the agent has it,
+  go into one private file (mode `0600`, in a runtime directory under the home, removed when
+  the turn ends), passed with `--mcp-config`. `--strict-mcp-config` stays, so nothing else
+  loads. A turn without servers runs with the same flags as before.
+- **`${VAR}` unexpanded.** The file holds the references as you wrote them, and Claude Code
+  expands them from the turn's environment (observed once with Claude Code 2.1.322), so it
+  holds no secret value. Before the turn, a server whose referenced variable is not set is
+  left out of that turn, with a note: `DOCS_DB_URL is not set`. Its status reads
+  `skipped: DOCS_DB_URL is not set`.
+- **Tool search.** With the loadout's default [`tool_search = auto`](configuration.md#tool-search),
+  the turn gets Claude Code's tool search: the server's tool schemas are loaded on demand,
+  and a lead's `orch` tools stay loaded upfront.
+- **No pre-approved tool.** Nothing is added to `--allowedTools` for a server: the agent's
+  permission mode decides each call, as for `chrome`.
+- **A failing server** does not fail the turn: Claude Code waits for it up to `MCP_TIMEOUT`
+  (30 seconds by default) and goes on without its tools. **[documented]**
+- **Its status.** After the turn, `spartito mcp`, `spartito mcp show` and the MCP tool
+  `get_agent` show each server's status as the CLI reported it at the turn's start
+  (`last_status`, such as `connected`, `failed` or `needs-auth`).
+
+A Codex agent skips every server with the note `codex does not support it`; the setting stays.
+The agent's log line `capabilities for this turn: …` and `spartito capabilities show AGENT`
+name the servers like any other capability.
+
+### The variables
+
+A `${VAR}` reference is read from the environment of the process that runs the turns. A turn
+started from a terminal (`spartito spawn`, `spartito send`, `spartito web` started there)
+inherits that terminal's environment. The background service keeps only a few variables of
+the shell it was installed from (`PATH`, `LANG`, `LC_*`, `ORCH_*`, `CLAUDE_CONFIG_DIR`,
+`CODEX_HOME`: [desktop.md](desktop.md#background-service)), so a variable such as
+`DOCS_DB_URL` does not reach the turns it starts, and they skip the server with the note
+above. The service's variables are written into its unit file, which other users of the
+machine can read: keep secrets out of them.
+
+### Safety in phase 1
+
+- **What it reaches.** Spartito writes each server's `reaches` line, shown in the lists and in
+  `spartito mcp show`, and adds your own `--reaches` after it. A stdio server runs its command
+  on this machine as you, with your files and your network. An HTTP server receives the
+  agent's tool calls, and what they carry, with the credentials its headers give.
+- **The whole environment.** A stdio server inherits the turn's whole environment, and the
+  entry's `env` adds to it (observed once with Claude Code 2.1.322): every variable of the turn
+  reaches every stdio server of that turn.
+- **Prompt injection.** Tool results are text the model reads: a ticket, a page or a database
+  row can carry instructions aimed at the agent. Turn a server on only where its results can
+  be trusted, and prefer read-only servers and accounts.
+- **The permission mode decides.** No MCP tool is pre-approved. Do not combine MCP servers
+  with `bypassPermissions`.
+- **No escalation.** Adding and removing are yours alone; turning on follows the capability
+  rules ([capabilities.md](capabilities.md#giving-capabilities-from-agents)).
+- **A guard rail, not a sandbox.** An agent with a shell can still edit Spartito's home or your
+  Claude Code configuration, as it can every other setting.
+
+### Limits of phase 1
+
+- Only servers added in Spartito. Your own Claude Code servers, plugin servers and claude.ai
+  connectors are not listed and cannot be given to agents (phases 2 and 9).
+- No status check of its own: `LAST STATUS` comes from agents' turns only (phase 2).
+- No tool list or token cost per server (phase 3), and no per-server tool allowlist: an agent
+  that has a server gets all its tools (phase 5).
+- No OAuth sign-in: a server that needs one reports `needs-auth` and gives no tools (phase 7).
+- No dashboard page for MCP servers, and no HTTP endpoints to add or remove them (phases 4
+  and 6).
+- Codex agents skip every server (phase 8).
+
+## Design of the later phases
+
+**Not built.** The sections below are the design of phases 2 to 9: the commands, options,
+pages and endpoints they describe do not exist yet. Phase 1 above was built from parts of
+it; where the two differ, [What works today](#what-works-today) describes the code.
 
 ## The model
 
@@ -132,7 +328,7 @@ What Spartito does:
   all, with the reason.
 - It keeps the result in a cache table and stores no failure detail beyond one line.
 - It runs on demand: when the MCP page opens and the cache is older than 10 minutes, on
-  **Check now**, and with `spartito mcp --refresh`. Never in a background loop: each run
+  **Check now**, and with the planned option `--refresh` of `spartito mcp`. Never in a background loop: each run
   connects to every server you have.
 
 States shown:
@@ -396,7 +592,7 @@ with a note.
 
 ## The MCP page, the command and the API
 
-### The dashboard page
+### The dashboard page (planned)
 
 A new page at `#/mcp`, opened from a new button in the side bar's header. It has a project
 picker (*All projects* / a project), because local scope, `.mcp.json` and the project level
@@ -451,21 +647,27 @@ badges show them.
 ### The command
 
 **Decided** ([question 12](#decisions)): a group `spartito mcp`, whose `on`, `off` and
-`inherit` are the capability commands for `mcp:<name>`.
+`inherit` are the capability commands for `mcp:<name>`. Phase 1 built the list, `show`,
+`on`, `off`, `inherit`, `add` and `remove` ([What works today](#what-works-today)); the
+lines marked *planned* do not exist yet.
 
-    spartito mcp [--project P] [--refresh] [--json]   # list with status, tools, cost, levels
-    spartito mcp show NAME [--project P]              # definition (redacted), tools, levels
-    spartito mcp on|off|inherit NAME [--project P] [--role R] [--agent A]
-    spartito mcp tools NAME [--only a,b | --all]      # the allowlist
-    spartito mcp measure NAME [--project P]           # the probe
-    spartito mcp add NAME --command CMD [--arg A]… [--env NAME='${VAR}']…
-    spartito mcp add NAME --url URL [--header 'Name: ${VAR}']… [--also-claude-code]
-    spartito mcp remove NAME                          # Spartito's own servers only
-    spartito mcp login NAME [--project P]             # runs claude mcp login (below)
+    spartito mcp [--project P] [--json]                # built: the list with levels, status
+    spartito mcp show NAME [--project P] [--json]     # built: definition (as shown), levels
+    spartito mcp on|off|inherit NAME [--project P] [--role R] [--agent A]   # built
+    spartito mcp add NAME --command CMD [--arg A]… [--env NAME='${VAR}']… [--reaches TEXT]   # built
+    spartito mcp add NAME --url URL [--header 'Name: ${VAR}']… [--reaches TEXT]             # built
+    spartito mcp remove NAME                          # built: Spartito's own servers only
+    spartito mcp --refresh                            # planned (phase 2): check the status now
+    spartito mcp tools NAME [--only a,b | --all]      # planned (phase 5): the allowlist
+    spartito mcp measure NAME [--project P]           # planned (phase 3): the probe
+    spartito mcp add NAME --url URL --also-claude-code   # planned (phase 6)
+    spartito mcp login NAME [--project P]             # planned (phase 7): claude mcp login
 
 `spartito mcp on jira --role tester` is the same as
 `spartito capabilities on mcp:jira --role tester`. `spartito capabilities` lists MCP servers
 in a section of their own, and `spawn --capabilities mcp:jira` works.
+
+The list as planned once phases 2 to 5 add origins, statuses, tools and cost:
 
     $ spartito mcp --project my-app
       NAME     ORIGIN       TRANSPORT  STATUS      TOOLS   COST (listed / deferred)  GLOBAL   PROJECT
@@ -474,7 +676,9 @@ in a section of their own, and `spawn --capabilities mcp:jira` works.
     role reviewer: mcp:docs-db off (final)
     not available to agents yet: 3 claude.ai connectors, 1 plugin server
 
-### The JSON API
+### The JSON API (planned)
+
+None of these endpoints exists yet (phase 4).
 
 | endpoint | does |
 |---|---|
@@ -493,7 +697,8 @@ Levels go through the existing `POST /api/capabilities` and
 
 ### What agents see
 
-`get_agent`'s `capabilities.items` gets one entry per server, with:
+`get_agent`'s `capabilities.items` gets one entry per server, with (built in phase 1, with
+`tools` always `null` until allowlists):
 
 - `kind: "mcp"`
 - `origin`
@@ -538,9 +743,9 @@ Rules for added servers:
   every stdio server of that turn.
 - Phase 1 therefore writes `${VAR}` references into the private file unexpanded and lets
   Claude Code expand them from the turn's environment. The file then holds no secret value.
-  Proposal, as unset variables are not checked: before the turn, the runner checks that
-  every referenced variable without a default is set, and skips the server with a note
-  (`DOCS_DB_URL is not set`) if not.
+  As unset variables are not checked, before the turn the runner checks that every
+  referenced variable is set, and skips the server with a note (`DOCS_DB_URL is not set`)
+  if not. Built in phase 1, where a default (`${VAR:-default}`) is refused altogether.
 - Arguments are stored as given, and Claude Code expands `${VAR}` in them too. The form
   warns against putting secrets in them.
 - Names must not collide with the `orch` server, with Claude Code's reserved names
@@ -549,7 +754,7 @@ Rules for added servers:
 
 **OAuth servers.** A remote server that signs in with OAuth must be in Claude Code's own
 configuration. The add form's **Also add to Claude Code (user scope)** checkbox, and
-`--also-claude-code`, say exactly that:
+the planned option `--also-claude-code` of `spartito mcp add` (phase 6), say exactly that:
 
 > Your own Claude Code sessions will see this server too.
 
@@ -640,7 +845,8 @@ All of it is additive.
 - **`agents.capabilities`.** The same.
 - **`run_meta.capabilities`.** The JSON record gains a key `mcp`, for example
   `{"jira": "needs-auth"}`. Older code ignores it.
-- **New table `mcp_servers`.**
+- **New table `mcp_servers`** (built in phase 1; `tools` and `pin` stay empty until phases 5
+  and 2).
   - `name` (primary key), `origin`, `transport`
   - `definition` (JSON; Spartito's own servers only; never with values)
   - `reaches`
@@ -659,7 +865,7 @@ All of it is additive.
   without a manual step. `tests/test_store.py` covers an old database and the new code, and
   an old code path against a new database.
 - **Outside Spartito.** `~/.claude.json` is changed only by Claude Code, and only through
-  `--also-claude-code`.
+  the planned `--also-claude-code`.
 
 ## Phases
 
@@ -669,7 +875,7 @@ a day, **L** about two days. Every phase ships alone.
 | # | phase | depends on | size |
 |---|---|---|---|
 | 0 | `ToolSearch` and an upfront `orch` server (a separate change, built) | nothing | S, 1 task |
-| 1 | Spartito's own servers as capabilities, Claude wiring, command | 0 | 3 × M |
+| 1 | Spartito's own servers as capabilities, Claude wiring, command (built) | 0 | 3 × M |
 | 2 | Discovering your servers and their status | 1 | 2 × M |
 | 3 | The probe: tools and token cost | 2 | M, possibly + S |
 | 4 | The dashboard's MCP page | 1–3 | L + M |
@@ -700,9 +906,12 @@ This phase is built as a separate, small change, ahead of the rest of this desig
 
 **1. Spartito's own servers as capabilities, Claude wiring, command**
 
+Built: see [What works today](#what-works-today).
+
 - Scope: the `mcp:` names; the dynamic registry; `Wiring.mcp_servers`; the merged private
   configuration file; the `mcp_servers` table; the init statuses recorded with each turn;
-  `spartito mcp list|show|on|off|inherit|add|remove` (stdio and HTTP, `${VAR}` only);
+  `spartito mcp` (the list) and `spartito mcp show|on|off|inherit|add|remove` (stdio and
+  HTTP, `${VAR}` only);
   `get_agent`.
 - Files:
   - new: `src/orchestrator/mcp.py` (entries, validation, redaction), `core/mcp.py`

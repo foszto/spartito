@@ -1,9 +1,11 @@
 # Capabilities
 
 A *capability* is something extra an agent's CLI gets for its turns, beyond its role prompt and
-its [loadout](configuration.md#loadout). Spartito has one so far, `chrome`: the browser tools
-of Claude in Chrome. Capabilities are off by default. They are turned on and off globally, per
-project, per role and per agent, and every agent shows which ones its next turn gets.
+its [loadout](configuration.md#loadout). Spartito has one built in, `chrome`: the browser tools
+of Claude in Chrome. Every MCP server you add in Spartito is one too, named `mcp:<name>`
+([MCP servers](#mcp-servers)). Capabilities are off by default. They are turned on and off
+globally, per project, per role and per agent, and every agent shows which ones its next turn
+gets.
 
 - [Capabilities, the loadout and tools](#capabilities-the-loadout-and-tools)
 - [Listing them](#listing-them)
@@ -11,6 +13,7 @@ project, per role and per agent, and every agent shows which ones its next turn 
 - [What an agent gets](#what-an-agent-gets)
 - [Giving capabilities from agents](#giving-capabilities-from-agents)
 - [`chrome`: Claude in Chrome](#chrome-claude-in-chrome)
+- [MCP servers](#mcp-servers)
 - [Adding a capability](#adding-a-capability)
 
 ## Capabilities, the loadout and tools
@@ -40,6 +43,9 @@ role tester (my-app): chrome on
 when there is none; `--project` adds the project's own setting (`inherit`: none). The lines
 below the table list the roles' settings, globally and, with `--project`, the project's.
 `--json` adds each capability's label, description, what it can reach and what it requires.
+MCP servers you added follow in a section of their own, `MCP servers (spartito mcp):`, with
+their capability names, transport, command or URL origin, levels and last status
+([mcp.md](mcp.md#listing-and-showing)).
 `spartito providers` lists, per provider, the capabilities it supports.
 
 | status | meaning |
@@ -106,7 +112,9 @@ capability on again.
 A name that is not registered is refused when it is set (`unknown capability 'jira' (known:
 chrome)`), by the commands and by the settings API alike. `inherit` also accepts a name that is
 no longer registered, so that a setting left by a removed plugin can be cleared; until then, a
-turn that would have it skips it with the note `not registered here`.
+turn that would have it skips it with the note `not registered here`. For an MCP server the
+refusal names the servers added and the command that adds one (`spartito mcp add`), and
+removing a server removes its settings at every level.
 
 A capability that is on but that the agent's provider does not support is skipped, with the
 note `codex does not support it`; it is not an error, and the setting stays. Starting an agent
@@ -303,6 +311,27 @@ extension and a claude.ai login; each point is a single measurement:
 The default stays off: `chrome` reaches your signed-in browser, it costs context on every turn
 of an agent that has it, and the cases above are untested.
 
+## MCP servers
+
+Each MCP server added in Spartito, a local command (stdio) or a remote URL (HTTP), is a
+capability named `mcp:<name>`: `spartito mcp add docs-db --command docs-db-mcp` adds
+`mcp:docs-db`, off until a level turns it on. Everything on this page applies to it: the
+levels, a role's final `off`, the rules for agents, `spawn --capabilities mcp:docs-db`, the
+dashboard's controls and what an agent shows. `spartito mcp on|off|inherit docs-db` is the same
+as `spartito capabilities on|off|inherit mcp:docs-db`.
+
+| | |
+|---|---|
+| providers | `claude` (Codex agents skip it with the note `codex does not support it`) |
+| default | off |
+| reaches | for a command, that it runs on this machine as you, with your files, your network and the environment it is given; for a URL, that the agent's tool calls go to its origin; and your own `--reaches` line |
+
+Only you add and remove servers; agents cannot, the orchestrator agent included. Env and
+header values are `${VAR}` references only: Spartito stores no secret. On a Claude turn, the
+servers that are on go into one private MCP configuration with the turn's tool search, and
+`get_agent` shows each one's status at the agent's last turn. All of it, with the safety
+notes and the limits of what is built: [mcp.md](mcp.md#what-works-today).
+
 ## Adding a capability
 
 `ORCH_CAPABILITIES="package.module:attribute,…"` registers more capabilities after the
@@ -343,5 +372,6 @@ a spec that cannot be loaded stops the command, as a broken `ORCH_PROVIDERS` doe
 keeps it from the shell it is installed from:
 [desktop.md](desktop.md#background-service)).
 
-Capabilities that bring their own MCP servers, a file in the home that declares them, and
-further availability checks are planned, not built.
+A file in the home that declares capabilities, and further availability checks, are planned,
+not built. MCP servers need no plugin: they are added with `spartito mcp add`
+([MCP servers](#mcp-servers)).

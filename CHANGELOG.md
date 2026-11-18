@@ -48,9 +48,23 @@ chosen is in the
 - The loadout key `tool_search` (`auto`, `always`, `never`) decides when Claude agents load MCP
   tools on demand; `always` defers a lead's `orch` tools too, about 4,300 fewer prompt tokens
   per request (`docs/configuration.md`).
+- MCP servers as capabilities: `spartito mcp add NAME --command CMD` (a local server) or
+  `--url URL` (a remote one) adds an MCP server, which becomes the capability `mcp:NAME`, off
+  until turned on with `spartito mcp on NAME` (or `spartito capabilities on mcp:NAME`) at the
+  same levels as `chrome`. A Claude agent's turn with a server on gets it in a private MCP
+  configuration, still under `--strict-mcp-config`; Codex agents skip it with a note. Env and
+  header values must be `${VAR}` references, read from the environment the turns run in:
+  Spartito stores no secret. Only the owner adds and removes servers, never an agent.
+  `spartito mcp` lists them with their levels and the status of the last turn, `spartito mcp
+  show` gives one, `spartito mcp remove` removes one and its settings, `spartito capabilities`
+  lists them in a section of their own, and `spawn --capabilities mcp:NAME` works. Read
+  `docs/mcp.md` first: a server runs as you or receives the agent's tool calls.
 
 ### Changed
 
+- `spartito mcp` without a subcommand lists the MCP servers; Spartito's own `orch` MCP server,
+  which it used to run, is now `spartito mcp serve`. Agents and `spartito chat` never started
+  it through the command, so they are not affected.
 - New projects and agents get a provider that is available here. `spartito project add`
   without `--provider` takes the first available one instead of always `claude`, and prints
   it. An explicit provider that is not available is refused, naming the available ones. When
