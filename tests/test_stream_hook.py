@@ -4,11 +4,23 @@ passed on to the orchestrator's MCP server. The plugin providers are in streampr
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
-from streamprovider import NOTE, HeldBackProvider, HomeProvider, NotingProvider
+from streamprovider import (
+    NOTE,
+    PID_FILE,
+    HeldBackProvider,
+    HomeProvider,
+    NotingProvider,
+    ParseRaisesProvider,
+    RelaunchedProvider,
+    StreamNotCallableProvider,
+    StreamRaisesProvider,
+)
+from test_turn_end import all_gone
 
-from orchestrator import capabilities, providers, runner
+from orchestrator import capabilities, config, providers, runner
 from orchestrator.models import Agent, Event, RunStatus
 from orchestrator.providers.base import ParsedLines, turn_stream
 from orchestrator.providers.claude import ClaudeProvider
@@ -17,13 +29,18 @@ from orchestrator.providers.codex import CodexProvider
 
 @pytest.fixture
 def plugins(orch, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(
-        "ORCH_PROVIDERS",
-        "fake=fakeprovider:FakeProvider,held-back=streamprovider:HeldBackProvider,"
-        "noting=streamprovider:NotingProvider",
-    )
-    monkeypatch.setitem(providers.PROVIDERS, "held-back", HeldBackProvider())
-    monkeypatch.setitem(providers.PROVIDERS, "noting", NotingProvider())
+    plugins = [
+        HeldBackProvider,
+        NotingProvider,
+        RelaunchedProvider,
+        StreamRaisesProvider,
+        StreamNotCallableProvider,
+        ParseRaisesProvider,
+    ]
+    specs = [f"{cls.name}=streamprovider:{cls.__name__}" for cls in plugins]
+    monkeypatch.setenv("ORCH_PROVIDERS", ",".join(["fake=fakeprovider:FakeProvider", *specs]))
+    for cls in plugins:
+        monkeypatch.setitem(providers.PROVIDERS, cls.name, cls())
 
 
 # -- what finish reports counts ----------------------------------------------------------------
@@ -61,6 +78,41 @@ def test_each_turn_has_a_stream_of_its_own(orch, project: str, plugins: None) ->
     assert (finished.status, finished.result) == (RunStatus.DONE, "three four")
 
 
+def test_a_turn_relaunched_without_memory_reads_the_new_launch_with_a_new_stream(
+    orch, project: str, plugins: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(runner.CANARY_ENV, "1")
+    (config.home() / "loadout.toml").write_text("[worker]\nmemory = true\n")
+    agent, run = orch.spawn(project, "one two", worktree=False, provider="relaunched")
+    assert orch.wait([agent.id], timeout=60)[0]
+
+    # Nothing of the first launch (its stream, its line `memory-launch`) reaches the turn.
+    finished = orch.store.get_run(run.id)
+    assert (finished.status, finished.result) == (RunStatus.DONE, "plain: one two")
+
+
+# -- a stream that cannot be had --------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("provider", "error"),
+    [
+        ("stream-raises", "RuntimeError: no stream for this turn"),
+        ("stream-not-callable", "TypeError: 'str' object is not callable"),
+        ("parse-raises", "RuntimeError: no events for this line"),  # as it was before
+    ],
+)
+def test_a_stream_that_fails_fails_the_run_and_ends_the_cli(
+    orch, project: str, plugins: None, provider: str, error: str
+) -> None:
+    agent, run = orch.spawn(project, "one", worktree=False, provider=provider)
+    assert orch.wait([agent.id], timeout=60)[0]
+
+    finished = orch.store.get_run(run.id)
+    assert (finished.status, finished.error) == (RunStatus.FAILED, error)
+    assert all_gone([int((Path(agent.cwd) / PID_FILE).read_text())])
+
+
 # -- a provider without stream() --------------------------------------------------------------
 
 
@@ -74,7 +126,7 @@ def test_without_stream_each_line_goes_through_parse_and_the_end_reports_nothing
 
     assert isinstance(stream, ParsedLines)
     assert stream.feed("hello") == [Event("text", "HELLO")]
-    assert stream.finish(0) == stream.finish(1) == stream.finish(None) == []
+    assert stream.finish(0) == stream.finish(1) == []
 
 
 @pytest.mark.parametrize(

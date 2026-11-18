@@ -150,9 +150,10 @@ class TurnStream(Protocol):
         """The events of one line of the CLI's output."""
         ...
 
-    def finish(self, exit_code: int | None) -> list[Event]:
-        """The events once the output has ended, with the CLI's exit code (None: it is
-        still running, e.g. a lead's CLI kept alive by something it started)."""
+    def finish(self, exit_code: int) -> list[Event]:
+        """The events once the output has ended, with the CLI's exit code. On a lead's turn
+        whose CLI the runner ended after its answer the code is 0, which cannot be told
+        apart from a clean exit."""
         ...
 
 
@@ -235,7 +236,7 @@ class ParsedLines:
     def feed(self, line: str) -> list[Event]:
         return self.provider.parse(line)
 
-    def finish(self, exit_code: int | None) -> list[Event]:
+    def finish(self, exit_code: int) -> list[Event]:
         return []
 
 

@@ -342,8 +342,8 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
         reader = threading.Thread(target=_pump, args=(child.stdout, lines), daemon=True)
         reader.start()
         known: dict[int, tuple[int, int]] = {}
-        stream = turn_stream(provider)
         try:
+            stream = turn_stream(provider)  # in here: a failure ends the started CLI
             with contextlib.suppress(BrokenPipeError):  # a CLI that exited unasked
                 child.stdin.write(invocation.stdin)
                 child.stdin.close()
