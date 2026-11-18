@@ -72,6 +72,9 @@ INSTALL_HINT = "install the extra spartito[app]"
 LAUNCHER_HINT = f"then run `{config.CLI_NAME} app install`"
 DOCS_HINT = "see docs/desktop.md"
 ALREADY_OPEN = "the dashboard window of this home is already open"
+# The baseline a `spartito app` read before its lock, handed to itself across its relaunch:
+# requests written in between are answered.
+BASELINE_VAR = "ORCH_APP_BASELINE"
 ANSWER_TIMEOUT = 5.0  # seconds a second `spartito app` waits for the open window's answer
 WATCH_EVERY = 0.3  # seconds between two looks at the request file
 ACTIVE_WAIT = 1.0  # seconds for the native window to become the active one (macOS)
@@ -918,6 +921,17 @@ def forward(target: str) -> int:
     return 0
 
 
+def handed_baseline() -> int:
+    """The window's baseline (Session.baseline): the one its relaunch handed over
+    (BASELINE_VAR, taken out of the environment) when that is an id up to the latest one,
+    else the latest id now."""
+    handed = os.environ.pop(BASELINE_VAR, "")
+    latest = app_open.last_id()
+    if re.fullmatch(r"[0-9]{1,18}", handed) and int(handed) <= latest:
+        return int(handed)
+    return latest
+
+
 def take_bundle_identity() -> tuple[bool, Path | None]:
     """Whether this process was started as the launcher's app (macOS: CFProcessPath, or the
     bundle's interpreter copy, whose script sets launcher.BUNDLE_VAR), and the bundle in the
@@ -1040,7 +1054,7 @@ def run(
     bundled, own_bundle = take_bundle_identity()
     # The baseline from before the lock: a second `spartito app` that finds the lock taken
     # writes its request after it, and this window answers it.
-    baseline = app_open.last_id()
+    baseline = handed_baseline()
     lock = single_instance()
     if lock is None:
         return forward(target)
@@ -1061,9 +1075,10 @@ def run(
                 **os.environ,
                 launcher.BUNDLE_VAR: str(item.path),
                 "__PYVENV_LAUNCHER__": sys.executable,
+                BASELINE_VAR: str(baseline),
             }
             execute(str(copy), [str(copy), *argv[1:]], env)
-        env = {**os.environ, "CFProcessPath": str(item.executable)}
+        env = {**os.environ, "CFProcessPath": str(item.executable), BASELINE_VAR: str(baseline)}
         execute(sys.executable, argv, env)  # says why there is no copy (stale_copy)
     failed = os.environ.pop(launcher.COPY_FAILED_VAR, None) is not None
     cut_app_log()  # this process holds the window lock: the log is its own now
