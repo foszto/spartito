@@ -45,6 +45,9 @@ chosen is in the
   The dashboard has a **Capabilities** box in its settings, an inherit / on / off choice per
   capability in an agent's setup panel and the new-agent dialog, and a badge on agents that
   have one. More capabilities can be registered with `ORCH_CAPABILITIES`.
+- The loadout key `tool_search` (`auto`, `always`, `never`) decides when Claude agents load MCP
+  tools on demand; `always` defers a lead's `orch` tools too, about 4,300 fewer prompt tokens
+  per request (`docs/configuration.md`).
 
 ### Changed
 
@@ -62,6 +65,10 @@ chosen is in the
 - A role's `model` applies only to agents of the role's own provider.
 - Every Claude turn runs with `CLAUDE_CODE_ENABLE_CFC=0` unless `chrome` is on for it, so that
   your own Claude in Chrome setting does not reach agents.
+- Agents with a capability that brings MCP tools, such as `chrome`, use Claude Code's tool
+  search when their role restricts the built-in tools: the browser tools' schemas are loaded on
+  demand instead of being sent with every request, which takes the extra prompt tokens of
+  `chrome` from about 11,600 to about 2,900 per request.
 
 ### Fixed
 

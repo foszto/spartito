@@ -265,13 +265,15 @@ ignores `~/.codex/config.toml`. If you rely on `~/.claude/settings.json` or on C
 | `slash_commands` | `false` = no skills or slash commands at all, the project's included | `--disable-slash-commands` |
 | `codex_user_config` | `false` = Codex does not read `$CODEX_HOME/config.toml` (the login is kept) | `--ignore-user-config` |
 | `memory` | `true` = also `Write` and `Edit`, but only into the session's own memory directory (`~/.claude/projects/<project>/memory/`) | `--settings` (a PreToolUse hook) |
+| `tool_search` | `auto`, `always` or `never`: when Claude Code loads MCP tools on demand ([Tool search](#tool-search)) | `ToolSearch` in `--tools` |
 
 Codex uses only `codex_user_config`; the other keys apply to Claude.
 
 ### Defaults
 
 The packaged roles set `mcp = strict`, `setting_sources = project,local`,
-`slash_commands = false` and `codex_user_config = false`, and these tools:
+`slash_commands = false` and `codex_user_config = false`, keep `tool_search = auto`, and set
+these tools:
 
 | role | `tools` |
 |---|---|
@@ -286,7 +288,7 @@ its `tools`.
 
 A custom role that sets none of the keys gets `tools = default` (including `Skill`),
 `mcp = strict`, `setting_sources = project,local`, `slash_commands = true`,
-`codex_user_config = false`. An empty value (`tools:`) is an error.
+`codex_user_config = false`, `tool_search = auto`. An empty value (`tools:`) is an error.
 
 ### Overrides: `loadout.toml`
 
@@ -339,6 +341,41 @@ tools = "Bash,Read,Edit,Write,Glob,Grep,Skill"
 [lead]
 tools = "Bash,Read,Glob,Grep,Skill"
 ```
+
+### Tool search
+
+Claude Code can load MCP tools on demand: it sends their names, and a tool's schema only once
+the model has looked it up with the built-in tool `ToolSearch`. It does so only when
+`ToolSearch` is among the built-in tools: with a `tools` list that leaves it out, every MCP
+tool's full schema goes with every request. The CLI's default set (`tools = default`) has it.
+`tool_search` decides when Spartito adds it to a role's list:
+
+| value | `ToolSearch` is added | the `orch` tools of a lead |
+|---|---|---|
+| `auto` (default) | on a turn with a capability that brings MCP tools, such as [`chrome`](capabilities.md#cost) | loaded upfront (`"alwaysLoad": true` in `--mcp-config` on such a turn), as without tool search |
+| `always` | on every turn with MCP tools: a lead's, the orchestrator's, or one with such a capability | loaded on demand too |
+| `never` | never: every MCP tool's schema is sent upfront | loaded upfront |
+
+Nothing is added with `tools = default` or to a list that names `ToolSearch` already.
+`tools = none` gets `ToolSearch` alone under the same rule, since without it the MCP tools
+would all load upfront. Under `auto`, a turn without such a capability runs with the same
+flags as before. `spartito chat` has no capabilities, so only `always` adds it there. Spartito
+neither sets nor removes `ENABLE_TOOL_SEARCH`: a value in its environment reaches the CLI and
+keeps applying (`false`, for example, removes `ToolSearch` even from a list that names it).
+Codex is not affected.
+
+Measured once with Claude Code 2.1.322 (`--model sonnet`), on the first request of a lead's
+turn:
+
+| lead's turn | prompt tokens |
+|---|---|
+| `auto` or `never`, no capability (the `orch` tools upfront) | about 14,100 |
+| `always`, no capability (the `orch` tools on demand) | about 9,900 |
+| `auto`, with `chrome` (the `orch` tools upfront, the browser tools on demand) | about 16,900 |
+| `always`, with `chrome` | about 12,100 |
+
+`always` saves about 4,300 prompt tokens per request for a lead. In exchange, the lead calls
+`ToolSearch` before it first uses one of the `orch` tools, which costs one extra request.
 
 ### Notes
 

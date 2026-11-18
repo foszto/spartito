@@ -233,6 +233,23 @@ spartito capabilities on chrome
 spartito capabilities off chrome
 ```
 
+### Cost
+
+The browser tools are MCP tools, and their schemas take room in every request. Measured once
+with Claude Code 2.1.322 (`--model sonnet`), on the first request of a worker's turn:
+
+| worker's turn | prompt tokens per request |
+|---|---|
+| without `chrome` | about 8,500 |
+| with `chrome`, the tools listed upfront (`tool_search = never`) | about 20,000 (+11,600) |
+| with `chrome` and tool search (the default) | about 11,300 (+2,900) |
+
+With tool search, Claude Code sends the tools' names only and loads a tool's schema when the
+agent needs it: before it first uses a browser tool, the agent calls the built-in tool
+`ToolSearch`, which costs one extra request. Spartito adds `ToolSearch` to the turn of an agent
+with `chrome` whose role restricts the built-in tools; with the CLI's default tool set it is
+there anyway. The loadout's [`tool_search`](configuration.md#tool-search) changes this.
+
 ### Safety
 
 - It drives your real, signed-in browser: an agent with `chrome` acts with your sessions on any
@@ -270,7 +287,9 @@ extension and a claude.ai login; each point is a single measurement:
   calls through.
 - Two turns at the same time each used their own tab and both finished (one pair, not a stress
   test).
-- A turn with `--chrome` used about 2,400 more prompt tokens than the same turn without it.
+- With the browser tools listed upfront, a request carried about 11,600 more prompt tokens
+  than without `chrome`; with tool search about 2,900 more ([Cost](#cost)). With tool search,
+  turns found the browser tools through `ToolSearch` and called them without an error.
 
 ### Not verified yet
 
@@ -295,7 +314,7 @@ built-in one ([configuration.md](configuration.md#environment-variables)). The a
 | `name` | lower case letters, digits and `-`, starting with a letter, at most 32 characters |
 | `label`, `description` | what people read |
 | `reaches` | one line on what it can reach |
-| `providers` | provider name → `Support(on=Wiring(argv=…, env=…), off=Wiring(…))`: what it adds to that provider's turns when on and when off; a provider not named does not support it |
+| `providers` | provider name → `Support(on=Wiring(argv=…, env=…), off=Wiring(…))`: what it adds to that provider's turns when on and when off; a provider not named does not support it. `Wiring(…, mcp_tools=True)` says that what it adds brings MCP tools: a Claude turn then gets tool search under the loadout's [`tool_search`](configuration.md#tool-search) (default `False`) |
 | `requires` | what it needs, one phrase each (optional) |
 | `check` | returns `(status, reason)`: instant and offline, it reads no file and runs nothing (optional; without it the status is `unknown`) |
 | `docs` | where it is documented (optional) |
