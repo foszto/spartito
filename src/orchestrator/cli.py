@@ -242,6 +242,12 @@ def state_label(view: dict) -> tuple[str, str | None]:
     return text, STATUS_COLORS.get(status)
 
 
+# Set in the environment of `chat`'s Claude Code, so the commands its model runs through Bash
+# (pre-approved: `Bash(spartito *)`, and without ORCH_AGENT_ID, so they count as the owner's)
+# can be told apart where only the owner in their own shell may act.
+CHAT_ENV = "ORCH_CHAT_SESSION"
+
+
 def mcp_config() -> str:
     servers = {
         "orch": {
@@ -320,7 +326,7 @@ def chat(
         argv += ["--effort", effort]
     if not here:
         os.chdir(config.workspace_dir())
-    os.execvpe("claude", argv, {**os.environ, "PATH": locate.search_path()})
+    os.execvpe("claude", argv, {**os.environ, "PATH": locate.search_path(), CHAT_ENV: "1"})
 
 
 @app.command()
@@ -1974,6 +1980,16 @@ def mcp_show(
         typer.echo(f"{label:<12} {value}")
 
 
+def not_in_chat(action: str) -> None:
+    """Adding and removing MCP servers change what code runs and with whose credentials: the
+    owner's alone, so not a command the `chat` session's model runs (CHAT_ENV)."""
+    if os.environ.get(CHAT_ENV):
+        raise fail(
+            f"`{CLI} mcp {action}` is refused in a `{CLI} chat` session: adding and removing"
+            " MCP servers is the owner's alone; run the command in your own shell"
+        )
+
+
 @mcp_app.command("add")
 def mcp_add(
     name: Annotated[str, typer.Argument(help="Letters, digits, '_' and '-'.")],
@@ -2008,6 +2024,7 @@ def mcp_add(
     `${VAR}` references, read from the environment of the process that runs the turns;
     Spartito stores no secret. It is off until you turn it on. Only the owner adds servers:
     refused in an agent's turn."""
+    not_in_chat("add")
     o = orch()
     try:
         entry = o.mcp_add(
@@ -2027,6 +2044,7 @@ def mcp_add(
 def mcp_remove(name: str) -> None:
     """Remove an MCP server, and its setting at every level (global, projects, roles,
     agents). Only the owner removes servers: refused in an agent's turn."""
+    not_in_chat("remove")
     o = orch()
     try:
         entry = o.mcp_remove(name, calling_agent(o))

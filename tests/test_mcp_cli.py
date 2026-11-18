@@ -369,3 +369,41 @@ def test_only_serve_counts_as_the_mcp_server_process(
     monkeypatch.setattr(sys, "argv", [config.CLI_NAME, *argv])
 
     assert desktop.role() == part
+
+
+# -- the `chat` session ----------------------------------------------------------------------
+
+
+def test_chat_marks_its_clis_environment(
+    orch: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started: list[dict] = []
+    monkeypatch.setattr(cli.shutil, "which", lambda name, path=None: f"/bin/{name}")
+    monkeypatch.setattr(cli.os, "execvpe", lambda file, argv, env: started.append(env))
+
+    assert invoke("chat", "--here").exit_code == 0
+    assert started[0][cli.CHAT_ENV] == "1"
+
+
+def test_a_chat_session_cannot_add_or_remove_servers(orch: Orchestrator, project: str) -> None:
+    """Its commands run as the owner's (no ORCH_AGENT_ID) and pre-approved: adding and
+    removing are refused under its mark; the rest goes by the capability rules."""
+    run(*ADD_DOCS_DB)
+    chat = {cli.CHAT_ENV: "1"}
+
+    def in_chat(*args: str) -> click.testing.Result:
+        return CliRunner().invoke(cli.app, list(args), env=chat)
+
+    for args in (["add", "other", "--command", "x"], ["remove", "docs-db"]):
+        result = in_chat("mcp", *args)
+        assert result.exit_code == 1
+        assert f"`{config.CLI_NAME} mcp {args[0]}` is refused in a `{config.CLI_NAME} chat`" in (
+            " ".join(click.unstyle(result.output).split())
+        )
+        assert "run the command in your own shell" in result.output
+    assert [entry["server"] for entry in orch.mcp_list()] == ["docs-db"]
+    for args in (["mcp"], ["mcp", "show", "docs-db"], ["mcp", "on", "docs-db", "-p", project]):
+        assert in_chat(*args).exit_code == 0, args
+    assert orch.settings(project)["capabilities"] == {"mcp:docs-db": True}
+    run("mcp", "add", "other", "--command", "x")  # without the mark: the owner's shell
+    run("mcp", "remove", "other")
