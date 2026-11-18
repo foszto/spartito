@@ -304,11 +304,11 @@ Sources:
   - the event stream is "volatile by contract". **[documented]** (same page)
   - the client library is TypeScript (`@opencode/client`). **[documented]** <https://opencode.ai/docs/build/client/>
   - `opencode acp` speaks the Agent Client Protocol over stdio. **[observed]**
-- **Recommendation: one `opencode run --standalone --format json` process per turn**, like the other providers.
+- **Decided: one `opencode run --standalone --format json` process per turn**, like the other providers.
   - It keeps the runner's model: one process group per turn, killable, a stdout stream, no daemon, isolation through the environment.
   - A long-lived `serve` would need daemon management, an HTTP client in Python, a password, per-location config and handling of missed events.
-  - Revisit if the start-up cost per turn turns out to be large (live check V12).
   - ACP is interesting as a later, generic provider for several harnesses, but it needs a long-lived process per session.
+  - ACP is on the roadmap: [ROADMAP.md](../ROADMAP.md).
 
 ### 2.12 Licence and stability
 
@@ -631,7 +631,7 @@ Decided: no golden tests for now; the existing tests and the normal review carry
 3. **Q3 A provider-neutral "user configuration" loadout key** in place of `codex_user_config`? *Recommendation:* not now. Map opencode onto `setting_sources`, keep `codex_user_config`, and decide when a fourth provider needs it.
 4. **Q4 Default permission mode** for opencode: no `--auto` (asks rejected), or `--auto`? *Recommendation:* no `--auto`.
 5. **Q5 Structured answers** asked for in the prompt, not enforced: acceptable for planner, reviewer and tester roles? *Recommendation:* yes, listed as a limit.
-6. **Q6 Server model**: one process per turn now, `serve` or ACP later? *Recommendation:* per turn, revisited after V12.
+6. **Q6 Server model**: one process per turn now, `serve` or ACP later? Decided: one process per turn; ACP is on the roadmap ([ROADMAP.md](../ROADMAP.md)).
 7. **Q7 Order of work**: refactor (1–4) before opencode, or opencode first on today's structure? *Recommendation:* 1 → 3 first; opencode on top, so it costs one module.
 8. **Q8 MCP servers on opencode** without an approval gate (as decided for Codex in `mcp.md#phases`): allow them only when the owner marks a server for it, or in general? *Recommendation:* the same rule as for Codex.
 9. **Q9 Global opencode config**: if V15 shows the leak, accept that the user's global `opencode.json` applies to agents (listed), or deny opencode agents some of it through policies only? *Recommendation:* accept and list it. Revisit if a cleaner switch appears.
