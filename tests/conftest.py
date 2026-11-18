@@ -399,9 +399,10 @@ PROVIDER_CLIS = builtin_executables()
 @pytest.fixture(scope="session", autouse=True)
 def fake_provider_clis(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Fake CLIs of the built-in providers (PROVIDER_CLIS) first on PATH for the whole
-    session (each xdist worker its own); returns their directory; the session ends at once
-    if one of them is not the first found. Set in os.environ, outside `monkeypatch`, as home_guard
-    sets the home: no test's undo removes it, and it is not undone at the end (a thread a
+    session (each xdist worker its own); returns their directory. If one of them is not the
+    first found, the fixture fails: every test errors at its setup with the reason (a
+    fixture's failure carries back from xdist workers), and none runs. Set in os.environ,
+    outside `monkeypatch`, as home_guard sets the home: no test's undo removes it, and it is not undone at the end (a thread a
     test left behind keeps it). Every child that inherits or keeps PATH finds these first,
     so its search never reaches a real CLI further on PATH or in the usual install
     directories (locate.search_path appends them after PATH; the ones under `~` are in the
@@ -416,7 +417,7 @@ def fake_provider_clis(tmp_path_factory: pytest.TempPathFactory) -> Path:
     for name in PROVIDER_CLIS:  # what a child searching PATH would start
         found = shutil.which(name)
         if found is None or Path(found).parent != bin_dir:
-            pytest.exit(f"`{name}` is not the suite's fake on PATH: {found}", returncode=3)
+            pytest.fail(f"`{name}` is not the suite's fake on PATH: {found}", pytrace=False)
     return bin_dir
 
 

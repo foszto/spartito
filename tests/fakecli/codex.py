@@ -4,8 +4,9 @@
 - The prompt is stdin as it is.
 - The thread is the one of `exec resume <id>`, else a new one (`fake-codex-thread`).
 - Reports no compaction (`codex exec --json` has no event for it) and no cost; its usage
-  counts cached tokens inside `input_tokens`. The figures are those of this turn (the real
-  CLI reports the thread's totals on resume): one turn with TOKENS per thread.
+  counts cached tokens inside `input_tokens`. The figures are those of this turn, while the
+  real CLI (and so CodexProvider) reports the thread's totals on resume: TOKENS on a
+  resumed thread fails the turn with a message saying so.
 """
 
 from __future__ import annotations
@@ -35,8 +36,9 @@ class Dialect:
     def compaction(trigger: str, pre: int, post: int) -> list[dict]:
         return []
 
-    @staticmethod
-    def result(text: str, error: bool, usage: dict | None) -> list[dict]:
+    def result(self, text: str, error: bool, usage: dict | None) -> list[dict]:
+        if usage and "resume" in self.argv:
+            text, error = "fakecli codex: no TOKENS on a resumed thread (no running total)", True
         if error:
             return [{"type": "turn.failed", "error": {"message": text}}]
         message = {"type": "agent_message", "id": "item_0", "text": text}

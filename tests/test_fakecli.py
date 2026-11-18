@@ -68,3 +68,9 @@ def test_a_codex_turn_and_its_resumed_turn_on_the_fake_cli(
     (seen,) = codex_runs(config.run_dir(second.id))
     assert seen["argv"][:3] == ["exec", "resume", codex_dialect.SESSION]
     assert seen["prompt"] == "FAIL"  # a resumed thread has its role already
+
+    third = orch.send(agent.id, "TOKENS 10")  # the fake keeps no running total of a thread
+    finished(orch, agent.id)
+
+    run = orch.store.get_run(third.id)
+    assert run.status is RunStatus.FAILED and "no TOKENS on a resumed thread" in run.error
