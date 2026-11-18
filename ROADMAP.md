@@ -9,7 +9,7 @@ repository's issues ([CONTRIBUTING.md](CONTRIBUTING.md)).
 |---|---|---|---|
 | reach | [authentication](#dashboard-authentication-and-safe-exposure), [remote control](#remote-control) | [phone](#phone-friendly-dashboard-and-push-notifications) | |
 | isolation | | [devcontainers](#devcontainers), [permissions](#permission-profiles-and-approvals) | |
-| integrations | | [harnesses](#more-harness-integrations), [GitHub](#github-automations), [trackers](#issue-tracker-links-for-the-board) | |
+| integrations | | [harnesses](#more-harness-integrations), [ACP](#acp-as-a-generic-provider), [GitHub](#github-automations), [trackers](#issue-tracker-links-for-the-board) | |
 | workflow | [code view](#worktree-code-view) | [merging](#merge-assistance), [playbooks](#reusable-playbooks), [schedules](#scheduled-and-event-triggered-turns) | |
 | operations | [CI](#ci-for-the-public-repository) | [releases](#safe-upgrades-and-releases), [observability](#observability), [costs](#budgets-and-cost-reports), [backup](#state-backup-export-and-move), [refactoring](#the-rest-of-the-internal-refactoring) | |
 | platforms | [Linux](#linux-tested-end-to-end) | | [Windows](#windows-support) |
@@ -175,6 +175,25 @@ files, and compaction as a separate turn
 **Open questions.** Which harnesses come first. What a provider must support (structured
 answers, the `orch` MCP tools for leads, usage and cost, compaction), and how missing
 features are shown.
+
+#### ACP as a generic provider
+
+**What it means.** One generic provider that speaks ACP, the Agent Client Protocol (JSON-RPC
+over stdio, with a long-lived session per agent), could serve several harnesses: opencode
+(`opencode acp`) and Gemini CLI speak it natively, and Claude Code and Codex reach it
+through adapters. That would mean less code per provider, no start-up cost per turn, live
+events as the agent works, and an agent's permission requests answered from the dashboard.
+
+**Today.** Each provider runs one CLI process per turn
+([processes](docs/architecture.md#processes)), and opencode is being designed the same way
+(see [more harness integrations](#more-harness-integrations)). A provider implements the
+protocol in `providers/base.py` ([other providers](docs/providers.md#other-providers)).
+
+**Open questions.** The runner would have to manage long-running processes: stopping them,
+and recovering after a crash. The environment, the capabilities and the MCP configuration are
+set per turn today ([what a turn gets](docs/mcp.md#what-the-agents-turn-gets)) and cannot
+change inside a running process. How mature are the adapters? Would it replace the per-turn
+providers, or sit beside them?
 
 #### GitHub automations
 
