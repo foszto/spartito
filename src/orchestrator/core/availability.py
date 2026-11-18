@@ -149,7 +149,9 @@ def describe(provider: Provider) -> dict[str, Any]:
             "compaction_instructions": instructions,
             "context_size": getattr(provider, "reports_context", None),
             "role_prompt": getattr(provider, "role_prompt", None),
-            "attribution": bool(roles.attribution(provider.name, bot_coauthor=False)),
+            "attribution": bool(
+                roles.attribution(getattr(provider, "credit", None), bot_coauthor=False)
+            ),
         },
         "limits": list(getattr(provider, "limits", None) or ()),
         # The registered capabilities it carries (capabilities.py).

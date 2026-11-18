@@ -289,6 +289,7 @@ def chat(
     if effort and effort not in providers.get("claude").efforts:
         allowed = ", ".join(providers.get("claude").efforts)
         raise fail(f"claude has no effort '{effort}' (use: {allowed})")
+    credit = getattr(providers.get("claude"), "credit", None)
     role = roles.load("orchestrator")
     try:
         # No project: only $ORCH_HOME/loadout.toml applies.
@@ -308,7 +309,7 @@ def chat(
         "claude",
         "--mcp-config", mcp_config(),
         "--append-system-prompt",
-        f"{role.prompt}\n\n{roles.attribution('claude', bot_coauthor=bot_coauthor)}",
+        f"{role.prompt}\n\n{roles.attribution(credit, bot_coauthor=bot_coauthor)}",
         "--allowedTools", "mcp__orch", f"Bash({CLI} *)",
         *loadout_flags(chosen, search=search),
     ]  # fmt: skip

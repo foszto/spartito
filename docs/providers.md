@@ -281,7 +281,7 @@ protocol in `src/orchestrator/providers/base.py`. Its self-description is option
 | `cache_effect` | what a model or effort switch does to the prompt cache: `{"model": …, "effort": …}`, each `restarts`, `may restart` or `keeps` | `may restart` |
 | `config_env` | the variables that point its CLI at its configuration, carried into the background service | none |
 | `carries_mcp_servers` | whether its turns get the [MCP servers](mcp.md) added in Spartito | no |
+| `credit` | its agents' attribution section: `link`, the CLI credited after Spartito in a pull request description, and `trailer_rule`, how a commit's trailer names Spartito (`providers/kit.py`, `Credit`) | no attribution section |
 
 Compaction (`compact_prompt`) and the context size (`context_after`) are optional too: a
-provider without `compact_prompt` cannot compact. A provider other than `claude` and `codex`
-gets no attribution section.
+provider without `compact_prompt` cannot compact.

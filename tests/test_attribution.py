@@ -6,9 +6,10 @@ from __future__ import annotations
 import json
 import tomllib
 from pathlib import Path
+from typing import Any
 
 import pytest
-from fakeprovider import FakeProvider
+from codexstandin import CodexStandIn
 from typer.testing import CliRunner
 
 from orchestrator import cli, config, providers, roles, settings
@@ -24,6 +25,11 @@ CODEX_LINE = (
     "🤖 Generated with [Spartito](https://github.com/foszto/spartito)"
     " + [Codex](https://github.com/openai/codex)"
 )
+
+
+def credit(provider: str) -> Any:
+    """The registered provider's credit, which roles.attribution takes."""
+    return providers.get(provider).credit
 
 
 def agent(provider: str) -> Agent:
@@ -98,7 +104,7 @@ def test_every_agent_credits_spartito_and_its_cli(provider: str, line: str, trai
         assert "## Attribution" in lines(prompt)
         assert prompt.index("## Attribution") < prompt.index("## Context")
         section = prompt[prompt.index("## Attribution") : prompt.index("\n\n## Context")]
-        assert section == roles.attribution(provider, bot_coauthor=True)
+        assert section == roles.attribution(credit(provider), bot_coauthor=True)
         assert section == (
             old_section(line, trailer).replace(MANAGED, MANAGED_WITH_BOT)
             + f"\n{BOT_RULE}\n  {BOT_TRAILER}"
@@ -123,7 +129,7 @@ def test_switched_off_the_section_is_the_one_from_before(
         custom_file.write_text("Do it my way.\n")
     prompt = system_prompt(agent(provider), None, roles.load("worker"), bot_coauthor=False)
 
-    assert roles.attribution(provider, bot_coauthor=False) == old_section(line, trailer)
+    assert roles.attribution(credit(provider), bot_coauthor=False) == old_section(line, trailer)
     section = prompt[prompt.index("## Attribution") : prompt.index("\n\n## Context")]
     assert section == old_section(line, trailer)
     assert config.BOT_NAME not in prompt and "noreply.github.com" not in prompt
@@ -136,6 +142,23 @@ def test_a_provider_without_a_credit_gets_no_rule(bot_coauthor: bool) -> None:
     assert config.BOT_NAME not in prompt
 
 
+@pytest.mark.parametrize("bot_coauthor", [True, False])
+def test_an_unregistered_provider_gets_no_rule(bot_coauthor: bool) -> None:
+    prompt = system_prompt(agent("gone"), None, roles.load("worker"), bot_coauthor=bot_coauthor)
+    assert "## Attribution" not in prompt and "Generated with" not in prompt
+    assert roles.attribution(None, bot_coauthor=bot_coauthor) == ""
+
+
+def test_a_plugin_with_a_credit_gets_its_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The rule follows the provider's `credit`, under any name."""
+    monkeypatch.setitem(providers.PROVIDERS, "my-cli", CodexStandIn())
+
+    prompt = system_prompt(agent("my-cli"), None, roles.load("worker"), bot_coauthor=False)
+
+    section = prompt[prompt.index("## Attribution") : prompt.index("\n\n## Context")]
+    assert section == old_section(CODEX_LINE, CODEX_TRAILER)
+
+
 def test_the_bot_trailer_comes_from_config(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.BOT_NAME == "spartito-dev[bot]"
     assert config.BOT_EMAIL == "355965793+spartito-dev[bot]@users.noreply.github.com"
@@ -143,7 +166,7 @@ def test_the_bot_trailer_comes_from_config(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr(config, "BOT_NAME", "my-app[bot]")
     monkeypatch.setattr(config, "BOT_EMAIL", "1+my-app[bot]@users.noreply.github.com")
-    section = roles.attribution("codex", bot_coauthor=True)
+    section = roles.attribution(credit("codex"), bot_coauthor=True)
     assert section.endswith(
         "\n  Co-Authored-By: my-app[bot] <1+my-app[bot]@users.noreply.github.com>"
     )
@@ -181,7 +204,7 @@ def test_the_orchestrator_session_gets_the_rule(
 
     role = roles.load("orchestrator").prompt
     assert role.startswith("Steer it my way.") == custom
-    assert prompt == f"{role}\n\n{roles.attribution('claude', bot_coauthor=True)}"
+    assert prompt == f"{role}\n\n{roles.attribution(credit('claude'), bot_coauthor=True)}"
     assert CLAUDE_LINE in lines(prompt)
     assert CLAUDE_TRAILER in lines(prompt)
     assert OVERRIDE in lines(prompt)
@@ -234,11 +257,12 @@ def test_the_setting_cannot_be_set_per_project(orch: Orchestrator, project: str)
 
 def turn_system_prompt(orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch) -> str:
     """The system prompt a real turn's provider receives, for a `codex` agent: the fake
-    provider stands in for Codex (in the runner too), the attribution rule stays Codex's."""
+    provider with Codex's credit stands in for Codex (in the runner too), so the attribution
+    rule stays Codex's."""
     monkeypatch.setenv(
-        "ORCH_PROVIDERS", "fake=fakeprovider:FakeProvider,codex=fakeprovider:FakeProvider"
+        "ORCH_PROVIDERS", "fake=fakeprovider:FakeProvider,codex=codexstandin:CodexStandIn"
     )
-    monkeypatch.setitem(providers.PROVIDERS, "codex", FakeProvider())
+    monkeypatch.setitem(providers.PROVIDERS, "codex", CodexStandIn())
     agent, run = orch.spawn(project, "hello", worktree=False, provider="codex")
     done, _ = orch.wait([agent.id], timeout=30)
     assert done, "agent did not finish in time"
@@ -250,7 +274,7 @@ def test_a_turn_gets_the_bot_trailer_by_default(
 ) -> None:
     prompt = turn_system_prompt(orch, project, monkeypatch)
 
-    assert f"\n\n{roles.attribution('codex', bot_coauthor=True)}\n\n## Context\n" in prompt
+    assert f"\n\n{roles.attribution(credit('codex'), bot_coauthor=True)}\n\n## Context\n" in prompt
     assert f"\n  {BOT_TRAILER}\n" in prompt and MANAGED_WITH_BOT in lines(prompt)
 
 

@@ -161,7 +161,9 @@ def system_prompt(
             f"You work on branch `{agent.branch}` in your own git worktree, "
             f"based on `{agent.base_ref}`. Never switch branches."
         )
-    credit = roles.attribution(agent.provider, bot_coauthor=bot_coauthor)
+    credit = roles.attribution(
+        getattr(providers.PROVIDERS.get(agent.provider), "credit", None), bot_coauthor=bot_coauthor
+    )
     prompt = f"{role.prompt}\n\n{credit}" if credit else role.prompt
     return f"{prompt}\n\n## Context\n" + "\n".join(context)
 
