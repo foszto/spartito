@@ -4,8 +4,8 @@ conversations.
 The orchestrator and the leads record one with the MCP tool `request_decision` (table
 `decisions`); it stays `open` until the owner answers it (dashboard, `spartito decide`), or the
 agent, the top-level orchestrator or the project's lead withdraws it (`withdraw_decision`),
-or the agent is removed. The answer reaches the agent as an ordinary user message
-(Orchestrator.send, sender None):
+or the agent is removed. Removing a project deletes its decisions, open and closed. The
+answer reaches the agent as an ordinary user message (Orchestrator.send, sender None):
 
     Decision #12 — <question>
     Answer: <answer>
@@ -199,6 +199,21 @@ def withdraw_all(store: Store, agent_id: str, note: str) -> None:
             " WHERE agent_id = ? AND state = ?",
             (WITHDRAWN, note, now(), agent_id, OPEN),
         )
+
+
+def delete_project(store: Store, project: str) -> list[int]:
+    """Delete every decision of the project (recorded with its agents' project), open or
+    closed, with their links to board items, in one transaction (the project is being
+    removed); their ids. Matched by project only: an agent id used again elsewhere keeps its
+    decisions there."""
+    with store.transaction() as conn:
+        rows = conn.execute("SELECT id FROM decisions WHERE project = ?", (project,)).fetchall()
+        ids = json.dumps([row["id"] for row in rows])
+        for table, key in (("board_blockers", "decision_id"), ("decisions", "id")):
+            conn.execute(
+                f"DELETE FROM {table} WHERE {key} IN (SELECT value FROM json_each(?))", (ids,)
+            )
+    return sorted(row["id"] for row in rows)
 
 
 def choose(decision: Decision, answer: Any) -> str:

@@ -21,7 +21,14 @@ from .core.access import Caller
 from .core.delivery import delivery_floor as _delivery_floor  # noqa: F401 (old import path)
 from .core.delivery import wait_for_agents as _wait  # noqa: F401 (old import path)
 from .replies import clip, structured_page
-from .service import ORCHESTRATOR_ID, Orchestrator, OrchestratorError, result_file, run_usage
+from .service import (
+    ORCHESTRATOR_ID,
+    ConfirmAgents,
+    Orchestrator,
+    OrchestratorError,
+    result_file,
+    run_usage,
+)
 
 MAX_WAIT_SECONDS = 1800
 WAIT_SECONDS = 120  # default wait_for_agents timeout
@@ -645,6 +652,18 @@ def update_board_item(
     return _board_line(orch.update_board_item(item_id, changes, _actor(access)))
 
 
+# No output schema and no titles: every agent pays for the listing in every turn.
+@server.tool(structured_output=False)
+def delete_board_item(item_id: int) -> dict[str, Any]:
+    """Delete a wrong or duplicate board item for good (finished work: state done).
+    Leads: own project only."""
+    orch = _orch()
+    access = Caller.from_env(orch)
+    access.project(orch.board_item(item_id).project)  # a lead stays within its project
+    item = orch.delete_board_item(item_id)
+    return {"deleted": item.id, "project": item.project, "title": _short(item.title, 100)}
+
+
 # A tuple and no output schema: the shortest listing (every orchestrator turn pays for it).
 @server.tool(structured_output=False)
 def dispatch_board(project: str, items: tuple[int, ...] = ()) -> dict[str, Any]:
@@ -670,6 +689,24 @@ def dispatch_board(project: str, items: tuple[int, ...] = ()) -> dict[str, Any]:
     return reply | ({"note": sent["note"]} if sent.get("note") else {})
 
 
+@server.tool(structured_output=False)
+def remove_project(project: str, confirm: tuple[str, ...] = ()) -> dict[str, Any]:
+    """Unregister a project, delete its board items and decisions; repo and branches stay.
+    Only once its agents are archived with safe work; `confirm`: their ids, as the first
+    reply names them, deletes them."""
+    orch = _orch()
+    if Caller.from_env(orch).scoped():
+        raise OrchestratorError("only the top-level orchestrator removes projects")
+    try:
+        return orch.remove_project(project, list(confirm) if confirm else None)
+    except ConfirmAgents as exc:
+        return {
+            "removed": None,
+            "confirm": f"{exc}. Call again with confirm={json.dumps(exc.agents)} to remove.",
+            "agents": exc.agents,
+        }
+
+
 def _without_titles(name: str) -> None:
     """Drop the titles pydantic writes into a tool's input schema (they repeat the names):
     the listing is sent in every turn. Validation uses the function's model, not this."""
@@ -680,6 +717,8 @@ def _without_titles(name: str) -> None:
 
 
 _without_titles("dispatch_board")
+_without_titles("remove_project")
+_without_titles("delete_board_item")
 
 
 @server.tool(structured_output=False)
@@ -702,7 +741,13 @@ _lean("ask_project_lead", "provider")
 
 # Tools only the top-level orchestrator (and the interactive session) sees: every other
 # agent pays for each tool's description in every turn, and these refuse other agents.
-ORCHESTRATOR_TOOLS = ("dispatch_board", "add_project", "ask_project_lead", "set_project_provider")
+ORCHESTRATOR_TOOLS = (
+    "dispatch_board",
+    "add_project",
+    "ask_project_lead",
+    "set_project_provider",
+    "remove_project",
+)
 
 
 def main() -> None:

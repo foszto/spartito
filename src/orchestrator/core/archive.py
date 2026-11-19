@@ -1,18 +1,20 @@
 """Archiving agents: by hand (one, or all whose work is safe), restoring, deleting an
-archived one, and the automatic archive check of idle agents (budget and stamp)."""
+archived one, the automatic archive check of idle agents (budget and stamp), and removing a
+project whose agents are all archived."""
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import shutil
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
-from .. import config, decisions, git, notify, roles, settings
-from ..errors import NeedsConfirmation, OrchestratorError
+from .. import board, config, decisions, git, notify, roles, settings
+from ..errors import ConfirmAgents, NeedsConfirmation, OrchestratorError
 from ..models import Agent, Project, RunStatus
 from ..store import ARCHIVE_AUTO, ARCHIVE_MANUAL, Store
 from .dispatch import LEAD_ROLE
@@ -40,6 +42,8 @@ class Facade(Protocol):
     def auto_archive(self) -> list[str]: ...
 
     def stop(self, agent_id: str) -> int: ...
+
+    def remove(self, agent_id: str, delete_branch: bool = False) -> None: ...
 
 
 # The automatic archive check runs from the listings (dashboard poll, `spartito ps`,
@@ -281,3 +285,93 @@ def remove(orch: Facade, agent_id: str, delete_branch: bool = False) -> None:
     decisions.withdraw_all(orch.store, agent.id, decisions.REMOVED)
     orch.store.delete_agent(agent.id)
     shutil.rmtree(config.agent_files_dir(agent.id), ignore_errors=True)  # a provider's files
+
+
+UNSAVED_BUDGET = 10.0  # seconds for the git checks of one archived agent
+
+
+def _again(name: str) -> str:
+    return f"then remove the project again ({config.CLI_NAME} project rm {name})"
+
+
+def remove_project(
+    orch: Facade, name: str, confirm: Collection[str] | None = None
+) -> dict[str, Any]:
+    """Unregister a project and leave nothing of it behind but what its deleted agents had
+    spent (spent_removed, for the cost history); its repository and branches are never
+    touched.
+
+    Refused while it has agents that are not archived, or archived agents with work that is
+    not safe (`unsaved`: commits not merged into the base branch, uncommitted changes); both
+    refusals name the commands that clear them. Archived agents need `confirm`: the ids of
+    exactly those agents, as ConfirmAgents named them (else, or when they changed since, it
+    is raised again): they are deleted as `remove` deletes one (record, conversation,
+    worktree), their branches kept. Then the project's board items (with their history,
+    sources and links) and all its decisions, open and closed, are deleted, and its settings,
+    its budget and its empty worktrees folder go with the registration. Not one transaction:
+    a failure on the way says what is done and that running it again completes it. Returns
+    {removed, agents, branches, board_items, decisions}: the agents deleted, the branches
+    kept, the item and decision ids deleted."""
+    if isinstance(confirm, (bool, str)):
+        raise OrchestratorError("confirm with the ids of the archived agents to delete")
+    project = orch.project(name)
+    cli = config.CLI_NAME
+    agents = orch.store.list_agents(project.name)
+    marks = orch.store.archived(project.name)
+    active = [agent.id for agent in agents if agent.id not in marks]
+    if active:
+        commands = "; ".join(f"{cli} archive {agent_id}" for agent_id in active)
+        raise OrchestratorError(
+            f"project '{project.name}' has agents that are not archived: {', '.join(active)}."
+            f" Archive them first ({commands}), {_again(project.name)}"
+        )
+    held = {}
+    for agent in agents:
+        if unsaved := orch.unsaved(agent, time.monotonic() + UNSAVED_BUDGET):
+            held[agent.id] = unsaved
+    if held:
+        reasons = "; ".join(f"{agent_id} has {why}" for agent_id, why in held.items())
+        commands = "; ".join(f"{cli} rm {agent_id}" for agent_id in held)
+        raise OrchestratorError(
+            f"archived agents of project '{project.name}' hold work that is not safe: {reasons}."
+            " Merge or commit it, or delete those agents by hand, which loses their"
+            f" uncommitted changes and keeps their branches ({commands}), {_again(project.name)}"
+        )
+    branches = sorted({agent.branch for agent in agents if agent.owns_worktree and agent.branch})
+    ids = [agent.id for agent in agents]
+    if ids and set(confirm or ()) != set(ids):
+        changed = " (they changed since the confirmation asked)" if confirm is not None else ""
+        raise ConfirmAgents(
+            f"project '{project.name}' has {len(ids)} archived"
+            f" agent{'' if len(ids) == 1 else 's'} ({', '.join(ids)}){changed}."
+            " Removing the project deletes them for good: records, conversations and"
+            " worktrees (their work is merged and committed)"
+            + (f". Their branches are kept: {', '.join(branches)}" if branches else ""),
+            ids,
+        )
+    removed: list[str] = []
+    try:
+        # An agent sharing a worktree first: its owner's removal is refused while it is there.
+        for agent in sorted(agents, key=lambda agent: agent.owns_worktree):
+            orch.remove(agent.id)
+            removed.append(agent.id)
+        items = board.delete_project(orch.store, project.name)
+        deleted = decisions.delete_project(orch.store, project.name)
+        orch.store.delete_project(project.name)  # with its settings and budget
+    except Exception as exc:
+        done = f"agents deleted so far: {', '.join(removed)}" if removed else "no agent deleted"
+        reason = exc.args[0] if isinstance(exc, OrchestratorError) and exc.args else repr(exc)
+        raise OrchestratorError(
+            f"removing project '{project.name}' stopped part way ({done}): {reason}. The project"
+            f" is still registered: running the removal again completes it"
+            f" ({cli} project rm {project.name})"
+        ) from exc
+    with contextlib.suppress(OSError):  # the folder of its worktrees, if nothing is left in it
+        config.worktrees_dir(project.name).rmdir()
+    return {
+        "removed": project.name,
+        "agents": removed,
+        "branches": branches,
+        "board_items": items,
+        "decisions": deleted,
+    }

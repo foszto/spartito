@@ -38,6 +38,7 @@ from .core.setup import next_message as next_message  # the move's words, for th
 from .core.views import context_view as context_view  # old import path
 from .core.views import result_file as result_file  # old import path
 from .core.views import run_usage as run_usage  # old import path
+from .errors import ConfirmAgents as ConfirmAgents  # for the interfaces
 from .errors import NeedsConfirmation as NeedsConfirmation  # old import path
 from .errors import OrchestratorError
 from .models import Agent, Project, Run
@@ -121,13 +122,7 @@ class Orchestrator:
             raise OrchestratorError(f"unknown project '{name}' (registered: {known})")
         return project
 
-    def remove_project(self, name: str) -> None:
-        self.project(name)
-        if self.store.list_agents(name):
-            raise OrchestratorError(
-                f"project '{name}' still has agents (archived ones too); archive and delete them first"
-            )
-        self.store.delete_project(name)
+    remove_project = archiving.remove_project  # with its archived agents and its board
 
     # -- agents -----------------------------------------------------------
 
@@ -258,7 +253,8 @@ class Orchestrator:
 
     def board_items(self, project: str | None = None, state: str | None = None) -> list[board.Item]:
         """A project's items (None: every registered project's), optionally of one state.
-        A removed project's items are kept: registering it again brings them back."""
+        Removing a project deletes its items; those of a project removed by an older version
+        are kept but not listed (registering it again brings them back)."""
         try:
             items = board.listing(self.store, project and self.project(project).name, state)
         except ValueError as exc:
@@ -312,6 +308,13 @@ class Orchestrator:
     ) -> board.Item:
         try:
             return board.move(self.store, item_id, direction, actor or board.OWNER)
+        except ValueError as exc:
+            raise OrchestratorError(str(exc)) from None
+
+    def delete_board_item(self, item_id: int) -> board.Item:
+        """Delete an item for good, with its history and links; the item as it was."""
+        try:
+            return board.delete(self.store, item_id)
         except ValueError as exc:
             raise OrchestratorError(str(exc)) from None
 

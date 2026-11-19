@@ -25,7 +25,8 @@ of the board (items, states, dispatch of a project's `ready` items) are in
 Four columns, one per state. The filter in the header switches between all projects and one;
 **Show done** shows the `done` cards (remembered in the browser); **Add item** adds one. A
 click on a card, or Enter, opens its detail: the item's fields, and below them its live
-state, source, blockers, history and runs. The board button in a project's row still opens
+state, source, blockers, history and runs; **Delete** there deletes the item for good, after
+a confirmation. The board button in a project's row still opens
 that project's own board dialog, unchanged.
 
 **Moving items.** An item moves only within its own project:
@@ -99,12 +100,14 @@ spartito board dispatch 12 15 21         # those items (idea or ready, any proje
 spartito board dispatch -p my-app        # the project's ready items
 spartito board show 12                   # an item with its source, blockers, history and runs
 spartito board link 12 7                 # decision 7 blocks item 12 (--remove: unlink)
+spartito board rm 12                     # delete item 12 for good, with its history and links
 ```
 
 `spartito board --live` shows the branch as `+3 -1 dirty`, `even`, `merged`, `no branch` or
 `error`.
 
 MCP tools: `list_board(project, state, live)` (`live` adds agent and git status),
+`delete_board_item(item_id)` (a lead: items of its own project only),
 `dispatch_board(project, items)` (named items, default all `ready`; the top-level orchestrator
 only), `request_decision(question, options, recommendation, item)` (`item`: the board item
 the decision blocks, linked at once).
@@ -123,6 +126,7 @@ HTTP API (the dashboard's; writes need the page's own origin and a JSON body):
 | `GET /api/board/<id>/detail` | the item with its history, runs, live state, blockers and source |
 | `POST /api/board/from-message` | `{agent_id, event_id, title?, description?, state?, project?}`: a new item from a message |
 | `POST /api/board/<id>/blockers` | `{decision_id, linked}`: link or unlink a decision; the item's blockers |
+| `POST /api/board/<id>/delete` | delete the item for good, with its history, source and links: `{deleted: item}` |
 
 **Database.** The batch adds four tables: `board_history`, `board_git` (the git cache),
 `board_sources` and `board_blockers`. They are additive: older code keeps working on the same

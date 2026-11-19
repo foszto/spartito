@@ -21,20 +21,23 @@ MASTER_LISTING_CHARS = 15342
 # What the orchestrator (and the interactive session) sees beyond a lead, as listed:
 # dispatch_board (355), and since the provider choice add_project (634), ask_project_lead
 # (889) and set_project_provider (317); 1727 of them are descriptions and input schemas.
-ORCHESTRATOR_EXTRA_CHARS = 355 + 634 + 889 + 317
-ORCHESTRATOR_TEXT_CHARS = 1730
+# Then remove_project (428), 364 of them its description and input schema.
+ORCHESTRATOR_EXTRA_CHARS = 355 + 634 + 889 + 317 + 428
+ORCHESTRATOR_TEXT_CHARS = 1730 + 364
 # What every agent, a lead too, pays beyond master's listing: per tool, the new optional
-# parameters (without title and default) and their words in the description.
+# parameters (without title and default) and their words in the description; a new tool
+# whole, without output schema and titles.
 LEAD_EXTRA_CHARS: dict[str, int] = {}
 LEAD_EXTRA_CHARS["list_board"] = 64  # P3: `live`
 # 140 until the capabilities (6 left), raised by what they need beyond that (164 - 6), and
-# by what withdrawing others' decisions needs (11).
-LEAD_EXTRA_BUDGET = 298 + 11
+# by what withdrawing others' decisions (11) and deleting a board item (258) need.
+LEAD_EXTRA_BUDGET = 298 + 11 + 258
 LEAD_EXTRA_CHARS["request_decision"] = 64  # P5: `item`
 LEAD_EXTRA_CHARS["spawn_agent"] = 6  # provider choice: the role's default
 LEAD_EXTRA_CHARS["spawn_agent"] += 94  # `capabilities`, and how to add and drop one
 LEAD_EXTRA_CHARS["send_message"] = 70  # `capabilities`, and that it stays
 LEAD_EXTRA_CHARS["withdraw_decision"] = 11  # whose decisions a lead withdraws
+LEAD_EXTRA_CHARS["delete_board_item"] = 258  # the whole tool, as listed
 # Master's add_project and ask_project_lead as listed (560 + 712): only the orchestrator gets
 # them since the provider choice (they always refused other agents). Taken off master's
 # listing, not off what is new: the budget above still limits what every agent pays.
@@ -125,8 +128,8 @@ def test_the_tool_listing_costs_a_lead_only_its_budget(
         assert removed == []
         only = [tool for tool in seen if tool["name"] in mcp_server.ORCHESTRATOR_TOOLS]
         text = sum(len(t["description"]) + len(json.dumps(t["inputSchema"])) for t in only)
-        board_tool = next(tool for tool in only if tool["name"] == "dispatch_board")
-        assert text <= ORCHESTRATOR_TEXT_CHARS and "outputSchema" not in board_tool
+        listed = [tool for tool in only if tool["name"] in ("dispatch_board", "remove_project")]
+        assert text <= ORCHESTRATOR_TEXT_CHARS and all("outputSchema" not in t for t in listed)
 
 
 def test_the_interactive_session_sees_what_the_orchestrator_sees(

@@ -49,6 +49,9 @@ the work.
 - Ideas and tasks you collect go on the project's board (`add_board_item`), not only into the
   conversation; at the start of a session read the boards (`list_board`) to pick up from there.
 - When the user asks to start board items, `dispatch_board` sends them to the project's lead.
+- `delete_board_item` only for an item that is wrong or a duplicate; finished work is `done`.
+- `remove_project` only when the user asks. Its first reply names the archived agents it would
+  delete: show that to the user, and `confirm` (those ids) only after they agree.
 
 ## Reporting
 Tell the user what was started (agent ids), what finished, what failed and why, and what

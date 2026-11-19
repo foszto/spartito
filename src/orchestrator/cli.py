@@ -22,6 +22,7 @@ from .providers import McpServer, kit, locate
 from .providers.claude import loadout_flags, tool_search
 from .service import (
     ORCHESTRATOR_ID,
+    ConfirmAgents,
     NeedsConfirmation,
     Orchestrator,
     OrchestratorError,
@@ -646,12 +647,39 @@ def project_list() -> None:
 
 
 @project_app.command("rm")
-def project_rm(name: str) -> None:
-    """Unregister a project (it must have no agents). The repository is not touched."""
+def project_rm(
+    name: str,
+    yes: Annotated[
+        bool, typer.Option("--yes", "-y", help="Delete its archived agents without asking.")
+    ] = False,
+) -> None:
+    """Unregister a project with its settings, budget, board items and decisions. The
+    repository and its branches are not touched.
+
+    Agents that are not archived must be archived first (`{cli} archive`), and archived ones
+    with work that is not merged or committed deleted by hand (`{cli} rm`); the refusal names
+    the commands. The other archived agents are deleted with the project, as `{cli} rm`
+    deletes one (their branches are kept), after a confirmation.
+    """
+    o = orch()
     try:
-        orch().remove_project(name)
+        try:
+            result = o.remove_project(name)
+        except ConfirmAgents as exc:
+            if not yes and not typer.confirm(f"{exc}. Remove anyway?"):
+                raise typer.Exit(1) from None
+            result = o.remove_project(name, exc.agents)  # refused if they changed meanwhile
     except OrchestratorError as exc:
         raise fail(exc) from None
+    for agent_id in result["agents"]:
+        typer.echo(f"deleted {agent_id}")
+    if result["branches"]:
+        typer.echo(f"branches kept: {', '.join(result['branches'])}")
+    items, asked = len(result["board_items"]), len(result["decisions"])
+    extra = [f"{items} board item{'s' * (items != 1)}"] if items else []
+    extra += [f"{asked} decision{'s' * (asked != 1)}"] if asked else []
+    deleted = f" ({' and '.join(extra)} deleted)" if extra else ""
+    typer.echo(f"removed {result['removed']}{deleted}")
 
 
 # -- settings ---------------------------------------------------------------
@@ -1053,6 +1081,20 @@ def board_actor(entry: dict) -> str:
     else:
         who = f"{kind}: {name}"
     return who + (f" (run {entry['run_id']})" if entry["run_id"] else "")
+
+
+@board_app.command("rm")
+def board_rm(
+    item_id: int,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Delete without asking.")] = False,
+) -> None:
+    """Delete an item for good, with its history and its decision links."""
+    o = orch()
+    item = board_fail(lambda: o.board_item(item_id))
+    if not yes and not typer.confirm(f"Delete #{item.id} {item.title!r} from {item.project}?"):
+        raise typer.Exit(1)
+    board_fail(lambda: o.delete_board_item(item_id))
+    typer.echo(f"#{item.id} deleted from {item.project}")
 
 
 @board_app.command("show")

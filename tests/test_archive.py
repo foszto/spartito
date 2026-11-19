@@ -4,6 +4,7 @@ deleted for good only from the archive, and archived automatically when idle and
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
 import sqlite3
@@ -18,7 +19,7 @@ import pytest
 from starlette.testclient import TestClient
 from typer.testing import CliRunner
 
-from orchestrator import cli, config, git, mcp_server, notify
+from orchestrator import board, cli, config, git, mcp_server, notify
 from orchestrator.core import archive as archiving
 from orchestrator.models import COMPACT, Agent, RunStatus, Usage
 from orchestrator.service import NeedsConfirmation, Orchestrator, OrchestratorError
@@ -798,3 +799,297 @@ def test_the_scripts_clean_up_their_agents(
 
     assert orch.store.list_agents(project) == []
     assert not Path(owner.cwd).exists() and not git.branch_exists(repo, owner.branch)
+
+
+# -- removing a project with its archived agents -------------------------------
+
+
+@pytest.fixture
+def other_project(orch: Orchestrator, tmp_path: Path) -> str:
+    """A second project (a second repository)."""
+    second = tmp_path / "second"
+    second.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(second)], check=True)
+    run_git(second, "commit", "-q", "--allow-empty", "-m", "init")
+    return orch.add_project(str(second), "other", "fake").name
+
+
+def board_rows(orch: Orchestrator, item_ids: list[int]) -> int:
+    """The rows every board table holds of these items."""
+    with orch.store.connection() as conn:
+        return sum(
+            conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {key} IN (SELECT value FROM json_each(?))",
+                (json.dumps(item_ids),),
+            ).fetchone()[0]
+            for table, key in [("board_items", "id")]
+            + [(table, "item_id") for table in board.ITEM_TABLES]
+        )
+
+
+def decision_rows(orch: Orchestrator, project: str) -> list[int]:
+    """The ids of the project's decisions, and of their links."""
+    with orch.store.connection() as conn:
+        rows = conn.execute("SELECT id FROM decisions WHERE project = ?", (project,)).fetchall()
+        links = conn.execute(
+            "SELECT decision_id FROM board_blockers WHERE decision_id IN"
+            " (SELECT value FROM json_each(?))",
+            (json.dumps([row["id"] for row in rows]),),
+        ).fetchall()
+    return [row[0] for row in rows] + [row[0] for row in links]
+
+
+def test_agents_that_are_not_archived_are_named_with_the_commands_to_run(
+    orch: Orchestrator, project: str
+) -> None:
+    lead_id = orch.create_agent(project, name="lead", role="lead", worktree=False).id
+    done = orch.create_agent(project, name="done", worktree=False).id
+    orch.archive(done)
+    item = orch.add_board_item(project, "kept")
+
+    cli_name = config.CLI_NAME
+    for confirm in (None, [done]):
+        with pytest.raises(OrchestratorError) as refused:
+            orch.remove_project(project, confirm)
+        assert str(refused.value) == (
+            f"project '{project}' has agents that are not archived: {lead_id}. Archive them"
+            f" first ({cli_name} archive {lead_id}), then remove the project again"
+            f" ({cli_name} project rm {project})"
+        )
+    assert orch.store.get_project(project) and orch.store.get_agent(done)
+    assert orch.board_items(project) == [item]
+
+
+def test_archived_agents_with_work_that_is_not_safe_are_refused_even_with_confirm(
+    orch: Orchestrator, project: str, repo: Path
+) -> None:
+    dirty = with_worktree(orch, project, repo, name="dirty")
+    ahead = with_worktree(orch, project, repo, name="ahead")
+    (Path(dirty.cwd) / "draft.txt").write_text("x")
+    commit(ahead.cwd)
+    for agent in (dirty, ahead):
+        orch.archive(agent.id, confirm=True)
+
+    with pytest.raises(OrchestratorError) as refused:
+        orch.remove_project(project, [dirty.id, ahead.id])
+    text = str(refused.value)
+    assert f"{dirty.id} has 1 uncommitted change in {dirty.cwd}" in text
+    assert f"{ahead.id} has 1 commit not merged into main" in text
+    cli_name = config.CLI_NAME
+    commands = "; ".join(f"{cli_name} rm {a.id}" for a in orch.store.list_agents(project))
+    assert f"({commands})" in text
+    assert text.endswith(f"then remove the project again ({cli_name} project rm {project})")
+    assert orch.store.get_agent(dirty.id) and Path(dirty.cwd, "draft.txt").exists()
+
+    for agent in (dirty, ahead):  # what the message says to run
+        orch.remove(agent.id)
+    assert orch.remove_project(project)["agents"] == []
+    assert git.branch_exists(repo, ahead.branch)
+
+
+def test_removing_a_project_leaves_nothing_of_it_behind(
+    orch: Orchestrator, project: str, repo: Path, other_project: str
+) -> None:
+    worker = with_worktree(orch, project, repo, name="worker")
+    sharer = orch.create_agent(project, name="sharer", share_with=worker.id)
+    plain = orch.create_agent(project, name="plain", worktree=False)
+    gone = orch.create_agent(project, name="gone", worktree=False)
+    asked = orch.request_decision(plain.id, "which way?")
+    orch.withdraw_decision(orch.request_decision(plain.id, "old").id, plain.id)
+    orch.request_decision(gone.id, "left by an agent deleted before")
+    orch.archive(gone.id)
+    orch.remove(gone.id)
+    items = [orch.add_board_item(project, "a").id, orch.add_board_item(project, "b").id]
+    orch.link_decision(items[0], asked.id)
+    orch.update_board_item(items[1], {"state": "ready"})
+    orch.store.set_settings(project, {"archive_after_hours": 5})
+    orch.set_budget(10.0, project)
+    theirs = orch.create_agent(other_project, name="theirs", worktree=False)
+    kept_decision = orch.request_decision(theirs.id, "and here?")
+    kept_item = orch.add_board_item(other_project, "c")
+    orch.link_decision(kept_item.id, kept_decision.id)
+    orch.store.set_settings(other_project, {"archive_after_hours": 7})
+    orch.set_budget(20.0, other_project)
+    # A closed decision in the other project, of an agent deleted long ago whose id is in
+    # use again here.
+    with orch.store.connection() as conn:
+        collides = conn.execute(
+            "INSERT INTO decisions (agent_id, project, question, state, created_at)"
+            " VALUES (?, ?, 'same id, other project', 'withdrawn', '2000')",
+            (plain.id, other_project),
+        ).lastrowid
+    for agent in (worker, sharer, plain, theirs):  # a provider's own files (opencode's)
+        config.agent_files_dir(agent.id).mkdir(parents=True)
+        (config.agent_files_dir(agent.id) / "instructions.md").write_text("role")
+    for agent in (worker, sharer, plain):
+        orch.archive(agent.id)
+    before = decision_rows(orch, project)
+    assert len(before) == 4  # three decisions and one link
+
+    with pytest.raises(NeedsConfirmation) as asking:
+        orch.remove_project(project)
+    named = ", ".join(a.id for a in orch.store.list_agents(project))
+    assert f"3 archived agents ({named})" in str(asking.value)
+    assert f"Their branches are kept: {worker.branch}" in str(asking.value)
+    assert orch.store.get_agent(worker.id) and Path(worker.cwd).exists()
+
+    assert sorted(asking.value.agents) == sorted([worker.id, sharer.id, plain.id])
+    result = orch.remove_project(project, asking.value.agents)
+
+    assert result["removed"] == project and result["branches"] == [worker.branch]
+    assert result["agents"][-1] == worker.id  # the owner after the agent sharing its worktree
+    assert set(result["agents"]) == {worker.id, sharer.id, plain.id}
+    assert result["board_items"] == items and result["decisions"] == sorted(before[:3])
+    assert orch.store.get_project(project) is None and orch.store.list_agents(project) == []
+    assert board_rows(orch, items) == 0
+    assert decision_rows(orch, project) == []
+    assert orch.store.get_settings(project) == {}
+    assert [b["scope"] for b in orch.store.budgets()] == [other_project]
+    assert not config.worktrees_dir(project).exists()
+    assert not any(config.agent_files_dir(a.id).exists() for a in (worker, sharer, plain))
+    assert git.branch_exists(repo, worker.branch)  # the repository is not touched
+    # The other project keeps all of its own.
+    assert (
+        orch.board_items() == [kept_item] and board_rows(orch, [kept_item.id]) == 4
+    )  # item, add, link, blocker
+    assert [d["id"] for d in orch.list_decisions()] == [kept_decision.id]
+    assert [d["id"] for d in orch.list_decisions(closed=True)] == [kept_decision.id, collides]
+    assert orch.store.get_settings(other_project) == {"archive_after_hours": 7}
+    assert (config.agent_files_dir(theirs.id) / "instructions.md").is_file()
+
+
+def test_a_project_registered_again_under_its_name_counts_the_old_spend_in_total_only(
+    orch: Orchestrator, project: str, repo: Path
+) -> None:
+    gone = orch.create_agent(project, name="gone", worktree=False)
+    spent_turn(orch, gone.id, Usage(1, 2, 3, 4, cost_usd=0.5), 0.5)
+    orch.archive(gone.id)
+    orch.remove_project(project, [gone.id])
+    assert spent_rows(orch) == [(gone.id, project, 0.5)]  # kept for the cost history
+
+    orch.add_project(str(repo), project, "fake")
+    orch.set_budget(10.0, project, period="total")
+    (total,) = orch.budget_list()
+    assert total["spent_usd"] == 0.5  # the name's removed agents still count
+    orch.set_budget(None, project, period="month")
+    (month,) = orch.budget_list()
+    assert month["spent_usd"] == 0  # a deleted agent's spend has no date
+
+
+def test_mcp_removes_a_project_for_the_orchestrator_only(
+    orch: Orchestrator, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lead_id = orch.create_agent(project, name="lead", role="lead", worktree=False).id
+    orch.add_board_item(project, "x")
+    monkeypatch.setenv("ORCH_AGENT_ID", lead_id)
+    with pytest.raises(OrchestratorError, match="only the top-level orchestrator removes"):
+        mcp_server.remove_project(project, confirm=(lead_id,))
+
+    monkeypatch.setenv("ORCH_AGENT_ID", orch.orchestrator().id)
+    with pytest.raises(OrchestratorError, match=f"not archived: {lead_id}"):
+        mcp_server.remove_project(project)
+    orch.archive(lead_id)
+    asked = mcp_server.remove_project(project)
+    assert asked["removed"] is None and asked["agents"] == [lead_id]
+    assert asked["confirm"].endswith(f'Call again with confirm=["{lead_id}"] to remove.')
+    assert f"1 archived agent ({lead_id})" in asked["confirm"]
+    assert orch.store.get_project(project)
+
+    done = mcp_server.remove_project(project, confirm=tuple(asked["agents"]))
+    assert done["removed"] == project and done["agents"] == [lead_id]
+    assert orch.store.get_project(project) is None and orch.board_items() == []
+    with pytest.raises(OrchestratorError, match=f"unknown project '{project}'"):
+        mcp_server.remove_project(project)
+
+
+def test_cli_and_web_remove_a_project_with_its_archived_agents_after_asking(
+    orch: Orchestrator, project: str, other_project: str, client: TestClient
+) -> None:
+    runner = CliRunner()
+    for name in (project, other_project):
+        orch.archive(orch.create_agent(name, name="old", worktree=False).id)
+        orch.add_board_item(name, "x")
+
+    declined = runner.invoke(cli.app, ["project", "rm", project], input="n\n")
+    assert declined.exit_code == 1 and "1 archived agent" in declined.output
+    assert orch.store.get_project(project)
+    removed = runner.invoke(cli.app, ["project", "rm", project], input="y\n")
+    assert removed.exit_code == 0, removed.output
+    assert f"removed {project} (1 board item deleted)" in removed.output
+
+    url = f"/api/projects/{other_project}/remove"
+    asked = client.post(url, json={}, headers=ORIGIN).json()
+    assert "1 archived agent" in asked["confirm"] and orch.store.get_project(other_project)
+    blind = client.post(url, json={"confirm": True}, headers=ORIGIN)
+    assert blind.status_code == 400 and "list of agent ids" in blind.json()["error"]
+    done = client.post(url, json={"confirm": asked["agents"]}, headers=ORIGIN).json()
+    assert done["removed"] == other_project and len(done["board_items"]) == 1
+    assert orch.store.list_projects() == []
+
+
+def test_a_confirmation_holds_only_for_the_agents_it_named(
+    orch: Orchestrator, project: str, client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = orch.create_agent(project, name="first", worktree=False).id
+    orch.archive(first)
+    item = orch.add_board_item(project, "x")
+    with pytest.raises(NeedsConfirmation) as asking:
+        orch.remove_project(project)
+    assert asking.value.agents == [first]
+    asked = client.post(f"/api/projects/{project}/remove", json={}, headers=ORIGIN).json()
+    monkeypatch.setenv("ORCH_AGENT_ID", orch.orchestrator().id)
+    told = mcp_server.remove_project(project)
+    later = orch.create_agent(project, name="later", worktree=False).id
+    orch.archive(later)  # started and archived (by hand, or automatically) after the question
+
+    with pytest.raises(NeedsConfirmation, match="changed since the confirmation asked") as again:
+        orch.remove_project(project, [first])
+    stale = client.post(
+        f"/api/projects/{project}/remove", json={"confirm": asked["agents"]}, headers=ORIGIN
+    ).json()
+    assert "changed since" in stale["confirm"] and sorted(stale["agents"]) == sorted([first, later])
+    assert "changed since" in mcp_server.remove_project(project, tuple(told["agents"]))["confirm"]
+    for blind in (True, "yes"):
+        with pytest.raises(OrchestratorError, match="ids of the archived agents"):
+            orch.remove_project(project, blind)
+    assert orch.store.get_agent(first) and orch.board_items(project) == [item]
+
+    assert orch.remove_project(project, again.value.agents)["removed"] == project
+
+
+def test_a_removal_that_fails_part_way_says_so_and_completes_when_run_again(
+    orch: Orchestrator, project: str, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agents = [with_worktree(orch, project, repo, name=f"w{n}") for n in range(2)]
+    for agent in agents:
+        orch.archive(agent.id)
+    item = orch.add_board_item(project, "x")
+    real, calls = git.remove_worktree, []
+
+    def second_fails(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 2:
+            raise git.GitError("fatal: simulated failure")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(git, "remove_worktree", second_fails)
+    with pytest.raises(NeedsConfirmation) as asking:
+        orch.remove_project(project)
+    with pytest.raises(OrchestratorError) as failed:
+        orch.remove_project(project, asking.value.agents)
+
+    (first, second) = [orch.store.get_agent(a.id) for a in agents]
+    gone, left = (agents[0], agents[1]) if first is None else (agents[1], agents[0])
+    assert {first is None, second is None} == {True, False}
+    assert str(failed.value) == (
+        f"removing project '{project}' stopped part way (agents deleted so far: {gone.id}):"
+        " fatal: simulated failure. The project is still registered: running the removal"
+        f" again completes it ({config.CLI_NAME} project rm {project})"
+    )
+    assert orch.store.get_project(project) and orch.board_items(project) == [item]
+
+    with pytest.raises(NeedsConfirmation) as again:
+        orch.remove_project(project)
+    assert again.value.agents == [left.id]
+    assert orch.remove_project(project, again.value.agents)["agents"] == [left.id]
+    assert orch.store.get_project(project) is None and orch.board_items() == []

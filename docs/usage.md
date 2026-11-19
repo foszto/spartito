@@ -59,7 +59,7 @@ listed by `spartito ps`; the top-level orchestrator's id is `orchestrator`.
 spartito project add [PATH] [--name NAME] [--provider claude|codex]
 spartito project provider PROJECT PROVIDER
 spartito project list
-spartito project rm NAME
+spartito project rm NAME [--yes|-y]
 ```
 
 - `add` registers the git repository containing `PATH` (default: the current directory). The
@@ -74,8 +74,23 @@ spartito project rm NAME
   Existing agents keep theirs, and a note lists those on another provider;
   `spartito model AGENT --provider` moves one
   ([providers.md](providers.md#a-projects-default-provider)).
-- `rm` unregisters a project that has no agents (archived ones included). The repository is not
-  touched.
+- `rm` unregisters a project: its settings, its budget, its board items (with their history
+  and links) and all its decisions, open and closed, are deleted. The repository and its
+  branches are not touched. It is refused while the project has agents that are not archived
+  (`spartito archive` them), or archived agents with commits not merged into the base branch
+  or uncommitted changes (merge or commit the work, or delete them with `spartito rm`); the
+  refusal names the exact commands. The remaining archived agents are deleted with the project
+  as `spartito rm` deletes one, with their worktrees but not their branches, after a
+  confirmation that names them (`--yes` skips it). The confirmation holds for exactly the
+  agents it named: if another one was archived meanwhile, it asks again. The dashboard's
+  **Remove** asks the same way; the orchestrator does it with the MCP tool
+  `remove_project(project, confirm)`, `confirm` being the agent ids its first reply names. The
+  removal is not one transaction: if it stops part way (a git error while deleting an agent),
+  the message says what was deleted, the project stays registered, and running `rm` again
+  completes it. Only what the deleted agents had spent is kept, for the cost history: it stays
+  in the total and in `spartito cost`, under the project's name. A project registered again
+  under the same name counts it in a budget of period `total`, not in a `day` or `month`
+  budget (that spend has no date).
 
 ### Providers
 
@@ -367,8 +382,9 @@ spartito rm AGENT [--delete-branch]
 - `archive --safe` archives every idle agent whose work is safe, in one project or all.
 - `restore` brings an agent back; so does any message to it.
 - `rm` deletes an archived agent for good, with its worktree (uncommitted work is lost);
-  `--delete-branch` deletes its branch too. Only archived agents can be deleted, and only from
-  the command line or the dashboard, never by an agent.
+  `--delete-branch` deletes its branch too. Only archived agents can be deleted, from the command
+  line or the dashboard; an agent never deletes one, except the orchestrator removing a whole
+  project (`remove_project` with `confirm`).
 
 Safe work and automatic archiving: [agents.md](agents.md#archiving).
 
@@ -379,6 +395,7 @@ spartito board [-p PROJECT] [--state|-s STATE] [--live]
 spartito board add TITLE -p PROJECT [--description|-d TEXT] [--state|-s idea]
 spartito board edit ITEM_ID [--title T] [-d TEXT] [-s STATE] [--agent AGENT] [--branch BRANCH]
 spartito board move ITEM_ID up|down
+spartito board rm ITEM_ID [--yes|-y]
 spartito board dispatch -p PROJECT
 spartito board dispatch ITEM_ID...
 spartito board show ITEM_ID
@@ -389,9 +406,10 @@ spartito decide DECISION_ID ANSWER
 ```
 
 States: `idea`, `ready`, `in_progress`, `done`. `spartito board` without `-p` lists every
-project's board. In `board edit`, `""` clears `--agent` or `--branch`. `decide` takes an
-option number or free text. `board dispatch` prints a `note: …` line when it created a
-project's lead on a fallback provider
+project's board. In `board edit`, `""` clears `--agent` or `--branch`. `board rm` deletes an
+item for good, with its history and decision links, after a question (`--yes` skips it).
+`decide` takes an option number or free text. `board dispatch` prints a `note: …` line when it
+created a project's lead on a fallback provider
 ([providers.md](providers.md#how-a-provider-is-chosen)). `--live`, `show`, `link` and
 dispatching named items:
 [board.md](board.md#command-line-mcp-and-api). See [agents.md](agents.md#task-board) and
