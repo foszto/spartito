@@ -180,6 +180,9 @@ the answer, and close a decision that has become moot with `withdraw_decision(de
 (only their own, only while open). The interactive `spartito chat` session asks you directly
 instead.
 
+A refused tool call (here: someone else's decision, one already closed) returns an error with
+the reason, `Error executing tool withdraw_decision: you have no decision #12`.
+
 Open decisions from all projects are listed in one place: the dashboard's question-mark button
 (with their number) opens the **Decisions** window (project, agent, question, options,
 recommendation, age); on the command line:

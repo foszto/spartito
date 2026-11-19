@@ -7,13 +7,18 @@ their notifications run on macOS only.
 
 from __future__ import annotations
 
+import json
+import logging
 import sqlite3
 import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
 
+import anyio
 import pytest
+from mcp import Client
+from mcp.types import CallToolResult
 from starlette.testclient import TestClient
 from test_autocompact import compaction_runs, set_threshold
 from test_notifications import lead, notifications, running, settle, until
@@ -21,6 +26,7 @@ from test_store import OLD_RUN_COLUMNS, OLD_SCHEMA, columns
 from typer.testing import CliRunner
 
 from orchestrator import cli, config, decisions, desktop, mcp_server, settings
+from orchestrator.core.access import Caller
 from orchestrator.models import RunStatus
 from orchestrator.service import ORCHESTRATOR_ID, Orchestrator, OrchestratorError
 from orchestrator.store import MESSAGE, NOTIFICATION, Store
@@ -175,6 +181,113 @@ def test_an_agent_withdraws_only_its_own_open_decisions(
     assert [item["id"] for item in orch.list_decisions()] == [second]
     closed = {item["id"]: item for item in orch.list_decisions(closed=True)}
     assert closed[first]["state"] == decisions.WITHDRAWN and closed[first]["closed_at"]
+
+
+def worker(orch: Orchestrator, project: str, name: str = "worker") -> str:
+    return orch.create_agent(project, name=name, role="worker", worktree=False).id
+
+
+# -- tool errors through the MCP layer -----------------------------------------
+
+
+def call(as_agent: Callable, agent_id: str | None, tool: str, arguments: dict) -> CallToolResult:
+    """Call a tool as an MCP client does (in-process), as `agent_id`."""
+    as_agent(agent_id)
+
+    async def run() -> CallToolResult:
+        async with Client(mcp_server.server) as client:
+            return await client.call_tool(tool, arguments)
+
+    try:
+        return anyio.run(run)
+    finally:
+        as_agent(None)
+
+
+def error_text(result: CallToolResult) -> str:
+    assert result.is_error
+    return " ".join(part.text for part in result.content)
+
+
+def test_a_refused_withdrawal_reaches_the_agent_with_its_reason(
+    orch: Orchestrator, project: str, as_agent: Callable
+) -> None:
+    mine, other = lead(orch, project, "mine"), worker(orch, project, "other")
+    theirs = orch.request_decision(mine, "Which database?").id
+    own = orch.request_decision(other, "Which port?").id
+
+    refused = call(as_agent, other, "withdraw_decision", {"decision_id": theirs})
+    assert error_text(refused) == (
+        f"Error executing tool withdraw_decision: you have no decision #{theirs}"
+    )
+    assert not call(as_agent, other, "withdraw_decision", {"decision_id": own}).is_error
+    again = call(as_agent, other, "withdraw_decision", {"decision_id": own})
+    assert f"decision #{own} is already withdrawn" in error_text(again)
+    assert "decision_id" in error_text(call(as_agent, other, "withdraw_decision", {}))
+
+
+def test_request_decision_through_mcp_records_for_the_orchestrator_and_explains_a_refusal(
+    orch: Orchestrator, as_agent: Callable
+) -> None:
+    arguments = {"question": "Go ahead?", "options": ["yes", "no"], "recommendation": "yes"}
+
+    unknown = call(as_agent, ORCHESTRATOR_ID, "request_decision", arguments)
+    assert error_text(unknown) == (
+        f"Error executing tool request_decision: unknown agent '{ORCHESTRATOR_ID}'"
+    )
+    chat = error_text(call(as_agent, None, "request_decision", arguments))
+    assert chat.startswith("Error executing tool request_decision: this session talks to")
+    assert "ask them here" in chat and "headless" in chat
+
+    orch.orchestrator()
+    recorded = call(as_agent, ORCHESTRATOR_ID, "request_decision", arguments)
+    assert not recorded.is_error
+    (item,) = orch.list_decisions()
+    assert item["agent_id"] == ORCHESTRATOR_ID and item["options"] == ["yes", "no"]
+
+
+@pytest.mark.parametrize(
+    ("raised", "text"),
+    [
+        (OrchestratorError("not here"), "Error executing tool list_projects: not here"),
+        (ValueError("bad value"), "Error executing tool list_projects: bad value"),
+        (OrchestratorError(), "Error executing tool list_projects: OrchestratorError"),
+        (KeyError("gone"), "Error executing tool list_projects: KeyError: 'gone'"),
+        (RuntimeError("boom"), "Error executing tool list_projects: RuntimeError: boom"),
+        (
+            json.JSONDecodeError("Expecting value", "x", 0),
+            "Error executing tool list_projects: JSONDecodeError: Expecting value:"
+            " line 1 column 1 (char 0)",
+        ),
+    ],
+)
+def test_every_tool_error_carries_its_reason(
+    orch: Orchestrator, as_agent: Callable, monkeypatch: pytest.MonkeyPatch, raised, text
+) -> None:
+    def fail(self: Caller) -> None:
+        raise raised
+
+    monkeypatch.setattr(Caller, "projects", fail)
+    assert error_text(call(as_agent, None, "list_projects", {})) == text
+
+
+def test_a_reply_that_fails_output_validation_is_a_crash_not_a_refusal(
+    as_agent: Callable, caplog: pytest.LogCaptureFixture
+) -> None:
+    def probe_output() -> int:
+        return "not a number"  # type: ignore[return-value]
+
+    mcp_server.server.tool()(probe_output)
+    try:
+        with caplog.at_level(logging.ERROR):
+            text = error_text(call(as_agent, None, "probe_output", {}))
+    finally:
+        mcp_server.server.remove_tool("probe_output")
+
+    # pydantic's ValidationError is a ValueError, yet no refusal: it keeps its type and is
+    # logged as a crash with its traceback.
+    assert text.startswith("Error executing tool probe_output: ValidationError: ")
+    assert any(r.exc_info and "unexpected exception" in r.getMessage() for r in caplog.records)
 
 
 # -- answering ---------------------------------------------------------------

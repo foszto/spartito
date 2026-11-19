@@ -126,6 +126,10 @@ chosen is in the
 
 ### Fixed
 
+- A refused MCP tool call (an unknown agent, someone else's decision, a closed one) tells the
+  agent why, instead of a bare `Error executing tool <name>`; an unexpected error keeps its
+  type and message. `spartito chat` is told to ask you directly instead of calling
+  `request_decision`, and that tool's refusal there says who records decisions.
 - A turn whose CLI is missing fails with a clear message that says where it was looked for,
   and the CLIs are also found in the usual install directories when a background service or
   launcher has a shorter `PATH`.

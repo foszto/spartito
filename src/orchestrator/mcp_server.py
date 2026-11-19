@@ -14,6 +14,7 @@ from typing import Any
 
 import anyio
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
 
 from . import board, capabilities, providers, roles
 from .core.access import Caller
@@ -30,7 +31,35 @@ LOG_CHARS = 6000  # a whole agent_log reply
 MAX_COMMITS = 20
 MAX_STATUS = 30
 
-server = MCPServer(
+
+# The SDK passes on the text of a ToolError only: any other exception a tool raises reaches
+# the agent as a bare "Error executing tool <name>". A refusal (OrchestratorError, or a plain
+# ValueError of a domain check) is meant for the caller, so it goes out as a ToolError with
+# its reason; anything else, ValueError subclasses too (pydantic's ValidationError of the
+# output conversion, JSONDecodeError, UnicodeDecodeError), still counts as a crash (logged
+# with its traceback) but carries its type and message.
+def _refusal(exc: BaseException) -> bool:
+    return isinstance(exc, OrchestratorError) or type(exc) is ValueError
+
+
+def _reason(exc: BaseException) -> str:
+    return str(exc) or type(exc).__name__
+
+
+class _Server(MCPServer):
+    async def call_tool(self, name: str, arguments: dict[str, Any], context: Any = None) -> Any:
+        try:
+            return await super().call_tool(name, arguments, context)
+        except UnexpectedToolError as exc:
+            cause = exc.__cause__
+            if cause is None or isinstance(cause, ToolError):
+                raise
+            if _refusal(cause):
+                raise ToolError(f"{exc}: {_reason(cause)}") from cause
+            raise UnexpectedToolError(f"{exc}: {type(cause).__name__}: {cause}") from cause
+
+
+server = _Server(
     "orch",
     instructions=(
         f"Tools to run coding agents ({providers.builtin_labels()}) in git worktrees. Flow: "
@@ -480,7 +509,10 @@ def request_decision(
     access = Caller.from_env(orch)
     caller = access.agent()
     if caller is None:
-        raise OrchestratorError("this session talks to the user directly: ask them here")
+        raise OrchestratorError(
+            "this session talks to the user directly: ask them here; decisions are recorded"
+            " only for headless agents (orchestrator, leads)"
+        )
     if item:
         access.project(orch.board_item(item).project)  # a lead stays within its project
     decision = orch.request_decision(caller.id, question, options, recommendation)

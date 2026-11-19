@@ -151,6 +151,9 @@ def test_chat_runs_with_the_orchestrator_tier_settings(
     assert option(tier, "--name") == config.ORCHESTRATOR_NAME
     assert (option(explicit, "--model"), option(explicit, "--effort")) == ("sonnet", "low")
     assert bad.exit_code == 1 and "no effort 'extreme'" in bad.output
+    # The role prompt sends decisions to request_decision; this session asks the user.
+    prompt = option(tier, "--append-system-prompt")
+    assert f"\n\n{cli.CHAT_NOTE}\n\n" in prompt and "ask them here" in prompt
 
 
 def test_chat_without_settings_leaves_model_and_effort_to_claude(

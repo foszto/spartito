@@ -258,6 +258,15 @@ def mcp_config() -> str:
 # -- orchestrator session ---------------------------------------------------
 
 
+# The orchestrator role is written for the headless orchestrator too; this session is the
+# user's own conversation, where request_decision is refused (no agent records it).
+CHAT_NOTE = (
+    "## This session\n"
+    "You talk with the user directly: ask them here for anything that needs their decision;"
+    " `request_decision` is for the headless orchestrator and leads."
+)
+
+
 @app.command()
 def chat(
     resume: Annotated[
@@ -309,7 +318,7 @@ def chat(
         "claude",
         "--mcp-config", mcp_config(),
         "--append-system-prompt",
-        f"{role.prompt}\n\n{roles.attribution(credit, bot_coauthor=bot_coauthor)}",
+        f"{role.prompt}\n\n{CHAT_NOTE}\n\n{roles.attribution(credit, bot_coauthor=bot_coauthor)}",
         "--allowedTools", "mcp__orch", f"Bash({CLI} *)",
         *loadout_flags(chosen, search=search),
     ]  # fmt: skip
