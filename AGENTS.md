@@ -12,8 +12,8 @@ The command is `spartito`, and the Python package is `orchestrator` (Python 3.14
   `providers/` (Claude, Codex), `roles/` (packaged role prompts).
 - Layers: interfaces > runner > core > domain > infra. The interfaces use only the facade
   and never the store. Details: `docs/architecture.md`.
-- `tests/`: one `test_<area>.py` per area; `tests/fakeprovider.py` stands in for the CLIs;
-  `tests/conftest.py` gives every test a temporary `ORCH_HOME`.
+- `tests/`: one `test_<area>.py` per area; `tests/fakeprovider.py` and `tests/fakecli/` stand
+  in for the CLIs; `tests/conftest.py` gives every test a temporary `ORCH_HOME`.
 
 ## Checks
 
