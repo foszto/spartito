@@ -108,6 +108,8 @@ chosen is in the
 - A turn whose CLI is missing fails with a clear message that says where it was looked for,
   and the CLIs are also found in the usual install directories when a background service or
   launcher has a shorter `PATH`.
+- A second `spartito app` started while the first one's window is still starting is answered
+  and its target shown, instead of waiting 5 seconds for "the window did not answer".
 
 ## [0.2.0] - 2026-11-13
 
