@@ -22,6 +22,7 @@ NAMES = (
     "isActive", "plural", "isIdle", "stateOf", "count", "tokens", "short",
     "contextWarn", "compactAtTitle", "contextTitle", "renderNav", "navItem", "setupTicket",
     "setupFresh", "placeChildren", "CAPABILITY_SETTINGS", "renderCacheInfo", "showCacheTip", "cacheTipKey",
+    "renderSettingsTabs", "selectSettingsTab", "tabKeyMove",
 )  # fmt: skip
 
 # What the code under test needs beyond the provider tests' harness, and invented data.

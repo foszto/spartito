@@ -626,7 +626,9 @@ creates the Maestro and a dispatch from the board show none. Details:
 
 **Models and effort** window: the tier settings per provider, the automatic compaction
 threshold and the archive hours, globally or for one project; keep-awake and desktop
-notifications globally. Under **Notifications**, **Allow in this browser** lets the page show
+notifications globally. Its sections are tabs too, one per section (the tiers, Archive,
+compaction, Capabilities, the switches, Version), the first one active; Left/Right, Home/End
+move between them. Under **Notifications**, **Allow in this browser** lets the page show
 the notifications itself, so that a click opens the agent or decision (see
 [desktop.md](desktop.md#notifications-with-click-through)).
 

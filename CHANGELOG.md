@@ -98,9 +98,11 @@ chosen is in the
 ### Changed
 
 - The dashboard's **Settings & usage** section shows its groups as tabs (Capabilities, Usage,
-  About, Changes) instead of accordions: the same content in the same order, one tab per group
-  and the first shown group active. A group that is not shown has no tab; the tab you chose is
-  remembered across polls, agents and visits, and Left/Right, Home/End move between the tabs.
+  About, Changes) instead of accordions, and so does the **Settings** dialog for its sections
+  (the tiers, Archive, compaction, Capabilities, the switches, Version): the same content in
+  the same order, one tab per section and the first section active. A section that is not
+  shown has no tab; the tab you chose is remembered across polls, agents and visits, and
+  Left/Right, Home/End move between the tabs.
 - **Incompatible:** `spartito mcp` without a subcommand now lists the MCP servers instead of
   running Spartito's own `orch` MCP server on stdio; `spartito mcp serve` runs it. Spartito's
   agents and `spartito chat` never started it through the command and are not affected. If

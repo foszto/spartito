@@ -16,6 +16,7 @@ NAMES = (
     *CAPABILITY_NAMES, "buildView", "buildDetails", "showDetails", "buildCacheInfo", "renderHeader",
     "renderWelcome", "renderQueue", "shownProvider", "contextText", "tokenText", "DETAILS_NAME", "DETAIL_GROUPS", "SUGGESTIONS",
     "detailNames", "detailShown", "activeDetailTab", "detailTabKey", "selectDetailTab", "syncDetailTabs",
+    "tabKeyMove",
 )  # fmt: skip
 
 PRELUDE = r"""
