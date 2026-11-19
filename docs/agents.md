@@ -27,6 +27,7 @@ can act on every project.
 | `list_projects()` | projects with their number of agents |
 | `add_project(path, name, default_provider)` | register a repository; `default_provider` must be available (default: the first available one) (orchestrator only) |
 | `set_project_provider(project, provider)` | the provider of a project's new agents; it must be available, existing agents keep theirs (orchestrator only) |
+| `remove_project(project, confirm)` | unregister a project with its settings, budget, board items and decisions; archived agents with safe work deleted only with `confirm`: their ids, as the first reply names them (orchestrator only) |
 | `list_roles(project)` | roles available, with `lead` and `worktree` flags |
 | `spawn_agent(task, project, name, role, provider, model, effort, worktree, share_worktree_with, base, after, output_schema, freeform, notify, capabilities)` | start an agent; returns at once |
 | `ask_project_lead(project, message, notify, provider)` | message a project's lead, creating it; `provider` applies to a new lead only (orchestrator only) |
@@ -39,10 +40,11 @@ can act on every project.
 | `stop_agent(agent_id)` | stop running and queued turns |
 | `archive_agent(agent_id, confirm, restore)` | archive (unmerged work only with `confirm`), or restore |
 | `request_decision(question, options, recommendation, item)` | ask the owner (headless lead roles only); `item`: the board item it blocks |
-| `withdraw_decision(decision_id)` | close one of your own open decisions |
+| `withdraw_decision(decision_id)` | close an open decision: your own; a lead also its project's, the orchestrator any |
 | `list_board(project, state, live)` | the project's task board, shortened to fit; `live` adds agent and git status |
 | `add_board_item(project, title, description, state)` | add an item |
 | `update_board_item(item_id, state, title, description, agent, branch)` | change an item |
+| `delete_board_item(item_id)` | delete a wrong or duplicate item for good, with its history |
 | `dispatch_board(project, items)` | send board items to the project's lead (default: all `ready`; orchestrator only) |
 
 Replies are kept short: results and logs are cut to a budget, and say how to read the rest
@@ -147,16 +149,21 @@ Each project has a board of items that survives across sessions. An item has a t
 `in_progress`, `done`, and optionally the agent and branch working on it. Items are ordered
 within their state; a new item, and an item that changes state, goes to the end.
 
-- The orchestrator and the project's lead use `list_board`, `add_board_item` and
-  `update_board_item`; a lead only on its own project. `list_board` puts `in_progress` first,
-  then `ready`, `idea` and `done`, and counts what does not fit in its reply.
+- The orchestrator and the project's lead use `list_board`, `add_board_item`,
+  `update_board_item` and `delete_board_item`; a lead only on its own project. `list_board`
+  puts `in_progress` first, then `ready`, `idea` and `done`, and counts what does not fit in
+  its reply.
 - In the dashboard, the board button in a project's row opens it: one list per state, add,
   edit, move up or down, change state.
 - **Board** in the dashboard's left column shows every project's board in one view: items
   move by drag or keyboard, a selection is dispatched to the leads, each card shows its
   agent's status and its branch's git state, and an item whose branch is merged moves to
   `done` by itself. See [board.md](board.md).
-- On the command line: `spartito board`, `spartito board add`, `spartito board edit`, `spartito board move`.
+- On the command line: `spartito board`, `spartito board add`, `spartito board edit`, `spartito board move`,
+  `spartito board rm`.
+- Deleting an item (`delete_board_item`, `spartito board rm`, **Delete** in its detail on the
+  dashboard) removes it for good, with its history, its source and its decision links; the
+  decisions stay. Removing a project deletes all of its items.
 
 ```sh
 spartito board add -p my-app "Password reset" -d "Email link, expires in 1 hour" --state ready
@@ -177,8 +184,14 @@ The headless orchestrator and the project leads record what needs the owner's de
 `request_decision(question, options, recommendation)`: a question of at most 500 characters,
 at most 6 short options, one recommendation. They continue with whatever does not depend on
 the answer, and close a decision that has become moot with `withdraw_decision(decision_id)`
-(only their own, only while open). The interactive `spartito chat` session asks you directly
-instead.
+(only while open). An agent withdraws its own decisions, a lead also those of the other agents
+in its project, and the top-level orchestrator (and the interactive `spartito chat` session)
+any. A decision withdrawn by anyone other than its agent notes who did it, and the agent gets
+a message (`Decision #12 — <question>` and `Withdrawn by <who>: no answer will come.`) unless
+it is archived. The interactive session asks you directly instead of recording decisions.
+
+A refused tool call (here: someone else's decision, one already closed) returns an error with
+the reason, `Error executing tool withdraw_decision: you have no decision #12`.
 
 Open decisions from all projects are listed in one place: the dashboard's question-mark button
 (with their number) opens the **Decisions** window (project, agent, question, options,
@@ -193,7 +206,8 @@ spartito decide 12 "Use Postgres"
 The answer reaches the agent as an ordinary message from you (`Decision #12 — <question>` and
 `Answer: <answer>`) and closes the decision; a closed decision takes no further answer. The
 message restores an archived agent; if the agent was deleted, the decision closes without an
-answer, with a note. A waiting decision also triggers a desktop notification (see
+answer, with a note. Removing a project deletes all of its decisions, open and closed. A
+waiting decision also triggers a desktop notification (see
 [configuration.md](configuration.md#desktop-notifications-desktop_notifications)).
 
 ## Archiving

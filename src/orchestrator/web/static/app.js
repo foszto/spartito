@@ -1515,13 +1515,27 @@ function archiveSafe(project) {
 }
 
 function removeProject(project) {
+  const url = `/api/projects/${encodeURIComponent(project.name)}/remove`;
+  const removed = async result => {
+    const items = result.board_items.length, agents = result.agents.length;
+    const parts = [items && plural(items, 'board item'), agents && plural(agents, 'archived agent')].filter(Boolean);
+    toast(`Project removed${parts.length ? ` with ${parts.join(' and ')}` : ''}`); await refresh();
+  };
   confirmDialog({
     title: `Remove project ${project.name}?`,
-    text: 'Only the registration is removed; the repository is not touched. A project that still has agents cannot be removed.',
+    text: 'The registration, its settings, board items and decisions are removed; the repository and its branches are not touched. '
+      + 'Agents that are not archived must be archived first, and archived ones with unmerged or uncommitted work deleted by hand.',
     ok: 'Remove',
     action: async () => {
-      await call(`/api/projects/${encodeURIComponent(project.name)}/remove`, {});
-      toast('Project removed'); await refresh();
+      const result = await call(url, {});
+      if (!result.confirm) { await removed(result); return; }
+      // Archived agents: a second confirmation names them; they are deleted with the project.
+      setTimeout(() => confirmDialog({
+        title: `Delete the archived agents of ${project.name}?`,
+        text: `${result.confirm}.`,
+        ok: 'Remove with them',
+        action: async () => removed(await call(url, { confirm: result.agents })),
+      }));
     },
   });
 }

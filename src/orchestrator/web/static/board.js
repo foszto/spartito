@@ -20,7 +20,7 @@
   const hooks = { card: [], menu: [], head: [], paint: [], detail: [] };
   const ui = {
     root: null, project: null, data: null, key: '', ticket: 0, holds: new Set(), pending: false,
-    focus: null, showDone: false, dialog: null, detail: null,
+    focus: null, showDone: false, dialog: null, detail: null, remove: null,
   };
 
   const owns = target => target.startsWith(ROUTE);
@@ -539,7 +539,11 @@
       field('Branch', input('branch', 'mono', 'optional')), el('p', 'bv-stamp'), el('div', 'bv-extra'));
     const foot = el('div', 'dialog-foot'), cancel = el('button', 'btn', 'Cancel'), save = el('button', 'btn primary', 'Save');
     cancel.value = 'cancel'; cancel.formNoValidate = true; save.value = 'ok';
-    foot.append(el('span', 'error'), cancel, save);
+    // Delete: only in an item's detail (showDetail sets its action), after a confirmation.
+    const remove = el('button', 'btn danger bv-delete', 'Delete');
+    remove.type = 'button'; remove.hidden = true;
+    remove.onclick = () => ui.remove && ui.remove();
+    foot.append(remove, el('span', 'error'), cancel, save);
     form.append(head, body, foot);
     node.append(form);
     form.onsubmit = async event => {
@@ -587,6 +591,7 @@
     project.value = ui.project || ui.data.projects[0];
     node.querySelector('.bv-project').hidden = false;
     node.querySelector('.bv-stamp').textContent = '';
+    node.querySelector('.bv-delete').hidden = true; ui.remove = null;
     fills++;  // a refill of a detail shown before is not wanted here
     node.querySelector('.bv-extra').replaceChildren();
     ui.submit = async data => {
@@ -651,6 +656,18 @@
       await load();
       return item.id;
     };
+    node.querySelector('.bv-delete').hidden = false;
+    ui.remove = () => confirmDialog({
+      title: `Delete #${item.id}?`,
+      text: `“${item.title}” is deleted from the ${item.project} board for good, with its history and links. This cannot be undone.`,
+      ok: 'Delete',
+      action: async () => {
+        await call(`/api/board/${item.id}/delete`, {});
+        if (ui.detail && ui.detail.id === item.id) node.close();
+        toast(`#${item.id} deleted`);
+        await load();
+      },
+    });
     extra(item, true);
     if (!node.open) node.showModal();
     form.elements.title.focus();

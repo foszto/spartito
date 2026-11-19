@@ -4,6 +4,7 @@ Most methods are functions of the core modules bound here (see core/__init__.py)
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,7 @@ from .core.setup import next_message as next_message  # the move's words, for th
 from .core.views import context_view as context_view  # old import path
 from .core.views import result_file as result_file  # old import path
 from .core.views import run_usage as run_usage  # old import path
+from .errors import ConfirmAgents as ConfirmAgents  # for the interfaces
 from .errors import NeedsConfirmation as NeedsConfirmation  # old import path
 from .errors import OrchestratorError
 from .models import Agent, Project, Run
@@ -120,13 +122,7 @@ class Orchestrator:
             raise OrchestratorError(f"unknown project '{name}' (registered: {known})")
         return project
 
-    def remove_project(self, name: str) -> None:
-        self.project(name)
-        if self.store.list_agents(name):
-            raise OrchestratorError(
-                f"project '{name}' still has agents (archived ones too); archive and delete them first"
-            )
-        self.store.delete_project(name)
+    remove_project = archiving.remove_project  # with its archived agents and its board
 
     # -- agents -----------------------------------------------------------
 
@@ -200,10 +196,26 @@ class Orchestrator:
             raise OrchestratorError(str(exc)) from None
 
     def withdraw_decision(self, decision_id: int, agent_id: str) -> decisions.Decision:
+        """Withdraw an open decision for `agent_id` ("": the interactive session). The
+        top-level orchestrator and the interactive session may withdraw any, a lead those
+        of its project, every other agent only its own. A requester other than the caller
+        is told with a user message, unless it is archived."""
+        caller = self.store.get_agent(agent_id) if agent_id else None
+        everywhere = not agent_id or (caller is not None and caller.project is None)
+        project = caller.project if caller and caller.project and self.is_lead(caller) else None
         try:
-            return decisions.withdraw(self.store, decision_id, agent_id)
+            decision = decisions.withdraw(self.store, decision_id, agent_id, project, everywhere)
         except ValueError as exc:
             raise OrchestratorError(str(exc)) from None
+        requester = self.store.get_agent(decision.agent_id)
+        if (
+            decision.agent_id != agent_id
+            and requester is not None
+            and requester.id not in self.store.archived()
+        ):  # tell it, as an answer is delivered; an archived agent is not woken for this
+            with contextlib.suppress(OrchestratorError):  # removed meanwhile: still withdrawn
+                self.send(requester.id, decisions.withdrawn_message(decision, agent_id))
+        return decision
 
     def list_decisions(self, closed: bool = False) -> list[dict[str, Any]]:
         """Open decisions (with `closed` all), each with the requesting agent's display
@@ -241,7 +253,8 @@ class Orchestrator:
 
     def board_items(self, project: str | None = None, state: str | None = None) -> list[board.Item]:
         """A project's items (None: every registered project's), optionally of one state.
-        A removed project's items are kept: registering it again brings them back."""
+        Removing a project deletes its items; those of a project removed by an older version
+        are kept but not listed (registering it again brings them back)."""
         try:
             items = board.listing(self.store, project and self.project(project).name, state)
         except ValueError as exc:
@@ -295,6 +308,13 @@ class Orchestrator:
     ) -> board.Item:
         try:
             return board.move(self.store, item_id, direction, actor or board.OWNER)
+        except ValueError as exc:
+            raise OrchestratorError(str(exc)) from None
+
+    def delete_board_item(self, item_id: int) -> board.Item:
+        """Delete an item for good, with its history and links; the item as it was."""
+        try:
+            return board.delete(self.store, item_id)
         except ValueError as exc:
             raise OrchestratorError(str(exc)) from None
 

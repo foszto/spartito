@@ -70,6 +70,15 @@ def place_board_item(orch: Orchestrator, request: Request, body: dict) -> dict[s
     return orch.place_board_item(item_id, body["state"], body.get("before")).to_dict()
 
 
+# -- deleting an item ------------------------------------------------------------------
+
+
+@route("/api/board/{item_id:int}/delete", post=True)
+def delete_board_item(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
+    """The item deleted for good, with its history and links: {deleted: the item as it was}."""
+    return {"deleted": orch.delete_board_item(request.path_params["item_id"]).to_dict()}
+
+
 # -- dispatching named items -----------------------------------------------------------
 
 
