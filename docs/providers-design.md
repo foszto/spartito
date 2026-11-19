@@ -1,8 +1,9 @@
 # Providers: less duplication, and opencode as a third provider
 
-> **Status: a design, not built.** Nothing described here as new exists yet: the modules,
-> attributes and the `opencode` provider named below are planned. What exists today is
-> described in [providers.md](providers.md), [configuration.md](configuration.md#loadout),
+> **Status: the refactor is built; opencode is next.** Phases 1–4 (the kit, the provider
+> attributes, the stream hook, the fake-CLI harness) are merged, and the live checks (5a) are
+> done; §1 describes the code before the refactor. The `opencode` provider (phases 5b–5d) and
+> what it adds to the kit are still planned. What exists today is described in [providers.md](providers.md), [configuration.md](configuration.md#loadout),
 > [capabilities.md](capabilities.md) and [mcp.md](mcp.md#what-works-today).
 >
 > Facts about opencode are marked:
@@ -385,19 +386,19 @@ Sources:
    - Facts about a provider that other modules need (credit, cache effect, config-home variables) become attributes of the provider instead of tables keyed by name.
    - The runner gets one new, optional, generic hook: a per-turn stream object.
 
-### 3.2 The structure (planned)
+### 3.2 The structure (phases 1–4, merged; `opencode.py` planned)
 
 ```
 providers/
   base.py        Provider protocol (unchanged required members) + new optional members
-  kit.py         (planned) shared building blocks, no provider knowledge
+  kit.py         shared building blocks, no provider knowledge
   claude.py      ClaudeProvider: explicit invocation and parser, on the kit
   codex.py       CodexProvider: same
   opencode.py    (planned) OpencodeProvider
   locate.py      unchanged; its _run becomes kit.run_cli
 ```
 
-**`kit.py` (planned)**:
+**`kit.py`** (merged; `schema_in_prompt` and `extract_json` come with opencode):
 
 | block | replaces | what |
 |---|---|---|
@@ -410,7 +411,7 @@ providers/
 | `with_role_prefix(ctx) -> str` | D9 | the first-turn strategy (role prompt, separator, prompt) |
 | `schema_in_prompt(prompt, schema) -> str`, `extract_json(text)` | new | for CLIs without a schema option: the schema appended to the prompt, the answer's JSON taken out of a code fence |
 
-**Optional `Provider` members (planned; all read with `getattr` and a default, so plugins keep working)**:
+**Optional `Provider` members (merged in phases 1–3; all read with `getattr` and a default, so plugins keep working)**:
 
 | member | default | replaces |
 |---|---|---|
@@ -425,9 +426,9 @@ providers/
 
 `chrome` stays declared in `capabilities.py` with `providers.claude.CHROME`: it is Claude's by nature.
 
-**The runner change (planned)**: the event dispatch (334–359) becomes `handle(event)`. Lines go through `stream.feed(line)`, and at the end of the stream `stream.finish(code)` is handled the same way. Nothing else in the runner learns about providers.
+**The runner change (phase 3, merged)**: the event dispatch (334–359) becomes `handle(event)`. Lines go through `stream.feed(line)`, and at the end of the stream `stream.finish(code)` is handled the same way. Nothing else in the runner learns about providers.
 
-**Attribution (planned)**:
+**Attribution (phase 2, merged)**:
 - `roles.attribution(provider_name)` looks up `providers.get(name).credit`.
 - The texts stay word for word.
 - Codex's rule ("when you add a trailer, keep its email…") becomes a named constant that opencode reuses.
@@ -497,11 +498,11 @@ class Stream(kit.JsonLines):
 ```
 
 Plus:
-- a fake-CLI dialect (`tests/fakecli/dialects/new.py`, planned);
+- a fake-CLI dialect (a module in `tests/fakecli/` beside `claude.py` and `codex.py`);
 - registration in `BUILTIN` (appended, so "the first available" does not change for anyone);
 - its row in [providers.md](providers.md#other-providers).
 
-### 3.4 One fake-CLI harness (planned)
+### 3.4 One fake-CLI harness (phase 4, merged)
 
 `tests/fakecli/` generalises the script of `FakeClaude`:
 - **One engine** reads the scenario words of the prompt (`SLEEP`, `FAIL`, `TOKENS`, `CONTEXT`, `TWICE`, `LINGER`, …).
@@ -527,6 +528,8 @@ Each step ships alone. The refactor relies on the existing tests that already pi
 2. Provider metadata instead of tables outside `providers/` (phase 2).
 3. The stream hook in the runner (phase 3).
 4. The fake-CLI harness (phase 4).
+
+All four steps are merged.
 
 ---
 
@@ -558,7 +561,7 @@ opencode run --standalone --format json --session <ses_id> [--archived --title <
 | `tools` | Claude tool names map to actions: `Bash`→`shell`; `Read`→`read`; `Edit`/`Write`/`MultiEdit`/`NotebookEdit`→`edit`; `Glob`→`glob`; `Grep`→`grep`; `WebFetch`→`webfetch`; `WebSearch`→`websearch`; `Task`/`Agent`→`subagent`; `Skill`→`skill`. A built-in action that no listed tool covers gets a `deny` rule and a `tool.use` deny policy. `default` denies nothing extra; `none` denies every built-in action. `ToolSearch` and unknown names are ignored, with a note |
 | always | `question` denied (nobody answers). The `opencode` namespace tools that create, move or remove worktrees and sessions are denied (Spartito owns both): `opencode_session_move`, `opencode_session_rename`, `opencode_worktree_create`, `opencode_worktree_list`, `opencode_worktree_remove` (V6; `worktree_remove` also uses the `edit` permission). `external_directory` denied except the turn's `writable_dirs` (the shared `.git`) |
 | `mcp` | `strict`: policies `mcp.use` `deny *`, then `allow` for the `orch` MCP server and each turn server. `inherit`: no policy |
-| `setting_sources` | without `project`: `OPENCODE_DISABLE_PROJECT_CONFIG=1`. This also drops project `AGENTS.md`, unlike Claude, where `project` keeps `CLAUDE.md`. Without `user`: policies `plugin.use` `deny *`, as before, and the global config is moved away: `XDG_CONFIG_HOME` points at a temporary config home of the turn, and the turn config's `"shell"` is a wrapper that gives the agent's commands the user's own value back; MCP servers get it through their `environment` (Q9, 4.6) |
+| `setting_sources` | without `project`: `OPENCODE_DISABLE_PROJECT_CONFIG=1`. This also drops project `AGENTS.md`, unlike Claude, where `project` keeps `CLAUDE.md`. Without `user`: policies `plugin.use` `deny *`, as before, and the global config is moved away: `XDG_CONFIG_HOME` points at a temporary config home of the turn, and the turn config's `"shell"` is a wrapper that gives the agent's commands the user's own value back; MCP servers get it through their `environment` (Q9, 4.6). With `user`: the global config is left alone: no `XDG_CONFIG_HOME` move, no wrapper, and the agent's commands run in the user's shell |
 | `slash_commands` | `false`: `skill` denied and `skill.use` `deny *` |
 | `memory` | no effect (opencode has no memory directory). A listed limit |
 | `tool_search` | no effect. Code Mode, opencode's default for MCP servers, is its own way: it keeps the schemas out of the request (V12) |
@@ -605,7 +608,7 @@ opencode run --standalone --format json --session <ses_id> [--archived --title <
 - **No context window in the gauge.**
 - **Costs may show `$0.00` for subscription sign-ins**, and per-turn costs miss opencode's hidden title and compaction calls.
 - **No OS sandbox.** The agent's shell can write outside its worktree. Only opencode's own tools are held back.
-- **Agent commands run in bash, not the user's shell** (for example zsh), when the global config is moved away (4.2): the `shell` wrapper `exec`s bash.
+- **Agent commands run in bash, not the user's shell** (for example zsh), when the global config is moved away, that is when `setting_sources` lacks `user` (4.2): the `shell` wrapper `exec`s bash. With `user`, the user's global `opencode.json` applies and the commands run in the user's shell.
 - **Sessions are stored in the user's opencode database**, marked archived but still listed by `opencode session list` (V18), and visible in opencode's own UI.
 - **A lost session restarts empty** instead of failing.
 - **`spartito chat` stays Claude only.**
@@ -626,7 +629,7 @@ For phases 5b–5d; the facts are in §2, the results in §5.
 10. **`--archived`** does not hide sessions in 2.3.2 (V18); §2.2, §4.1 and §4.5 say so.
 11. **Model list**: `opencode models` with `OPENCODE_DISABLE_MODELS_FETCH=1` is usable: plain lines, credentialed providers only, no variants (V10).
 12. **Login check**: `auth list --format json` is secret-free but misses providers keyed in a config file (V11).
-13. **Isolation** (Q9): the adapter will point `XDG_CONFIG_HOME` at the turn's temporary config home and set the turn config's `"shell"` to a wrapper that restores the user's original `XDG_CONFIG_HOME` (or unsets it, when it was unset) and `exec`s bash. MCP servers get the same original value through their `environment`. A test with the fake-CLI dialect fails if the wrapper or the MCP `environment` is no longer applied; no live run is needed (V15).
+13. **Isolation** (Q9): whenever the turn's `setting_sources` lacks `user`, the adapter will point `XDG_CONFIG_HOME` at the turn's temporary config home and set the turn config's `"shell"` to a wrapper that restores the user's original `XDG_CONFIG_HOME` (or unsets it, when it was unset) and `exec`s bash. MCP servers get the same original value through their `environment`. A test with the fake-CLI dialect fails if the wrapper or the MCP `environment` is no longer applied; no live run is needed (V15). With `user` present, none of this applies: no move, no wrapper.
 14. **Version**: strip the leading `v` of `opencode v2.3.2` (V19).
 15. **First event**: `step_start` comes at the first model token, so the first event of a turn is the time to first token (V12).
 16. **Further settings to consider**: the server watches every parent directory up to `/`; `OPENCODE_DISABLE_FILEWATCHER` exists in the source, its effect untested. Machine-wide config applies whatever the XDG directories are.
@@ -647,6 +650,8 @@ Sizes are per worker, tests and docs included: **S** about half a day, **M** abo
 | 5b | `providers/opencode.py`: invocation, turn config, loadout mapping, MCP translation; the `XDG_CONFIG_HOME` move with the `shell` wrapper and its test (about S of it, Q9); registered last in `BUILTIN`; a fake `opencode` on `PATH` in the same change | `providers/opencode.py`, `providers/__init__.py`, `tests/test_opencode.py` | 2, 3, 4, 5a | M |
 | 5c | opencode stream: usage, context, structured answers, the dialect | same owner as 5b | 5b | M |
 | 5d | Model list, availability, docs (`providers.md`, `configuration.md`, `capabilities.md`, `mcp.md`, `architecture.md`), `CHANGELOG.md` | docs, small code | 5b | M |
+
+Phases 1–4 are merged and 5a is done; 5b–5d are next.
 
 - **Total**: about 7.5 worker-days.
 - **Critical path**: 1 → 2 (or 4) → 5b → 5c (5d alongside), about 4 days with three workers.
@@ -719,7 +724,7 @@ Decided: no golden tests for now; the existing tests and the normal review carry
 6. **Q6 Server model**: one process per turn now, `serve` or ACP later? Decided: one process per turn; ACP is on the roadmap ([ACP as a generic provider](../ROADMAP.md#acp-as-a-generic-provider)).
 7. **Q7 Order of work**: refactor (1–4) before opencode, or opencode first on today's structure? Decided: refactor first (phases 1–4), then opencode.
 8. **Q8 MCP servers on opencode** without an approval gate (as decided for Codex in [mcp.md](mcp.md#decisions)): allow them only when the owner marks a server for it, or in general? Decided: MCP servers on opencode follow the same marked-server rule as Codex.
-9. **Q9 Global opencode config**: if V15 shows the leak, accept that the user's global `opencode.json` applies to agents (listed), or deny opencode agents some of it through policies only? Decided anew after V15, replacing the earlier answer (accept the global config and list it as a limit): when `setting_sources` leaves out `user` (4.2), the adapter moves the global config away by pointing `XDG_CONFIG_HOME` at the turn's temporary config home. The turn config sets `"shell"` to a wrapper that restores the user's original `XDG_CONFIG_HOME` (unsets it when it was unset) and `exec`s bash; MCP servers get the same value through their `environment`. So `git`, `gh` and the user's other tools keep reading the user's own config (for example the `gh` login under `~/.config/gh`). Accepted side effect: agent commands run in bash, not the user's shell (listed in 4.5). A test with the fake-CLI dialect fails if the wrapper is no longer applied. About S, inside phase 5b.
+9. **Q9 Global opencode config**: if V15 shows the leak, accept that the user's global `opencode.json` applies to agents (listed), or deny opencode agents some of it through policies only? Decided anew after V15, replacing the earlier answer (accept the global config and list it as a limit): whenever the turn's `setting_sources` lacks `user` (4.2), the same way Claude Code drops its user settings then, the adapter moves the global config away by pointing `XDG_CONFIG_HOME` at the turn's temporary config home. The turn config sets `"shell"` to a wrapper that restores the user's original `XDG_CONFIG_HOME` (unsets it when it was unset) and `exec`s bash; MCP servers get the same value through their `environment`. So `git`, `gh` and the user's other tools keep reading the user's own config (for example the `gh` login under `~/.config/gh`). Accepted side effect: agent commands run in bash, not the user's shell (listed in 4.5). With `user` present, the global config is left alone: no `XDG_CONFIG_HOME` move, no wrapper, and the agent's commands run in the user's shell. A test with the fake-CLI dialect fails if the wrapper is no longer applied. About S, inside phase 5b.
 
 See also [mcp.md](mcp.md#wiring-per-provider) for how MCP servers are wired per provider,
 [configuration.md](configuration.md#model-and-effort) for model and effort, and
