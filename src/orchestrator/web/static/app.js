@@ -405,9 +405,11 @@ function buildView() {
   caps.id = 'setupCaps'; caps.hidden = true;
   setup.addEventListener('focusout', () => setTimeout(() => renderSetup(setupData)));
   caps.addEventListener('focusout', () => setTimeout(() => renderSetup(setupData)));
-  chips.append(lead, setup, tail);
-  who.append(title, chips, note, caps);
-  const detailsButton = button('ghost', 'info', 'Details', () => { $('details').hidden = !$('details').hidden; });
+  chips.append(lead, setup, buildCacheInfo(), tail);
+  who.append(title, chips, note);
+  const detailsButton = button('ghost', 'sliders', DETAILS_NAME, () => { detailsOpen = !detailsOpen; showDetails(); });
+  detailsButton.setAttribute('aria-controls', 'details');
+  detailsButton.setAttribute('aria-expanded', 'false');
   const codeButton = button('ghost', 'code', 'Code', () => toggleCode());
   codeButton.id = 'codeButton'; codeButton.hidden = true;
   codeButton.title = 'The files of its worktree and its changes against the base branch (read-only)';
@@ -421,11 +423,7 @@ function buildView() {
   archive.title = 'Hide it from the lists; everything is kept and it can be restored';
   top.append(face, who, compact, codeButton, detailsButton, stop, archive, restore, remove);
 
-  const details = el('div'); details.id = 'details'; details.hidden = true;
-  const facts = el('dl'); facts.id = 'facts';
-  const changes = el('pre'); changes.id = 'changes';
-  const runs = el('table'); runs.id = 'runs';
-  details.append(facts, runs, changes);
+  const details = buildDetails(caps);
 
   const log = el('div'); log.id = 'log';
   const thread = el('div', 'thread'); thread.id = 'thread';
@@ -460,6 +458,95 @@ function buildView() {
   view.append(top, details, code, log, queue, busy, form);
   shown = selected; lastEvent = 0; toolGroup = null; setupData = null; codeShown = null; capabilityNote = null;
   input.focus();
+}
+
+// -- the agent's settings and usage (the section the header's button opens) --------------
+// Built once per view; a poll only fills it, so neither the section nor a group closes, and
+// no control in it loses the focus. What is open is kept for the page: the section across
+// agents until it is closed, each group also in the browser's storage.
+
+const DETAILS_NAME = 'Settings & usage';
+const DETAIL_GROUPS = [['capabilities', 'Capabilities'], ['usage', 'Usage'], ['about', 'About'], ['changes', 'Changes']];
+let detailsOpen = false;
+const detailGroups = stored('orch-detail-groups', {});
+
+function buildDetails(caps) {
+  const details = el('section', 'details');
+  details.id = 'details'; details.hidden = true;
+  details.setAttribute('aria-label', DETAILS_NAME);
+  const usage = el('dl'); usage.id = 'usage';
+  const runs = el('table'); runs.id = 'runs';
+  const runsWrap = el('div', 'table-wrap'); runsWrap.append(runs);
+  const facts = el('dl'); facts.id = 'facts';
+  const changes = el('pre'); changes.id = 'changes';
+  const content = { capabilities: [caps], usage: [usage, runsWrap], about: [facts], changes: [changes] };
+  for (const [name, label] of DETAIL_GROUPS) {
+    const group = el('details', 'detail-group'), head = el('summary');
+    group.id = `details-${name}`; group.dataset.group = name;
+    group.open = detailGroups[name] !== false;  // open unless the user closed it
+    head.append(icon('right'), label);
+    group.append(head, ...content[name]);
+    group.ontoggle = () => { detailGroups[name] = group.open; store('orch-detail-groups', detailGroups); };
+    details.append(group);
+  }
+  return details;
+}
+
+// Shows the section as `detailsOpen` says, while the header offers its button.
+function showDetails() {
+  const open = $('detailsButton'), details = $('details');
+  if (!open || !details) return;
+  const on = detailsOpen && !open.hidden;
+  details.hidden = !on;
+  open.setAttribute('aria-expanded', String(on));
+  open.classList.toggle('active', on);
+}
+
+// -- the prompt cache hint (an info button next to model and effort) ----------------------
+// Shown on hover, on focus and on a click; Escape, leaving it or moving the focus away hides
+// it. The button names it for assistive technology (aria-describedby).
+
+function buildCacheInfo() {
+  const wrap = el('span', 'info-tip'), tip = el('span', 'tip'), open = el('button', 'btn ghost icon info-button');
+  wrap.id = 'cacheInfo'; wrap.hidden = true;
+  tip.id = 'cacheTip'; tip.hidden = true; tip.setAttribute('role', 'tooltip');
+  open.id = 'cacheInfoButton'; open.type = 'button';
+  open.append(icon('info'));
+  open.setAttribute('aria-label', 'About switching model or effort');
+  open.setAttribute('aria-describedby', tip.id);
+  open.setAttribute('aria-controls', tip.id);
+  open.setAttribute('aria-expanded', 'false');
+  open.onfocus = () => showCacheTip(true);
+  open.onblur = () => showCacheTip(false);
+  open.onclick = () => showCacheTip(true);
+  wrap.onmouseenter = () => showCacheTip(true);
+  wrap.onmouseleave = () => { if (document.activeElement !== open) showCacheTip(false); };
+  wrap.append(open, tip);
+  return wrap;
+}
+
+function showCacheTip(on) {
+  const tip = $('cacheTip'), open = $('cacheInfoButton');
+  if (!tip || !open || tip.hidden === !on) return;
+  tip.hidden = !on;
+  open.setAttribute('aria-expanded', String(on));
+  if (on) document.addEventListener('keydown', cacheTipKey);
+  else document.removeEventListener('keydown', cacheTipKey);
+}
+
+function cacheTipKey(event) {
+  if (event.key !== 'Escape') return;
+  event.preventDefault();
+  showCacheTip(false);
+}
+
+// The hint's text, from the server unchanged; without one the button is not offered.
+function renderCacheInfo(text) {
+  const wrap = $('cacheInfo'), tip = $('cacheTip');
+  if (!wrap || !tip) return;
+  if (tip.textContent !== text) tip.textContent = text;
+  wrap.hidden = !text;
+  if (!text) showCacheTip(false);
 }
 
 // The provider of the agent shown, also before it exists: a lead-to-be gets the project's
@@ -499,7 +586,7 @@ function renderHeader(agent, setupFreshness = true) {
   const title = $('title'), chips = $('chips');
   const name = agent ? (agent.id === ORCH ? state.orchestrator_name : agent.id) : leadProject ? `${leadProject} lead` : state.orchestrator_name;
   const face = avatar(selected === ORCH ? ORCH : shownProvider(agent));
-  face.id = 'face'; $('face').replaceWith(face);
+  const before = $('face'); face.id = 'face'; before.replaceWith(face);
   const now = stateOf(agent);
   title.replaceChildren(name, el('span', `pill ${now.cls}`, now.label));
   if (agent?.archived) title.append(el('span', 'pill archived', 'archived'));
@@ -513,7 +600,12 @@ function renderHeader(agent, setupFreshness = true) {
   $('archive').hidden = !agent || Boolean(agent.archived) || agent.id === ORCH;
   $('restore').hidden = !agent?.archived;
   $('remove').hidden = !agent?.archived;  // only archived agents are deleted
-  $('detailsButton').hidden = !agent;
+  // The Maestro before its first message has capabilities to choose already, nothing else.
+  const draft = !agent && selected === ORCH ? state.orchestrator_setup : null;
+  $('detailsButton').hidden = !agent && !draft;
+  for (const name of ['usage', 'about']) $(`details-${name}`).hidden = !agent;
+  $('details-changes').hidden = !agent?.changes;
+  showDetails();
   // The code view: only for an agent with a worktree of its own (a branch).
   $('codeButton').hidden = !agent?.branch;
   if (!agent?.branch && codeShown) toggleCode(false);
@@ -540,7 +632,6 @@ function renderHeader(agent, setupFreshness = true) {
   const tail = $('chipsTail');
   chips.replaceChildren(); tail.replaceChildren();
   // Before its first message the orchestrator does not exist yet; its model can be chosen anyway.
-  const draft = !agent && selected === ORCH ? state.orchestrator_setup : null;
   renderSetup(agent ? {
     id: agent.id, provider: agent.provider, effective: agent.effective || {}, inherited: agent.inherited || {},
     own: { model: agent.model_override, effort: agent.effort_override },
@@ -556,6 +647,7 @@ function renderHeader(agent, setupFreshness = true) {
     if (!text) return;
     const node = el('span', 'chip'); if (iconName) node.append(icon(iconName)); node.append(text);
     (parent || chips).append(node);
+    return node;
   };
   chip(agent.role);  // the provider is the setup's first choice
   const context = agent.context;
@@ -578,10 +670,13 @@ function renderHeader(agent, setupFreshness = true) {
     node.title = `Compaction #${compaction.id}: ${compaction.error || compaction.status}`;
     tail.append(node);
   }
-  chip(agent.branch, 'branch', tail);
-  chip(tokenText(agent.tokens), null, tail);
-  chip(agent.cost_usd ? `$${agent.cost_usd.toFixed(2)}` : '', null, tail);
+  const branch = chip(agent.branch, 'branch', tail);
+  if (branch) branch.title = agent.branch;  // the chip may cut it
 
+  // Tokens and cost are in the section's Usage, with the recent runs.
+  const usage = $('usage'); usage.replaceChildren();
+  const used = (key, value) => { if (value) usage.append(el('dt', '', key), el('dd', '', value)); };
+  used('Tokens', tokenText(agent.tokens)); used('Cost', agent.cost_usd ? `$${agent.cost_usd.toFixed(2)}` : '');
   const facts = $('facts'); facts.replaceChildren();
   const fact = (key, value) => { if (value) facts.append(el('dt', '', key), el('dd', '', String(value))); };
   fact('Project', agent.project); fact('Started by', agent.parent_id); fact('Workspace', agent.cwd);
@@ -596,8 +691,8 @@ function renderHeader(agent, setupFreshness = true) {
     row([`#${run.id}${run.kind === 'compact' ? ' compact' : ''}`, run.status, (run.ended_at || '').slice(11, 19), tokenText(run.tokens) || '–',
       run.cost_usd != null ? `$${run.cost_usd.toFixed(4)}` : '–', run.model || ''], 'td');
   }
+  if (!usage.childElementCount && !runs.childElementCount) usage.append(el('dd', 'empty-note', 'Nothing used yet.'));
   $('changes').textContent = agent.changes || '';
-  $('changes').hidden = !agent.changes;
 }
 
 // -- the code view of a worktree (read-only) ---------------------------------
@@ -796,10 +891,11 @@ function renderSetup(data, fresh = true) {
   setupData = data;
   const caps = $('setupCaps');
   if (caps) renderCapabilitySetup(caps, data);
+  // What a switch does to the prompt cache: behind the info button, only with a conversation.
+  renderCacheInfo((data && data.session && data.cacheHint) || '');
   if (!data) { box.replaceChildren(); note.replaceChildren(); note.dataset.key = ''; note.hidden = true; return; }
   const notes = [];
   if (data.running) notes.push('A change applies from the next turn; the running one is not changed.');
-  if (data.session && data.cacheHint) notes.push(data.cacheHint);
   // Rebuilt only when it changed, so a focused "Check again" stays.
   const noteKey = JSON.stringify([notes, data.provider, providerTitle(provider(data.provider)), state.providers.some(canRun)]);
   if (note.dataset.key !== noteKey) {
@@ -1075,7 +1171,8 @@ const capabilityItems = holder => (Array.isArray(holder?.capabilities?.items) ? 
 // a running turn once no turn runs.
 let capabilityNote = null;
 
-// One line per capability under the setup, rebuilt when it changed. A poll leaves a line alone
+// One line per capability in the Capabilities group of the agent's settings and usage, rebuilt
+// when it changed. A poll leaves a line alone
 // while the user is on its choice or a choice of it is on its way; `own`: the capability whose
 // save has just answered, whose line is redrawn even while focused (the answer shows at once).
 function renderCapabilitySetup(box, data, own) {

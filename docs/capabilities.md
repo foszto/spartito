@@ -80,7 +80,7 @@ drops entries of that scope's settings that cannot be read.
 
 In the dashboard, the settings have a **Capabilities** box, for all projects and per project,
 with an inherit / on / off choice per capability and the roles' settings shown read-only. An
-agent's setup panel has a line per capability with its state, where it comes from and an
+agent's **Settings & usage** section has a line per capability with its state, where it comes from and an
 inherit / on / off choice; the new-agent dialog has a choice per capability, and agents with a
 capability on show a small badge in the list. The JSON API: `GET /api/capabilities` and
 `POST /api/capabilities`, `POST /api/agents/<id>/capabilities`

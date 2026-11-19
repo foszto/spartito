@@ -154,7 +154,7 @@ also through a `spartito` command run in its turn; only you and the orchestrator
 server on globally, for a project or for a role. A new agent gets one with
 `spartito spawn --capabilities mcp:docs-db`, or with `capabilities="mcp:docs-db"` in the MCP
 tools `spawn_agent` and `send_message`. The dashboard's capability controls (the
-**Capabilities** box, an agent's setup panel, the new-agent dialog) list each server like any
+**Capabilities** box, an agent's **Settings & usage** section, the new-agent dialog) list each server like any
 other capability; adding and removing are on the command line only.
 
 ```

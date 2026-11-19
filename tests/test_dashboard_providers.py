@@ -22,7 +22,7 @@ NAMES = (
     "openProjectDialog", "inherited", "openAgentDialog", "renderSettings", "defaultProviderBox",
     "setupSlot", "setupBusy", "bumpSetup", "inherits", "settingLabel", "renderSetup",
     "buildProviderControl", "moveAgent", "moved", "setupRequest", "describe", "markOwn",
-    "markExtras", "buildControl", "sendMessage",
+    "markExtras", "buildControl", "sendMessage", "renderCacheInfo", "showCacheTip", "cacheTipKey",
 )  # fmt: skip
 
 

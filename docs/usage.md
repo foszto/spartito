@@ -531,9 +531,10 @@ Messages that have not started yet are listed under **Queued**, where they can b
 (pencil) or withdrawn (**✕**). A state such as *idle · 3 agents working* means the agent
 itself is idle while agents it started are working; you can still write to it.
 
-**Agent header.** Status, context bar (for example `780k/1M 78%`, with the automatic
-compaction threshold), tokens and cost, and the buttons **Stop**, **Compact** (with optional
-instructions) and **Archive** / **Restore**. The model and effort drop-downs:
+**Agent header.** Name, status, role, the provider, model and effort drop-downs, the context
+bar (for example `780k/1M 78%`, with the automatic compaction threshold), the branch, and the
+buttons **Compact** (with optional instructions), **Code**, **Settings & usage**, **Stop** and
+**Archive** / **Restore**. The model and effort drop-downs:
 
 - list the provider's models (for Claude, the models the installed Claude Code offers, read
   once per process without a model request; if that fails, the aliases, marked
@@ -541,6 +542,23 @@ instructions) and **Archive** / **Restore**. The model and effort drop-downs:
   `other…` for any name (Enter applies, Esc discards), and `inherit (…)`, which clears the
   agent's own value and shows what applies instead (the tier setting or `CLI default`);
 - mark the agent's own value as `own`; a change applies from the next turn.
+
+Once the agent has a conversation, an info button (**ⓘ**) after the drop-downs tells what
+switching the model or the effort does to the prompt cache. It shows on hover, on keyboard
+focus and on a click; Escape, moving away or leaving it hides it.
+
+**Settings & usage** opens a section under the header, in groups that each fold up (what is
+open stays open while the page refreshes, and the groups also on the next visit):
+
+- **Capabilities**: a line per capability, with its inherit / on / off choice (see
+  *Capabilities* below);
+- **Usage**: the agent's tokens and cost, and its recent turns with the tokens, cost and model
+  of each;
+- **About**: project, who started it, workspace, session, turns, the last run's model and the
+  command to take it over in a terminal (`spartito attach`);
+- **Changes**: the commits of its branch and its uncommitted changes (not for Maestro).
+
+For Maestro before its first message it holds only **Capabilities**.
 
 **Code view.** **Code** in the header of an agent with a worktree of its own shows its code in
 place of the conversation, read-only, and loads it only when opened (**Refresh** loads it
@@ -607,8 +625,8 @@ the notifications itself, so that a click opens the agent or decision (see
 
 **Capabilities.** The settings have a **Capabilities** box, for all projects and per project:
 an inherit / on / off choice per capability, and the roles' settings shown read-only. An
-agent's setup panel has a line per capability with its state, where it comes from and an
-inherit / on / off choice; the new-agent dialog has a choice per capability, and agents with a
+agent's **Settings & usage** section has a line per capability with its state, where it comes
+from and an inherit / on / off choice; the new-agent dialog has a choice per capability, and agents with a
 capability on show a small badge in the list ([capabilities.md](capabilities.md)).
 
 **Decisions** window: every open decision across projects with its project, agent, question,
