@@ -95,7 +95,8 @@ def test_an_explicit_provider_must_be_usable(orch: Orchestrator, monkeypatch) ->
     with pytest.raises(OrchestratorError) as raised:
         availability.choose("codex", [("claude", "the project's default")])
     assert str(raised.value) == (
-        "codex is not available: not installed (not_installed here). Available: claude, fake."
+        "codex is not available: not installed (not_installed here). Available: claude, opencode,"
+        " fake."
         f" `{config.CLI_NAME} providers` says more"
     )
     with pytest.raises(OrchestratorError, match="unknown provider 'nope'"):
@@ -125,10 +126,16 @@ def test_an_unusable_default_falls_back_to_the_first_usable_with_a_note(
 def test_unknown_counts_as_usable_and_nothing_usable_is_an_error(
     orch: Orchestrator, monkeypatch
 ) -> None:
-    statuses(monkeypatch, claude="not_installed", codex="not_installed")
+    statuses(monkeypatch, claude="not_installed", codex="not_installed", opencode="not_installed")
     assert availability.choose(None, [("fake", "the project's default")]).provider == "fake"
 
-    statuses(monkeypatch, claude="not_installed", codex="not_installed", fake="not_installed")
+    statuses(
+        monkeypatch,
+        claude="not_installed",
+        codex="not_installed",
+        opencode="not_installed",
+        fake="not_installed",
+    )
     with pytest.raises(availability.NoneUsable) as raised:
         availability.choose(None, [("codex", "the project's default")])
     message = str(raised.value)
@@ -143,7 +150,7 @@ def test_a_fallback_is_noted_on_the_first_run_and_in_every_reply(
     orch: Orchestrator, repo: Path, monkeypatch, no_launch: list[int], client: TestClient
 ) -> None:
     project = orch.add_project(str(repo), "demo", "codex").name
-    statuses(monkeypatch, codex="not_installed", claude="not_installed")
+    statuses(monkeypatch, codex="not_installed", claude="not_installed", opencode="not_installed")
     expected = (
         "codex (the project's default) is not available: not installed (not_installed here);"
         " this agent runs on fake"
@@ -213,7 +220,13 @@ def test_a_project_without_a_provider_gets_the_first_usable(
 def test_with_nothing_usable_the_first_supported_is_registered_with_a_note(
     orch: Orchestrator, repo: Path, monkeypatch
 ) -> None:
-    statuses(monkeypatch, claude="not_installed", codex="not_installed", fake="not_installed")
+    statuses(
+        monkeypatch,
+        claude="not_installed",
+        codex="not_installed",
+        opencode="not_installed",
+        fake="not_installed",
+    )
 
     project = orch.add_project(str(repo), "demo")
 

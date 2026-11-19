@@ -22,7 +22,7 @@ from home_guard import (  # noqa: F401  (no test reaches a real home: its hooks 
 
 from orchestrator import providers
 from orchestrator.core import availability, views
-from orchestrator.providers import claude, codex, locate
+from orchestrator.providers import claude, codex, locate, opencode
 from orchestrator.service import Orchestrator
 
 
@@ -353,6 +353,8 @@ def recorded_claude_models(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 CODEX_MODELS = Path(__file__).parent / "fixtures" / "codex_debug_models.json"
+# What `opencode models` prints: plain `provider/model` lines.
+OPENCODE_MODELS = "opencode/big-pickle\nopenrouter/openai/gpt-4.1-mini\n"
 FAKED_PROBE = "faked in tests"
 REAL_PROBE = availability.probe
 
@@ -366,7 +368,7 @@ def faked_probe(provider) -> locate.Probe:
     return REAL_PROBE(provider)
 
 
-# Stands in for every built-in provider's CLI (`claude`, `codex`) in every process of the suite, children included (a
+# Stands in for every built-in provider's CLI (`claude`, `codex`, `opencode`) in every process of the suite, children included (a
 # runner, an MCP server, a `spartito web` a test starts: none of them has this process's
 # patches). `--version` answers; anything else fails at once. Appends one line per call to
 # $FAKE_CLI_LOG when set: its path and arguments, each followed by \x1f.
@@ -423,15 +425,18 @@ def fake_provider_clis(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 @pytest.fixture(autouse=True)
 def no_real_provider_clis(monkeypatch: pytest.MonkeyPatch, fake_provider_clis: Path):
-    """No test runs a real `claude` or `codex`: in this process the availability check
-    reports both as available (version "test") without running anything, Codex's model list
-    is a recorded one (Claude's: recorded_claude_models), no usual install directory is
+    """No test runs a real `claude`, `codex` or `opencode`: in this process the availability
+    check reports each as available (version "test") without running anything, Codex's and
+    opencode's model lists are recorded ones (Claude's: recorded_claude_models), no usual
+    install directory is
     searched, and no check of an earlier test is kept; children find fake_provider_clis.
     Tests of the real check call locate.probe with a PATH of fakes."""
     monkeypatch.setattr(locate, "EXTRA_DIRS", ())
     monkeypatch.setattr(availability, "probe", faked_probe)
     monkeypatch.setattr(codex, "request_model_list", CODEX_MODELS.read_text)
     monkeypatch.setitem(providers.PROVIDERS, "codex", codex.CodexProvider())
+    monkeypatch.setattr(opencode, "request_model_list", lambda: OPENCODE_MODELS)
+    monkeypatch.setitem(providers.PROVIDERS, "opencode", opencode.OpencodeProvider())
     availability.reset()
     yield
     # A background check still running must end before the fakes above are undone.

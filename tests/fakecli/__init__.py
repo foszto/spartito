@@ -3,8 +3,9 @@
 A provider's own command line (its invocation) runs with `python engine.py <dialect>` in
 place of its executable (`launch`); the arguments, stdin and environment are the ones the
 provider built. The engine (engine.py) records what the CLI was started with and plays the
-scenario that the words of the prompt describe; the dialect (claude.py, codex.py) reads the
-CLI's own options and input and writes the abstract events as the CLI's own output lines.
+scenario that the words of the prompt describe; the dialect (claude.py, codex.py, opencode.py)
+reads the CLI's own options and input and writes the abstract events as the CLI's own output
+lines.
 
 What it records: one JSON line per launch in `fake-<dialect>.jsonl` in the run's scratch
 directory (FAKE_<DIALECT>_LOG names the file; `runs` reads it): `argv` (without the
@@ -36,7 +37,7 @@ import sys
 from pathlib import Path
 
 ENGINE = Path(__file__).with_name("engine.py")
-DIALECTS = ("claude", "codex")  # a module of this package each
+DIALECTS = ("claude", "codex", "opencode")  # a module of this package each
 
 
 def log_variable(dialect: str) -> str:

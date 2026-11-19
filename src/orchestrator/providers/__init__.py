@@ -8,9 +8,10 @@ import os
 from .base import Invocation, McpServer, Provider, RunContext
 from .claude import ClaudeProvider
 from .codex import CodexProvider
+from .opencode import OpencodeProvider
 
 # The supported harnesses, in the order "the first available one" goes by.
-BUILTIN = (ClaudeProvider, CodexProvider)
+BUILTIN = (ClaudeProvider, CodexProvider, OpencodeProvider)
 PROVIDERS: dict[str, Provider] = {cls.name: cls() for cls in BUILTIN}
 
 

@@ -6,6 +6,8 @@ A dialect module defines `Dialect(argv)` with:
 - `prompt(raw)`: the prompt in stdin;
 - `session()`, `compaction(trigger, pre, post)`, `result(text, error, usage)`: the CLI's
   output lines (dicts) for these events; `usage` has the keys of TOKENS (see __init__).
+Optional: `command()`, the exit code of a call that is no turn (it has answered it; None: a
+turn), and `exit_code`, the turn's (default 0).
 """
 
 import importlib
@@ -26,6 +28,10 @@ def emit(lines: list[dict]) -> None:
 def main() -> None:
     name, argv = sys.argv[1], sys.argv[2:]
     cli = importlib.import_module(f"fakecli.{name}").Dialect(argv)
+    command = getattr(cli, "command", None)
+    code = command() if command else None
+    if code is not None:
+        sys.exit(code)
     seen: dict = {"argv": argv}
     cli.record(seen)
     names = [n for n in os.environ.get(f"FAKE_{name.upper()}_ENV", "").split(",") if n]
@@ -56,6 +62,7 @@ def main() -> None:
         emit(cli.result("boom", True, usage))
     else:
         emit(cli.result(f"done: {prompt}", False, usage))
+    sys.exit(getattr(cli, "exit_code", 0))
 
 
 if __name__ == "__main__":

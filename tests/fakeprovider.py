@@ -33,7 +33,9 @@ provider whose CLI is not installed.
 FakeClaude is Claude's own provider (ClaudeProvider: its command line, its private MCP
 configuration file, its parser) with the fake CLI of tests/fakecli in place of the `claude`
 executable, in its claude dialect; register it as `claude`. FakeCodex is the same for Codex
-(CodexProvider, the codex dialect). The fake CLI reads the provider's own options and input
+(CodexProvider, the codex dialect), and FakeOpencode for opencode (OpencodeProvider, the
+opencode dialect: its configuration and shell are recorded too, see fakecli/opencode.py). The
+fake CLI reads the provider's own options and input
 (Claude: the SessionStart hooks of `--settings`, the memory canary; the prompt as stream-json
 with `--input-format stream-json`), appends what it saw to `fake-claude.jsonl` or
 `fake-codex.jsonl` in the run's scratch directory (`claude_runs`, `codex_runs`: `argv`
@@ -84,6 +86,7 @@ from orchestrator.models import Agent, Event, Usage
 from orchestrator.providers.base import NOTIFICATION_RESULT, Invocation, RunContext
 from orchestrator.providers.claude import ClaudeProvider, loadout_flags, stream_json_prompt
 from orchestrator.providers.codex import CodexProvider
+from orchestrator.providers.opencode import OpencodeProvider
 
 SCRIPT = r"""
 import json, os, pathlib, signal, subprocess, sys, time
@@ -313,6 +316,17 @@ class FakeCodex(CodexProvider):
         return fakecli.launch(super().invocation(ctx), "codex", ctx.scratch)
 
 
+class FakeOpencode(OpencodeProvider):
+    """opencode's provider with the fake CLI (fakecli, its opencode dialect) in place of
+    `opencode`."""
+
+    def models(self) -> list[str]:
+        return ["fake/opencode-model"]
+
+    def invocation(self, ctx: RunContext) -> Invocation:
+        return fakecli.launch(super().invocation(ctx), "opencode", ctx.scratch)
+
+
 def claude_runs(scratch) -> list[dict]:
     """What FakeClaude's CLI saw, one entry per launch (fake-claude.jsonl)."""
     return fakecli.runs(scratch, "claude")
@@ -321,3 +335,8 @@ def claude_runs(scratch) -> list[dict]:
 def codex_runs(scratch) -> list[dict]:
     """What FakeCodex's CLI saw, one entry per launch (fake-codex.jsonl)."""
     return fakecli.runs(scratch, "codex")
+
+
+def opencode_runs(scratch) -> list[dict]:
+    """What FakeOpencode's CLI saw, one entry per launch (fake-opencode.jsonl)."""
+    return fakecli.runs(scratch, "opencode")

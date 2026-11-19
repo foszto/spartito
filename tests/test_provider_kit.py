@@ -266,7 +266,7 @@ def test_the_answers_json_is_taken_out_of_a_code_block(text: str, found: object)
 # -- the providers' attributes ------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("name", ["claude", "codex"])
+@pytest.mark.parametrize("name", ["claude", "codex", "opencode"])
 def test_the_provider_attributes_say_what_the_tables_say(name: str) -> None:
     """What the consumers read instead of the tables keyed by name; the attribution texts
     both produce are pinned in test_attribution."""
@@ -276,7 +276,7 @@ def test_the_provider_attributes_say_what_the_tables_say(name: str) -> None:
     assert set(provider.config_env) <= set(runner.MCP_PASSED_ENV) & set(autostart.env_names())
     assert provider.reports_context is isinstance(provider, providers.BUILTIN)
     assert provider.carries_mcp_servers is (name == "claude")  # capabilities.mcp_capability
-    assert not hasattr(provider, "min_version")
+    assert getattr(provider, "min_version", None) == {"opencode": (2, 2, 3)}.get(name)
 
 
 # -- a plugin that knows nothing of the kit -----------------------------------------------------

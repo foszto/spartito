@@ -14,9 +14,11 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from fakeprovider import FakeOpencode, opencode_runs
 
+from orchestrator import config, providers, roles
 from orchestrator.loadout import Loadout
-from orchestrator.models import Agent
+from orchestrator.models import Agent, RunStatus
 from orchestrator.providers import McpServer, RunContext, opencode
 from orchestrator.providers.base import Wiring
 from orchestrator.providers.opencode import OpencodeProvider
@@ -349,3 +351,265 @@ def test_the_wrapper_unsets_a_value_that_was_unset(
     assert run_wrapper(invocation, dict(os.environ)) == "(unset)"
     servers = turn_config(invocation)["mcp"]["servers"]
     assert servers["orch"]["environment"]["XDG_CONFIG_HOME"] == str(Path.home() / ".config")
+
+
+# -- the stream ---------------------------------------------------------------------------------
+
+SID = "ses_0123456789abcdef0123456789"
+
+
+def line(kind: str, **fields) -> str:
+    return json.dumps({"type": kind, "timestamp": 1, "sessionID": SID, **fields})
+
+
+def part(kind: str, **fields) -> dict:
+    return {"messageID": "msg_1", "sessionID": SID, "type": kind, **fields}
+
+
+def text(part_id: str, words: str) -> str:
+    return line("text", part=part("text", id=part_id, text=words, time={"start": 1, "end": 2}))
+
+
+def step_finish(
+    tokens_in: int, out: int, read: int, write: int, cost: float, reasoning: int = 0
+) -> str:
+    tokens = {"input": tokens_in, "output": out, "reasoning": reasoning,
+              "cache": {"read": read, "write": write}}  # fmt: skip
+    return line(
+        "step_finish", part=part("step-finish", id="prt_f", reason="stop", cost=cost, tokens=tokens)
+    )
+
+
+def tool(name: str, given: object, output: str = "", status: str = "completed", **state) -> str:
+    state = {"status": status, "input": given, "output": output, "title": "", **state}
+    return line("tool_use", part=part("tool", partID="prt_t", id="call_1", tool=name, state=state))
+
+
+STEP_START = line("step_start", part=part("step-start", id="prt_s", snapshot="0"))
+
+
+def read(*lines: str, code: int = 0, structured: bool = False) -> list[tuple]:
+    """Each event of the lines and the end of the stream as (kind, text, extra)."""
+    stream = opencode.Stream(structured=structured)
+    events = [event for one in lines for event in stream.feed(one)] + stream.finish(code)
+    return [
+        (e.kind, e.text, e.session_id or (e.usage.context_tokens if e.kind == "context" else None))
+        for e in events
+    ]
+
+
+def test_text_comes_per_part_when_the_step_ends() -> None:
+    events = read(
+        STEP_START,
+        text("prt_1", "first"),
+        text("prt_2", "second"),
+        text("prt_1", "first, whole"),  # a part's text is its whole text
+        step_finish(10, 2, 0, 0, 0.001),
+        "not json",
+    )
+
+    assert events == [
+        ("session", "", SID),
+        ("text", "first, whole", None),
+        ("text", "second", None),
+        ("context", "", 10),
+        ("info", "not json", None),
+        ("result", "second", None),  # the last text of the turn
+    ]
+
+
+def test_a_tool_comes_on_completion_and_an_error_state_is_a_tool_result() -> None:
+    done = tool("read", {"filePath": "README.md"}, output="# my-app")
+    failed = tool("shell", {"command": "false"}, status="error", error="exit 1")
+
+    assert read(done, failed)[1:3] == [
+        ("tool", 'read {"filePath": "README.md"}', None),
+        ("tool", 'shell {"command": "false"}', None),
+    ]
+    assert read(failed)[2] == ("tool_result", "error: exit 1", None)
+
+
+def test_a_code_mode_call_names_its_server_and_an_error_in_its_output() -> None:
+    code = "return tools.docs_db.query({q: 1});"
+    fine = tool("execute", {"code": code}, output='{"result": 5}')
+    broken = tool(
+        "execute", {"code": code}, output="TypeError: tools.docs_db.query is not a function"
+    )
+
+    assert read(fine)[1:-1] == [("tool", f"execute (docs_db.query) {code}", None)]
+    assert read(broken)[2] == (
+        "tool_result",
+        "error: TypeError: tools.docs_db.query is not a function",
+        None,
+    )
+
+
+def test_the_nested_error_fails_the_turn() -> None:
+    error = {"type": "provider.no-route", "message": "no route for model x"}
+    failed = line("error", error=error)
+
+    events = opencode.Stream()
+    for one in (STEP_START, failed):
+        events.feed(one)
+    (result,) = events.finish(1)
+
+    assert (result.kind, result.is_error) == ("result", True)
+    assert result.text == "no route for model x (provider.no-route)"
+    assert read(line("error", sessionID="", error={"type": "unknown"}), code=1)[-1][:2] == (
+        "result",
+        "error (unknown)",
+    )
+
+
+def test_a_failure_without_an_error_line_leaves_the_text_to_the_runner() -> None:
+    stream = opencode.Stream()
+    (result,) = stream.finish(1)
+
+    assert (result.kind, result.text, result.is_error) == ("result", "", True)
+
+
+def test_usage_and_cost_are_summed_over_the_steps_and_context_is_the_last() -> None:
+    stream = opencode.Stream()
+    events = [
+        event
+        for one in (
+            STEP_START,
+            step_finish(100, 10, 1000, 50, 0.01, reasoning=5),
+            step_finish(20, 30, 1200, 0, 0.02),
+        )
+        for event in stream.feed(one)
+    ]
+    (result,) = stream.finish(0)
+
+    sizes = [event.usage.context_tokens for event in events if event.kind == "context"]
+    assert sizes == [1150, 1220]  # input + cache read + cache write, per step
+    usage = result.usage
+    tokens = (usage.input_tokens, usage.output_tokens, usage.cache_read_tokens)
+    assert tokens == (120, 45, 2200) and usage.cache_creation_tokens == 50
+    assert result.cost_usd == pytest.approx(0.03) and usage.cost_usd == pytest.approx(0.03)
+    assert usage.cumulative is False  # per turn, not session totals
+
+
+@pytest.mark.parametrize("code", [143, -15])
+def test_a_signal_exit_is_a_stop(code: int) -> None:
+    stream = opencode.Stream()
+    stream.feed(STEP_START)
+    stream.feed(text("prt_1", "half"))
+
+    *texts, result = stream.finish(code)
+
+    assert [(e.kind, e.text) for e in texts] == [("text", "half")]
+    assert result.is_error and result.text.startswith("stopped: opencode ended by a signal")
+    assert result.usage is None  # a killed step reports nothing
+
+
+def test_retries_and_background_jobs_are_info() -> None:
+    retry = line("retry", attempt=2, nextRetryAt=5, error={"message": "overloaded"})
+    wait = line("background_wait", jobs=[{"id": "j1", "kind": "shell", "title": "npm test"}])
+
+    assert read(retry, wait)[1:3] == [
+        ("info", "retry 2: overloaded", None),
+        ("info", "waiting for background jobs: npm test", None),
+    ]
+
+
+def test_a_structured_answer_is_read_from_the_last_text() -> None:
+    answer = 'Done.\n```json\n{"summary": "ok"}\n```'
+
+    def result(words: str, structured: bool = True):
+        stream = opencode.Stream(structured=structured)
+        for one in (STEP_START, text("prt_1", words), step_finish(1, 1, 0, 0, 0)):
+            stream.feed(one)
+        return stream.finish(0)[-1]
+
+    assert result(answer).structured == {"summary": "ok"}
+    assert result(answer).text == answer
+    assert result("no JSON, sorry").structured is None
+    assert result(answer, structured=False).structured is None  # none was asked for
+
+
+# -- turns through the runner on the fake CLI ---------------------------------------------------
+
+
+@pytest.fixture
+def opencode_turns(orch, project: str, monkeypatch: pytest.MonkeyPatch) -> str:
+    """FakeOpencode as `opencode`, here and in runners; the user's XDG_CONFIG_HOME is the
+    temporary one of conftest. Returns the project."""
+    monkeypatch.setenv(
+        "ORCH_PROVIDERS", "fake=fakeprovider:FakeProvider,opencode=fakeprovider:FakeOpencode"
+    )
+    monkeypatch.setitem(providers.PROVIDERS, "opencode", FakeOpencode())
+    monkeypatch.setenv("FAKE_OPENCODE_ENV", "ORCH_HOME,PWD")
+    return project
+
+
+def finished(orch, agent_id: str) -> None:
+    idle, _ = orch.wait([agent_id], timeout=60)
+    assert idle
+
+
+def test_a_worker_turn_and_its_resumed_turn(orch, opencode_turns: str) -> None:
+    user_home = os.environ["XDG_CONFIG_HOME"]
+    agent, first = orch.spawn(opencode_turns, "hello TOKENS 1000", provider="opencode")
+    finished(orch, agent.id)
+
+    run = orch.store.get_run(first.id)
+    assert run.status is RunStatus.DONE, run.error
+    (seen,) = opencode_runs(config.run_dir(first.id))
+    session = option(seen["argv"], "--session")
+    assert seen["argv"][:4] == ["run", "--standalone", "--format", "json"]
+    assert ["--archived", "--title", agent.id] == seen["argv"][6:9]
+    assert orch.store.get_agent(agent.id).session_id == session
+    cwd = orch.store.get_agent(agent.id).cwd
+    assert seen["env"] == {"ORCH_HOME": os.environ["ORCH_HOME"], "PWD": cwd}
+    # The role prompt and the credit are in the instructions file, every turn.
+    assert seen["prompt"] == "hello TOKENS 1000"
+    (instructions,) = seen["instructions"]
+    assert roles.load("worker", None).prompt.splitlines()[0] in instructions
+    assert "[OpenCode](https://opencode.ai)" in instructions
+    assert (seen["mode"], seen["dir_mode"]) == ("0o600", "0o700")
+    assert not Path(seen["config_path"]).exists()  # removed with the turn
+    assert seen["config_content"]["permissions"][-1]["resource"].endswith("/*")  # the .git
+    # The worker leaves out the user's opencode config: moved away for opencode, given back
+    # to the agent's commands by the shell wrapper.
+    assert seen["config_home"] != user_home
+    assert seen["command_config_home"] == user_home
+    assert run.result.startswith("done: hello TOKENS 1000")
+    assert run.structured is None  # no answer schema was asked for
+    usage = orch.store.usage_of(agent.id)[first.id]
+    tokens = (usage.input_tokens, usage.output_tokens, usage.cache_read_tokens)
+    assert tokens == (1000, 100, 2000) and usage.cache_creation_tokens == 500
+    assert run.cost_usd == pytest.approx(0.01) and usage.cumulative is False
+    assert usage.context_tokens == 3500
+
+    second = orch.send(agent.id, "FAIL")
+    finished(orch, agent.id)
+
+    run = orch.store.get_run(second.id)
+    assert run.status is RunStatus.FAILED and run.error == "boom (unknown)"
+    (seen,) = opencode_runs(config.run_dir(second.id))
+    assert option(seen["argv"], "--session") == session and "--archived" not in seen["argv"]
+
+
+def test_a_lead_turn_has_the_orch_server_in_its_configuration(orch, opencode_turns: str) -> None:
+    user_home = os.environ["XDG_CONFIG_HOME"]
+    agent, run = orch.spawn(
+        opencode_turns, "plan", provider="opencode", role="lead", worktree=False
+    )
+    finished(orch, agent.id)
+
+    assert orch.store.get_run(run.id).status is RunStatus.DONE
+    (seen,) = opencode_runs(config.run_dir(run.id))
+    servers = seen["config"]["mcp"]["servers"]
+    assert list(servers) == ["orch"]
+    assert servers["orch"]["type"] == "local"
+    assert servers["orch"]["command"][1:] == ["-m", "orchestrator.mcp_server"]
+    assert servers["orch"]["environment"]["ORCH_AGENT_ID"] == agent.id
+    # The server gets the user's own XDG_CONFIG_HOME, not the one the turn moved away.
+    assert seen["server_config_home"] == {"orch": user_home} != {"orch": seen["config_home"]}
+    assert seen["command_config_home"] == user_home
+    statements = [(p["action"], p["resource"], p["effect"]) for p in seen["config"]["policies"]]
+    assert ("mcp.use", "*", "deny") in statements and ("mcp.use", "orch", "allow") in statements
+    allow = {"action": "orch_*", "resource": "*", "effect": "allow"}
+    assert allow in seen["config_content"]["permissions"]
+    assert seen["prompt"] == "plan"
