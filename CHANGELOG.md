@@ -16,13 +16,21 @@ chosen is in the
   in a config file is not listed there. Each turn runs with a private opencode server, the
   role prompt every turn, its loadout as opencode permissions and policies, and leads get the
   `orch` MCP server; a project's `opencode.json` cannot replace the turn's permissions,
-  shell or MCP servers. By default (`setting_sources` without `user`) the user's global
-  opencode config is left out, and with it a provider keyed only there; logins and
-  environment variables still work, and the agent's commands keep the user's own
-  `XDG_CONFIG_HOME` and run in bash. Its cost and context size are reported; it cannot
+  shell or MCP servers. The user's global opencode config applies to its agents, with the
+  turn's permissions and policies on top. Its cost and context size are reported; it cannot
   compact, so it shows no automatic compaction threshold, has no Claude in Chrome, does not
   get MCP servers added in Spartito yet, and only asks for an answer schema in the prompt
   ([providers.md](docs/providers.md#opencode-opencode)).
+- The loadout key `opencode_user_config` (default `true`): OpenCode agents keep the user's
+  global opencode config (custom providers and models, plugins, skills, global `AGENTS.md`)
+  and run their commands in the user's shell, whatever `setting_sources` says, so a model of
+  a provider defined only in `~/.config/opencode/opencode.json` works for them. OpenCode's
+  skills are allowed too: neither `slash_commands = false` nor a `tools` list without `Skill`
+  denies them, only `tools = none`; with `mcp = strict` the global config's MCP servers stay
+  refused. `opencode_user_config = false` in `~/.orchestrator/loadout.toml` restores the
+  isolation. A project's own files can only
+  turn it off. Claude Code and Codex are not affected
+  ([configuration.md](docs/configuration.md#opencode)).
 - `spartito providers` checks which of the supported harnesses, Claude Code, Codex and
   OpenCode, this machine can run: each CLI is looked for on `PATH` and in the usual install
   directories and asked its version, without a network request or an agent turn; only

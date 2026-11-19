@@ -8,6 +8,8 @@ import pytest
 
 from orchestrator import config, roles
 from orchestrator.loadout import Loadout, LoadoutError, resolve
+from orchestrator.models import Agent
+from orchestrator.providers import RunContext, get
 from orchestrator.providers.claude import loadout_flags
 from orchestrator.service import Orchestrator
 
@@ -71,6 +73,7 @@ def test_packaged_roles_load_only_what_their_job_needs(home: Path) -> None:
         assert loadout.strict_mcp, name
         assert loadout.setting_sources == ("project", "local"), name
         assert not loadout.slash_commands and not loadout.codex_user_config, name
+        assert loadout.opencode_user_config, name  # OpenCode keeps the user's global config
         assert "Skill" not in loadout.tools, name  # skills off: they could not be invoked
         assert {"Bash", "Read", "Glob", "Grep"} <= set(loadout.tools), name
     for name in ("worker", "tester"):
@@ -373,3 +376,67 @@ def test_a_turn_reports_an_ignored_project_inherit_and_stays_strict(
     assert "--strict-mcp-config" in seen["loadout_flags"]
     info = [event.text for event in orch.store.events(agent.id) if event.kind == "info"]
     assert ignored_inherit(where) in info
+
+
+def test_opencode_user_config_is_on_and_the_home_can_turn_it_off(home: Path) -> None:
+    write_role(home / "roles", "custom", "---\nopencode_user_config: false\n---\nWork.\n")
+
+    assert resolve(roles.load("worker")).opencode_user_config
+    assert not resolve(roles.load("custom")).opencode_user_config  # a home role file
+    home.joinpath("loadout.toml").write_text("[worker]\nopencode_user_config = false\n")
+    assert not resolve(roles.load("worker")).opencode_user_config
+    assert resolve(roles.load("reviewer")).opencode_user_config
+
+
+def test_a_project_can_turn_opencode_user_config_off_but_not_on(home: Path, tmp_path: Path) -> None:
+    home.mkdir()
+    home.joinpath("loadout.toml").write_text("[default]\nopencode_user_config = false\n")
+    project = tmp_path / "my-app"
+    (project / ".orch").mkdir(parents=True)
+    path = project / ".orch" / "loadout.toml"
+    path.write_text("[worker]\nopencode_user_config = true\n")
+    write_role(project / ".orch" / "roles", "custom", "---\nopencode_user_config: true\n---\nW.\n")
+    warnings: list[str] = []
+
+    worker = resolve(roles.load("worker", project), project, warn=warnings.append)
+    role = roles.load("custom", project)
+    custom = resolve(role, project, warn=warnings.append)
+
+    assert not worker.opencode_user_config and not custom.opencode_user_config
+    grant = (
+        "ignoring `opencode_user_config = true`: a project's own files cannot give its agents"
+        f" the user's global opencode configuration; set it in {config.home() / 'loadout.toml'}"
+    )
+    assert warnings == [f"{path} [worker]: {grant}"]  # the home's [default] comes first
+    # Without the home's: the role file's is skipped too (the fallback's on applies).
+    home.joinpath("loadout.toml").unlink()
+    warnings.clear()
+    assert resolve(role, project, warn=warnings.append).opencode_user_config
+    assert warnings == [f"{role.source} (frontmatter): {grant}"]
+    # Off from a project is honoured, over the fallback's on.
+    path.write_text("[default]\nopencode_user_config = false\n")
+    warnings.clear()
+    assert not resolve(
+        roles.load("worker", project), project, warn=warnings.append
+    ).opencode_user_config
+    assert warnings == []
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+def test_opencode_user_config_changes_nothing_for_claude_and_codex(
+    tmp_path: Path, provider: str
+) -> None:
+    agent = Agent(id="a-1", project="p", name="a", role="worker", provider=provider, cwd="/w")
+    packaged = resolve(roles.load("worker"))
+    calls = []
+    for on in (True, False):
+        ctx = RunContext(agent=agent, prompt="do it", system_prompt="ROLE", scratch=tmp_path)
+        ctx.loadout = Loadout(**{**vars(packaged), "opencode_user_config": on})
+        invocation = get(provider).invocation(ctx)
+        calls.append((invocation.argv, invocation.env))
+
+    on, off = calls
+    session = "--session-id"
+    if session in on[0]:  # a new session id each time
+        on[0][on[0].index(session) + 1] = off[0][off[0].index(session) + 1]
+    assert on == off

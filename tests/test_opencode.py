@@ -35,7 +35,10 @@ from orchestrator.providers.opencode import OpencodeProvider
 
 # The real lookup; conftest replaces the module attribute with a recorded answer.
 REAL_REQUEST_MODEL_LIST = opencode.request_model_list
-STRICT = Loadout(strict_mcp=True, setting_sources=("project", "local"))  # as the fallback
+# The packaged roles' loadout (their `tools` aside): the user's global opencode config kept.
+PACKAGED = Loadout(strict_mcp=True, setting_sources=("project", "local"), slash_commands=False)
+# The same with `opencode_user_config = false`: the user's global opencode config left out.
+STRICT = replace(PACKAGED, slash_commands=True, opencode_user_config=False)
 OWN = McpServer(command="python", args=["-m", "orchestrator.mcp_server"], env={"A": "1"})
 DOCS_DB = {"command": "docs-db", "args": ["--db", "${DOCS_DB:-main}"], "env": {"URL": "${DB_URL}"}}
 REMOTE = {"type": "http", "url": "https://docs.example.com/mcp", "headers": {"X": "${TOKEN}"}}
@@ -199,7 +202,7 @@ def test_the_file_holds_the_policies_and_the_content_the_rest(tmp_path: Path) ->
 
 
 def test_every_deny_is_backed_by_a_policy(tmp_path: Path) -> None:
-    loadout = Loadout(tools=("Read",), slash_commands=False)
+    loadout = Loadout(tools=("Read",), slash_commands=False, opencode_user_config=False)
     invocation = OpencodeProvider().invocation(context(tmp_path, loadout))
 
     for rule in permissions(invocation):
@@ -209,7 +212,8 @@ def test_every_deny_is_backed_by_a_policy(tmp_path: Path) -> None:
 
 
 def test_a_tool_list_denies_the_actions_it_does_not_cover(tmp_path: Path) -> None:
-    loadout = Loadout(tools=("Read", "Grep", "Glob", "Bash", "ToolSearch", "mcp__x"))
+    tools = ("Read", "Grep", "Glob", "Bash", "ToolSearch", "mcp__x")
+    loadout = Loadout(tools=tools, opencode_user_config=False)
 
     invocation = OpencodeProvider().invocation(context(tmp_path, loadout))
 
@@ -234,11 +238,75 @@ def test_tools_none_and_default(tmp_path: Path) -> None:
     assert not set(denied(listed)) & set(opencode.BUILTIN_ACTIONS)
 
 
-def test_without_slash_commands_skills_are_denied(tmp_path: Path) -> None:
-    invocation = OpencodeProvider().invocation(context(tmp_path, Loadout(slash_commands=False)))
+def test_without_slash_commands_skills_are_denied_unless_the_user_config_is_kept(
+    tmp_path: Path,
+) -> None:
+    isolated = Loadout(slash_commands=False, opencode_user_config=False)
+    invocation = OpencodeProvider().invocation(context(tmp_path, isolated))
+    kept = OpencodeProvider().invocation(context(tmp_path, Loadout(slash_commands=False)))
 
     assert "skill" in denied(invocation)
     assert ("skill.use", "*", "deny") in policies(invocation)
+    assert "skill" not in denied(kept)
+    assert not [p for p in policies(kept) if p[0] == "skill.use" or p[1].startswith("skill")]
+
+
+def no_skill_deny(invocation) -> bool:
+    return "skill" not in denied(invocation) and not [
+        p for p in policies(invocation) if p[0] == "skill.use" or p[1].startswith("skill:")
+    ]
+
+
+def test_a_tools_list_without_skill_denies_skills_only_without_the_user_config(
+    tmp_path: Path,
+) -> None:
+    """The packaged roles' lists leave out Skill for Claude's sake: with the user's
+    opencode config kept that denies no skill; `none` still does, and the opt-out as before."""
+    packaged = replace(PACKAGED, tools=("Bash", "Read", "Edit", "Write", "Glob", "Grep"))
+    opted_out = replace(packaged, opencode_user_config=False)
+    none = replace(PACKAGED, tools=())
+
+    kept = OpencodeProvider().invocation(context(tmp_path, packaged))
+    isolated = OpencodeProvider().invocation(context(tmp_path, opted_out))
+    nothing = OpencodeProvider().invocation(context(tmp_path, none))
+
+    assert no_skill_deny(kept)
+    assert [a for a in denied(kept) if a in opencode.BUILTIN_ACTIONS] == [
+        "webfetch", "websearch", "subagent",
+    ]  # fmt: skip
+    assert "skill" in denied(isolated)
+    assert ("tool.use", "skill:*", "deny") in policies(isolated)
+    assert ("skill.use", "*", "deny") in policies(isolated)
+    assert [a for a in denied(nothing) if a in opencode.BUILTIN_ACTIONS] == list(
+        opencode.BUILTIN_ACTIONS
+    )
+    assert ("tool.use", "skill:*", "deny") in policies(nothing)
+
+
+def test_the_packaged_loadout_keeps_the_users_config_and_the_turns_limits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`opencode_user_config` (default true): no moved XDG_CONFIG_HOME, no shell wrapper, no
+    plugin or skill deny; the rest of the turn's limits hold as without it."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", "/home/me/.config")
+    shared = tmp_path / "repo" / ".git"
+    shared.mkdir(parents=True)
+    ctx = replace(context(tmp_path, PACKAGED), mcp=OWN, lead=True, writable_dirs=[str(shared)])
+
+    invocation = OpencodeProvider().invocation(ctx)
+
+    assert "XDG_CONFIG_HOME" not in invocation.env and "shell" not in turn_config(invocation)
+    assert "OPENCODE_DISABLE_PROJECT_CONFIG" not in invocation.env
+    actions = {action for action, _, _ in policies(invocation)}
+    assert not {"plugin.use", "skill.use"} & actions
+    assert "skill" not in denied(invocation)
+    assert denied(invocation) == [*opencode.ALWAYS_DENIED, "external_directory"]
+    boundary = os.path.realpath(shared) + "/*"
+    assert ("tool.use", f"external_directory:{boundary}", "allow") in policies(invocation)
+    assert policies(invocation)[-2:] == [("mcp.use", "*", "deny"), ("mcp.use", "orch", "allow")]
+    server = turn_config(invocation)["mcp"]["servers"]["orch"]
+    assert "XDG_CONFIG_HOME" not in server["environment"]  # it inherits the user's own
+    assert not list(config.agent_files_dir(AGENT_ID).rglob("AGENTS.md"))
 
 
 def test_the_shared_git_directory_is_the_only_one_outside(tmp_path: Path) -> None:
@@ -264,7 +332,7 @@ def test_setting_sources_decide_project_and_user_configuration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", "/home/me/.config")
-    user_only = Loadout(setting_sources=("user",))
+    user_only = Loadout(setting_sources=("user",), opencode_user_config=False)
     every = OpencodeProvider().invocation(context(tmp_path))
     user = OpencodeProvider().invocation(context(tmp_path, user_only))
     no_user = OpencodeProvider().invocation(context(tmp_path, STRICT))
@@ -276,7 +344,8 @@ def test_setting_sources_decide_project_and_user_configuration(
     for kept in (every, user):
         assert "XDG_CONFIG_HOME" not in kept.env and "shell" not in turn_config(kept)
         assert ("plugin.use", "*", "deny") not in policies(kept)
-    # Without: moved away to a home of the agent's; no plugins.
+    # Without, and with `opencode_user_config = false`: moved away to a home of the
+    # agent's; no plugins.
     own = config.agent_files_dir(AGENT_ID)
     assert no_user.env["XDG_CONFIG_HOME"] == str(own / opencode.CONFIG_HOME)
     assert Path(no_user.env["XDG_CONFIG_HOME"]).is_dir()
@@ -290,7 +359,7 @@ def test_a_moved_config_home_has_a_global_agents_file_in_place_of_claudes(
     """opencode reads `~/.claude/CLAUDE.md` when its config directory has no AGENTS.md
     (documented): without `user` a placeholder takes its place; with `user`, nothing."""
     monkeypatch.setenv("XDG_CONFIG_HOME", "/home/me/.config")
-    kept = Loadout(setting_sources=("user", "project"))
+    kept = Loadout(setting_sources=("user", "project"), opencode_user_config=False)
 
     OpencodeProvider().invocation(context(tmp_path, kept, agent_id="kept-1a2b"))
     no_user = OpencodeProvider().invocation(context(tmp_path, STRICT, agent_id="moved-3c4d"))
@@ -710,7 +779,33 @@ def finished(orch, agent_id: str) -> None:
     assert idle
 
 
+def leave_the_user_config_out() -> None:
+    """The opt-out in the home's loadout.toml: `opencode_user_config = false`."""
+    config.home().mkdir(parents=True, exist_ok=True)
+    (config.home() / "loadout.toml").write_text("[default]\nopencode_user_config = false\n")
+
+
+def test_a_worker_turn_keeps_the_users_opencode_config_by_default(
+    orch, opencode_turns: str
+) -> None:
+    user_home = os.environ["XDG_CONFIG_HOME"]
+    agent, run = orch.spawn(opencode_turns, "hello", provider="opencode")
+    finished(orch, agent.id)
+
+    assert orch.store.get_run(run.id).status is RunStatus.DONE
+    (seen,) = opencode_runs(config.run_dir(run.id))
+    assert seen["config_home"] == seen["command_config_home"] == user_home
+    assert seen["shell"] is None and seen["global_agents"] is None
+    statements = [(p["action"], p["resource"]) for p in seen["config"]["policies"]]
+    assert not [s for s in statements if s[0] in ("plugin.use", "skill.use")]
+    assert ("tool.use", "skill:*") not in statements  # its `tools` lack Skill: allowed anyway
+    assert "skill" not in [r["action"] for r in seen["config_content"]["permissions"]]
+    assert ("tool.use", "question:*") in statements and ("mcp.use", "*") in statements
+    assert not (config.agent_files_dir(agent.id) / opencode.CONFIG_HOME).exists()
+
+
 def test_a_worker_turn_and_its_resumed_turn(orch, opencode_turns: str) -> None:
+    leave_the_user_config_out()
     user_home = os.environ["XDG_CONFIG_HOME"]
     agent, first = orch.spawn(opencode_turns, "hello TOKENS 1000", provider="opencode")
     finished(orch, agent.id)
@@ -733,12 +828,15 @@ def test_a_worker_turn_and_its_resumed_turn(orch, opencode_turns: str) -> None:
     assert (seen["mode"], seen["dir_mode"]) == ("0o600", "0o700")
     assert not Path(seen["config_path"]).exists()  # removed with the turn
     assert seen["config_content"]["permissions"][-1]["resource"].endswith("/*")  # the .git
-    # The worker leaves out the user's opencode config: moved away for opencode, given back
-    # to the agent's commands by the shell wrapper.
+    # Opted out, the worker leaves out the user's opencode config: moved away for opencode,
+    # given back to the agent's commands by the shell wrapper; no plugins nor skills.
     assert seen["config_home"] != user_home
     assert seen["command_config_home"] == user_home
     assert seen["global_agents"] == opencode.GLOBAL_AGENTS_TEXT  # in place of CLAUDE.md
     assert seen["config_home"] == str(config.agent_files_dir(agent.id) / opencode.CONFIG_HOME)
+    statements = [(p["action"], p["resource"], p["effect"]) for p in seen["config"]["policies"]]
+    assert ("plugin.use", "*", "deny") in statements and ("skill.use", "*", "deny") in statements
+    assert ("tool.use", "skill:*", "deny") in statements
     assert run.result.startswith("done: hello TOKENS 1000")
     assert run.structured is None  # no answer schema was asked for
     usage = orch.store.usage_of(agent.id)[first.id]
@@ -774,8 +872,8 @@ def test_a_lead_turn_has_the_orch_server_in_its_configuration(orch, opencode_tur
     assert servers["orch"]["type"] == "local"
     assert servers["orch"]["command"][1:] == ["-m", "orchestrator.mcp_server"]
     assert servers["orch"]["environment"]["ORCH_AGENT_ID"] == agent.id
-    # The server gets the user's own XDG_CONFIG_HOME, not the one the turn moved away.
-    assert seen["server_config_home"] == {"orch": user_home} != {"orch": seen["config_home"]}
+    # The user's opencode config is kept (the default): one XDG_CONFIG_HOME for all.
+    assert seen["server_config_home"] == {"orch": user_home} == {"orch": seen["config_home"]}
     assert seen["command_config_home"] == user_home
     statements = [(p["action"], p["resource"], p["effect"]) for p in seen["config"]["policies"]]
     assert ("mcp.use", "*", "deny") in statements and ("mcp.use", "orch", "allow") in statements
@@ -792,6 +890,7 @@ def test_a_projects_opencode_json_replaces_neither_the_shell_nor_the_orch_server
 ) -> None:
     """The project's config loads after the OPENCODE_CONFIG file and before the content:
     what Spartito must keep is in the content."""
+    leave_the_user_config_out()  # for the shell wrapper
     user_home = os.environ["XDG_CONFIG_HOME"]
     path = Path(orch.store.get_project(opencode_turns).path)
     (path / "PROJECT.md").write_text("the project's own instructions")
@@ -847,7 +946,7 @@ def test_a_turn_stopped_by_the_user_ends_stopped_as_for_the_other_providers(
     stopped = orch.store.get_run(run.id)
     assert (stopped.status, stopped.error) == (RunStatus.STOPPED, "stopped")
     (seen,) = opencode_runs(config.run_dir(run.id))
-    assert seen["config_home"] == str(config.agent_files_dir(agent.id) / opencode.CONFIG_HOME)
+    assert seen["config_home"] == os.environ["XDG_CONFIG_HOME"]  # the user's config kept
 
 
 # -- the model list and the availability check ---------------------------------------------------
