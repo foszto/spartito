@@ -234,6 +234,33 @@ def test_a_declared_login_check_reports_not_logged_in(bare_path: Path) -> None:
     assert found.reason == "found on PATH; not logged in: Not logged in"
 
 
+@pytest.mark.parametrize(
+    ("said", "status", "reason"),
+    [
+        (True, "available", "found on PATH; logged in"),
+        (False, "not_logged_in", "found on PATH; not logged in: `mycli auth list` lists none"),
+        ("none listed here", "unknown", "found on PATH; none listed here"),
+        (None, "available", "found on PATH; login not checked"),
+    ],
+)
+def test_the_login_checks_output_decides_the_status(
+    bare_path: Path, said: bool | str | None, status: str, reason: str
+) -> None:
+    """A text: no login listed, but one the CLI does not list may work: usable, `unknown`."""
+    script(bare_path, "mycli", "echo 9.9.9")
+    outputs: list[str] = []
+
+    def logged_in(output: str) -> bool | str | None:
+        outputs.append(output)
+        return said
+
+    found = locate.probe("mycli", login_args=("auth", "list"), logged_in=logged_in)
+
+    assert (found.status, found.reason) == (status, reason)
+    assert outputs == ["9.9.9\n"]
+    assert (found.status in availability.USABLE) == (status != "not_logged_in")
+
+
 class OldestSupported(FakeProvider):
     """A provider whose CLI is `mycli` and must be 2.2.3 or later."""
 

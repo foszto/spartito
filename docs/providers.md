@@ -88,10 +88,11 @@ Limits:
 - asks for an answer schema in the prompt without enforcing it
 - cannot compact: opencode compacts on its own, and that is not reported
 - reports the context size without a window
-- takes no MCP servers added in Spartito yet
+- takes no MCP servers added in Spartito (`mcp:<name>`) yet, as Codex; a lead's `orch` server it does
 - of the loadout `memory`, `tool_search` and `codex_user_config` have no effect
 - has no sandbox: only opencode's own tools are held back
-- runs the agent's commands in bash when `setting_sources` leaves out `user`
+- leaves the user's global opencode config out unless `setting_sources` has `user`: a provider keyed only there is not available to agents
+- without `user` in `setting_sources`, runs the agent's commands in bash, not the user's shell
 - may report no cost for subscription sign-ins, and misses opencode's title and compaction calls
 - starts a lost session anew instead of failing
 
@@ -112,6 +113,17 @@ What else to know:
   keep their configuration; those commands then run in bash, not the user's shell. Every turn
   denies `question` (nobody answers), opencode's tools that move sessions or manage worktrees,
   and access outside the worktree but for the shared `.git`.
+- **The user's global opencode config** does not apply to agents by default
+  (`setting_sources = project,local`, without `user`): neither its `opencode.json` nor its
+  plugins, agents, commands or global `AGENTS.md`, and `~/.claude/CLAUDE.md`, which opencode
+  reads when there is no global `AGENTS.md`, is kept out too. A provider whose key is set only
+  in the global `opencode.json` is therefore not available to agents; a login made with
+  `opencode auth login` (or `/connect`), and a provider's environment variable, still are.
+  `setting_sources = "user,project,local"` in a loadout brings the global config back
+  ([configuration.md](configuration.md#loadout)). Without `user`, the agent's commands run in
+  bash, not the user's shell.
+- **MCP servers** added in Spartito (`mcp:<name>`) are not carried to opencode agents yet, as
+  for Codex; the `orch` MCP server of leads is.
 - **The context gauge** shows the size of the conversation without a window. opencode
   compacts on its own when the conversation grows; that is not reported, and the gauge may
   drop without a line in the log.
@@ -153,8 +165,8 @@ is not available a hint says so, with a **Check again** button that checks once 
 |---|---|---|
 | `available` | the CLI was found and answered `--version` | yes |
 | `not_installed` | the CLI was not found, its `#!` interpreter (such as `node`) is missing, it could not be started, or its version is older than the provider's `min_version` (opencode: 2.2.3) | no |
-| `not_logged_in` | the provider's own login check failed; only opencode has one: `opencode auth list` lists no provider | no |
-| `unknown` | the CLI was found but `--version` failed or did not answer within 5 seconds, the provider names no CLI, or the check has not run yet | yes |
+| `not_logged_in` | the provider's own login check failed; only opencode has one, and only a failing `opencode auth list` counts | no |
+| `unknown` | the CLI was found but `--version` failed or did not answer within 5 seconds, the provider names no CLI, opencode's `opencode auth list` lists no login, or the check has not run yet | yes |
 
 `unknown` can be chosen: the check could not tell, and the turn shows whether the CLI works.
 
@@ -215,9 +227,10 @@ status and reason. What to do:
 ### What is not checked
 
 Claude Code's and Codex's login is not checked: no check is known that is both offline and
-free of prompts. opencode's is checked with `opencode auth list`, which does not see a provider
-whose key is in an opencode config file: connect it with `/connect` in opencode, or give its key
-in an environment variable. An `available` CLI that is not logged in, has no access to the model or cannot reach its service
+free of prompts. opencode's is checked with `opencode auth list`, which lists the providers
+connected with `/connect` in opencode or by an environment variable. It does not see a provider
+whose key is in an opencode config file, and opencode's free models need no login, so a list
+without any login leaves opencode `unknown`, which can be chosen. An `available` CLI that is not logged in, has no access to the model or cannot reach its service
 still fails at its first turn, with the CLI's own error in the agent's log. Log in with the
 CLI itself, in a terminal.
 
@@ -337,6 +350,7 @@ protocol in `src/orchestrator/providers/base.py`. Its self-description is option
 | `executable` | the CLI's command name, for the availability check | not checked: `unknown`, which can be chosen |
 | `version_args` | what the check runs | `--version` |
 | `login_args` | a command that exits non-zero when not logged in; offline, never prompting | the login is not checked |
+| `logged_in` | reads the output of `login_args`: `True` logged in, `False` not, a text: none listed but a login it does not list may work (`unknown`, the text its reason), `None` cannot tell | the exit code alone decides |
 | `reports_cost` | whether its turns report a cost | not said |
 | `role_prompt` | `every_turn` or `first_turn` | not said |
 | `limits` | what it does not support, one phrase each | none listed |

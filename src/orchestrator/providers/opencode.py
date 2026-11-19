@@ -71,6 +71,10 @@ SIGNAL_EXITS = (130, 137, 143)
 CONFIG_HOME = "opencode-config-home"
 SHELL_WRAPPER = "opencode-shell"
 INSTRUCTIONS = "opencode-instructions.md"
+# The global AGENTS.md of the moved-away configuration (opencode reads `~/.claude/CLAUDE.md`
+# when there is none): one neutral line, not empty, so that it takes the fallback's place.
+GLOBAL_AGENTS = Path("opencode") / "AGENTS.md"
+GLOBAL_AGENTS_TEXT = "Spartito leaves the user's own global instructions out of this turn.\n"
 
 
 def new_session_id() -> str:
@@ -219,14 +223,25 @@ def parse_model_list(output: str) -> list[str]:
     return list(dict.fromkeys(line for line in found if re.fullmatch(r"[^\s/]+/\S+", line)))
 
 
-def logged_in(output: str) -> bool | None:
+# Why an empty `auth list` is no proof of a missing login (the reason of `unknown`).
+NONE_LISTED = (
+    "no login listed by `opencode auth list`; a provider keyed in a config file is not seen"
+    " there, and the free models need none"
+)
+
+
+def logged_in(output: str) -> bool | str | None:
     """Whether `opencode auth list --format json` lists a connected provider (names only,
-    no secrets; a key in a configuration file is not listed). None: not its JSON list."""
+    no secrets): True. An empty list is no proof (a key in a configuration file is not
+    listed, and the free models need none): NONE_LISTED, which leaves the CLI usable.
+    None: not its JSON list."""
     try:
         listed = json.loads(output)
     except ValueError:
         return None
-    return bool(listed) if isinstance(listed, list) else None
+    if not isinstance(listed, list):
+        return None
+    return True if listed else NONE_LISTED
 
 
 class OpencodeProvider:
@@ -245,10 +260,14 @@ class OpencodeProvider:
         "asks for an answer schema in the prompt without enforcing it",
         "cannot compact: opencode compacts on its own, and that is not reported",
         "reports the context size without a window",
-        "takes no MCP servers added in Spartito yet",
+        "takes no MCP servers added in Spartito (`mcp:<name>`) yet, as Codex; a lead's"
+        " `orch` server it does",
         "of the loadout `memory`, `tool_search` and `codex_user_config` have no effect",
         "has no sandbox: only opencode's own tools are held back",
-        "runs the agent's commands in bash when `setting_sources` leaves out `user`",
+        "leaves the user's global opencode config out unless `setting_sources` has `user`:"
+        " a provider keyed only there is not available to agents",
+        "without `user` in `setting_sources`, runs the agent's commands in bash, not the"
+        " user's shell",
         "may report no cost for subscription sign-ins, and misses opencode's title and"
         " compaction calls",
         "starts a lost session anew instead of failing",
@@ -273,7 +292,7 @@ class OpencodeProvider:
         return self.catalog.models(self)
 
     @staticmethod
-    def logged_in(output: str) -> bool | None:
+    def logged_in(output: str) -> bool | str | None:
         return logged_in(output)
 
     def invocation(self, ctx: RunContext) -> Invocation:
@@ -311,6 +330,10 @@ class OpencodeProvider:
             home = ctx.scratch / CONFIG_HOME
             home.mkdir(exist_ok=True)
             env["XDG_CONFIG_HOME"] = str(home)
+            # [documented, not observed] that this keeps `~/.claude/CLAUDE.md` out.
+            agents = home / GLOBAL_AGENTS
+            agents.parent.mkdir(exist_ok=True)
+            agents.write_text(GLOBAL_AGENTS_TEXT, encoding="utf-8")
             config["shell"] = str(write_wrapper(ctx.scratch / SHELL_WRAPPER, original))
             # An environment can only set a value: the default stands in for an unset one.
             server_home = original if original is not None else str(Path.home() / ".config")

@@ -6,7 +6,8 @@ the event shapes seen with opencode 2.3.2 (docs/providers-design.md, §2).
   (FAKE_OPENCODE_AUTH: the JSON it prints; default: one provider connected by a variable).
 - Records the OPENCODE_CONFIG file as `config_path`, `config` (parsed), `mode`, `dir_mode`;
   OPENCODE_CONFIG_CONTENT (parsed) as `config_content`; the text of its `instructions` files
-  as `instructions`; its own XDG_CONFIG_HOME as `config_home`.
+  as `instructions`; its own XDG_CONFIG_HOME as `config_home`, and the text of the global
+  AGENTS.md there (`opencode/AGENTS.md`) as `global_agents` (None: no such file).
 - What the agent's commands would see as XDG_CONFIG_HOME, `command_config_home`: it runs the
   configured `shell` (else /bin/sh) with `-c`, as opencode runs a command; `(unset)` when
   unset. What each local MCP server would see, `server_config_home` (name -> value): its
@@ -71,6 +72,8 @@ class Dialect:
             Path(name).read_text(encoding="utf-8") for name in config.get("instructions", [])
         ]
         seen["config_home"] = os.environ.get("XDG_CONFIG_HOME")
+        agents = Path(seen["config_home"] or "/nonexistent") / "opencode" / "AGENTS.md"
+        seen["global_agents"] = agents.read_text(encoding="utf-8") if agents.is_file() else None
         shell = config.get("shell") or "/bin/sh"
         shown = subprocess.run([shell, "-c", SHOW_HOME], capture_output=True, text=True)
         seen["command_config_home"] = shown.stdout

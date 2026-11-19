@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -265,6 +266,25 @@ def test_setting_sources_decide_project_and_user_configuration(
     assert Path(no_user.env["XDG_CONFIG_HOME"]).is_dir()
     assert turn_config(no_user)["shell"] == str(tmp_path / opencode.SHELL_WRAPPER)
     assert ("plugin.use", "*", "deny") in policies(no_user)
+
+
+def test_a_moved_config_home_has_a_global_agents_file_in_place_of_claudes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """opencode reads `~/.claude/CLAUDE.md` when its config directory has no AGENTS.md
+    (documented): without `user` a placeholder takes its place; with `user`, nothing."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", "/home/me/.config")
+    moved, kept = tmp_path / "moved", tmp_path / "kept"
+    moved.mkdir()
+    kept.mkdir()
+
+    no_user = OpencodeProvider().invocation(context(moved, STRICT))
+    OpencodeProvider().invocation(context(kept, Loadout(setting_sources=("user", "project"))))
+
+    placeholder = Path(no_user.env["XDG_CONFIG_HOME"]) / "opencode" / "AGENTS.md"
+    assert placeholder == moved / opencode.CONFIG_HOME / "opencode" / "AGENTS.md"
+    assert placeholder.read_text().strip()  # not empty: an empty file may count as none
+    assert not list(kept.rglob("AGENTS.md"))
 
 
 # -- MCP servers --------------------------------------------------------------------------------
@@ -585,6 +605,7 @@ def test_a_worker_turn_and_its_resumed_turn(orch, opencode_turns: str) -> None:
     # to the agent's commands by the shell wrapper.
     assert seen["config_home"] != user_home
     assert seen["command_config_home"] == user_home
+    assert seen["global_agents"] == opencode.GLOBAL_AGENTS_TEXT  # in place of CLAUDE.md
     assert run.result.startswith("done: hello TOKENS 1000")
     assert run.structured is None  # no answer schema was asked for
     usage = orch.store.usage_of(agent.id)[first.id]
@@ -624,6 +645,24 @@ def test_a_lead_turn_has_the_orch_server_in_its_configuration(orch, opencode_tur
     allow = {"action": "orch_*", "resource": "*", "effect": "allow"}
     assert allow in seen["config_content"]["permissions"]
     assert seen["prompt"] == "plan"
+
+
+def test_a_turn_stopped_by_the_user_ends_stopped_as_for_the_other_providers(
+    orch, opencode_turns: str
+) -> None:
+    """The stop's SIGTERM reaches the runner and the CLI together; the runner decides the
+    status from its own stop, not from the stream's signal exit."""
+    agent, run = orch.spawn(opencode_turns, "SLEEP 30", provider="opencode", worktree=False)
+    deadline = time.monotonic() + 30
+    while not opencode_runs(config.run_dir(run.id)):
+        assert time.monotonic() < deadline, "the turn did not start"
+        time.sleep(0.05)
+
+    assert orch.stop(agent.id) == 1
+    finished(orch, agent.id)
+
+    stopped = orch.store.get_run(run.id)
+    assert (stopped.status, stopped.error) == (RunStatus.STOPPED, "stopped")
 
 
 # -- the model list and the availability check ---------------------------------------------------
@@ -672,8 +711,8 @@ def test_a_failing_model_list_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     ("version", "auth", "status", "reason"),
     [
         ("2.3.2", None, "available", "found on PATH; logged in"),
-        ("2.2.3", "[]", "not_logged_in", "found on PATH; not logged in: `opencode auth list"
-         " --standalone --format json` lists none"),
+        ("2.2.3", "[]", "unknown", "found on PATH; no login listed by `opencode auth list`;"
+         " a provider keyed in a config file is not seen there, and the free models need none"),
         ("2.3.2", "not json", "available", "found on PATH; login not checked"),
         ("1.19.0", None, "not_installed", "found on PATH; version 1.19.0 is older than 2.2.3,"
          " the oldest supported"),
@@ -694,6 +733,8 @@ def test_the_check_reads_the_version_and_the_login(
     found = REAL_PROBE(OpencodeProvider())
 
     assert (found.status, found.version, found.reason) == (status, version, reason)
+    # An empty login list is no proof: the CLI stays usable.
+    assert (found.status in availability.USABLE) == (status != "not_installed")
     # The version of `opencode v2.3.2`, its `v` dropped; the minimum applies after the login.
     asked = fake_on_path.read_text().splitlines()
     assert asked == [" --version", " auth list --standalone --format json"]

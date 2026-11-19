@@ -191,9 +191,11 @@ class Provider(Protocol):
     #                                   a command that exits non-zero when not logged in; it
     #                                   must be offline and never prompt. None (default): the
     #                                   login is not checked
-    #   logged_in(output: str) -> bool | None
+    #   logged_in(output: str) -> bool | str | None
     #                                   reads the output of `login_args` too: False: not
-    #                                   logged in; None: it cannot tell (login not checked)
+    #                                   logged in; a text: none listed, but a login it does
+    #                                   not list may work (`unknown`, the text the reason);
+    #                                   None: it cannot tell (login not checked)
     #   reports_cost: bool | None       whether its turns report a cost; None: not said
     #   role_prompt: str | None         "every_turn" or "first_turn": when it gets the role
     #                                   prompt; None: not said
