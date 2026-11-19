@@ -89,6 +89,10 @@ chosen is in the
 
 ### Changed
 
+- `withdraw_decision` is no longer limited to an agent's own decisions: the top-level
+  orchestrator and `spartito chat` may withdraw any open decision, and a lead those of the
+  agents in its project. The decision notes who withdrew it, and its agent gets a message
+  that no answer will come, unless it is archived.
 - **Incompatible:** `spartito mcp` without a subcommand now lists the MCP servers instead of
   running Spartito's own `orch` MCP server on stdio; `spartito mcp serve` runs it. Spartito's
   agents and `spartito chat` never started it through the command and are not affected. If

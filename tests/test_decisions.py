@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import subprocess
 import sys
 import time
 from collections.abc import Callable
@@ -166,7 +167,7 @@ def test_the_interactive_session_asks_the_user_directly(
 def test_an_agent_withdraws_only_its_own_open_decisions(
     orch: Orchestrator, project: str, as_agent: Callable
 ) -> None:
-    mine, other = lead(orch, project, "mine"), lead(orch, project, "other")
+    mine, other = worker(orch, project, "mine"), lead(orch, project, "other")
     first = ask(as_agent, mine)["decision_id"]
     second = ask(as_agent, other)["decision_id"]
 
@@ -185,6 +186,79 @@ def test_an_agent_withdraws_only_its_own_open_decisions(
 
 def worker(orch: Orchestrator, project: str, name: str = "worker") -> str:
     return orch.create_agent(project, name=name, role="worker", worktree=False).id
+
+
+def other_project(orch: Orchestrator, tmp_path: Path) -> str:
+    path = tmp_path / "other-repo"
+    path.mkdir()
+    git = ["git", "-C", str(path), "-c", "user.name=t", "-c", "user.email=t@example.com"]
+    subprocess.run([*git, "init", "-q", "-b", "main"], check=True)
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    return orch.add_project(str(path), "other", "fake").name
+
+
+def test_the_orchestrator_withdraws_any_open_decision_and_is_noted(
+    orch: Orchestrator, project: str, as_agent: Callable
+) -> None:
+    orch.orchestrator()
+    lead_id = lead(orch, project)
+    first = ask(as_agent, lead_id)["decision_id"]
+    second = ask(as_agent, lead_id, "Which cache?")["decision_id"]
+
+    assert withdraw(as_agent, ORCHESTRATOR_ID, first) == {"withdrawn": first}
+    assert withdraw(as_agent, None, second) == {"withdrawn": second}  # the chat session
+
+    closed = {item["id"]: item for item in orch.list_decisions(closed=True)}
+    assert closed[first]["state"] == decisions.WITHDRAWN
+    assert closed[first]["note"] == f"withdrawn by {ORCHESTRATOR_ID}"
+    assert closed[second]["note"] == "withdrawn by the owner"
+    with pytest.raises(OrchestratorError, match=f"decision #{first} is already withdrawn"):
+        withdraw(as_agent, ORCHESTRATOR_ID, first)
+
+
+def test_the_requester_is_told_when_someone_else_withdraws_its_decision(
+    orch: Orchestrator, project: str, as_agent: Callable
+) -> None:
+    orch.orchestrator()
+    lead_id, mine = lead(orch, project), worker(orch, project, "mine")
+    archived = worker(orch, project, "archived")
+    first = ask(as_agent, lead_id)["decision_id"]
+    own = orch.request_decision(mine, "Which port?").id
+    quiet = orch.request_decision(archived, "Which host?").id
+    orch.archive(archived, confirm=True)
+
+    withdraw(as_agent, ORCHESTRATOR_ID, first)
+    withdraw(as_agent, mine, own)  # its own: nothing to tell
+    withdraw(as_agent, lead_id, quiet)  # archived: not woken for this
+
+    (run,) = orch.store.runs_of(lead_id)
+    assert run.prompt == (
+        f"Decision #{first} — Which database?\nWithdrawn by {ORCHESTRATOR_ID}: no answer will come."
+    )
+    assert orch.store.meta(run.id).kind == MESSAGE and orch.store.meta(run.id).sender is None
+    assert orch.store.runs_of(mine) == [] and orch.store.runs_of(archived) == []
+    assert archived in orch.store.archived()
+
+
+def test_a_lead_withdraws_the_decisions_of_its_project_only(
+    orch: Orchestrator, project: str, as_agent: Callable, tmp_path: Path
+) -> None:
+    lead_id, worker_id = lead(orch, project), worker(orch, project)
+    elsewhere = lead(orch, other_project(orch, tmp_path), "elsewhere")
+    workers = orch.request_decision(worker_id, "Which port?").id
+    leads = ask(as_agent, lead_id)["decision_id"]
+    foreign = ask(as_agent, elsewhere, "Which region?")["decision_id"]
+
+    with pytest.raises(OrchestratorError, match=f"you have no decision #{foreign}"):
+        withdraw(as_agent, lead_id, foreign)
+    with pytest.raises(OrchestratorError, match=f"you have no decision #{leads}"):
+        withdraw(as_agent, worker_id, leads)  # a worker: its own only
+    assert withdraw(as_agent, lead_id, workers) == {"withdrawn": workers}
+
+    closed = {item["id"]: item for item in orch.list_decisions(closed=True)}
+    assert closed[workers]["state"] == decisions.WITHDRAWN
+    assert closed[workers]["note"] == f"withdrawn by {lead_id}"
+    assert {item["id"] for item in orch.list_decisions()} == {leads, foreign}
 
 
 # -- tool errors through the MCP layer -----------------------------------------

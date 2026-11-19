@@ -39,7 +39,7 @@ can act on every project.
 | `stop_agent(agent_id)` | stop running and queued turns |
 | `archive_agent(agent_id, confirm, restore)` | archive (unmerged work only with `confirm`), or restore |
 | `request_decision(question, options, recommendation, item)` | ask the owner (headless lead roles only); `item`: the board item it blocks |
-| `withdraw_decision(decision_id)` | close one of your own open decisions |
+| `withdraw_decision(decision_id)` | close an open decision: your own; a lead also its project's, the orchestrator any |
 | `list_board(project, state, live)` | the project's task board, shortened to fit; `live` adds agent and git status |
 | `add_board_item(project, title, description, state)` | add an item |
 | `update_board_item(item_id, state, title, description, agent, branch)` | change an item |
@@ -177,8 +177,11 @@ The headless orchestrator and the project leads record what needs the owner's de
 `request_decision(question, options, recommendation)`: a question of at most 500 characters,
 at most 6 short options, one recommendation. They continue with whatever does not depend on
 the answer, and close a decision that has become moot with `withdraw_decision(decision_id)`
-(only their own, only while open). The interactive `spartito chat` session asks you directly
-instead.
+(only while open). An agent withdraws its own decisions, a lead also those of the other agents
+in its project, and the top-level orchestrator (and the interactive `spartito chat` session)
+any. A decision withdrawn by anyone other than its agent notes who did it, and the agent gets
+a message (`Decision #12 — <question>` and `Withdrawn by <who>: no answer will come.`) unless
+it is archived. The interactive session asks you directly instead of recording decisions.
 
 A refused tool call (here: someone else's decision, one already closed) returns an error with
 the reason, `Error executing tool withdraw_decision: you have no decision #12`.

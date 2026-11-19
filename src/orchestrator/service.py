@@ -4,6 +4,7 @@ Most methods are functions of the core modules bound here (see core/__init__.py)
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import Any
 
@@ -200,10 +201,26 @@ class Orchestrator:
             raise OrchestratorError(str(exc)) from None
 
     def withdraw_decision(self, decision_id: int, agent_id: str) -> decisions.Decision:
+        """Withdraw an open decision for `agent_id` ("": the interactive session). The
+        top-level orchestrator and the interactive session may withdraw any, a lead those
+        of its project, every other agent only its own. A requester other than the caller
+        is told with a user message, unless it is archived."""
+        caller = self.store.get_agent(agent_id) if agent_id else None
+        everywhere = not agent_id or (caller is not None and caller.project is None)
+        project = caller.project if caller and caller.project and self.is_lead(caller) else None
         try:
-            return decisions.withdraw(self.store, decision_id, agent_id)
+            decision = decisions.withdraw(self.store, decision_id, agent_id, project, everywhere)
         except ValueError as exc:
             raise OrchestratorError(str(exc)) from None
+        requester = self.store.get_agent(decision.agent_id)
+        if (
+            decision.agent_id != agent_id
+            and requester is not None
+            and requester.id not in self.store.archived()
+        ):  # tell it, as an answer is delivered; an archived agent is not woken for this
+            with contextlib.suppress(OrchestratorError):  # removed meanwhile: still withdrawn
+                self.send(requester.id, decisions.withdrawn_message(decision, agent_id))
+        return decision
 
     def list_decisions(self, closed: bool = False) -> list[dict[str, Any]]:
         """Open decisions (with `closed` all), each with the requesting agent's display

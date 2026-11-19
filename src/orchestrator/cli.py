@@ -263,7 +263,8 @@ def mcp_config() -> str:
 CHAT_NOTE = (
     "## This session\n"
     "You talk with the user directly: ask them here for anything that needs their decision;"
-    " `request_decision` is for the headless orchestrator and leads."
+    " `request_decision` is for the headless orchestrator and leads. `withdraw_decision`"
+    " works here too: it closes an open decision of any agent that is no longer needed."
 )
 
 

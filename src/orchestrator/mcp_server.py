@@ -526,7 +526,7 @@ _lean("request_decision", "item")
 
 @server.tool()
 def withdraw_decision(decision_id: int) -> dict[str, Any]:
-    """Withdraw one of your open decisions that is no longer needed."""
+    """Withdraw an open decision no longer needed; leads: any in their project."""
     orch = _orch()
     caller = Caller.from_env(orch).id
     return {"withdrawn": orch.withdraw_decision(decision_id, caller).id}
