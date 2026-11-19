@@ -156,6 +156,10 @@ chosen is in the
 
 ### Fixed
 
+- The tabs of **Settings & usage** and of the Settings dialog switch again: only the panel of
+  the active tab is shown. The agent's groups were all left visible, so a click or an arrow key
+  changed the tab's highlight but not what was on screen; the Settings dialog rebuilt its strip
+  on every click, dropping the tab under the pointer and its focus.
 - A refused MCP tool call (an unknown agent, someone else's decision, a closed one) tells the
   agent why, instead of a bare `Error executing tool <name>`; an unexpected error keeps its
   type and message. `spartito chat` is told to ask you directly instead of calling

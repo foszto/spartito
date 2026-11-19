@@ -23,7 +23,7 @@ NAMES = (
     "setupSlot", "setupBusy", "bumpSetup", "inherits", "settingLabel", "renderSetup",
     "buildProviderControl", "moveAgent", "moved", "setupRequest", "describe", "markOwn",
     "markExtras", "buildControl", "sendMessage", "renderCacheInfo", "showCacheTip", "cacheTipKey",
-    "renderSettingsTabs", "selectSettingsTab", "tabKeyMove",
+    "renderSettingsTabs", "applySettingsTab", "selectSettingsTab", "tabKeyMove",
 )  # fmt: skip
 
 
@@ -390,6 +390,26 @@ out({ first, chosen, polled, right, left, end, wrap, global, home });
         "shown": ["settings-orchestrator"],
     }
     assert result["home"] == "orchestrator"
+
+
+def test_a_settings_tab_click_shows_one_section_and_keeps_the_strip_in_place() -> None:
+    result = run_page(
+        """
+state.settings.projects['my-app'] = {};
+settingsDialog.querySelector('[name=scope]').value = 'my-app';
+renderSettings();
+const shown = () => $('settingsRows').children.filter(b => !b.hidden).map(b => b.id);
+const before = $('settingsTabs').children;
+$('settings-tab-worker').onclick();
+const clicked = { tab: settingsTab, shown: shown(), same: $('settingsTabs').children.every((t, i) => t === before[i]) };
+renderSettings();  // a poll replaces the rows and the strip
+const polled = { tab: settingsTab, shown: shown() };
+out({ clicked, polled });
+"""
+    )
+    # exactly one section shown, the one the clicked tab controls, and the strip is not rebuilt
+    assert result["clicked"] == {"tab": "worker", "shown": ["settings-worker"], "same": True}
+    assert result["polled"] == {"tab": "worker", "shown": ["settings-worker"]}
 
 
 def test_a_projects_default_provider_is_set_at_once_and_its_note_shown() -> None:
