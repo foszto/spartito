@@ -171,20 +171,17 @@ input.input.compact { width: 170px; background: var(--bg); color: var(--text); }
 .pill.failed { color: var(--failed); background: color-mix(in srgb, var(--failed) 14%, transparent); }
 .pill.stopped, .pill.skipped { color: var(--other); background: color-mix(in srgb, var(--other) 14%, transparent); }
 .pill.idle { color: var(--idle); background: none; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--idle) 45%, transparent); }
-/* the agent's settings and usage: collapsible groups that scroll inside the section */
+/* the agent's settings and usage: one tab per group, the panel scrolls inside the section */
 #details { padding: 6px 24px 10px; border-bottom: 1px solid var(--line); background: var(--surface); max-height: 45vh;
   overflow: auto; overscroll-behavior: contain; }
-.detail-group { padding: 4px 0; border-top: 1px solid var(--line); min-width: 0; }
-.detail-group:first-child { border-top: 0; }
-.detail-group:has(> .setup-caps[hidden]) { display: none; }
-.detail-group > summary { display: flex; align-items: center; gap: 6px; width: max-content; padding: 4px 6px 4px 0;
-  cursor: pointer; list-style: none; color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .02em;
-  text-transform: uppercase; border-radius: 6px; }
-.detail-group > summary::-webkit-details-marker { display: none; }
-.detail-group > summary:hover { color: var(--text); }
-.detail-group > summary svg { width: 13px; height: 13px; transition: transform .12s; }
-.detail-group[open] > summary svg { transform: rotate(90deg); }
-.detail-group > :not(summary) { margin: 2px 0 8px 19px; }
+.detail-tabs { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 3px; margin: 2px 0 8px;
+  background: var(--sunken); border-radius: 9px; }
+.detail-tab { padding: 4px 14px; border: 0; border-radius: 7px; background: none; color: var(--muted);
+  font-size: 12px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; }
+.detail-tab:hover { color: var(--text); }
+.detail-tab.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, .12); }
+.detail-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.detail-group { min-width: 0; }
 #details dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 16px; font-size: 13px; }
 #details dt { color: var(--muted); } #details dd { margin: 0; overflow-wrap: anywhere; }
 #details dd.empty-note { grid-column: 1 / -1; padding: 0; }

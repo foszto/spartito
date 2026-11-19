@@ -551,8 +551,11 @@ Once the agent has a conversation, an info button (**ⓘ**) after the drop-downs
 switching the model or the effort does to the prompt cache. It shows on hover, on keyboard
 focus and on a click; Escape, moving away or leaving it hides it.
 
-**Settings & usage** opens a section under the header, in groups that each fold up (what is
-open stays open while the page refreshes, and the groups also on the next visit):
+**Settings & usage** opens a section under the header, one tab per group (the tab you chose
+stays chosen while the page refreshes, and also on the next visit; a group that is not shown,
+such as Changes without changes, has no tab, and if the shown tab goes away the first shown
+one is shown instead; Left and Right move between the tabs, Home and End to the first and the
+last):
 
 - **Capabilities**: a line per capability, with its inherit / on / off choice (see
   *Capabilities* below);

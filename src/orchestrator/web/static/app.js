@@ -461,14 +461,33 @@ function buildView() {
 }
 
 // -- the agent's settings and usage (the section the header's button opens) --------------
-// Built once per view; a poll only fills it, so neither the section nor a group closes, and
-// no control in it loses the focus. What is open is kept for the page: the section across
-// agents until it is closed, each group also in the browser's storage.
+// Built once per view; a poll only fills it, so neither the section nor its tab changes, and
+// no control in it loses the focus. What is shown is kept for the page: the section across
+// agents until it is closed, the tab also in the browser's storage.
 
 const DETAILS_NAME = 'Settings & usage';
 const DETAIL_GROUPS = [['capabilities', 'Capabilities'], ['usage', 'Usage'], ['about', 'About'], ['changes', 'Changes']];
 let detailsOpen = false;
-const detailGroups = stored('orch-detail-groups', {});
+// The group the user chose. A group that is not shown (a hidden panel, an empty capabilities
+// box) is skipped while it stays hidden, and comes back when it is shown again.
+let detailTab = stored('orch-detail-tab', DETAIL_GROUPS[0][0]);
+
+const detailNames = () => DETAIL_GROUPS.map(([name]) => name);
+
+// Whether the section can show a group: its panel is not hidden, and the capabilities one
+// needs lines (the box hides itself when it has none).
+function detailShown(name) {
+  const panel = $(`details-${name}`);
+  if (!panel || panel.hidden) return false;
+  if (name === 'capabilities') { const caps = $('setupCaps'); return Boolean(caps) && !caps.hidden; }
+  return true;
+}
+
+// The tab shown: the chosen one while it is shown, else the first shown one.
+function activeDetailTab() {
+  if (detailShown(detailTab)) return detailTab;
+  return detailNames().find(detailShown) || detailTab;
+}
 
 function buildDetails(caps) {
   const details = el('section', 'details');
@@ -480,16 +499,63 @@ function buildDetails(caps) {
   const facts = el('dl'); facts.id = 'facts';
   const changes = el('pre'); changes.id = 'changes';
   const content = { capabilities: [caps], usage: [usage, runsWrap], about: [facts], changes: [changes] };
+  const tabs = el('div', 'detail-tabs'), panels = [];
+  tabs.id = 'details-tabs';
+  tabs.setAttribute('role', 'tablist');
+  tabs.setAttribute('aria-label', `${DETAILS_NAME} groups`);
+  tabs.onkeydown = detailTabKey;
   for (const [name, label] of DETAIL_GROUPS) {
-    const group = el('details', 'detail-group'), head = el('summary');
-    group.id = `details-${name}`; group.dataset.group = name;
-    group.open = detailGroups[name] !== false;  // open unless the user closed it
-    head.append(icon('right'), label);
-    group.append(head, ...content[name]);
-    group.ontoggle = () => { detailGroups[name] = group.open; store('orch-detail-groups', detailGroups); };
-    details.append(group);
+    const tab = el('button', 'detail-tab', label), panel = el('div', 'detail-group');
+    tab.type = 'button'; tab.id = `details-tab-${name}`;
+    tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-controls', `details-${name}`);
+    tab.onclick = () => selectDetailTab(name, true);
+    panel.id = `details-${name}`; panel.dataset.group = name;
+    panel.setAttribute('role', 'tabpanel');
+    panel.setAttribute('aria-labelledby', tab.id);
+    panel.append(...content[name]);
+    tabs.append(tab); panels.push(panel);
   }
+  details.append(tabs, ...panels);
+  syncDetailTabs();
   return details;
+}
+
+// The tablist's keys: Left and Right move between the shown tabs (wrapping), Home and End go
+// to the first and the last. The tablist is one tab stop (roving tabindex), so the focus
+// moves with the arrows.
+function detailTabKey(event) {
+  const shown = detailNames().filter(detailShown);
+  if (!shown.length) return;
+  const at = Math.max(shown.indexOf(activeDetailTab()), 0), last = shown.length - 1;
+  const to = { ArrowRight: at === last ? 0 : at + 1, ArrowLeft: at === 0 ? last : at - 1, Home: 0, End: last }[event.key];
+  if (to === undefined) return;
+  event.preventDefault();
+  selectDetailTab(shown[to], true);
+}
+
+// Shows a group as the tab and remembers it. Hidden groups cannot be chosen.
+function selectDetailTab(name, focus) {
+  if (!detailNames().includes(name) || !detailShown(name)) return;
+  detailTab = name; store('orch-detail-tab', detailTab);
+  syncDetailTabs();
+  if (focus) $(`details-tab-${name}`).focus();
+}
+
+// Keeps the tabs in step with the panels: a hidden panel hides its tab, and the tab shown is
+// always a shown one. Called when the view is built and whenever a panel may have changed.
+function syncDetailTabs() {
+  const names = detailNames();
+  if (!names.every(name => $(`details-tab-${name}`))) return;  // the section is not built
+  const active = activeDetailTab();
+  for (const name of names) {
+    const shown = detailShown(name), tab = $(`details-tab-${name}`), on = name === active && shown;
+    tab.hidden = !shown;
+    tab.setAttribute('aria-selected', String(on));
+    tab.tabIndex = on ? 0 : -1;
+    tab.classList.toggle('active', on);
+    $(`details-${name}`).classList.toggle('active', on);
+  }
 }
 
 // Shows the section as `detailsOpen` says, while the header offers its button.
@@ -610,6 +676,7 @@ function renderHeader(agent, setupFreshness = true) {
   $('detailsButton').hidden = !agent && !draft;
   for (const name of ['usage', 'about']) $(`details-${name}`).hidden = !agent;
   $('details-changes').hidden = !agent?.changes;
+  syncDetailTabs();
   showDetails();
   // The code view: only for an agent with a worktree of its own (a branch).
   $('codeButton').hidden = !agent?.branch;
@@ -647,6 +714,7 @@ function renderHeader(agent, setupFreshness = true) {
     own: { model: draft.model_override, effort: draft.effort_override }, session: false, running: false,
     cacheHint: draft.cache_hint, role: ORCH, capabilities: draft.capabilities,
   }, setupFreshness);
+  syncDetailTabs();  // the capabilities box may have hidden itself, or shown again
   if (!agent) return;
   const chip = (text, iconName, parent) => {
     if (!text) return;
