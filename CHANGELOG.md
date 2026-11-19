@@ -11,18 +11,23 @@ chosen is in the
 
 - OpenCode (`opencode`, 2.2.3 or later; tested with 2.3.2) is the third supported harness,
   after Claude Code and Codex: projects and agents can run on it, and `spartito providers`
-  checks its version and whether a provider is connected (`opencode auth list`) and lists its
-  models. Each turn runs with a private opencode server, the role prompt every turn, its
-  loadout as opencode permissions and policies, and leads get the `orch` MCP server. Without
-  `user` in `setting_sources` the user's global opencode config is left out, while the
-  agent's commands keep the user's own `XDG_CONFIG_HOME`. Its cost and context size are
-  reported; it cannot compact, has no Claude in Chrome, does not get MCP servers added in
-  Spartito yet, and only asks for an answer schema in the prompt
+  checks its version, lists its models (outside any project) and reads which providers are
+  connected (`opencode auth list`); with none listed it stays usable as `unknown`, since a key
+  in a config file is not listed there. Each turn runs with a private opencode server, the
+  role prompt every turn, its loadout as opencode permissions and policies, and leads get the
+  `orch` MCP server; a project's `opencode.json` cannot replace the turn's permissions,
+  shell or MCP servers. By default (`setting_sources` without `user`) the user's global
+  opencode config is left out, and with it a provider keyed only there; logins and
+  environment variables still work, and the agent's commands keep the user's own
+  `XDG_CONFIG_HOME` and run in bash. Its cost and context size are reported; it cannot
+  compact, so it shows no automatic compaction threshold, has no Claude in Chrome, does not
+  get MCP servers added in Spartito yet, and only asks for an answer schema in the prompt
   ([providers.md](docs/providers.md#opencode-opencode)).
-- `spartito providers` checks which of the supported harnesses, Claude Code and Codex, this
-  machine can run: each CLI is looked for on `PATH` and in the usual install directories and
-  asked its version, without a network request, an agent turn or a login check. `--json` adds
-  each provider's features, limits and models.
+- `spartito providers` checks which of the supported harnesses, Claude Code, Codex and
+  OpenCode, this machine can run: each CLI is looked for on `PATH` and in the usual install
+  directories and asked its version, without a network request or an agent turn; only
+  OpenCode's login is checked, by the providers it lists. `--json` adds each provider's
+  features, limits and models.
 - Every provider choice in the dashboard lists all supported providers: the add-project and
   new-agent dialogs, a project's **Default provider** in the **Models and effort** window
   (applied at once), and a `provider` select next to each agent's model and effort, the

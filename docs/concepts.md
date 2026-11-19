@@ -53,12 +53,13 @@ the role file is your own: `Attribution` and `Context`. The `Context` section gi
 id, project, working directory and branch. The `Attribution` section tells the agent how to
 end each pull request description it writes: with
 `🤖 Generated with [Spartito](https://github.com/foszto/spartito) + [Claude Code](https://claude.com/claude-code)`,
-or `+ [Codex](https://github.com/openai/codex)` for a Codex agent. It also tells the agent to add
+`+ [Codex](https://github.com/openai/codex)` for a Codex agent, or `+ [OpenCode](https://opencode.ai)`
+for an OpenCode agent. It also tells the agent to add
 ` via Spartito` after the name in a commit's `Co-Authored-By` trailer and to keep the email, for
 example `Co-Authored-By: <model> via Spartito <noreply@anthropic.com>` from Claude Code. A Codex
-agent changes only a trailer it adds, and no agent invents a trailer or its email. Besides that
+or OpenCode agent changes only a trailer it adds, and no agent invents a trailer or its email. Besides that
 trailer, every agent adds one given line to each commit message it writes, exactly as written,
-also a Codex agent that adds no trailer of its own:
+also a Codex or OpenCode agent that adds no trailer of its own:
 `Co-Authored-By: spartito-dev[bot] <355965793+spartito-dev[bot]@users.noreply.github.com>`.
 It credits Spartito's GitHub App bot; `spartito config bot-coauthor off` leaves it out
 ([configuration.md](configuration.md#bot-co-author-bot_coauthor)). These rules override the

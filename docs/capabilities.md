@@ -18,7 +18,7 @@ gets.
 
 ## Capabilities, the loadout and tools
 
-A *tool* of Claude Code or Codex is one thing the model can call, such as `Bash` or
+A *tool* of Claude Code, Codex or OpenCode is one thing the model can call, such as `Bash` or
 `mcp__orch__spawn_agent`. The loadout's `tools` key lists the CLI's built-in tools and
 restricts them. A capability adds: one name stands for what a CLI needs for a whole feature,
 such as a flag that brings a set of tools (`chrome` brings Claude in Chrome's browser tools).
@@ -117,7 +117,7 @@ refusal names the servers added and the command that adds one (`spartito mcp add
 removing a server removes its settings at every level.
 
 A capability that is on but that the agent's provider does not support is skipped, with the
-note `codex does not support it`; it is not an error, and the setting stays. Starting an agent
+note `codex does not support it` (or `opencode does not support it`); it is not an error, and the setting stays. Starting an agent
 whose own setting asks for one says so in the reply's note.
 
 The settings are stored with the other settings: the keys `capabilities` and
@@ -219,8 +219,8 @@ Requires:
 - the Claude in Chrome extension, version 1.0.36 or later, in Chrome or another supported Chromium browser, running while the turn runs
 - Claude Code logged in with a claude.ai account: not an API key, a long-lived token or a third-party cloud provider (Bedrock, Vertex)
 
-It is Claude only. A Codex agent skips it, with a note; `spartito providers` shows `chrome` in
-the `CAPABILITIES` column of `claude` and `-` for `codex`.
+It is Claude only. A Codex or OpenCode agent skips it, with a note; `spartito providers` shows
+`chrome` in the `CAPABILITIES` column of `claude` and `-` for `codex` and `opencode`.
 
 Every Claude turn without `chrome` runs with `CLAUDE_CODE_ENABLE_CFC=0`, so an agent never gets
 the browser by accident, for example through your own Claude Code setting that turns Claude in
@@ -323,7 +323,7 @@ as `spartito capabilities on|off|inherit mcp:docs-db`.
 
 | | |
 |---|---|
-| providers | `claude` (Codex agents skip it with the note `codex does not support it`) |
+| providers | `claude` (Codex and OpenCode agents skip it with the note `codex does not support it` or `opencode does not support it`) |
 | default | off |
 | reaches | for a command, that it runs on this machine as you, with your files, your network and the environment it is given; for a URL, that the agent's tool calls go to its origin; and your own `--reaches` line |
 

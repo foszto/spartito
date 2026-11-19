@@ -1,9 +1,10 @@
 # Providers: less duplication, and opencode as a third provider
 
-> **Status: the refactor is built; opencode is next.** Phases 1–4 (the kit, the provider
-> attributes, the stream hook, the fake-CLI harness) are merged, and the live checks (5a) are
-> done; §1 describes the code before the refactor. The `opencode` provider (phases 5b–5d) and
-> what it adds to the kit are still planned. What exists today is described in [providers.md](providers.md), [configuration.md](configuration.md#loadout),
+> **Status: built.** Phases 1–4 (the kit, the provider attributes, the stream hook, the
+> fake-CLI harness) are merged, the live checks (5a) are done, and the `opencode` provider
+> (phases 5b–5d) is built, with a live smoke check (§5); §1 describes the code before the
+> refactor. Where the build left this design, §5 lists it ("Deviations"). What exists today
+> is described in [providers.md](providers.md), [configuration.md](configuration.md#loadout),
 > [capabilities.md](capabilities.md) and [mcp.md](mcp.md#what-works-today).
 >
 > Facts about opencode are marked:
@@ -386,7 +387,7 @@ Sources:
    - Facts about a provider that other modules need (credit, cache effect, config-home variables) become attributes of the provider instead of tables keyed by name.
    - The runner gets one new, optional, generic hook: a per-turn stream object.
 
-### 3.2 The structure (phases 1–4, merged; `opencode.py` planned)
+### 3.2 The structure (phases 1–4, merged; `opencode.py` built)
 
 ```
 providers/
@@ -394,7 +395,7 @@ providers/
   kit.py         shared building blocks, no provider knowledge
   claude.py      ClaudeProvider: explicit invocation and parser, on the kit
   codex.py       CodexProvider: same
-  opencode.py    (planned) OpencodeProvider
+  opencode.py    OpencodeProvider
   locate.py      unchanged; its _run becomes kit.run_cli
 ```
 
@@ -446,11 +447,12 @@ providers/
 One module, about 200–300 lines, and one dialect for the fake-CLI harness.
 
 ```python
-"""<Harness> in headless mode: `<cli> … --json`."""   # (planned skeleton)
+"""<Harness> in headless mode: `<cli> … --json`."""  # (planned skeleton)
 
 from ..models import Agent, Event, Usage
 from . import kit
 from .base import Invocation, RunContext, wired
+
 
 class NewProvider:
     name = "new"
@@ -469,8 +471,10 @@ class NewProvider:
     config_env = ("NEW_HOME",)
     limits = ("…",)
 
-    catalog = kit.ModelCatalog(lambda: parse_models(kit.run_cli(["new", "models"], 15)[1]),
-                               retry_when=lambda models: not models)
+    catalog = kit.ModelCatalog(
+        lambda: parse_models(kit.run_cli(["new", "models"], 15)[1]),
+        retry_when=lambda models: not models,
+    )
 
     def models(self):
         return self.catalog.models()
@@ -479,22 +483,22 @@ class NewProvider:
         argv = ["new", "run", "--json"]
         argv += ["--resume", ctx.agent.session_id] if ctx.agent.session_id else []
         argv += ["--model", ctx.model] if ctx.model else []
-        servers = kit.turn_servers(ctx)            # canonical entries, translated here
+        servers = kit.turn_servers(ctx)  # canonical entries, translated here
         extra_argv, extra_env = wired(ctx.wirings)
         return Invocation(argv=argv + extra_argv, stdin=ctx.prompt, env=extra_env)
 
     def stream(self):
         return Stream()
 
-    def parse(self, line: str) -> list[Event]:     # kept for the protocol
+    def parse(self, line: str) -> list[Event]:  # kept for the protocol
         return Stream().feed(line)
 
     def attach_command(self, agent: Agent) -> list[str]:
         return ["new", "--resume", agent.session_id or ""]
 
+
 class Stream(kit.JsonLines):
-    def on_json(self, data: dict) -> list[Event]:
-        ...                                        # map the CLI's events to Spartito's
+    def on_json(self, data: dict) -> list[Event]: ...  # map the CLI's events to Spartito's
 ```
 
 Plus:
@@ -533,7 +537,9 @@ All four steps are merged.
 
 ---
 
-## 4. The opencode adapter (planned)
+## 4. The opencode adapter (built)
+
+The design as it was planned; where the build differs, see "Deviations" in §5.
 
 ### 4.1 The command line of a turn
 
@@ -570,7 +576,7 @@ opencode run --standalone --format json --session <ses_id> [--archived --title <
 ### 4.3 Capabilities and the `orch` MCP server
 
 - **`chrome`**: not supported (Claude only). An agent on opencode skips it with the existing note.
-- **`mcp:<name>`**: supported (`carries_mcp_servers = True`). The canonical entry is translated:
+- **`mcp:<name>`**: supported (`carries_mcp_servers = True`; as built `False` until the mark of Q8 exists, §5). The canonical entry is translated:
   - `command` + `args` → `command: [command, *args]`; `env` → `environment`; `url`/`headers` → `type: "remote"`;
   - `${NAME}` → `{env:NAME}`; `${NAME:-default}` → `{env:NAME}` when the turn's environment has it set, else the default written literally.
   - The pre-turn check of unset variables stays as it is.
@@ -651,7 +657,7 @@ Sizes are per worker, tests and docs included: **S** about half a day, **M** abo
 | 5c | opencode stream: usage, context, structured answers, the dialect | same owner as 5b | 5b | M |
 | 5d | Model list, availability, docs (`providers.md`, `configuration.md`, `capabilities.md`, `mcp.md`, `architecture.md`), `CHANGELOG.md` | docs, small code | 5b | M |
 
-Phases 1–4 are merged and 5a is done; 5b–5d are next.
+Phases 1–4 are merged, 5a is done, and 5b–5d are built.
 
 - **Total**: about 7.5 worker-days.
 - **Critical path**: 1 → 2 (or 4) → 5b → 5c (5d alongside), about 4 days with three workers.
@@ -659,7 +665,7 @@ Phases 1–4 are merged and 5a is done; 5b–5d are next.
 
 **Risks**:
 - **opencode's surface changes**: undocumented `run` flags and JSON events, weekly releases. Mitigations: `min_version`, defensive parsing, a recorded fixture per tested version, and a note of the tested version in `providers.md`.
-- **Config precedence**: the `OPENCODE_CONFIG` file loads before project config, so a repository's `opencode.json` can widen its permissions; `OPENCODE_CONFIG_CONTENT` loads after it. The turn's permission rules therefore go into `OPENCODE_CONFIG_CONTENT`, and policies, which held against the project, back every deny (V5).
+- **Config precedence**: the `OPENCODE_CONFIG` file loads before project config, so a repository's `opencode.json` can widen its permissions; `OPENCODE_CONFIG_CONTENT` loads after it. The turn's permission rules therefore go into `OPENCODE_CONFIG_CONTENT`, and policies, which held against the project, back every deny (V5). As built, the `shell`, the MCP servers, the `instructions` and `update` go there too, so a project cannot replace them; only the policies stay in the file.
 - **Isolation**: moving `XDG_CONFIG_HOME` leaks into the agent's commands (V15) unless the `shell` wrapper and the MCP servers' `environment` restore the user's value. Risks: one of them is not applied (covered by the test of 4.6, item 13), or a future opencode release changes or drops the `shell` setting.
 - **Shared database**: concurrent standalone processes share one SQLite database, as does the user's own opencode. Three parallel turns ran without lock errors (V14).
 - **Silent new session**: a missing `PWD` sends the turn to the wrong directory; a lost session id silently starts a new one.
@@ -698,15 +704,31 @@ Phases 1–4 are merged and 5a is done; 5b–5d are next.
 
 **Not verified**:
 - cost under a subscription sign-in (needs a browser sign-in);
-- a lead turn with Spartito's real `orch` MCP server (a fake MCP server covered the long wait);
+- a long wait of Spartito's real `orch` MCP server (the smoke check called it briefly; a fake MCP server covered the long wait);
 - `retry` and `reasoning` events (none occurred; `--thinking` not tried);
 - `opencode models` with the network actually cut (V10);
 - SIGKILL instead of SIGTERM (V16);
-- whether `update: "disable"` in the `OPENCODE_CONFIG` file counts as global config;
-- whether an `instructions` file reaches the prompt (V4);
+- whether `update: "disable"` counts (now in `OPENCODE_CONFIG_CONTENT`);
+- the order of the instruction sources in the prompt (the smoke check showed that an `instructions` file reaches it, V4);
 - denying `opencode_worktree_create` and `opencode_session_move` directly; part of V6's function list comes from the model's own report;
 - the effect of `OPENCODE_DISABLE_FILEWATCHER`;
 - the spend after the last `opencode stats` reading is an estimate.
+
+**The smoke check of the built adapter**, on opencode 2.3.2 (`opencode v2.3.2`):
+- a worker turn, a lead turn with Spartito's own `orch` MCP server, and a turn that probed the role prompt;
+- confirmed: the command line, `ses_` ids, `--archived --title`, `PWD`, the turn config and its `instructions`, the `shell` wrapper and the placeholder `AGENTS.md` (accepted without warnings), the wrapper restoring the user's `XDG_CONFIG_HOME` in bash, the placeholder keeping `~/.claude/CLAUDE.md` out, the role prompt and the attribution reaching the model together with the project's `AGENTS.md`, the stream shapes, usage, cost and context, the `orch` MCP server starting with its environment and called through Code Mode (`await tools.orch.list_agents()`), `--version`, `models --standalone` with fetching off, `auth list --standalone --format json` printing `[]` with exit 0 when only a config file holds a key, and `spartito providers` listing opencode as a usable `unknown`;
+- it led to three changes: the model list depended on the asking process's directory (now asked in a fixed one), the Code Mode tool names come from the call's metadata (`state.metadata.metadata.toolCalls`), and the automatic compaction threshold is no longer shown for a provider that cannot compact;
+- not verified: `update: "disable"`, the order of the instruction sources, the cost of a subscription sign-in, a login from `opencode auth login` while the global config is moved away; and, since the settings moved after the check, that `OPENCODE_CONFIG_CONTENT`'s `shell` and MCP servers win over a project's and that `{env:NAME}` is substituted there (both seen in source).
+
+**Deviations** of the build from this design:
+- `carries_mcp_servers = False` (4.3): the mark of Q8 does not exist yet, so added MCP servers are not carried, as for Codex; the translation is built and tested.
+- An empty `auth list` leaves opencode usable as `unknown`, not `not_logged_in` (4.6, item 12): a key in a config file is not listed, and the free models need no login.
+- Without `user`, the temporary config home holds a one-line global `AGENTS.md`, so that opencode's fallback to `~/.claude/CLAUDE.md` [documented] does not apply; the config home is removed when the turn ends.
+- The `shell`, the MCP servers (each entry in full), the `instructions` and `update` are in `OPENCODE_CONFIG_CONTENT`, not the `OPENCODE_CONFIG` file, which keeps only the policies (4.1).
+- `opencode models` and `auth list` run with `--standalone`; the model list in the temporary directory, outside any project.
+- The `orch` MCP server's `timeout.execution` is one hour (3,600,000 ms), as Codex's tool timeout.
+- A local MCP server gets `$HOME/.config` as `XDG_CONFIG_HOME` when the user's was unset; the wrapper is a file in the run's directory.
+- A turn ended by a signal that Spartito did not send fails with `stopped: …`; one stopped by `spartito stop` ends `stopped`, as for the other providers.
 
 **Installing opencode for these checks**: not needed. It is already installed (2.3.2). Upgrading would need the owner's go-ahead, because releases are frequent and the checks should run on one pinned version.
 

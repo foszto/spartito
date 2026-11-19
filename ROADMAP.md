@@ -161,15 +161,16 @@ logs.
 
 #### More harness integrations
 
-**What it means.** Agents could run on more coding-agent CLIs than Claude Code and Codex,
-chosen per project or per agent as today, including locally hosted models where a harness
-supports them.
+**What it means.** Agents could run on more coding-agent CLIs than Claude Code, Codex and
+OpenCode, chosen per project or per agent as today, including locally hosted models where a
+harness supports them.
 
 **Today.** The plug-in interface exists. Providers implement a small protocol
 (`providers/base.py`) and are registered in the package or with `ORCH_PROVIDERS`
-([providers](docs/configuration.md#providers-and-permissions)). Codex shows what an
-integration with fewer features looks like: no cost, a context size only from its session
-files, and compaction as a separate turn
+([providers](docs/configuration.md#providers-and-permissions)). Codex and OpenCode show
+what an integration with fewer features looks like: Codex with no cost, a context size only
+from its session files and compaction as a separate turn, OpenCode with no compaction and an
+answer schema asked for in the prompt
 ([limitations](docs/architecture.md#platform-support-and-limitations)).
 
 **Open questions.** Which harnesses come first. What a provider must support (structured
@@ -185,7 +186,7 @@ through adapters. That would mean less code per provider, no start-up cost per t
 events as the agent works, and an agent's permission requests answered from the dashboard.
 
 **Today.** Each provider runs one CLI process per turn
-([processes](docs/architecture.md#processes)), and opencode is being designed the same way
+([processes](docs/architecture.md#processes)), and opencode runs the same way
 (see [more harness integrations](#more-harness-integrations)). A provider implements the
 protocol in `providers/base.py` ([other providers](docs/providers.md#other-providers)).
 

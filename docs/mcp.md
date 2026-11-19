@@ -201,7 +201,9 @@ For a Claude agent whose next turn has at least one server on:
   `spartito mcp show`, `spartito capabilities show AGENT` and the MCP tool `get_agent` show it
   (`last_status`).
 
-A Codex agent skips every server with the note `codex does not support it`; the setting stays.
+A Codex agent skips every server with the note `codex does not support it`, and an OpenCode
+agent with `opencode does not support it`; the setting stays. An OpenCode lead still gets the
+`orch` MCP server ([OpenCode](#opencode)).
 The agent's log line `capabilities for this turn: …` and `spartito capabilities show AGENT`
 name the servers like any other capability.
 
@@ -262,7 +264,8 @@ What works today:
 - No OAuth sign-in: a server that needs one reports `needs-auth` and gives no tools (phase 7).
 - No dashboard page for MCP servers, and no HTTP endpoints to add or remove them (phases 4
   and 6).
-- Codex agents skip every server (phase 8).
+- Codex agents skip every server (phase 8), and so do OpenCode agents
+  ([OpenCode](#opencode)).
 - The background service passes no variable other than its few on to turns, so a server
   that references one is skipped in every turn it starts ([The variables](#the-variables)).
   No way to give it such variables is built yet.
@@ -639,6 +642,30 @@ What is open:
 
 Codex is therefore a later phase. Until then a Codex agent skips MCP-server capabilities
 with a note.
+
+### OpenCode
+
+What is built:
+
+- A lead's `orch` MCP server is a local server in the turn's `OPENCODE_CONFIG_CONTENT`, which
+  opencode loads after a project's `opencode.json`, so a project's server of the same name
+  cannot replace it: `mcp.servers.orch` with `type: "local"`, the command as one array, its
+  `environment`, `cwd`, `codemode: true` and `timeout.execution` of an hour (in
+  milliseconds). A policy and the permission `orch_*` allow it; with `mcp = strict` an
+  `mcp.use` policy refuses every other server. **[observed]**
+- The model calls the server's tools through opencode's Code Mode
+  (`await tools.orch.list_agents()`); the agent's log names the tools each call made.
+  **[observed]**
+- The translation of an added server is built and tested, but not used yet: `command` and
+  `args` become one `command` array, `env` becomes `environment`, and a `url` gives
+  `type: "remote"` with its `headers`. `${NAME}` becomes opencode's `{env:NAME}`, and
+  `${NAME:-default}` becomes `{env:NAME}` when the turn's environment has the variable, else
+  the default as written. When the user's global opencode config is moved away for the turn,
+  a local server gets the user's own `XDG_CONFIG_HOME` in its `environment`.
+
+What is open: an added server would run without an approval gate, as with Codex, so OpenCode
+waits for the same decision. Until then an OpenCode agent skips MCP-server capabilities with
+a note.
 
 ## The MCP page, the command and the API
 

@@ -20,9 +20,16 @@ laid out.
 There is no daemon. `spartito`, the dashboard and the MCP server write to a SQLite database and
 start one detached runner process (`python -m orchestrator.runner <run-id>`) per turn. The
 runner waits for dependencies, creates the worktree if needed, runs `claude -p
---output-format stream-json` or `codex exec --json`, and turns the output into uniform events.
-Every turn is its own process, and the command line, the dashboard and the MCP server read
-the same database, so they can be used side by side.
+--output-format stream-json`, `codex exec --json` or `opencode run --format json`, and turns
+the output into uniform events. Every turn is its own process, and the command line, the
+dashboard and the MCP server read the same database, so they can be used side by side.
+
+The CLI runs in the runner's process group, but what it starts need not stay there. An
+opencode turn starts a private server of its own (`--standalone`), which runs the agent's
+commands through a pty helper; the server, the helper and each shell have process groups of
+their own, as Claude Code's shells have sessions of their own. A stop, or the end of a lead's
+turn after its answer, therefore ends the CLI's descendants and the groups and sessions they
+created, not only the runner's group.
 
 ### State
 
@@ -48,15 +55,16 @@ macOS the background service writes to `logs/web.log`; the window of `spartito a
 ### Permissions and providers
 
 Claude agents run with `--permission-mode auto`, Codex agents in the `workspace-write`
-sandbox; `spartito spawn --permission` overrides this per agent.
+sandbox, opencode agents in its `default` mode (a request that would ask for approval is
+rejected and the turn goes on); `spartito spawn --permission` overrides this per agent.
 
 Providers implement a small protocol (`providers/base.py`); further providers can be
 registered with `ORCH_PROVIDERS="name=package.module:Class"`. Details:
 [configuration.md](configuration.md#providers-and-permissions).
 
 Which providers can run is checked per process (`core/availability.py`): each CLI is looked
-for on `PATH` and in the usual install directories and asked `--version`
-(`providers/locate.py`), and the result is kept for 5 minutes, not in the database, because
+for on `PATH` and in the usual install directories and asked `--version`, opencode also
+`auth list` (`providers/locate.py`), and the result is kept for 5 minutes, not in the database, because
 the command line, the service and the MCP servers can each see another `PATH`. New agents and
 projects get an available provider. Details: [providers.md](providers.md).
 
@@ -76,11 +84,18 @@ projects get an available provider. Details: [providers.md](providers.md).
   per-turn figures are derived by subtraction; the tokens of a turn that failed or was stopped
   without a result are counted in the agent's next turn (the agent's total is correct).
   Details: [agents.md](agents.md#context-and-compaction).
+- **OpenCode.** Its limits are listed in its `limits` attribute (`providers/opencode.py`),
+  shown by `spartito providers --json` and in [providers.md](providers.md#opencode-opencode).
+  It has no sandbox: only opencode's own tools are held back by permission rules and
+  policies. It cannot be compacted, and it compacts on its own without reporting it, so the
+  context gauge may drop without a line in the log. Its answer schema is asked for in the
+  prompt, not enforced. By default its agents run without the user's global opencode config,
+  and their commands run in bash. MCP servers added in Spartito are not carried to it yet.
 - **Notifications.** A lead's answer reaches its parent only once the lead and all of its
   agents are idle.
 - **Role prompts.** A Codex agent receives its role prompt in the first turn of its session
   and keeps that version; a running `spartito chat` session keeps the prompt it started with.
-  Headless Claude agents receive the current role prompt with every turn.
+  Headless Claude and OpenCode agents receive the current role prompt with every turn.
 - **Upgrades.** A running `spartito web` keeps the code it was started with; restart it after an
   upgrade (for the background service: `spartito service install` again). New turns start new
   runner processes and use the new code.
@@ -140,7 +155,8 @@ src/orchestrator/
   runner.py        one turn in its own detached process
   store.py         SQLite (WAL): the only shared state
   providers/       __init__.py (the registry, `BUILTIN`), base.py (protocol), claude.py,
-                   codex.py, locate.py (finding a CLI, the `--version` check),
+                   codex.py, opencode.py, locate.py (finding a CLI, the `--version`
+                   and login checks),
                    kit.py (building blocks the providers share)
   notify.py        notification turns to parents
   replies.py       results cut to a size budget for agents

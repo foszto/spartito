@@ -1,10 +1,10 @@
 # Spartito
 
-Spartito runs Claude Code and Codex agents headless and in parallel, each in its own git
-worktree and branch. You steer them through one orchestrator agent (shown as *Maestro*) from a
+Spartito runs Claude Code, Codex and OpenCode agents headless and in parallel, each in its own
+git worktree and branch. You steer them through one orchestrator agent (shown as *Maestro*) from a
 web dashboard or the command line, instead of managing many terminal sessions by hand. It is
-for developers who already use Claude Code or Codex and want several agents working on their
-repositories at once.
+for developers who already use Claude Code, Codex or OpenCode and want several agents working
+on their repositories at once.
 
 ```
 you ── orchestrator (Maestro)
@@ -44,8 +44,8 @@ were: the `orch` MCP server and its tools, the `ORCH_*` variables, `orch.db` and
 - macOS or Linux (see [Platform support](https://github.com/foszto/spartito#platform-support)).
 - Python 3.14 and [uv](https://docs.astral.sh/uv/).
 - `git`.
-- At least one of the two supported CLIs, installed and logged in: `claude` (Claude Code) or
-  `codex` (Codex). `spartito providers` shows which of them this machine can run; new projects
+- At least one of the three supported CLIs, installed and logged in: `claude` (Claude Code),
+  `codex` (Codex) or `opencode` (OpenCode, 2.2.3 or later). `spartito providers` shows which of them this machine can run; new projects
   and agents, the orchestrator agent included, get an available one, and a provider can be
   chosen per project and per agent. `spartito chat` needs `claude`. Details:
   [docs/providers.md](https://github.com/foszto/spartito/blob/master/docs/providers.md).
@@ -147,7 +147,7 @@ spartito archive fix-login-3f2a     # hide it from the lists; everything is kept
 
 ## How it fits together
 
-Every agent is a headless Claude Code or Codex session with a role. A message to an agent
+Every agent is a headless Claude Code, Codex or OpenCode session with a role. A message to an agent
 starts a *turn*: `spartito`, the dashboard or the MCP server records it in a SQLite database
 under `~/.orchestrator/` and starts one detached runner process, which runs the CLI in the
 agent's worktree and records its output as events. The orchestrator and the project leads

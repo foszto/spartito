@@ -17,7 +17,7 @@ lists as `#12`. *Project lead* or *lead* is the agent with role `lead` of a proj
 |---|---|
 | `spartito project add/list/rm` | register, list and unregister projects |
 | `spartito project provider <project> <provider>` | the provider of a project's new agents |
-| `spartito providers` | which provider CLIs (Claude Code, Codex) this machine can run |
+| `spartito providers` | which provider CLIs (Claude Code, Codex, OpenCode) this machine can run |
 | `spartito capabilities` | capabilities such as Claude in Chrome: list, `on`/`off`/`inherit` per level, `show` an agent's |
 | `spartito mcp` | MCP servers added in Spartito: list, `show`, `add`, `remove`, `on`/`off`/`inherit` per level |
 | `spartito chat` | interactive orchestrator session (Claude Code) |
@@ -87,7 +87,10 @@ spartito providers [--json]
   status (`available`, `not_installed`, `not_logged_in`, `unknown`), version, the
   capabilities it supports (`CAPABILITIES`: `chrome` for `claude`, `-` for none) and the
   reason, such as `found on PATH; login not checked`. `*` marks the first available one, which a new
-  project gets. It runs only each CLI's `--version`: no agent turn, no login check, no network.
+  project gets. It runs only each CLI's `--version`, and for opencode also
+  `opencode auth list`, which names the connected providers without a secret: no agent turn,
+  no network, no login check for Claude Code or Codex. An opencode that lists no login is
+  `unknown`, which can still be chosen.
   When a provider is `not_installed`, a line below the table says to run
   `spartito service install` or `spartito app install` again after installing a CLI.
   `--json` adds each provider's description, features, limits and models, without that line. The statuses, where
@@ -253,8 +256,9 @@ spartito send AGENT MESSAGE [--after AGENT_OR_RUN ...]
   ([providers.md](providers.md#how-a-provider-is-chosen)). `--share` works in another agent's
   worktree; `--base` branches from a ref or from another agent's branch; `--after`
   (repeatable) waits until those agents or turns (by run id) have finished successfully, and
-  skips this agent if one fails. `--permission` is the Claude permission mode or the Codex
-  sandbox mode (defaults: `auto`, `workspace-write`). `--capabilities` sets the agent's own
+  skips this agent if one fails. `--permission` is the Claude permission mode, the Codex
+  sandbox mode or opencode's `default` or `auto` (defaults: `auto`, `workspace-write`,
+  `default`). `--capabilities` sets the agent's own
   capabilities, comma-separated: `"chrome"` turns one on, `"-chrome"` off
   ([capabilities.md](capabilities.md#turning-them-on-and-off)); one its provider does not
   support is kept, skipped in its turns, and `spawn` prints a `note: …` line about it.
@@ -328,7 +332,7 @@ spartito compact AGENT [INSTRUCTIONS]
   the agent's own value (`""` clears it). The change applies from the next turn. In an existing
   session a model change starts a new prompt cache (the next turn reads the whole conversation
   at full price); an effort change keeps the cache with Codex and may start a new one with
-  Claude. The orchestrator can be set too (`spartito model orchestrator --effort high`).
+  Claude or OpenCode. The orchestrator can be set too (`spartito model orchestrator --effort high`).
 - `model --provider` moves an idle agent, the orchestrator included, to another available
   provider. Nothing of a conversation is carried over: the next message continues the agent's
   last conversation on that provider, or starts a new one if it has none there; its
