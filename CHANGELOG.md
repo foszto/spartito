@@ -140,6 +140,10 @@ chosen is in the
 
 ### Fixed
 
+- The tabs of **Settings & usage** and of the Settings dialog switch again: only the panel of
+  the active tab is shown. The agent's groups were all left visible, so a click or an arrow key
+  changed the tab's highlight but not what was on screen; the Settings dialog rebuilt its strip
+  on every click, dropping the tab under the pointer and its focus.
 - A turn whose CLI is missing fails with a clear message that says where it was looked for,
   and the CLIs are also found in the usual install directories when a background service or
   launcher has a shorter `PATH`.

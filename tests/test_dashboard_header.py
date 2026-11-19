@@ -16,7 +16,7 @@ NAMES = (
     *CAPABILITY_NAMES, "buildView", "buildDetails", "showDetails", "buildCacheInfo", "renderHeader",
     "renderWelcome", "renderQueue", "shownProvider", "contextText", "tokenText", "DETAILS_NAME", "DETAIL_GROUPS", "SUGGESTIONS",
     "detailNames", "detailShown", "activeDetailTab", "detailTabKey", "selectDetailTab", "syncDetailTabs",
-    "tabKeyMove",
+    "tabKeyMove", "detailAvailable",
 )  # fmt: skip
 
 PRELUDE = r"""
@@ -175,7 +175,7 @@ def test_the_open_section_and_its_tabs_survive_a_poll_and_a_rebuilt_view() -> No
 buildView(); renderHeader(agent());
 const state0 = () => ({ hidden: $('details').hidden, expanded: $('detailsButton').getAttribute('aria-expanded'),
   about: $('details-tab-about').getAttribute('aria-selected'), usage: $('details-tab-usage').getAttribute('aria-selected'),
-  active: detailTab, aboutHidden: $('details-about').hidden });
+  active: detailTab, shown: detailNames().filter(n => !$(`details-${n}`).hidden) });
 const before = { ...state0(), controls: $('detailsButton').getAttribute('aria-controls'),
   name: $('detailsButton').textContent, groups: $('details-tabs').children.map(t => t.getAttribute('aria-controls')),
   tablist: [$('details-tabs').getAttribute('role'), $('details').children.slice(1).map(g => g.getAttribute('role'))],
@@ -199,7 +199,7 @@ out({ before, opened, polled, rebuilt, closed: state0(), saved: saved.at(-1),
         "about": "false",
         "usage": "false",
         "active": "capabilities",
-        "aboutHidden": False,
+        "shown": ["capabilities"],
         "controls": "details",
         "name": "Settings & usage",
         "groups": ["details-capabilities", "details-usage", "details-about", "details-changes"],
@@ -217,7 +217,7 @@ out({ before, opened, polled, rebuilt, closed: state0(), saved: saved.at(-1),
         "about": "false",
         "usage": "false",
         "active": "capabilities",
-        "aboutHidden": False,
+        "shown": ["capabilities"],
     }
     polled = {
         "hidden": False,
@@ -225,13 +225,49 @@ out({ before, opened, polled, rebuilt, closed: state0(), saved: saved.at(-1),
         "about": "true",
         "usage": "false",
         "active": "about",
-        "aboutHidden": False,
+        "shown": ["about"],
     }
     assert result["polled"] == polled
     assert result["rebuilt"] == polled
     assert result["closed"] == {**polled, "hidden": True, "expanded": "false"}
     assert result["saved"] == ["orch-detail-tab", "about"]
-    assert result["changes"] == [True, True, [False, False]]
+    # changes cannot be shown: its tab and panel are hidden, and the shown group stays shown
+    assert result["changes"] == [True, True, [True, False]]
+
+
+def test_a_click_or_a_key_shows_exactly_one_panel_and_a_poll_keeps_it() -> None:
+    result = run_page(
+        """
+buildView(); renderHeader(agent()); $('detailsButton').onclick();
+const shown = () => detailNames().filter(n => !$(`details-${n}`).hidden);
+const tab = (name, key) => { if (key) $('details-tabs').onkeydown({ key, preventDefault() {} }); else $(`details-tab-${name}`).onclick();
+  return { tab: detailTab, shown: shown() }; };
+const clicked = tab('usage'), back = tab('capabilities'), about = tab('about');
+const right = tab(null, 'ArrowRight'), left = tab(null, 'ArrowLeft'), end = tab(null, 'End'), home = tab(null, 'Home');
+renderHeader(agent()); renderHeader(agent({ status: 'running' }));
+const polled = { tab: detailTab, shown: shown() };
+// a group that cannot be shown is skipped, and its panel stays hidden
+renderHeader(agent({ changes: '' }));
+const withoutChanges = { shown: shown(), changesTab: $('details-tab-changes').hidden, changesPanel: $('details-changes').hidden };
+out({ clicked, back, about, right, left, end, home, polled, withoutChanges });
+"""
+    )
+    assert result["clicked"] == {"tab": "usage", "shown": ["usage"]}
+    assert result["back"] == {"tab": "capabilities", "shown": ["capabilities"]}
+    assert result["about"] == {"tab": "about", "shown": ["about"]}
+    assert result["right"] == {
+        "tab": "capabilities",
+        "shown": ["capabilities"],
+    }  # wraps from the last shown
+    assert result["left"] == {"tab": "about", "shown": ["about"]}  # wraps from the first
+    assert result["end"] == {"tab": "about", "shown": ["about"]}
+    assert result["home"] == {"tab": "capabilities", "shown": ["capabilities"]}
+    assert result["polled"] == {"tab": "capabilities", "shown": ["capabilities"]}
+    assert result["withoutChanges"] == {
+        "shown": ["capabilities"],
+        "changesTab": True,
+        "changesPanel": True,
+    }
 
 
 def test_the_tabs_are_one_tab_stop_and_move_with_the_arrow_keys() -> None:

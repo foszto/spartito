@@ -474,13 +474,16 @@ let detailTab = stored('orch-detail-tab', DETAIL_GROUPS[0][0]);
 
 const detailNames = () => DETAIL_GROUPS.map(([name]) => name);
 
-// Whether the section can show a group: its panel is not hidden, and the capabilities one
-// needs lines (the box hides itself when it has none).
+// What a group can show for the agent drawn: usage and about need an agent, changes need
+// changes, and the capabilities box hides itself when it has no lines. syncDetailTabs owns the
+// panels' visibility, so the tab's own hiding is never mistaken for one of these.
+const detailAvailable = {};
+
+// Whether the section can show a group.
 function detailShown(name) {
-  const panel = $(`details-${name}`);
-  if (!panel || panel.hidden) return false;
+  if (!$(`details-${name}`) || !$(`details-tab-${name}`)) return false;
   if (name === 'capabilities') { const caps = $('setupCaps'); return Boolean(caps) && !caps.hidden; }
-  return true;
+  return detailAvailable[name] !== false;
 }
 
 // The tab shown: the chosen one while it is shown, else the first shown one.
@@ -545,8 +548,12 @@ function selectDetailTab(name, focus) {
   if (focus) $(`details-tab-${name}`).focus();
 }
 
-// Keeps the tabs in step with the panels: a hidden panel hides its tab, and the tab shown is
-// always a shown one. Called when the view is built and whenever a panel may have changed.
+// Keeps the tabs in step with the panels: a group that cannot be shown hides its tab, the tab
+// shown is always a shown one, and only that tab's panel is visible. Called when the view is
+// built and whenever a panel may have changed. It owns the panels' visibility (the section
+// used to fold them up, and a class alone showed nothing): the availability of a group for
+// something other than the tab is recorded in detailAvailable beforehand, so what it hides
+// itself is never taken for unavailable.
 function syncDetailTabs() {
   const names = detailNames();
   if (!names.every(name => $(`details-tab-${name}`))) return;  // the section is not built
@@ -557,7 +564,9 @@ function syncDetailTabs() {
     tab.setAttribute('aria-selected', String(on));
     tab.tabIndex = on ? 0 : -1;
     tab.classList.toggle('active', on);
-    $(`details-${name}`).classList.toggle('active', on);
+    const panel = $(`details-${name}`);
+    panel.classList.toggle('active', on);
+    panel.hidden = !on;
   }
 }
 
@@ -677,8 +686,8 @@ function renderHeader(agent, setupFreshness = true) {
   // The Maestro before its first message has capabilities to choose already, nothing else.
   const draft = !agent && selected === ORCH ? state.orchestrator_setup : null;
   $('detailsButton').hidden = !agent && !draft;
-  for (const name of ['usage', 'about']) $(`details-${name}`).hidden = !agent;
-  $('details-changes').hidden = !agent?.changes;
+  // What the section can show for this agent: syncDetailTabs hides the rest, panels and tabs.
+  Object.assign(detailAvailable, { usage: Boolean(agent), about: Boolean(agent), changes: Boolean(agent?.changes) });
   syncDetailTabs();
   showDetails();
   // The code view: only for an agent with a worktree of its own (a branch).
@@ -2449,30 +2458,44 @@ function renderSettingsTabs(sections) {
     box.id = `settings-${name}`;
     box.setAttribute('role', 'tabpanel');
     box.setAttribute('aria-labelledby', `settings-tab-${name}`);
-    box.hidden = Boolean(strip) && name !== settingsTab;  // without a tablist all are shown
   }
-  if (!strip) return;
+  if (!strip) {  // without a tablist all are shown
+    for (const [, box] of sections) box.hidden = false;
+    return;
+  }
   strip.setAttribute('role', 'tablist');
   strip.setAttribute('aria-label', 'Settings sections');
   strip.replaceChildren();
   for (const [name, box] of sections) {
-    const on = name === settingsTab, tab = el('button', 'detail-tab', box.children[0]?.textContent || name);
+    const tab = el('button', 'detail-tab', box.children[0]?.textContent || name);
     tab.type = 'button'; tab.id = `settings-tab-${name}`;
     tab.setAttribute('role', 'tab');
     tab.setAttribute('aria-controls', box.id);
-    tab.setAttribute('aria-selected', String(on));
-    tab.tabIndex = on ? 0 : -1;
-    tab.classList.toggle('active', on);
     tab.onclick = () => selectSettingsTab(name, true);
     strip.append(tab);
   }
   strip.onkeydown = event => tabKeyMove(event, names, settingsTab, name => selectSettingsTab(name, true));
+  applySettingsTab();
+}
+
+// Shows the active section and marks its tab, in place: a click does not rebuild the strip, so
+// the tab under the pointer (and the focus) stays where it is.
+function applySettingsTab() {
+  const strip = $('settingsTabs');
+  for (const [name, box] of settingsSections) {
+    const on = name === settingsTab, tab = $(`settings-tab-${name}`);
+    box.hidden = Boolean(strip) && !on;
+    if (!tab) continue;
+    tab.setAttribute('aria-selected', String(on));
+    tab.tabIndex = on ? 0 : -1;
+    tab.classList.toggle('active', on);
+  }
 }
 
 function selectSettingsTab(name, focus) {
   if (!settingsSections.some(([section]) => section === name)) return;
   settingsTab = name;
-  renderSettingsTabs(settingsSections);
+  applySettingsTab();
   if (focus) $(`settings-tab-${name}`)?.focus();
 }
 
