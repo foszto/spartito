@@ -8,12 +8,20 @@ every request. Keys, in a role's frontmatter or a loadout.toml table:
                      default set, `none` = no built-in tools. MCP tools are not affected.
   mcp                `strict` = only the orchestrator's own server (`--strict-mcp-config`);
                      `inherit` = also user, project, plugin and claude.ai connector servers;
-                     ignored (with a warning) from a project's own files, see resolve()
+                     `inherit` is ignored (with a warning) from a project's own files,
+                     see resolve()
   setting_sources    Claude setting sources (`--setting-sources`); `project,local` drops the
                      user level (user plugins, skills, commands, hooks) but keeps the
                      project's CLAUDE.md and .claude/; `user,project,local` = inherit
   slash_commands     `false` disables every skill and slash command (`--disable-slash-commands`)
   codex_user_config  `false` = Codex ignores $CODEX_HOME/config.toml (`--ignore-user-config`)
+  opencode_user_config
+                     `true` = OpenCode keeps the user's global configuration
+                     ($XDG_CONFIG_HOME/opencode: providers and models, plugins, skills, the
+                     global AGENTS.md) whatever `setting_sources` says, and its skills stay
+                     usable without `slash_commands` or `Skill` in `tools` (not with `none`);
+                     `false` = `setting_sources` decides, as for Claude. Only `false` counts from a project's own files (resolve());
+                     no effect for Claude or Codex
   memory             `true` = Claude also gets Write and Edit, but only for its own memory
                      directory (~/.claude/projects/<project>/memory/); a hook refuses every
                      other target (memory_guard.py). Only for headless turns whose hooks
@@ -57,6 +65,7 @@ KEYS = (
     "setting_sources",
     "slash_commands",
     "codex_user_config",
+    "opencode_user_config",
     "memory",
     "tool_search",
 )
@@ -72,6 +81,7 @@ FALLBACK: dict[str, Any] = {
     "setting_sources": "project,local",
     "slash_commands": True,
     "codex_user_config": False,
+    "opencode_user_config": True,
     "memory": False,
     "tool_search": "auto",
 }
@@ -91,6 +101,7 @@ class Loadout:
     setting_sources: tuple[str, ...] | None = None  # None: every source
     slash_commands: bool = True
     codex_user_config: bool = True
+    opencode_user_config: bool = True
     memory: bool = False  # Write/Edit confined to the memory directory
     tool_search: str = "auto"  # TOOL_SEARCH; matters only with a restricted `tools`
 
@@ -141,7 +152,7 @@ def _value(key: str, value: Any) -> Any:
         if value not in TOOL_SEARCH:
             raise LoadoutError(f"`tool_search` must be `auto`, `always` or `never`, not {value!r}")
         return value
-    if key in ("slash_commands", "codex_user_config", "memory"):
+    if key in ("slash_commands", "codex_user_config", "opencode_user_config", "memory"):
         return _flag(value, key)
     raise LoadoutError(f"unknown loadout key `{key}` (use: {', '.join(KEYS)})")
 
@@ -176,16 +187,25 @@ def load_file(path: Path) -> dict[str, dict[str, Any]]:
     return data
 
 
+# What a project's own files cannot grant: (key, value as written) -> what it would give.
+GRANTS = {
+    ("mcp", "inherit"): "more MCP servers",
+    ("opencode_user_config", "true"): "the user's global opencode configuration",
+}
+
+
 def _ignored(
     key: str, value: Any, where: str, project: bool, warn: Callable[[str], None] | None
 ) -> bool:
-    """True for `mcp = inherit` from a project's own file, reported through `warn`."""
-    if not (project and key == "mcp" and value == "inherit"):
+    """True for a GRANTS value from a project's own file, reported through `warn`."""
+    written = str(value).strip().lower() if isinstance(value, bool | str) else None
+    grant = GRANTS.get((key, written)) if project else None
+    if grant is None:
         return False
     if warn:
         warn(
-            f"{where}: ignoring `mcp = inherit`: a project's own files cannot give its agents "
-            f"more MCP servers; set it in {config.home() / FILENAME}"
+            f"{where}: ignoring `{key} = {written}`: a project's own files cannot give its "
+            f"agents {grant}; set it in {config.home() / FILENAME}"
         )
     return True
 
@@ -221,8 +241,9 @@ def resolve(
             layers.append((f"{path} [{name}]", tables.get(name, {})))
     layers.append((f"{role.source} (frontmatter)", role.loadout))
     layers.append(("fallback", FALLBACK))
-    # A repository grants nothing: `mcp = inherit` from its own files (the project's
-    # loadout.toml, a role file in its .orch/roles/) is skipped as if the key were absent.
+    # A repository grants nothing: `mcp = inherit` and `opencode_user_config = true` from
+    # its own files (the project's loadout.toml, a role file in its .orch/roles/) are
+    # skipped as if the key were absent.
     project_layers = {0, 1} if project_path else set()
     if project_path and Path(role.source).is_relative_to(Path(project_path) / ".orch"):
         project_layers.add(len(layers) - 2)
@@ -243,6 +264,7 @@ def resolve(
         setting_sources=values["setting_sources"],
         slash_commands=values["slash_commands"],
         codex_user_config=values["codex_user_config"],
+        opencode_user_config=values["opencode_user_config"],
         memory=values["memory"],
         tool_search=values["tool_search"],
     )

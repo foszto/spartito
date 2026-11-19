@@ -39,7 +39,7 @@ Anthropic's coding agent CLI, run as `claude -p --output-format stream-json`.
 | cost | reported |
 | role prompt | every turn |
 | compaction | Claude Code's own `/compact`, with optional instructions |
-| loadout | every key but `codex_user_config` ([configuration.md](configuration.md#loadout)) |
+| loadout | every key but `codex_user_config` and `opencode_user_config` ([configuration.md](configuration.md#loadout)) |
 | attribution | the Claude Code line ([concepts.md](concepts.md#agents-and-roles)) |
 | permissions | `--permission-mode auto` by default |
 
@@ -79,7 +79,7 @@ private server of its own (`--standalone`). Spartito supports opencode 2.2.3 or 
 | cost | reported |
 | role prompt | every turn |
 | compaction | none: the Compact button and `spartito compact` refuse an opencode agent |
-| loadout | `tools`, `mcp`, `setting_sources` and `slash_commands` ([configuration.md](configuration.md#loadout)) |
+| loadout | `tools`, `mcp`, `setting_sources`, `slash_commands` and `opencode_user_config` ([configuration.md](configuration.md#loadout)) |
 | attribution | the OpenCode line, every turn |
 | permissions | `default`: no `--auto`, so every request that would ask is rejected and the turn goes on; `auto`: `--auto` |
 
@@ -91,8 +91,8 @@ Limits:
 - takes no MCP servers added in Spartito (`mcp:<name>`) yet, as Codex; a lead's `orch` server it does
 - of the loadout `memory`, `tool_search` and `codex_user_config` have no effect
 - has no sandbox: only opencode's own tools are held back
-- leaves the user's global opencode config out unless `setting_sources` has `user`: a provider keyed only there is not available to agents
-- without `user` in `setting_sources`, runs the agent's commands in bash, not the user's shell
+- loads the user's global opencode config (providers, plugins, skills, global AGENTS.md); with `opencode_user_config = false` and no `user` in `setting_sources` it is left out, and a provider keyed only there is not available to agents
+- with the user's global opencode config left out, runs the agent's commands in bash, not the user's shell
 - may report no cost for subscription sign-ins, and misses opencode's title and compaction calls
 - starts a lost session anew instead of failing
 
@@ -117,21 +117,29 @@ What else to know:
   under other names (with `mcp = strict` those servers are refused). It can also add or
   reconfigure providers for its agents, including where a provider's requests go, as a
   project's settings can for the other harnesses. Without `project` in `setting_sources` the project's opencode config and its
-  `AGENTS.md` are left out (unlike Claude Code, where `CLAUDE.md` stays). Without `user`, the
+  `AGENTS.md` are left out (unlike Claude Code, where `CLAUDE.md` stays). With
+  `opencode_user_config = false` and without `user`, the
   user's global opencode config is moved away for the turn (`XDG_CONFIG_HOME`), and the
   agent's commands get the user's own `XDG_CONFIG_HOME` back, so `git`, `gh` and other tools
   keep their configuration; those commands then run in bash, not the user's shell. Every turn
   denies `question` (nobody answers), opencode's tools that move sessions or manage worktrees,
   and access outside the worktree but for the shared `.git`.
-- **The user's global opencode config** does not apply to agents by default
-  (`setting_sources = project,local`, without `user`): neither its `opencode.json` nor its
-  plugins, agents, commands or global `AGENTS.md`, and `~/.claude/CLAUDE.md`, which opencode
-  reads when there is no global `AGENTS.md`, is kept out too. A provider whose key is set only
-  in the global `opencode.json` is therefore not available to agents; a login made with
-  `opencode auth login` (or `/connect`), and a provider's environment variable, still are.
-  `setting_sources = "user,project,local"` in a loadout brings the global config back
-  ([configuration.md](configuration.md#loadout)). Without `user`, the agent's commands run in
-  bash, not the user's shell.
+- **The user's global opencode config** applies to agents by default
+  (`opencode_user_config = true`), as when the user runs `opencode`: its `opencode.json`
+  (custom providers and models), plugins, skills, agents, commands and global `AGENTS.md`,
+  and the agent's commands run in the user's shell. The turn's permission rules and policies
+  still hold, and with `mcp = strict` the global config's MCP servers are refused. OpenCode's
+  skills are allowed even with the packaged roles' `slash_commands = false` and their `tools`
+  lists without `Skill`; only `tools = none` denies them. Claude Code and Codex are not affected.
+  `opencode_user_config = false` in `~/.orchestrator/loadout.toml` (`[default]` or a role's
+  table) leaves it out again for roles without `user` in `setting_sources`: neither its
+  `opencode.json` nor its plugins, agents, commands or global `AGENTS.md`, and
+  `~/.claude/CLAUDE.md`, which opencode reads when there is no global `AGENTS.md`, is kept
+  out too. A provider whose key is set only in the global `opencode.json` is then not
+  available to agents; a login made with `opencode auth login` (or `/connect`), and a
+  provider's environment variable, still are, and the agent's commands run in bash, not the
+  user's shell. A project's own files can only turn the key off
+  ([configuration.md](configuration.md#opencode)).
 - **MCP servers** added in Spartito (`mcp:<name>`) are not carried to opencode agents yet, as
   for Codex; the `orch` MCP server of leads is.
 - **The context gauge** shows the size of the conversation without a window. opencode

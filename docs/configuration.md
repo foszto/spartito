@@ -260,8 +260,9 @@ configuration (claude.ai connectors, plugins, skills, MCP servers), which multip
 of every request. Each role therefore declares what its CLI loads besides the role prompt. By
 default, agents load only the `orch` MCP server (leads), the project's own `CLAUDE.md` and
 `.claude/` settings, and a fixed set of built-in tools; skills and slash commands are off,
-Codex ignores `~/.codex/config.toml`, and OpenCode leaves out your global opencode config
-([OpenCode](#opencode)). If you rely on `~/.claude/settings.json` or on Codex's
+and Codex ignores `~/.codex/config.toml`. OpenCode keeps your global opencode config (your
+providers and models, plugins, skills), within the turn's limits ([OpenCode](#opencode)).
+If you rely on `~/.claude/settings.json` or on Codex's
 `model_provider` or profiles, see
 [Authentication and model settings](#overrides-loadouttoml) below.
 
@@ -274,11 +275,13 @@ Codex ignores `~/.codex/config.toml`, and OpenCode leaves out your global openco
 | `setting_sources` | `project,local` = without the user level (user plugins, skills, commands, hooks), keeping the project's `CLAUDE.md` and `.claude/`; `user,project,local` = everything | `--setting-sources` |
 | `slash_commands` | `false` = no skills or slash commands at all, the project's included | `--disable-slash-commands` |
 | `codex_user_config` | `false` = Codex does not read `$CODEX_HOME/config.toml` (the login is kept) | `--ignore-user-config` |
+| `opencode_user_config` | `true` (default) = OpenCode keeps your global opencode config, whatever `setting_sources` says; `false` = `setting_sources` decides ([OpenCode](#opencode)). Only `false` counts from a project's own files | none (OpenCode's configuration) |
 | `memory` | `true` = also `Write` and `Edit`, but only into the session's own memory directory (`~/.claude/projects/<project>/memory/`) | `--settings` (a PreToolUse hook) |
 | `tool_search` | `auto`, `always` or `never`: when Claude Code loads MCP tools on demand ([Tool search](#tool-search)) | `ToolSearch` in `--tools` |
 
-Codex uses only `codex_user_config`; OpenCode uses `tools`, `mcp`, `setting_sources` and
-`slash_commands` ([OpenCode](#opencode)); the other keys apply to Claude.
+Codex uses only `codex_user_config`; OpenCode uses `tools`, `mcp`, `setting_sources`,
+`slash_commands` and `opencode_user_config` ([OpenCode](#opencode)); the other keys apply to
+Claude.
 
 ### Defaults
 
@@ -299,7 +302,8 @@ its `tools`.
 
 A custom role that sets none of the keys gets `tools = default` (including `Skill`),
 `mcp = strict`, `setting_sources = project,local`, `slash_commands = true`,
-`codex_user_config = false`, `tool_search = auto`. An empty value (`tools:`) is an error.
+`codex_user_config = false`, `opencode_user_config = true`, `tool_search = auto`. An empty
+value (`tools:`) is an error.
 
 ### OpenCode
 
@@ -308,21 +312,32 @@ configuration, which a project's `opencode.json` cannot lift:
 
 | key | on OpenCode |
 |---|---|
-| `tools` | each listed tool allows opencode's counterpart: `Bash` its shell, `Read` read, `Edit`, `Write`, `MultiEdit` and `NotebookEdit` edit, `Glob`, `Grep`, `WebFetch`, `WebSearch`, `Task` or `Agent` its sub-agents, `Skill` skills; the others are denied. `default` denies nothing extra, `none` every built-in tool. A tool without a counterpart (such as `ToolSearch`) is ignored, with a line in the log |
+| `tools` | each listed tool allows opencode's counterpart: `Bash` its shell, `Read` read, `Edit`, `Write`, `MultiEdit` and `NotebookEdit` edit, `Glob`, `Grep`, `WebFetch`, `WebSearch`, `Task` or `Agent` its sub-agents, `Skill` skills (with `opencode_user_config = true`, skills are allowed by any list but `none`); the others are denied. `default` denies nothing extra, `none` every built-in tool. A tool without a counterpart (such as `ToolSearch`) is ignored, with a line in the log |
 | `mcp` | `strict`: only the `orch` MCP server (leads); every other server, yours or the project's, is refused. `inherit`: also the MCP servers of the opencode config that applies (yours with `user`, the project's with `project`) |
-| `setting_sources` | without `project`: the project's `opencode.json` and its `AGENTS.md` are left out (unlike Claude Code, where `CLAUDE.md` stays). Without `user`: your global opencode config is left out for the turn: its `opencode.json`, plugins, agents, commands and global `AGENTS.md`, and `~/.claude/CLAUDE.md`, which opencode reads in place of a missing global `AGENTS.md`. A provider whose key is set only in the global `opencode.json` is then not available to agents; a login made with `opencode auth login` and a provider's environment variable still are. The agent's commands get your own `XDG_CONFIG_HOME`, so `git` and `gh` keep their configuration, and run in bash, not your shell |
-| `slash_commands` | `false`: skills are denied |
+| `opencode_user_config` | `true` (default): your global opencode config applies as when you run `opencode` yourself, whatever `setting_sources` says: its `opencode.json` (custom providers and models), plugins, skills, agents, commands and global `AGENTS.md` (or `~/.claude/CLAUDE.md` in its place), and the agent's commands run in your shell. OpenCode's skills are allowed even with `slash_commands = false` and a `tools` list without `Skill` (as the packaged roles'); `tools = none` still denies them. `false`: `setting_sources`, `slash_commands` and `tools` decide, as below |
+| `setting_sources` | without `project`: the project's `opencode.json` and its `AGENTS.md` are left out (unlike Claude Code, where `CLAUDE.md` stays). Without `user`, and with `opencode_user_config = false`: your global opencode config is left out for the turn: its `opencode.json`, plugins, agents, commands and global `AGENTS.md`, and `~/.claude/CLAUDE.md`, which opencode reads in place of a missing global `AGENTS.md`. A provider whose key is set only in the global `opencode.json` is then not available to agents; a login made with `opencode auth login` and a provider's environment variable still are. The agent's commands get your own `XDG_CONFIG_HOME`, so `git` and `gh` keep their configuration, and run in bash, not your shell |
+| `slash_commands` | `false`, with `opencode_user_config = false`: skills are denied (as by a `tools` list without `Skill`) |
 | `memory`, `tool_search`, `codex_user_config` | no effect |
 
 Every OpenCode turn also denies opencode's `question` tool (nobody answers), its tools that
 move sessions or manage worktrees (Spartito owns both), and access outside the worktree but
-for the shared `.git`. With the packaged roles' `setting_sources = project,local`, your global
-opencode config does not apply; to bring it back:
+for the shared `.git`. These hold with your global opencode config too, and so do `tools`,
+the permission mode, and `mcp = strict`: the MCP servers of your global config stay refused.
+
+`opencode_user_config` is set like any other key, but only your own files can turn it on: a
+`true` from a project's `.orch/loadout.toml` or from a role file in its `.orch/roles/` is
+skipped with an `info` event, as `mcp = "inherit"` is ([below](#overrides-loadouttoml)); a
+`false` from there applies. It changes nothing for Claude Code and Codex, so a role keeps
+`setting_sources = project,local` for Claude. To leave your global opencode config out of
+every OpenCode agent, or of one role's:
 
 ```toml
 # ~/.orchestrator/loadout.toml
 [default]
-setting_sources = "user,project,local"   # OpenCode: the global opencode config applies again
+opencode_user_config = false             # OpenCode: setting_sources decides again
+
+[reviewer]
+opencode_user_config = false             # or for one role only
 ```
 
 ### Overrides: `loadout.toml`
@@ -349,7 +364,8 @@ claude.ai connectors and the servers of the repository's `.mcp.json`. A reposito
 be able to grant that to itself, so from the project's `.orch/loadout.toml` (`[<role>]` and
 `[default]`) and from a role file in `<project>/.orch/roles/` the value is skipped, as if the
 key were not there, and the next level decides. The turn's log gets an `info` event naming
-the file. `mcp = "strict"` from a project's files still applies.
+the file. `mcp = "strict"` from a project's files still applies. The same holds for
+`opencode_user_config = true` ([OpenCode](#opencode)).
 
 **Authentication and model settings.** Dropping the `user` setting source drops all of
 `~/.claude/settings.json`, not only plugins: also `env` (for example Bedrock, Vertex or proxy

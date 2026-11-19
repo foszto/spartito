@@ -14,9 +14,10 @@ Frontmatter keys (all optional):
                `none` or absent: free text
 
 Loadout keys (`tools`, `mcp`, `setting_sources`, `slash_commands`, `codex_user_config`,
-`memory`, `tool_search`) declare what the agent loads besides this prompt; see loadout.py.
-A role that declares none gets the fallback there: no user-level settings, plugins, skills
-or MCP servers.
+`opencode_user_config`, `memory`, `tool_search`) declare what the agent loads besides this
+prompt; see loadout.py. A role that declares none gets the fallback there: no user-level
+settings, plugins, skills or MCP servers; OpenCode alone keeps its global configuration
+(`opencode_user_config`), its MCP servers still left out.
 """
 
 from __future__ import annotations

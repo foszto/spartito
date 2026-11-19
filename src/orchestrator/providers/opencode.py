@@ -194,15 +194,21 @@ def turn_rules(
     denied: list[str] = []
     if loadout.tools is not None:
         covered = {TOOL_ACTIONS[tool] for tool in loadout.tools if tool in TOOL_ACTIONS}
+        # With the user's global configuration its skills come too: a `tools` list without
+        # Skill (kept short for Claude's requests) does not deny them; `none` still does.
+        if loadout.opencode_user_config and loadout.tools:
+            covered.add("skill")
         denied = [action for action in BUILTIN_ACTIONS if action not in covered]
         ignored = [tool for tool in loadout.tools if tool not in TOOL_ACTIONS]
         if ignored:
             notes.append(f"tools without a counterpart in opencode, ignored: {', '.join(ignored)}")
-    if not loadout.slash_commands and "skill" not in denied:
+    # Nor does `slash_commands = false` then.
+    no_skills = not loadout.slash_commands and not loadout.opencode_user_config
+    if no_skills and "skill" not in denied:
         denied.append("skill")
     for action in (*denied, *ALWAYS_DENIED):
         deny(action)
-    if not loadout.slash_commands:
+    if no_skills:
         policies.append(rule("skill.use", "*", "deny"))
     # Outside the worktree: only the directories the turn must write (the shared .git).
     deny("external_directory")
@@ -221,8 +227,19 @@ def turn_rules(
 
 
 def user_config(ctx: RunContext) -> bool:
-    """Whether the turn keeps the user's global opencode configuration: its setting sources
-    name `user` (None: every source)."""
+    """Whether the turn keeps the user's global opencode configuration: the loadout's
+    `opencode_user_config` (the default), else its setting sources name `user` (None: every
+    source).
+
+    Kept, opencode runs as it does from the user's shell: XDG_CONFIG_HOME stays, so its
+    global config (providers and models, plugins, skills, the global AGENTS.md) applies, and
+    the agent's commands run in the user's shell. Left out: XDG_CONFIG_HOME is moved to the
+    agent's own home with a placeholder AGENTS.md, a shell wrapper gives the commands the
+    user's value back, and `plugin.use` is denied. Either way the turn's permission rules
+    and policies hold: `tools`, ALWAYS_DENIED, the worktree boundary and, with `mcp =
+    strict`, no MCP server but the turn's own (none of the global config's)."""
+    if ctx.loadout.opencode_user_config:
+        return True
     sources = ctx.loadout.setting_sources
     return sources is None or "user" in sources
 
@@ -315,10 +332,11 @@ class OpencodeProvider:
         " `orch` server it does",
         "of the loadout `memory`, `tool_search` and `codex_user_config` have no effect",
         "has no sandbox: only opencode's own tools are held back",
-        "leaves the user's global opencode config out unless `setting_sources` has `user`:"
-        " a provider keyed only there is not available to agents",
-        "without `user` in `setting_sources`, runs the agent's commands in bash, not the"
-        " user's shell",
+        "loads the user's global opencode config (providers, plugins, skills, global"
+        " AGENTS.md); with `opencode_user_config = false` and no `user` in `setting_sources`"
+        " it is left out, and a provider keyed only there is not available to agents",
+        "with the user's global opencode config left out, runs the agent's commands in bash,"
+        " not the user's shell",
         "may report no cost for subscription sign-ins, and misses opencode's title and"
         " compaction calls",
         "starts a lost session anew instead of failing",

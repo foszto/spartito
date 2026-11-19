@@ -89,8 +89,8 @@ projects get an available provider. Details: [providers.md](providers.md).
   It has no sandbox: only opencode's own tools are held back by permission rules and
   policies. It cannot be compacted, and it compacts on its own without reporting it, so the
   context gauge may drop without a line in the log. Its answer schema is asked for in the
-  prompt, not enforced. By default its agents run without the user's global opencode config,
-  and their commands run in bash. MCP servers added in Spartito are not carried to it yet.
+  prompt, not enforced. By default its agents keep the user's global opencode config
+  (`opencode_user_config`); without it, their commands run in bash. MCP servers added in Spartito are not carried to it yet.
 - **Notifications.** A lead's answer reaches its parent only once the lead and all of its
   agents are idle.
 - **Role prompts.** A Codex agent receives its role prompt in the first turn of its session
