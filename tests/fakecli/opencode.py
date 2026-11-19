@@ -9,10 +9,10 @@ the event shapes seen with opencode 2.3.2 (docs/providers-design.md, §2).
   (parsed; None: none, or OPENCODE_DISABLE_PROJECT_CONFIG) as `project_config`; its own
   XDG_CONFIG_HOME as `config_home`, and the text of the global AGENTS.md there
   (`opencode/AGENTS.md`) as `global_agents` (None: no such file).
-- What counts, as opencode loads it: the file, then the project's config, then the content;
-  the last document's `shell` and `instructions`, and each MCP server's entry whole from the
-  last document that names it, as `shell` and `servers`; the text of the `instructions`
-  files as `instructions`.
+- What counts, as opencode loads it (observed with 2.3.2): the file, then the project's
+  config, then the content; the last document's `shell`, and each MCP server's entry whole
+  from the last document that names it, as `shell` and `servers`; the text of every
+  document's `instructions` files, combined in that order, as `instructions`.
 - What the agent's commands would see as XDG_CONFIG_HOME, `command_config_home`: it runs the
   `shell` that counts (else /bin/sh) with `-c`, as opencode runs a command; `(unset)` when
   unset. What each local MCP server would see, `server_config_home` (name -> value): its
@@ -86,8 +86,10 @@ class Dialect:
         for document in documents:
             servers.update(document.get("mcp", {}).get("servers", {}))
         seen["shell"], seen["servers"] = shell, servers
-        seen["instructions"] = [
-            Path(name).read_text(encoding="utf-8") for name in last(documents, "instructions") or []
+        seen["instructions"] = [  # every document's, in order, as opencode combines them
+            Path(name).read_text(encoding="utf-8")
+            for document in documents
+            for name in document.get("instructions") or []
         ]
         seen["config_home"] = os.environ.get("XDG_CONFIG_HOME")
         agents = Path(seen["config_home"] or "/nonexistent") / "opencode" / "AGENTS.md"

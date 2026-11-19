@@ -42,9 +42,14 @@ REMOTE = {"type": "http", "url": "https://docs.example.com/mcp", "headers": {"X"
 SHOW_HOME = 'printf "%s" "${XDG_CONFIG_HOME-(unset)}"'
 
 
-def context(tmp_path: Path, loadout: Loadout | None = None, **agent_fields) -> RunContext:
+AGENT_ID = "fix-login-3f2a"
+
+
+def context(
+    tmp_path: Path, loadout: Loadout | None = None, agent_id: str = AGENT_ID, **agent_fields
+) -> RunContext:
     agent = Agent(
-        id="fix-login-3f2a",
+        id=agent_id,
         project="my-app",
         name="a",
         role="worker",
@@ -127,7 +132,8 @@ def test_a_resumed_turn_keeps_its_session_and_takes_auto_model_and_effort(
         "--auto", "--model", "openrouter/openai/gpt-4.1-mini#high",
     ]  # fmt: skip
     assert invocation.env["PWD"] == "/w"
-    assert turn_config(invocation)["instructions"] == [str(tmp_path / opencode.INSTRUCTIONS)]
+    own = config.agent_files_dir(AGENT_ID)
+    assert turn_config(invocation)["instructions"] == [str(own / opencode.INSTRUCTIONS)]
 
 
 def test_effort_needs_a_model_and_a_model_keeps_its_own_variant(tmp_path: Path) -> None:
@@ -270,10 +276,11 @@ def test_setting_sources_decide_project_and_user_configuration(
     for kept in (every, user):
         assert "XDG_CONFIG_HOME" not in kept.env and "shell" not in turn_config(kept)
         assert ("plugin.use", "*", "deny") not in policies(kept)
-    # Without: moved away to a home of the turn; no plugins.
-    assert no_user.env["XDG_CONFIG_HOME"] == str(tmp_path / opencode.CONFIG_HOME)
+    # Without: moved away to a home of the agent's; no plugins.
+    own = config.agent_files_dir(AGENT_ID)
+    assert no_user.env["XDG_CONFIG_HOME"] == str(own / opencode.CONFIG_HOME)
     assert Path(no_user.env["XDG_CONFIG_HOME"]).is_dir()
-    assert turn_config(no_user)["shell"] == str(tmp_path / opencode.SHELL_WRAPPER)
+    assert turn_config(no_user)["shell"] == str(own / opencode.SHELL_WRAPPER)
     assert ("plugin.use", "*", "deny") in policies(no_user)
 
 
@@ -283,17 +290,72 @@ def test_a_moved_config_home_has_a_global_agents_file_in_place_of_claudes(
     """opencode reads `~/.claude/CLAUDE.md` when its config directory has no AGENTS.md
     (documented): without `user` a placeholder takes its place; with `user`, nothing."""
     monkeypatch.setenv("XDG_CONFIG_HOME", "/home/me/.config")
-    moved, kept = tmp_path / "moved", tmp_path / "kept"
-    moved.mkdir()
-    kept.mkdir()
+    kept = Loadout(setting_sources=("user", "project"))
 
-    no_user = OpencodeProvider().invocation(context(moved, STRICT))
-    OpencodeProvider().invocation(context(kept, Loadout(setting_sources=("user", "project"))))
+    OpencodeProvider().invocation(context(tmp_path, kept, agent_id="kept-1a2b"))
+    no_user = OpencodeProvider().invocation(context(tmp_path, STRICT, agent_id="moved-3c4d"))
 
     placeholder = Path(no_user.env["XDG_CONFIG_HOME"]) / "opencode" / "AGENTS.md"
-    assert placeholder == moved / opencode.CONFIG_HOME / "opencode" / "AGENTS.md"
+    moved_home = config.agent_files_dir("moved-3c4d") / opencode.CONFIG_HOME
+    assert placeholder == moved_home / "opencode" / "AGENTS.md"
     assert placeholder.read_text().strip()  # not empty: an empty file may count as none
-    assert not list(kept.rglob("AGENTS.md"))
+    assert not list(config.agent_files_dir("kept-1a2b").rglob("AGENTS.md"))
+
+
+def turn_files(invocation) -> list[Path]:
+    """The files a turn's configuration names: its role prompt, its placeholder AGENTS.md
+    and its shell wrapper."""
+    home = Path(invocation.env["XDG_CONFIG_HOME"])
+    (instructions,) = turn_config(invocation)["instructions"]
+    return [
+        Path(instructions),
+        home / opencode.GLOBAL_AGENTS,
+        Path(turn_config(invocation)["shell"]),
+    ]
+
+
+def test_an_agents_turns_find_their_files_at_the_same_paths_unwritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """opencode tells a resumed session that instructions at another path replace the old
+    ones, with their whole text: the paths stay, and an unchanged file is not written."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", "/home/me/.config")
+    first = OpencodeProvider().invocation(context(tmp_path, STRICT))
+    files = turn_files(first)
+    for path in files:
+        os.utime(path, ns=(1_000_000_000, 1_000_000_000))  # as if written long ago
+
+    resumed = context(tmp_path, STRICT, session_id="ses_0123456789abcdef0123456789")
+    second = OpencodeProvider().invocation(resumed)
+
+    assert turn_files(second) == files
+    assert second.env["XDG_CONFIG_HOME"] == first.env["XDG_CONFIG_HOME"]
+    assert second.env["OPENCODE_CONFIG_CONTENT"] == first.env["OPENCODE_CONFIG_CONTENT"]
+    assert [path.stat().st_mtime_ns for path in files] == [1_000_000_000] * 3
+    own = config.agent_files_dir(AGENT_ID)
+    assert all(path.is_relative_to(own) for path in files)
+    assert own.stat().st_mode & 0o777 == 0o700
+    assert config.private_dir().stat().st_mode & 0o777 == 0o700
+
+
+def test_two_agents_get_files_of_their_own(tmp_path: Path) -> None:
+    one = OpencodeProvider().invocation(context(tmp_path, STRICT, agent_id="one-1a2b"))
+    two = OpencodeProvider().invocation(context(tmp_path, STRICT, agent_id="two-3c4d"))
+
+    assert not set(turn_files(one)) & set(turn_files(two))
+    assert one.env["XDG_CONFIG_HOME"] != two.env["XDG_CONFIG_HOME"]
+
+
+def test_a_changed_role_prompt_is_written_where_the_old_one_was(tmp_path: Path) -> None:
+    first = OpencodeProvider().invocation(context(tmp_path))
+    (path,) = turn_config(first)["instructions"]
+    os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+
+    changed = replace(context(tmp_path), system_prompt="ROLE, changed")
+    (again,) = turn_config(OpencodeProvider().invocation(changed))["instructions"]
+
+    assert again == path and Path(path).read_text() == "ROLE, changed"
+    assert Path(path).stat().st_mtime_ns != 1_000_000_000
 
 
 # -- MCP servers --------------------------------------------------------------------------------
@@ -656,6 +718,7 @@ def test_a_worker_turn_and_its_resumed_turn(orch, opencode_turns: str) -> None:
     run = orch.store.get_run(first.id)
     assert run.status is RunStatus.DONE, run.error
     (seen,) = opencode_runs(config.run_dir(first.id))
+    first_seen = seen
     session = option(seen["argv"], "--session")
     assert seen["argv"][:4] == ["run", "--standalone", "--format", "json"]
     assert ["--archived", "--title", agent.id] == seen["argv"][6:9]
@@ -675,8 +738,7 @@ def test_a_worker_turn_and_its_resumed_turn(orch, opencode_turns: str) -> None:
     assert seen["config_home"] != user_home
     assert seen["command_config_home"] == user_home
     assert seen["global_agents"] == opencode.GLOBAL_AGENTS_TEXT  # in place of CLAUDE.md
-    assert seen["config_home"].endswith(opencode.CONFIG_HOME)
-    assert not Path(seen["config_home"]).exists()  # removed with the turn
+    assert seen["config_home"] == str(config.agent_files_dir(agent.id) / opencode.CONFIG_HOME)
     assert run.result.startswith("done: hello TOKENS 1000")
     assert run.structured is None  # no answer schema was asked for
     usage = orch.store.usage_of(agent.id)[first.id]
@@ -692,7 +754,10 @@ def test_a_worker_turn_and_its_resumed_turn(orch, opencode_turns: str) -> None:
     assert run.status is RunStatus.FAILED and run.error == "boom (unknown)"
     (seen,) = opencode_runs(config.run_dir(second.id))
     assert option(seen["argv"], "--session") == session and "--archived" not in seen["argv"]
-    assert not Path(seen["config_home"]).exists()  # a failed turn's too
+    # The resumed turn finds the role prompt and the config home where the first one did.
+    assert seen["config_content"]["instructions"] == first_seen["config_content"]["instructions"]
+    assert seen["config_home"] == first_seen["config_home"]
+    assert seen["global_agents"] == opencode.GLOBAL_AGENTS_TEXT
 
 
 def test_a_lead_turn_has_the_orch_server_in_its_configuration(orch, opencode_turns: str) -> None:
@@ -729,9 +794,10 @@ def test_a_projects_opencode_json_replaces_neither_the_shell_nor_the_orch_server
     what Spartito must keep is in the content."""
     user_home = os.environ["XDG_CONFIG_HOME"]
     path = Path(orch.store.get_project(opencode_turns).path)
+    (path / "PROJECT.md").write_text("the project's own instructions")
     hostile = {
         "shell": "/bin/sh",
-        "instructions": [],
+        "instructions": [str(path / "PROJECT.md")],
         "mcp": {
             "servers": {
                 "orch": {
@@ -752,14 +818,16 @@ def test_a_projects_opencode_json_replaces_neither_the_shell_nor_the_orch_server
     assert orch.store.get_run(run.id).status is RunStatus.DONE
     (seen,) = opencode_runs(config.run_dir(run.id))
     assert seen["project_config"] == hostile  # it was read
-    assert seen["shell"] == str(config.run_dir(run.id) / opencode.SHELL_WRAPPER)
+    assert seen["shell"] == str(config.agent_files_dir(agent.id) / opencode.SHELL_WRAPPER)
     assert seen["command_config_home"] == user_home  # the wrapper still restores it
     server = seen["servers"]["orch"]
     assert server["command"][1:] == ["-m", "orchestrator.mcp_server"]
     assert server["environment"]["ORCH_AGENT_ID"] == agent.id
     assert "EXTRA" not in server["environment"] and server["disabled"] is False
-    (instructions,) = seen["instructions"]  # the role prompt stays
-    assert roles.load("lead", None).prompt.splitlines()[0] in instructions
+    # A project's instructions are added, as opencode does; the role prompt comes last.
+    project_text, role_prompt = seen["instructions"]
+    assert project_text == "the project's own instructions"
+    assert roles.load("lead", None).prompt.splitlines()[0] in role_prompt
 
 
 def test_a_turn_stopped_by_the_user_ends_stopped_as_for_the_other_providers(
@@ -779,7 +847,7 @@ def test_a_turn_stopped_by_the_user_ends_stopped_as_for_the_other_providers(
     stopped = orch.store.get_run(run.id)
     assert (stopped.status, stopped.error) == (RunStatus.STOPPED, "stopped")
     (seen,) = opencode_runs(config.run_dir(run.id))
-    assert seen["config_home"] and not Path(seen["config_home"]).exists()
+    assert seen["config_home"] == str(config.agent_files_dir(agent.id) / opencode.CONFIG_HOME)
 
 
 # -- the model list and the availability check ---------------------------------------------------
@@ -820,13 +888,28 @@ def test_the_model_list_is_asked_in_the_same_directory_from_anywhere(
         return 0, "opencode/a\n", ""
 
     monkeypatch.setattr(opencode.kit, "run_cli", run_cli)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("PWD", str(tmp_path))
+    standing = tmp_path / "my-app"
+    standing.mkdir()
+    monkeypatch.chdir(standing)
+    monkeypatch.setenv("PWD", str(standing))
 
     assert REAL_REQUEST_MODEL_LIST() == "opencode/a\n"
     where = opencode.model_list_dir()
     assert asked == [(where, where)] and Path(where).is_dir()
-    assert not Path(where).resolve().is_relative_to(tmp_path.resolve())
+    assert not Path(where).resolve().is_relative_to(standing.resolve())
+
+
+def test_the_model_list_is_asked_where_only_the_user_can_write() -> None:
+    """Not the shared temporary directory: anyone could put an opencode.json there, which
+    opencode would load as the project's."""
+    where = Path(opencode.model_list_dir())
+
+    assert where.parent == config.private_dir()
+    assert where.stat().st_mode & 0o777 == 0o700 == where.parent.stat().st_mode & 0o777
+    assert where.stat().st_uid == os.getuid() == where.parent.stat().st_uid
+    assert where.is_relative_to(config.home())  # ~/.orchestrator, not the shared /tmp
+    where.chmod(0o755)  # widened by someone: made private again
+    assert Path(opencode.model_list_dir()).stat().st_mode & 0o777 == 0o700
 
 
 def test_the_model_list_keeps_provider_model_lines_once() -> None:

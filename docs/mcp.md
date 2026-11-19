@@ -647,12 +647,17 @@ with a note.
 
 What is built:
 
-- A lead's `orch` MCP server is a local server in the turn's `OPENCODE_CONFIG_CONTENT`, which
-  opencode loads after a project's `opencode.json`, so a project's server of the same name
-  cannot replace it: `mcp.servers.orch` with `type: "local"`, the command as one array, its
-  `environment`, `cwd`, `codemode: true` and `timeout.execution` of an hour (in
-  milliseconds). A policy and the permission `orch_*` allow it; with `mcp = strict` an
-  `mcp.use` policy refuses every other server. **[observed]**
+- A lead's `orch` MCP server is a local server in the turn's `OPENCODE_CONFIG_CONTENT`:
+  `mcp.servers.orch` with `type: "local"`, the command as one array, its `environment`,
+  `cwd`, `codemode: true` and `timeout.execution` of an hour (in milliseconds). opencode
+  accepts it without warnings and starts the server with the `{env:NAME}` values of its
+  `environment` resolved. **[observed]** A call as long as the hour was not tried.
+- The content loads after a project's `opencode.json`: a project's `orch` server is
+  replaced whole by Spartito's, so an extra `environment` variable of the project's does not
+  reach it. **[observed]**
+- A policy and the permission `orch_*` allow the server; with `mcp = strict` an `mcp.use`
+  policy refuses every other server, and a project's extra server is not started.
+  **[observed]**
 - The model calls the server's tools through opencode's Code Mode
   (`await tools.orch.list_agents()`); the agent's log names the tools each call made.
   **[observed]**
@@ -664,7 +669,9 @@ What is built:
   a local server gets the user's own `XDG_CONFIG_HOME` in its `environment`.
 
 What is open: an added server would run without an approval gate, as with Codex, so OpenCode
-waits for the same decision. Until then an OpenCode agent skips MCP-server capabilities with
+waits for the same decision. Before added servers are carried, a literal value of a server's
+`env` or `headers` must also stay out of `OPENCODE_CONFIG_CONTENT`, which every agent
+command inherits: today only a value the CLI's own environment holds becomes `{env:NAME}`. Until then an OpenCode agent skips MCP-server capabilities with
 a note.
 
 ## The MCP page, the command and the API

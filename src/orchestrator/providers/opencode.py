@@ -10,12 +10,22 @@ is neither used nor started. The turn's settings are configuration, not flags:
 - OPENCODE_CONFIG_CONTENT: everything a project must not replace: the permission rules, the
   MCP servers, the role prompt as an `instructions` file, `update: "disable"` and, when the
   user's global configuration is moved away, the `shell`. It loads after a project's
-  opencode.json and wins over it [observed for permissions, V5]. A setting there replaces the
-  project's [seen in source for `shell` and the MCP servers: the last document's value, an MCP
-  server's entry whole]; each server's entry is written in full anyway (every field Spartito
-  relies on), so a merge of a same-named entry could not keep a project's value for them. It
-  is an environment variable the agent's commands inherit: it holds no secret, only paths,
-  Spartito's own values and `{env:NAME}` references (substituted there too [seen in source]).
+  opencode.json and wins over it [observed: the last `shell` holds, a project's same-named
+  MCP server is replaced whole, the last matching permission rule holds; a project's
+  `instructions` are added before the role prompt's, not replaced]. Each server's entry is
+  written in full anyway (every field Spartito relies on).
+  It is an environment variable the agent's commands inherit. It holds no secret today
+  because the only MCP server it carries is the `orch` one (carries_mcp_servers is False),
+  whose environment holds paths and Spartito's own values; a value the CLI's environment
+  holds as well is written as `{env:NAME}` (substituted there [observed]). A literal of an
+  added server's `env` or a remote server's `headers` that the CLI's environment does not
+  hold would be copied in as it is: to be solved before added servers are carried.
+
+The role prompt, the shell wrapper and the moved configuration home are per agent, at paths
+that do not change (config.agent_files_dir), and a file is written only when its content
+differs: opencode re-sends instructions whose path changed into a resumed session [observed
+with per-run paths]. They stay from turn to turn, with whatever opencode wrote into the
+configuration home, and go when the agent is deleted.
 
 Facts about the CLI (opencode 2.3.2): docs/providers-design.md, §2 and §4.
 """
@@ -28,11 +38,11 @@ import re
 import secrets
 import shlex
 import subprocess
-import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from .. import config
 from . import kit, locate
 from .base import REFERENCE, Agent, Event, Invocation, RunContext, Usage, brief, wired
 
@@ -73,11 +83,14 @@ ALWAYS_DENIED = (
 # (with no closing line), and SIGKILL; a negative code is Python's for a signal.
 SIGNAL_EXITS = (130, 137, 143)
 
-# Where the user's global configuration is moved away to (XDG_CONFIG_HOME, a directory of the
-# turn) and the shell that gives the agent's commands the user's own value back.
+# The agent's files (config.agent_files_dir): where the user's global configuration is moved
+# away to (XDG_CONFIG_HOME), the shell that gives the agent's commands the user's own value
+# back, and the role prompt.
 CONFIG_HOME = "opencode-config-home"
 SHELL_WRAPPER = "opencode-shell"
 INSTRUCTIONS = "opencode-instructions.md"
+# Where `opencode models` runs (config.private_work_dir).
+MODEL_LIST_DIR = "opencode-models"
 # `timeout.execution` of the `orch` MCP server, in milliseconds: an hour, as Codex's
 # tool_timeout_sec; the longest wait of its tools is 30 minutes (mcp_server.MAX_WAIT_SECONDS).
 OWN_SERVER_EXECUTION_MS = 3_600_000
@@ -132,7 +145,9 @@ def config_server(
     every field set (an entry of a project's opencode.json of the same name keeps nothing).
     `config_home`: the XDG_CONFIG_HOME a local server gets (the user's own, when the turn
     moved it away). `cli_env`: the CLI's environment; a value of the entry's environment
-    that it holds as well is written as `{env:NAME}` (but LITERAL_ENV)."""
+    that it holds as well is written as `{env:NAME}` (but LITERAL_ENV). Any other literal,
+    of `env` or of a remote server's `headers`, is kept as it is: no secret only as long as
+    the `orch` MCP server is the only one (see the module's docstring)."""
     if entry.get("url"):
         headers = entry.get("headers") or {}
         return {
@@ -233,9 +248,11 @@ def _lookup_models() -> kit.Models:
 
 
 def model_list_dir() -> str:
-    """Where `opencode models` runs: the temporary directory, no project, so that a
-    project's opencode.json never counts and every process lists the same."""
-    return tempfile.gettempdir()
+    """Where `opencode models` runs: a private directory of Spartito's (0700, under the
+    user's ORCH_HOME), no project, so that a project's opencode.json never counts, every
+    process lists the same, and nobody else can put an opencode.json or `.opencode/` where
+    opencode looks for them (this directory and those above it)."""
+    return str(config.private_work_dir(MODEL_LIST_DIR))
 
 
 def request_model_list() -> str:
@@ -355,23 +372,20 @@ class OpencodeProvider:
         turn_env = {**os.environ, **extra_env}
         # In OPENCODE_CONFIG_CONTENT, which a project's opencode.json cannot replace.
         content: dict[str, Any] = {"update": "disable"}
+        own = agent_files(agent.id)  # the same paths every turn
         if ctx.system_prompt:
-            instructions = ctx.scratch / INSTRUCTIONS
-            instructions.write_text(ctx.system_prompt, encoding="utf-8")
+            instructions = keep_written(own / INSTRUCTIONS, ctx.system_prompt)
             content["instructions"] = [str(instructions)]
         server_home = None
-        temporary: list[Path] = []
         if not user_config(ctx):
             original = os.environ.get("XDG_CONFIG_HOME")
-            home = ctx.scratch / CONFIG_HOME
-            home.mkdir(exist_ok=True)
-            temporary.append(home)  # removed when the turn ends, with what opencode put there
+            home = own / CONFIG_HOME
             env["XDG_CONFIG_HOME"] = str(home)
             # [documented, not observed] that this keeps `~/.claude/CLAUDE.md` out.
             agents = home / GLOBAL_AGENTS
-            agents.parent.mkdir(exist_ok=True)
-            agents.write_text(GLOBAL_AGENTS_TEXT, encoding="utf-8")
-            content["shell"] = str(write_wrapper(ctx.scratch / SHELL_WRAPPER, original))
+            agents.parent.mkdir(mode=config.PRIVATE_DIR_MODE, parents=True, exist_ok=True)
+            keep_written(agents, GLOBAL_AGENTS_TEXT)
+            content["shell"] = str(write_wrapper(own / SHELL_WRAPPER, original))
             # An environment can only set a value: the default stands in for an unset one.
             server_home = original if original is not None else str(Path.home() / ".config")
         if ctx.loadout.setting_sources is not None and "project" not in ctx.loadout.setting_sources:
@@ -399,7 +413,6 @@ class OpencodeProvider:
             env=env,
             private_files={ctx.mcp_config: json.dumps({"policies": policies}, indent=2)},
             notes=notes,
-            temporary_dirs=temporary,
         )
 
     def stream(self) -> Stream:
@@ -412,11 +425,31 @@ class OpencodeProvider:
         return ["opencode", "--session", agent.session_id or ""]
 
 
+def agent_files(agent_id: str) -> Path:
+    """The agent's own directory (config.agent_files_dir), made if missing, private as
+    config.private_dir."""
+    config.private_dir()
+    path = config.agent_files_dir(agent_id)
+    path.mkdir(mode=config.PRIVATE_DIR_MODE, parents=True, exist_ok=True)
+    return path
+
+
+def keep_written(path: Path, text: str) -> Path:
+    """`path` holding `text`: written only when it is missing or holds anything else, so an
+    unchanged file keeps its modification time."""
+    data = text.encode("utf-8")
+    try:
+        if path.read_bytes() == data:
+            return path
+    except OSError:
+        pass
+    path.write_bytes(data)
+    return path
+
+
 def write_wrapper(path: Path, original: str | None) -> Path:
-    """The shell wrapper of a turn (shell_wrapper), executable by its owner only."""
-    path.unlink(missing_ok=True)
-    path.write_text(shell_wrapper(original), encoding="utf-8")
-    path.chmod(0o700)
+    """The agent's shell wrapper (shell_wrapper), executable by its owner only."""
+    keep_written(path, shell_wrapper(original)).chmod(0o700)
     return path
 
 

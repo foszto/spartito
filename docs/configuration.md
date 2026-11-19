@@ -579,6 +579,7 @@ The main files under `~/.orchestrator/` (or `$ORCH_HOME`):
 | `run/page-notifier` | touched by a dashboard page that shows notifications |
 | `run/app-notifier`, `run/app-notifier.json` | the open native window's pid, start time and notification state |
 | `run/app-notify.json` | the launcher's app that may post notifications |
+| `run/private/` | readable by you only (0700): a turn's MCP configuration while it runs; OpenCode's files per agent (`agents/<agent-id>/`: the role prompt, the moved config home, the shell wrapper), removed with the agent; the directory `opencode models` runs in |
 | `run/notices/` | notices the busy database did not take yet (recorded by the next helper or poll) |
 | `logs/notices.log` | one line per step of each notification (see `spartito notices`) |
 | `run/app-profile/` | the browser profile of `spartito app` in Chromium app mode |

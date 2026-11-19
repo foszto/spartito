@@ -140,9 +140,6 @@ class Invocation:
     private_files: dict[Path, str] = field(default_factory=dict)
     # Info lines the runner logs for the turn, e.g. a setting the CLI cannot take.
     notes: list[str] = field(default_factory=list)
-    # Directories of the turn the runner removes, with their content, when the turn ends,
-    # however it ends (as private_files), e.g. a configuration home the CLI may write into.
-    temporary_dirs: list[Path] = field(default_factory=list)
 
 
 class TurnStream(Protocol):
@@ -232,10 +229,7 @@ class Provider(Protocol):
     #   carries_mcp_servers: bool       whether it takes MCP servers from capabilities;
     #                                   default False
     #   min_version: tuple[int, ...]    the oldest CLI version it supports; none: any
-    # Invocation.notes (default empty) holds info lines the runner logs for the turn;
-
-
-# Invocation.temporary_dirs (default empty) the directories it removes when the turn ends.
+    # Invocation.notes (default empty) holds info lines the runner logs for the turn.
 
 
 class ParsedLines:

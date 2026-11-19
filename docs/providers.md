@@ -99,7 +99,7 @@ Limits:
 What else to know:
 
 - **Model and effort.** A model is `provider/model`, as `opencode models` lists it. The list
-  is asked outside any project, so it shows the models of the user's own logins and global
+  is asked outside any project (in a private directory of Spartito's), so it shows the models of the user's own logins and global
   config, the same in every process; a model that is not listed, such as one of a provider
   keyed in a project's `opencode.json`, can still be given. The effort becomes the model's
   variant (`provider/model#high`); a model that names a variant keeps its own, and an effort
@@ -113,8 +113,10 @@ What else to know:
   server's entry in full. Its policies go into a private file (`OPENCODE_CONFIG`), which
   loads before the project's config; opencode lets an earlier policy win, so a project cannot
   lift them either. A project's `opencode.json` still adds what the turn does not set, such
-  as its own providers, agents or MCP servers under other names (with `mcp = strict` those
-  servers are refused). Without `project` in `setting_sources` the project's opencode config and its
+  as its own providers, agents, `instructions` (read before the role prompt) or MCP servers
+  under other names (with `mcp = strict` those servers are refused). It can also add or
+  reconfigure providers for its agents, including where a provider's requests go, as a
+  project's settings can for the other harnesses. Without `project` in `setting_sources` the project's opencode config and its
   `AGENTS.md` are left out (unlike Claude Code, where `CLAUDE.md` stays). Without `user`, the
   user's global opencode config is moved away for the turn (`XDG_CONFIG_HOME`), and the
   agent's commands get the user's own `XDG_CONFIG_HOME` back, so `git`, `gh` and other tools

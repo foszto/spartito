@@ -4,6 +4,7 @@ archived one, and the automatic archive check of idle agents (budget and stamp).
 from __future__ import annotations
 
 import fcntl
+import shutil
 import sys
 import time
 from collections.abc import Callable
@@ -279,3 +280,4 @@ def remove(orch: Facade, agent_id: str, delete_branch: bool = False) -> None:
             raise OrchestratorError(str(exc)) from None
     decisions.withdraw_all(orch.store, agent.id, decisions.REMOVED)
     orch.store.delete_agent(agent.id)
+    shutil.rmtree(config.agent_files_dir(agent.id), ignore_errors=True)  # a provider's files

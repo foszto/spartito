@@ -16,7 +16,6 @@ import json
 import os
 import queue
 import re
-import shutil
 import signal
 import subprocess
 import sys
@@ -310,7 +309,7 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
 
     with (
         # Removed when the block ends, however it ends: by then the turn's processes are.
-        PrivateFiles(store, run.id, invocation.private_files, invocation.temporary_dirs) as private,
+        PrivateFiles(store, run.id, invocation.private_files) as private,
         open(scratch / "stream.jsonl", "w", encoding="utf-8") as raw,
         open(stderr_path, "w", encoding="utf-8") as stderr,
     ):
@@ -339,7 +338,6 @@ def execute(store: Store, run: Run, agent: Agent, project: Project | None) -> No
                 noted, invocation = invocation, _plain(provider, plain_ctx)
                 note_invocation(store, run.id, agent.id, invocation, noted)
                 private.write(invocation.private_files)
-                private.dirs += invocation.temporary_dirs
                 child = _start(invocation, agent, token, stderr)
         assert child.stdin and child.stdout
         lines: queue.Queue[str | None] = queue.Queue()
@@ -568,15 +566,11 @@ class PrivateFiles:
     config.private_dir (0700), after removing whatever is at its path: a leftover of a
     runner that was killed (SIGKILL, a crash) is never reused. When one is written, the
     leftovers of other runs that are no longer active are removed as well, so they cannot
-    pile up. The turn's temporary directories (Invocation.temporary_dirs) are removed on
-    exit too."""
+    pile up."""
 
-    def __init__(
-        self, store: Store, run_id: int, files: dict[Path, str], dirs: list[Path] | None = None
-    ) -> None:
+    def __init__(self, store: Store, run_id: int, files: dict[Path, str]) -> None:
         self.store, self.run_id, self.files = store, run_id, files
         self.paths: set[Path] = set()
-        self.dirs: list[Path] = list(dirs or ())
 
     def __enter__(self) -> PrivateFiles:
         try:
@@ -590,8 +584,6 @@ class PrivateFiles:
         for path in self.paths:
             with contextlib.suppress(OSError):
                 path.unlink(missing_ok=True)
-        for directory in self.dirs:
-            shutil.rmtree(directory, ignore_errors=True)
 
     def write(self, files: dict[Path, str]) -> None:
         for path, content in files.items():
