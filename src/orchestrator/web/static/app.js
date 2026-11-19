@@ -461,14 +461,33 @@ function buildView() {
 }
 
 // -- the agent's settings and usage (the section the header's button opens) --------------
-// Built once per view; a poll only fills it, so neither the section nor a group closes, and
-// no control in it loses the focus. What is open is kept for the page: the section across
-// agents until it is closed, each group also in the browser's storage.
+// Built once per view; a poll only fills it, so neither the section nor its tab changes, and
+// no control in it loses the focus. What is shown is kept for the page: the section across
+// agents until it is closed, the tab also in the browser's storage.
 
 const DETAILS_NAME = 'Settings & usage';
 const DETAIL_GROUPS = [['capabilities', 'Capabilities'], ['usage', 'Usage'], ['about', 'About'], ['changes', 'Changes']];
 let detailsOpen = false;
-const detailGroups = stored('orch-detail-groups', {});
+// The group the user chose. A group that is not shown (a hidden panel, an empty capabilities
+// box) is skipped while it stays hidden, and comes back when it is shown again.
+let detailTab = stored('orch-detail-tab', DETAIL_GROUPS[0][0]);
+
+const detailNames = () => DETAIL_GROUPS.map(([name]) => name);
+
+// Whether the section can show a group: its panel is not hidden, and the capabilities one
+// needs lines (the box hides itself when it has none).
+function detailShown(name) {
+  const panel = $(`details-${name}`);
+  if (!panel || panel.hidden) return false;
+  if (name === 'capabilities') { const caps = $('setupCaps'); return Boolean(caps) && !caps.hidden; }
+  return true;
+}
+
+// The tab shown: the chosen one while it is shown, else the first shown one.
+function activeDetailTab() {
+  if (detailShown(detailTab)) return detailTab;
+  return detailNames().find(detailShown) || detailTab;
+}
 
 function buildDetails(caps) {
   const details = el('section', 'details');
@@ -480,16 +499,66 @@ function buildDetails(caps) {
   const facts = el('dl'); facts.id = 'facts';
   const changes = el('pre'); changes.id = 'changes';
   const content = { capabilities: [caps], usage: [usage, runsWrap], about: [facts], changes: [changes] };
+  const tabs = el('div', 'detail-tabs'), panels = [];
+  tabs.id = 'details-tabs';
+  tabs.setAttribute('role', 'tablist');
+  tabs.setAttribute('aria-label', `${DETAILS_NAME} groups`);
+  tabs.onkeydown = detailTabKey;
   for (const [name, label] of DETAIL_GROUPS) {
-    const group = el('details', 'detail-group'), head = el('summary');
-    group.id = `details-${name}`; group.dataset.group = name;
-    group.open = detailGroups[name] !== false;  // open unless the user closed it
-    head.append(icon('right'), label);
-    group.append(head, ...content[name]);
-    group.ontoggle = () => { detailGroups[name] = group.open; store('orch-detail-groups', detailGroups); };
-    details.append(group);
+    const tab = el('button', 'detail-tab', label), panel = el('div', 'detail-group');
+    tab.type = 'button'; tab.id = `details-tab-${name}`;
+    tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-controls', `details-${name}`);
+    tab.onclick = () => selectDetailTab(name, true);
+    panel.id = `details-${name}`; panel.dataset.group = name;
+    panel.setAttribute('role', 'tabpanel');
+    panel.setAttribute('aria-labelledby', tab.id);
+    panel.append(...content[name]);
+    tabs.append(tab); panels.push(panel);
   }
+  details.append(tabs, ...panels);
+  syncDetailTabs();
   return details;
+}
+
+// The keys of a tablist: Left and Right move between the tabs (wrapping), Home and End go to
+// the first and the last. A tablist is one tab stop (roving tabindex), so the focus moves
+// with the arrows.
+function tabKeyMove(event, names, active, select) {
+  if (!names.length) return;
+  const at = Math.max(names.indexOf(active), 0), last = names.length - 1;
+  const to = { ArrowRight: at === last ? 0 : at + 1, ArrowLeft: at === 0 ? last : at - 1, Home: 0, End: last }[event.key];
+  if (to === undefined) return;
+  event.preventDefault();
+  select(names[to]);
+}
+
+function detailTabKey(event) {
+  tabKeyMove(event, detailNames().filter(detailShown), activeDetailTab(), name => selectDetailTab(name, true));
+}
+
+// Shows a group as the tab and remembers it. Hidden groups cannot be chosen.
+function selectDetailTab(name, focus) {
+  if (!detailNames().includes(name) || !detailShown(name)) return;
+  detailTab = name; store('orch-detail-tab', detailTab);
+  syncDetailTabs();
+  if (focus) $(`details-tab-${name}`).focus();
+}
+
+// Keeps the tabs in step with the panels: a hidden panel hides its tab, and the tab shown is
+// always a shown one. Called when the view is built and whenever a panel may have changed.
+function syncDetailTabs() {
+  const names = detailNames();
+  if (!names.every(name => $(`details-tab-${name}`))) return;  // the section is not built
+  const active = activeDetailTab();
+  for (const name of names) {
+    const shown = detailShown(name), tab = $(`details-tab-${name}`), on = name === active && shown;
+    tab.hidden = !shown;
+    tab.setAttribute('aria-selected', String(on));
+    tab.tabIndex = on ? 0 : -1;
+    tab.classList.toggle('active', on);
+    $(`details-${name}`).classList.toggle('active', on);
+  }
 }
 
 // Shows the section as `detailsOpen` says, while the header offers its button.
@@ -610,6 +679,7 @@ function renderHeader(agent, setupFreshness = true) {
   $('detailsButton').hidden = !agent && !draft;
   for (const name of ['usage', 'about']) $(`details-${name}`).hidden = !agent;
   $('details-changes').hidden = !agent?.changes;
+  syncDetailTabs();
   showDetails();
   // The code view: only for an agent with a worktree of its own (a branch).
   $('codeButton').hidden = !agent?.branch;
@@ -647,6 +717,7 @@ function renderHeader(agent, setupFreshness = true) {
     own: { model: draft.model_override, effort: draft.effort_override }, session: false, running: false,
     cacheHint: draft.cache_hint, role: ORCH, capabilities: draft.capabilities,
   }, setupFreshness);
+  syncDetailTabs();  // the capabilities box may have hidden itself, or shown again
   if (!agent) return;
   const chip = (text, iconName, parent) => {
     if (!text) return;
@@ -2320,11 +2391,14 @@ function renderSettings() {
   const rows = $('settingsRows');
   rows.replaceChildren();
   const project = scope && state.projects.find(p => p.name === scope), redraws = [];
+  const sections = [];  // [name, box]: one tab each, in this order
+  const add = (name, box) => { sections.push([name, box]); rows.append(box); return box; };
   providerViews.set(dialog, () => { for (const redraw of redraws) redraw(); });
-  if (project) rows.append(defaultProviderBox(project, redraws));
+  if (project) add('provider', defaultProviderBox(project, redraws));
   for (const tier of state.tiers) {
     if (scope && tier === 'orchestrator') continue;
     const box = el('div', 'tier'), [title, about] = TIER_INFO[tier] || [tier, ''];
+    add(tier, box);
     box.append(el('h4', '', title), el('p', 'about', typeof about === 'function' ? about() : about));
     for (const p of state.providers) {
       const row = el('div', 'tier-row'), who = el('span', 'who');
@@ -2355,10 +2429,10 @@ function renderSettings() {
       update();
       redraws.push(update);
     }
-    rows.append(box);
   }
   const key = state.archive_after_key, box = el('div', 'tier');
   const field = el('input', 'input'), global = state.settings.global?.[key];
+  add('archive', box);
   box.append(el('h4', '', 'Archive'), el('p', 'about',
     'Finished agents are archived after this many idle hours, if their work is safe (no worktree of their own, '
     + `or merged and clean). Never project leads or ${state.orchestrator_name}. 0 or “off”: never.`));
@@ -2368,11 +2442,52 @@ function renderSettings() {
   field.setAttribute('aria-label', 'Archive after idle hours');
   const row = el('div', 'tier-row'); row.append(el('span', 'who', 'hours'), field);
   box.append(row);
-  rows.append(box);
-  rows.append(compactAtBox(scope, data));
-  if (state.capabilities?.length) rows.append(capabilitiesBox(scope, redraws));
-  if (!scope) rows.append(...SWITCHES.map(switchBox));
-  if (!scope) rows.append(versionBox(state));
+  add('compact', compactAtBox(scope, data));
+  if (state.capabilities?.length) add('capabilities', capabilitiesBox(scope, redraws));
+  if (!scope) SWITCHES.forEach((item, i) => add(`switch-${i}`, switchBox(item)));
+  if (!scope) add('version', versionBox(state));
+  renderSettingsTabs(sections);
+}
+
+// The Settings dialog's sections as tabs: one tab per section, only the active section shown.
+// renderSettings runs again on every poll and on a scope change (it replaces the rows), so the
+// active tab lives in `settingsTab` and is applied again after each render; a section that
+// disappeared (Default provider outside a project) hands over to the first one.
+let settingsTab = null, settingsSections = [];
+
+function renderSettingsTabs(sections) {
+  settingsSections = sections;
+  const strip = $('settingsTabs'), names = sections.map(([name]) => name);
+  if (!names.includes(settingsTab)) settingsTab = names[0] ?? null;
+  for (const [name, box] of sections) {
+    box.id = `settings-${name}`;
+    box.setAttribute('role', 'tabpanel');
+    box.setAttribute('aria-labelledby', `settings-tab-${name}`);
+    box.hidden = Boolean(strip) && name !== settingsTab;  // without a tablist all are shown
+  }
+  if (!strip) return;
+  strip.setAttribute('role', 'tablist');
+  strip.setAttribute('aria-label', 'Settings sections');
+  strip.replaceChildren();
+  for (const [name, box] of sections) {
+    const on = name === settingsTab, tab = el('button', 'detail-tab', box.children[0]?.textContent || name);
+    tab.type = 'button'; tab.id = `settings-tab-${name}`;
+    tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-controls', box.id);
+    tab.setAttribute('aria-selected', String(on));
+    tab.tabIndex = on ? 0 : -1;
+    tab.classList.toggle('active', on);
+    tab.onclick = () => selectSettingsTab(name, true);
+    strip.append(tab);
+  }
+  strip.onkeydown = event => tabKeyMove(event, names, settingsTab, name => selectSettingsTab(name, true));
+}
+
+function selectSettingsTab(name, focus) {
+  if (!settingsSections.some(([section]) => section === name)) return;
+  settingsTab = name;
+  renderSettingsTabs(settingsSections);
+  if (focus) $(`settings-tab-${name}`)?.focus();
 }
 
 // A project's default provider, the one its new agents run on: set at once, apart from Save.

@@ -15,12 +15,14 @@ from test_dashboard_providers import HARNESS, page_functions
 NAMES = (
     *CAPABILITY_NAMES, "buildView", "buildDetails", "showDetails", "buildCacheInfo", "renderHeader",
     "renderWelcome", "renderQueue", "shownProvider", "contextText", "tokenText", "DETAILS_NAME", "DETAIL_GROUPS", "SUGGESTIONS",
+    "detailNames", "detailShown", "activeDetailTab", "detailTabKey", "selectDetailTab", "syncDetailTabs",
+    "tabKeyMove",
 )  # fmt: skip
 
 PRELUDE = r"""
-let lastEvent = 0, toolGroup = null, codeShown = null, detailsOpen = false;
+let lastEvent = 0, toolGroup = null, codeShown = null, detailsOpen = false, detailTab = 'capabilities';
 function stopAgent() {}
-const detailGroups = {}, saved = [];
+const saved = [];
 store = (key, value) => saved.push([key, JSON.parse(JSON.stringify(value))]);
 const docListeners = new Set();
 document.addEventListener = (type, f) => docListeners.add(f);
@@ -122,7 +124,7 @@ def test_the_capability_lines_are_in_the_section_and_survive_a_poll_while_focuse
 buildView(); renderHeader(agent());
 const select = chromeSelect(), group = $('details-capabilities');
 const placed = { inSection: $('details').contains(select), inGroup: group.contains($('setupCaps')),
-  inHeader: top().querySelectorAll('[data-setup=cap:chrome]').length, label: group.children[0].textContent,
+  inHeader: top().querySelectorAll('[data-setup=cap:chrome]').length, label: $('details-tab-capabilities').textContent,
   lines: $('setupCaps').children.length };
 document.activeElement = select;
 const seen = watch(select.parentNode);
@@ -152,7 +154,7 @@ buildView(); renderHeader(agent());
 const chips = $('view').querySelectorAll('.chip').map(texts);
 const usage = $('usage').children.map(texts), runs = $('runs').querySelectorAll('tr').map(r => r.children.map(texts));
 renderHeader(agent({ tokens: null, cost_usd: 0, recent_runs: [] }));
-out({ chips, header: shownText(top()), usage, runs, group: $('details-usage').children[0].textContent,
+out({ chips, header: shownText(top()), usage, runs, group: $('details-tab-usage').textContent,
   empty: shownText($('usage')) });
 """
     )
@@ -167,41 +169,94 @@ out({ chips, header: shownText(top()), usage, runs, group: $('details-usage').ch
     assert result["empty"] == "Nothing used yet."
 
 
-def test_the_open_section_and_its_groups_survive_a_poll_and_a_rebuilt_view() -> None:
+def test_the_open_section_and_its_tabs_survive_a_poll_and_a_rebuilt_view() -> None:
     result = run_page(
         """
 buildView(); renderHeader(agent());
 const state0 = () => ({ hidden: $('details').hidden, expanded: $('detailsButton').getAttribute('aria-expanded'),
-  about: $('details-about').open, usage: $('details-usage').open });
+  about: $('details-tab-about').getAttribute('aria-selected'), usage: $('details-tab-usage').getAttribute('aria-selected'),
+  active: detailTab, aboutHidden: $('details-about').hidden });
 const before = { ...state0(), controls: $('detailsButton').getAttribute('aria-controls'),
-  name: $('detailsButton').textContent, groups: $('details').children.map(g => g.dataset.group) };
+  name: $('detailsButton').textContent, groups: $('details-tabs').children.map(t => t.getAttribute('aria-controls')),
+  tablist: [$('details-tabs').getAttribute('role'), $('details').children.slice(1).map(g => g.getAttribute('role'))],
+  panels: $('details').children.slice(1).map(g => [g.dataset.group, g.getAttribute('aria-labelledby')]) };
 $('detailsButton').onclick();
 const opened = state0();
-$('details-about').open = false; $('details-about').ontoggle();
+$('details-tab-about').onclick();
 renderHeader(agent()); renderHeader(agent({ status: 'running' }));
 const polled = state0();
 buildView(); renderHeader(agent());
 const rebuilt = state0();
 $('detailsButton').onclick();
 out({ before, opened, polled, rebuilt, closed: state0(), saved: saved.at(-1),
-  changes: [$('details-changes').hidden, (renderHeader(agent({ changes: ' M login.py' })), $('details-changes').hidden)] });
+  changes: [$('details-changes').hidden, $('details-tab-changes').hidden,
+    (renderHeader(agent({ changes: ' M login.py' })), [$('details-changes').hidden, $('details-tab-changes').hidden])] });
 """
     )
     assert result["before"] == {
         "hidden": True,
         "expanded": "false",
-        "about": True,
-        "usage": True,
+        "about": "false",
+        "usage": "false",
+        "active": "capabilities",
+        "aboutHidden": False,
         "controls": "details",
         "name": "Settings & usage",
-        "groups": ["capabilities", "usage", "about", "changes"],
+        "groups": ["details-capabilities", "details-usage", "details-about", "details-changes"],
+        "tablist": ["tablist", ["tabpanel", "tabpanel", "tabpanel", "tabpanel"]],
+        "panels": [
+            ["capabilities", "details-tab-capabilities"],
+            ["usage", "details-tab-usage"],
+            ["about", "details-tab-about"],
+            ["changes", "details-tab-changes"],
+        ],
     }
-    assert result["opened"] == {"hidden": False, "expanded": "true", "about": True, "usage": True}
-    assert result["polled"] == {"hidden": False, "expanded": "true", "about": False, "usage": True}
-    assert result["rebuilt"] == {"hidden": False, "expanded": "true", "about": False, "usage": True}
-    assert result["closed"] == {"hidden": True, "expanded": "false", "about": False, "usage": True}
-    assert result["saved"] == ["orch-detail-groups", {"about": False}]
-    assert result["changes"] == [True, False]
+    assert result["opened"] == {
+        "hidden": False,
+        "expanded": "true",
+        "about": "false",
+        "usage": "false",
+        "active": "capabilities",
+        "aboutHidden": False,
+    }
+    polled = {
+        "hidden": False,
+        "expanded": "true",
+        "about": "true",
+        "usage": "false",
+        "active": "about",
+        "aboutHidden": False,
+    }
+    assert result["polled"] == polled
+    assert result["rebuilt"] == polled
+    assert result["closed"] == {**polled, "hidden": True, "expanded": "false"}
+    assert result["saved"] == ["orch-detail-tab", "about"]
+    assert result["changes"] == [True, True, [False, False]]
+
+
+def test_the_tabs_are_one_tab_stop_and_move_with_the_arrow_keys() -> None:
+    result = run_page(
+        """
+buildView(); renderHeader(agent());
+const stops = () => $('details-tabs').children.map(t => [t.getAttribute('aria-selected'), t.tabIndex]);
+const key = k => { const event = { key: k, prevented: false, preventDefault() { this.prevented = true; } };
+  $('details-tabs').onkeydown(event); return [detailTab, event.prevented]; };
+const start = stops();
+const right = key('ArrowRight'), left = key('ArrowLeft'), wrapLeft = key('ArrowLeft');
+const home = key('Home'), end = key('End'), wrapRight = key('ArrowRight');
+const other = key('Enter');
+out({ start, right, left, wrapLeft, home, end, wrapRight, other, stops: stops() });
+"""
+    )
+    assert result["start"] == [["true", 0], ["false", -1], ["false", -1], ["false", -1]]
+    assert result["right"] == ["usage", True]
+    assert result["left"] == ["capabilities", True]
+    assert result["wrapLeft"] == ["about", True]
+    assert result["home"] == ["capabilities", True]
+    assert result["end"] == ["about", True]
+    assert result["wrapRight"] == ["capabilities", True]
+    assert result["other"] == ["capabilities", False]
+    assert result["stops"] == [["true", 0], ["false", -1], ["false", -1], ["false", -1]]
 
 
 def test_the_maestro_before_its_first_message_offers_only_its_capabilities() -> None:

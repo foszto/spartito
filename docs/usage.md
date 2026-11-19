@@ -569,8 +569,11 @@ Once the agent has a conversation, an info button (**ⓘ**) after the drop-downs
 switching the model or the effort does to the prompt cache. It shows on hover, on keyboard
 focus and on a click; Escape, moving away or leaving it hides it.
 
-**Settings & usage** opens a section under the header, in groups that each fold up (what is
-open stays open while the page refreshes, and the groups also on the next visit):
+**Settings & usage** opens a section under the header, one tab per group (the tab you chose
+stays chosen while the page refreshes, and also on the next visit; a group that is not shown,
+such as Changes without changes, has no tab, and if the shown tab goes away the first shown
+one is shown instead; Left and Right move between the tabs, Home and End to the first and the
+last):
 
 - **Capabilities**: a line per capability, with its inherit / on / off choice (see
   *Capabilities* below);
@@ -641,7 +644,9 @@ creates the Maestro and a dispatch from the board show none. Details:
 
 **Models and effort** window: the tier settings per provider, the automatic compaction
 threshold and the archive hours, globally or for one project; keep-awake and desktop
-notifications globally. Under **Notifications**, **Allow in this browser** lets the page show
+notifications globally. Its sections are tabs too, one per section (the tiers, Archive,
+compaction, Capabilities, the switches, Version), the first one active; Left/Right, Home/End
+move between them. Under **Notifications**, **Allow in this browser** lets the page show
 the notifications itself, so that a click opens the agent or decision (see
 [desktop.md](desktop.md#notifications-with-click-through)).
 

@@ -23,6 +23,7 @@ NAMES = (
     "setupSlot", "setupBusy", "bumpSetup", "inherits", "settingLabel", "renderSetup",
     "buildProviderControl", "moveAgent", "moved", "setupRequest", "describe", "markOwn",
     "markExtras", "buildControl", "sendMessage", "renderCacheInfo", "showCacheTip", "cacheTipKey",
+    "renderSettingsTabs", "selectSettingsTab", "tabKeyMove",
 )  # fmt: skip
 
 
@@ -170,10 +171,12 @@ const agentDialog = node('dialog', { id: 'agentDialog' }, data('span', 'project'
   node('select', { name: 'effort' }), node('select', { name: 'workspace', value: '' }), data('div', 'afterField'),
   data('div', 'checks', 'after')));
 const settingsDialog = node('dialog', { id: 'settingsDialog' }, node('form', {},
-  node('select', { name: 'scope', value: '' }), node('span', { id: 'settingsHelp' }), node('div', { id: 'settingsRows' })));
+  node('select', { name: 'scope', value: '' }), node('span', { id: 'settingsHelp' }), node('div', { id: 'settingsTabs' }),
+  node('div', { id: 'settingsRows' })));
 const confirmBox = node('dialog', { id: 'confirmDialog' }, node('form', {}, data('h3', 'title'), data('p', 'text'),
   (() => { const l = data('label', 'option'); l.append(node('span')); return l; })(), data('button', 'ok')));
 const setupBox = node('span', { id: 'setup' }), setupNote = node('div', { id: 'setupNote' });
+let settingsTab = null, settingsSections = [];
 const out = value => process.stdout.write(JSON.stringify(value));
 """
 
@@ -333,6 +336,60 @@ out({ fields: tier.querySelectorAll('[name]').map(n => n.name), who: tier.queryS
     assert result["who"] == ["ClClaude", "CoCodex"]
     assert result["effort"] == "high"
     assert result["box"] is False  # the default provider is a project's
+
+
+def test_the_settings_sections_are_tabs_that_keep_their_choice_and_fall_back() -> None:
+    result = run_page(
+        """
+state.settings.projects['my-app'] = {};
+const scope = settingsDialog.querySelector('[name=scope]');
+scope.value = 'my-app'; renderSettings();
+const names = () => settingsSections.map(([name]) => name);
+const shown = () => $('settingsRows').children.filter(b => !b.hidden).map(b => b.id);
+const stops = () => $('settingsTabs').children.filter(t => t.tabIndex === 0).map(t => t.id);
+const first = { tab: settingsTab, names: names(), shown: shown(), stops: stops(),
+  selected: $('settingsTabs').children.filter(t => t.getAttribute('aria-selected') === 'true').map(t => t.id),
+  roles: [$('settingsTabs').getAttribute('role'),
+    [$('settingsTabs').children.every(t => t.getAttribute('role') === 'tab'),
+      $('settingsRows').children.every(b => b.getAttribute('role') === 'tabpanel'),
+      $('settingsRows').children.every(b => b.getAttribute('aria-labelledby') === 'settings-tab-' + b.id.slice(9))]] };
+selectSettingsTab('worker', false);
+const chosen = { tab: settingsTab, shown: shown(), stops: stops() };
+renderSettings();  // a poll: the rows are replaced, the tab stays
+const polled = { tab: settingsTab, shown: shown() };
+const key = k => { $('settingsTabs').onkeydown({ key: k, preventDefault() {} }); return settingsTab; };
+const at = names().indexOf('worker');
+const right = key('ArrowRight') === names()[at + 1], left = key('ArrowLeft') === names()[at];
+key('End'); const end = settingsTab; key('ArrowRight'); const wrap = settingsTab;
+scope.value = ''; renderSettings();  // global: no Default provider
+const global = { tab: settingsTab, provider: names().includes('provider'), shown: shown() };
+$('settingsTabs').onkeydown({ key: 'Home', preventDefault: () => {} });
+const home = settingsTab;
+out({ first, chosen, polled, right, left, end, wrap, global, home });
+"""
+    )
+    assert result["first"]["tab"] == "provider"
+    assert result["first"]["names"][0] == "provider"
+    assert result["first"]["shown"] == ["settings-provider"]
+    assert result["first"]["stops"] == ["settings-tab-provider"]
+    assert result["first"]["selected"] == ["settings-tab-provider"]
+    assert result["first"]["roles"] == ["tablist", [True, True, True]]
+    assert result["chosen"] == {
+        "tab": "worker",
+        "shown": ["settings-worker"],
+        "stops": ["settings-tab-worker"],
+    }
+    # the active tab is applied again after a render that replaced every row
+    assert result["polled"] == {"tab": "worker", "shown": ["settings-worker"]}
+    assert result["right"] and result["left"]
+    assert result["end"] != result["wrap"]  # End is the last tab, ArrowRight wraps from it
+    # a section that disappears does not leave the tab pointing at nothing
+    assert result["global"] == {
+        "tab": "orchestrator",
+        "provider": False,
+        "shown": ["settings-orchestrator"],
+    }
+    assert result["home"] == "orchestrator"
 
 
 def test_a_projects_default_provider_is_set_at_once_and_its_note_shown() -> None:

@@ -113,6 +113,12 @@ chosen is in the
   orchestrator and `spartito chat` may withdraw any open decision, and a lead those of the
   agents in its project. The decision notes who withdrew it, and its agent gets a message
   that no answer will come, unless it is archived.
+- The dashboard's **Settings & usage** section shows its groups as tabs (Capabilities, Usage,
+  About, Changes) instead of accordions, and so does the **Settings** dialog for its sections
+  (the tiers, Archive, compaction, Capabilities, the switches, Version): the same content in
+  the same order, one tab per section and the first section active. A section that is not
+  shown has no tab; the tab you chose is remembered across polls, agents and visits, and
+  Left/Right, Home/End move between the tabs.
 - **Incompatible:** `spartito mcp` without a subcommand now lists the MCP servers instead of
   running Spartito's own `orch` MCP server on stdio; `spartito mcp serve` runs it. Spartito's
   agents and `spartito chat` never started it through the command and are not affected. If
