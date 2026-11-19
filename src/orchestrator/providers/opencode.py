@@ -4,12 +4,18 @@ Each turn is one `opencode run` with a private server of its own (`--standalone`
 environment and configuration reach only that server, and the user's shared opencode service
 is neither used nor started. The turn's settings are configuration, not flags:
 
-- a private file named by OPENCODE_CONFIG: the role prompt as an `instructions` file, the
-  `policies`, the MCP servers, `update: "disable"` and, when the user's global configuration
-  is moved away, the `shell`;
-- OPENCODE_CONFIG_CONTENT: the permission rules. It loads after a project's opencode.json and
-  so wins over it, where the OPENCODE_CONFIG file loads before it; every deny is backed by a
-  policy, which a project cannot lift.
+- a private file named by OPENCODE_CONFIG: the `policies`. It loads before a project's
+  opencode.json, and policies evaluate earliest-loaded first, so a project cannot lift them
+  [observed, V5]; every deny of the permission rules is backed by one.
+- OPENCODE_CONFIG_CONTENT: everything a project must not replace: the permission rules, the
+  MCP servers, the role prompt as an `instructions` file, `update: "disable"` and, when the
+  user's global configuration is moved away, the `shell`. It loads after a project's
+  opencode.json and wins over it [observed for permissions, V5]. A setting there replaces the
+  project's [seen in source for `shell` and the MCP servers: the last document's value, an MCP
+  server's entry whole]; each server's entry is written in full anyway (every field Spartito
+  relies on), so a merge of a same-named entry could not keep a project's value for them. It
+  is an environment variable the agent's commands inherit: it holds no secret, only paths,
+  Spartito's own values and `{env:NAME}` references (substituted there too [seen in source]).
 
 Facts about the CLI (opencode 2.3.2): docs/providers-design.md, §2 and §4.
 """
@@ -22,11 +28,12 @@ import re
 import secrets
 import shlex
 import subprocess
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from . import kit
+from . import kit, locate
 from .base import REFERENCE, Agent, Event, Invocation, RunContext, Usage, brief, wired
 
 DEFAULT_PERMISSION = "default"  # no --auto: every `ask` is rejected and the turn goes on
@@ -71,6 +78,12 @@ SIGNAL_EXITS = (130, 137, 143)
 CONFIG_HOME = "opencode-config-home"
 SHELL_WRAPPER = "opencode-shell"
 INSTRUCTIONS = "opencode-instructions.md"
+# `timeout.execution` of the `orch` MCP server, in milliseconds: an hour, as Codex's
+# tool_timeout_sec; the longest wait of its tools is 30 minutes (mcp_server.MAX_WAIT_SECONDS).
+OWN_SERVER_EXECUTION_MS = 3_600_000
+# Kept as values in a server's entry even when the CLI's environment has the same one: who
+# the `orch` MCP server acts for must not depend on that environment.
+LITERAL_ENV = ("ORCH_AGENT_ID",)
 # The global AGENTS.md of the moved-away configuration (opencode reads `~/.claude/CLAUDE.md`
 # when there is none): one neutral line, not empty, so that it takes the fallback's place.
 GLOBAL_AGENTS = Path("opencode") / "AGENTS.md"
@@ -110,25 +123,39 @@ def references(text: Any, env: Mapping[str, str]) -> Any:
 
 
 def config_server(
-    entry: Mapping[str, Any], env: Mapping[str, str], config_home: str | None
+    entry: Mapping[str, Any],
+    env: Mapping[str, str],
+    config_home: str | None,
+    cli_env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """An MCP server's entry (mcp.Server.entry's shape) as opencode's `mcp.servers` takes it.
+    """An MCP server's entry (mcp.Server.entry's shape) as opencode's `mcp.servers` takes it,
+    every field set (an entry of a project's opencode.json of the same name keeps nothing).
     `config_home`: the XDG_CONFIG_HOME a local server gets (the user's own, when the turn
-    moved it away)."""
+    moved it away). `cli_env`: the CLI's environment; a value of the entry's environment
+    that it holds as well is written as `{env:NAME}` (but LITERAL_ENV)."""
     if entry.get("url"):
-        server: dict[str, Any] = {"type": "remote", "url": references(entry["url"], env)}
         headers = entry.get("headers") or {}
-        if headers:
-            server["headers"] = {key: references(value, env) for key, value in headers.items()}
-        return server
+        return {
+            "type": "remote",
+            "url": references(entry["url"], env),
+            "headers": {key: references(value, env) for key, value in headers.items()},
+            "disabled": False,
+        }
     command = [entry["command"], *(entry.get("args") or ())]
-    server = {"type": "local", "command": [references(part, env) for part in command]}
     environment = {key: references(value, env) for key, value in (entry.get("env") or {}).items()}
     if config_home is not None:
         environment["XDG_CONFIG_HOME"] = config_home
-    if environment:
-        server["environment"] = environment
-    return server
+    known = cli_env or {}
+    environment = {
+        key: "{env:" + key + "}" if key not in LITERAL_ENV and known.get(key) == value else value
+        for key, value in environment.items()
+    }
+    return {
+        "type": "local",
+        "command": [references(part, env) for part in command],
+        "environment": environment,
+        "disabled": False,
+    }
 
 
 def rule(action: str, resource: str, effect: str) -> dict[str, str]:
@@ -205,13 +232,20 @@ def _lookup_models() -> kit.Models:
         return [], None
 
 
+def model_list_dir() -> str:
+    """Where `opencode models` runs: the temporary directory, no project, so that a
+    project's opencode.json never counts and every process lists the same."""
+    return tempfile.gettempdir()
+
+
 def request_model_list() -> str:
     """The output of `opencode models`, without fetching the catalogue: the models of the
-    providers with credentials, one `provider/model` a line. Raises OSError or
-    subprocess.SubprocessError."""
-    env = {**os.environ, "OPENCODE_DISABLE_MODELS_FETCH": "1"}
+    providers with credentials (the user's logins and global configuration), one
+    `provider/model` a line. Raises OSError or subprocess.SubprocessError."""
+    where = model_list_dir()  # opencode takes its directory from $PWD before the cwd
+    env = {**os.environ, "OPENCODE_DISABLE_MODELS_FETCH": "1", "PWD": where}
     argv = ["opencode", "models", "--standalone"]
-    code, out, err = kit.run_cli(argv, MODEL_LIST_TIMEOUT, env=env)
+    code, out, err = kit.run_cli(argv, MODEL_LIST_TIMEOUT, env=env, cwd=where)
     if code:
         raise subprocess.SubprocessError(f"exit {code}: {brief(err, 200)}")
     return out
@@ -319,43 +353,53 @@ class OpencodeProvider:
         argv += extra_argv
         env = {**extra_env, "PWD": agent.cwd}  # opencode takes its directory from $PWD
         turn_env = {**os.environ, **extra_env}
-        config: dict[str, Any] = {"update": "disable"}
+        # In OPENCODE_CONFIG_CONTENT, which a project's opencode.json cannot replace.
+        content: dict[str, Any] = {"update": "disable"}
         if ctx.system_prompt:
             instructions = ctx.scratch / INSTRUCTIONS
             instructions.write_text(ctx.system_prompt, encoding="utf-8")
-            config["instructions"] = [str(instructions)]
+            content["instructions"] = [str(instructions)]
         server_home = None
+        temporary: list[Path] = []
         if not user_config(ctx):
             original = os.environ.get("XDG_CONFIG_HOME")
             home = ctx.scratch / CONFIG_HOME
             home.mkdir(exist_ok=True)
+            temporary.append(home)  # removed when the turn ends, with what opencode put there
             env["XDG_CONFIG_HOME"] = str(home)
             # [documented, not observed] that this keeps `~/.claude/CLAUDE.md` out.
             agents = home / GLOBAL_AGENTS
             agents.parent.mkdir(exist_ok=True)
             agents.write_text(GLOBAL_AGENTS_TEXT, encoding="utf-8")
-            config["shell"] = str(write_wrapper(ctx.scratch / SHELL_WRAPPER, original))
+            content["shell"] = str(write_wrapper(ctx.scratch / SHELL_WRAPPER, original))
             # An environment can only set a value: the default stands in for an unset one.
             server_home = original if original is not None else str(Path.home() / ".config")
         if ctx.loadout.setting_sources is not None and "project" not in ctx.loadout.setting_sources:
             env["OPENCODE_DISABLE_PROJECT_CONFIG"] = "1"
+        cli_env = {**turn_env, **env}
+        cli_env["PATH"] = locate.search_path(cli_env.get("PATH"))  # as the runner gives it
         servers = {
-            name: config_server(entry, turn_env, server_home)
+            name: config_server(entry, turn_env, server_home, cli_env)
             for name, entry in kit.turn_servers(ctx).items()
         }
+        if ctx.mcp and OWN_SERVER in servers:
+            servers[OWN_SERVER].update(
+                cwd=agent.cwd, codemode=True, timeout={"execution": OWN_SERVER_EXECUTION_MS}
+            )
         permissions, policies = turn_rules(ctx, list(servers), notes)
-        config["policies"] = policies
+        content["permissions"] = permissions
         if servers:
-            config["mcp"] = {"servers": servers}
+            content["mcp"] = {"servers": servers}
         env["OPENCODE_CONFIG"] = str(ctx.mcp_config)
-        env["OPENCODE_CONFIG_CONTENT"] = json.dumps({"permissions": permissions})
+        env["OPENCODE_CONFIG_CONTENT"] = json.dumps(content)
         self._structured = bool(ctx.output_schema)
         return Invocation(
             argv=argv,
             stdin=kit.schema_in_prompt(ctx.prompt, ctx.output_schema),
             env=env,
-            private_files={ctx.mcp_config: json.dumps(config, indent=2)},
+            private_files={ctx.mcp_config: json.dumps({"policies": policies}, indent=2)},
             notes=notes,
+            temporary_dirs=temporary,
         )
 
     def stream(self) -> Stream:
@@ -382,6 +426,19 @@ def code_servers(code: Any) -> list[str]:
         return []
     found = re.findall(r"\btools\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_]+)", code)
     return list(dict.fromkeys(f"{server}.{tool}" for server, tool in found))
+
+
+def called_tools(state: Mapping[str, Any]) -> list[str] | None:
+    """The `server.tool` names a Code Mode `execute` call made, as its state reports them
+    (`metadata.metadata.toolCalls[].tool`, seen in 2.3.2); None when it reports none."""
+    outer = state.get("metadata")
+    inner = outer.get("metadata") if isinstance(outer, dict) else None
+    calls = inner.get("toolCalls") if isinstance(inner, dict) else None
+    if not isinstance(calls, list):
+        return None
+    names = [call.get("tool") for call in calls if isinstance(call, dict)]
+    found = [name for name in names if isinstance(name, str) and name]
+    return list(dict.fromkeys(found)) or None
 
 
 class Stream(kit.JsonLines):
@@ -461,7 +518,7 @@ class Stream(kit.JsonLines):
         given = state.get("input")
         if tool == "execute":  # Code Mode: MCP calls inside a script
             code = given.get("code") if isinstance(given, dict) else given
-            named = code_servers(code)
+            named = called_tools(state) or code_servers(code)  # the code: when not reported
             label = f"execute ({', '.join(named)})" if named else "execute"
             events = [Event("tool", f"{label} {brief(code)}")]
             output = state.get("output")

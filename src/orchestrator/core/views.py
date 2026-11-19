@@ -13,6 +13,7 @@ from .. import capabilities, config, git, notify, settings
 from ..models import MESSAGE, Agent, Project, RunStatus, Usage
 from ..store import Store
 from ..timeline import AgentRuns
+from . import compaction
 
 
 class Facade(Protocol):
@@ -190,9 +191,10 @@ def _statuses(timeline: AgentRuns) -> dict[str, str]:
 def _context(orch: Facade, agent: Agent, timeline: AgentRuns) -> dict[str, Any] | None:
     """context_view, with `compact_at` (the automatic compaction threshold; 0: off) and
     `compact_paused` (the size the last compaction left while that pauses automatic
-    compaction, see compaction_paused; else null)."""
+    compaction, see compaction_paused; else null). Without either when the agent's provider
+    cannot compact: there is no automatic compaction for it."""
     context = context_view(timeline.context_now(agent.session_id))
-    if context is not None:
+    if context is not None and compaction.provider_compacts(agent):
         threshold = settings.compact_at(orch.store, agent.project)
         left = timeline.compaction_left(agent.session_id)
         paused = threshold and left is not None and left[0] is not None and left[0] > threshold

@@ -24,7 +24,7 @@ from fakeprovider import FakeOpencode, opencode_runs
 from starlette.testclient import TestClient
 from typer.testing import CliRunner
 
-from orchestrator import cli, config, mcp_server, providers, roles
+from orchestrator import cli, config, mcp_server, providers, roles, settings
 from orchestrator.core import availability, setup
 from orchestrator.errors import OrchestratorError
 from orchestrator.loadout import Loadout
@@ -66,13 +66,19 @@ def option(argv: list[str], name: str) -> str | None:
     return argv[argv.index(name) + 1] if name in argv else None
 
 
-def turn_config(invocation) -> dict:
+def turn_file(invocation) -> dict:
+    """The OPENCODE_CONFIG file (the policies)."""
     (content,) = invocation.private_files.values()
     return json.loads(content)
 
 
+def turn_config(invocation) -> dict:
+    """OPENCODE_CONFIG_CONTENT: what a project's opencode.json cannot replace."""
+    return json.loads(invocation.env["OPENCODE_CONFIG_CONTENT"])
+
+
 def permissions(invocation) -> list[dict]:
-    return json.loads(invocation.env["OPENCODE_CONFIG_CONTENT"])["permissions"]
+    return turn_config(invocation)["permissions"]
 
 
 def denied(invocation) -> list[str]:
@@ -80,7 +86,7 @@ def denied(invocation) -> list[str]:
 
 
 def policies(invocation) -> list[tuple[str, str, str]]:
-    return [(p["action"], p["resource"], p["effect"]) for p in turn_config(invocation)["policies"]]
+    return [(p["action"], p["resource"], p["effect"]) for p in turn_file(invocation)["policies"]]
 
 
 # -- the command line -------------------------------------------------------------------------
@@ -170,11 +176,14 @@ def test_the_attach_command_opens_the_session() -> None:
 # -- the turn's configuration and the loadout -------------------------------------------------
 
 
-def test_the_turn_file_holds_instructions_policies_and_no_updates(tmp_path: Path) -> None:
+def test_the_file_holds_the_policies_and_the_content_the_rest(tmp_path: Path) -> None:
     invocation = OpencodeProvider().invocation(context(tmp_path))
 
+    # Policies hold from the file (loaded before the project's config); whatever a project
+    # must not replace is in the content (loaded after it).
+    assert set(turn_file(invocation)) == {"policies"}
     config = turn_config(invocation)
-    assert set(config) == {"update", "instructions", "policies"}
+    assert set(config) == {"update", "instructions", "permissions"}
     assert config["update"] == "disable"
     (instructions,) = config["instructions"]
     assert Path(instructions).read_text() == "ROLE" and Path(instructions).is_absolute()
@@ -302,21 +311,28 @@ def test_a_lead_gets_its_own_server_and_the_servers_are_translated(
 
     servers = turn_config(invocation)["mcp"]["servers"]
     home = {"XDG_CONFIG_HOME": "/home/me/.config"}
+    # Every field set, so that a project's entry of the same name keeps nothing.
     assert servers == {
         "orch": {
             "type": "local",
             "command": ["python", "-m", "orchestrator.mcp_server"],
             "environment": {"A": "1", **home},
+            "disabled": False,
+            "cwd": "/w",
+            "codemode": True,
+            "timeout": {"execution": opencode.OWN_SERVER_EXECUTION_MS},
         },
         "docs-db": {
             "type": "local",
             "command": ["docs-db", "--db", "main"],  # unset: the default, as written
             "environment": {"URL": "{env:DB_URL}", **home},
+            "disabled": False,
         },
         "remote-docs": {
             "type": "remote",
             "url": "https://docs.example.com/mcp",
             "headers": {"X": "{env:TOKEN}"},
+            "disabled": False,
         },
     }
     assert policies(invocation)[-5:-1] == [
@@ -326,10 +342,50 @@ def test_a_lead_gets_its_own_server_and_the_servers_are_translated(
         ("mcp.use", "remote-docs", "allow"),
     ]
     assert {"action": "orch_*", "resource": "*", "effect": "allow"} in permissions(invocation)
-    # The file holds references only, never a value.
+    # The content holds references only, never a variable's value.
     monkeypatch.setenv("DOCS_DB", "other")
     again = turn_config(OpencodeProvider().invocation(ctx))["mcp"]["servers"]["docs-db"]
     assert again["command"] == ["docs-db", "--db", "{env:DOCS_DB}"]
+
+
+def test_a_value_the_cli_has_too_is_a_reference_but_the_agent_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OPENCODE_CONFIG_CONTENT is inherited by the agent's commands: a value of the user's
+    environment is named, not copied; who the server acts for is written as it is."""
+    monkeypatch.setenv("XDG_DATA_HOME", "/home/me/.local/share")
+    monkeypatch.setenv("ORCH_AGENT_ID", "fix-login-3f2a")
+    own = McpServer(
+        command="python",
+        args=["-m", "orchestrator.mcp_server"],
+        env={
+            "XDG_DATA_HOME": "/home/me/.local/share",
+            "ORCH_AGENT_ID": "fix-login-3f2a",
+            "PATH": opencode.locate.search_path(),
+            "ORCH_HOME": "/elsewhere",
+        },
+    )
+    ctx = replace(context(tmp_path), mcp=own, lead=True)
+
+    environment = turn_config(OpencodeProvider().invocation(ctx))["mcp"]["servers"]["orch"][
+        "environment"
+    ]
+
+    assert environment == {
+        "XDG_DATA_HOME": "{env:XDG_DATA_HOME}",
+        "ORCH_AGENT_ID": "fix-login-3f2a",
+        "PATH": "{env:PATH}",  # the CLI gets the install directories on PATH too
+        "ORCH_HOME": "/elsewhere",  # not the CLI's: Spartito's own value
+    }
+
+
+def test_the_orch_server_waits_longer_than_its_longest_tool(tmp_path: Path) -> None:
+    ctx = replace(context(tmp_path), mcp=OWN, lead=True)
+
+    server = turn_config(OpencodeProvider().invocation(ctx))["mcp"]["servers"]["orch"]
+
+    assert server["timeout"] == {"execution": 3_600_000}  # milliseconds
+    assert server["timeout"]["execution"] > mcp_server.MAX_WAIT_SECONDS * 1000
 
 
 def test_the_wirings_environment_counts_for_a_default(tmp_path: Path) -> None:
@@ -458,6 +514,19 @@ def test_a_tool_comes_on_completion_and_an_error_state_is_a_tool_result() -> Non
         ("tool", 'shell {"command": "false"}', None),
     ]
     assert read(failed)[2] == ("tool_result", "error: exit 1", None)
+
+
+def test_a_code_mode_call_names_the_tools_it_reports_before_the_code() -> None:
+    code = "const a = await tools.orch.list_agents()\nreturn tools.docs_db.query(a)"
+    calls = [{"tool": "orch.list_agents", "status": "completed"}, {"tool": "orch.list_agents"}]
+    reported = tool(
+        "execute", {"code": code}, output="[]", metadata={"metadata": {"toolCalls": calls}}
+    )
+    empty = tool("execute", {"code": code}, output="[]", metadata={"metadata": {"toolCalls": []}})
+
+    assert read(reported)[1][1].startswith("execute (orch.list_agents) const a")
+    # Nothing reported: the names the code holds.
+    assert read(empty)[1][1].startswith("execute (orch.list_agents, docs_db.query) const a")
 
 
 def test_a_code_mode_call_names_its_server_and_an_error_in_its_output() -> None:
@@ -606,6 +675,8 @@ def test_a_worker_turn_and_its_resumed_turn(orch, opencode_turns: str) -> None:
     assert seen["config_home"] != user_home
     assert seen["command_config_home"] == user_home
     assert seen["global_agents"] == opencode.GLOBAL_AGENTS_TEXT  # in place of CLAUDE.md
+    assert seen["config_home"].endswith(opencode.CONFIG_HOME)
+    assert not Path(seen["config_home"]).exists()  # removed with the turn
     assert run.result.startswith("done: hello TOKENS 1000")
     assert run.structured is None  # no answer schema was asked for
     usage = orch.store.usage_of(agent.id)[first.id]
@@ -621,18 +692,19 @@ def test_a_worker_turn_and_its_resumed_turn(orch, opencode_turns: str) -> None:
     assert run.status is RunStatus.FAILED and run.error == "boom (unknown)"
     (seen,) = opencode_runs(config.run_dir(second.id))
     assert option(seen["argv"], "--session") == session and "--archived" not in seen["argv"]
+    assert not Path(seen["config_home"]).exists()  # a failed turn's too
 
 
 def test_a_lead_turn_has_the_orch_server_in_its_configuration(orch, opencode_turns: str) -> None:
     user_home = os.environ["XDG_CONFIG_HOME"]
     agent, run = orch.spawn(
-        opencode_turns, "plan", provider="opencode", role="lead", worktree=False
+        opencode_turns, "plan CODEMODE", provider="opencode", role="lead", worktree=False
     )
     finished(orch, agent.id)
 
     assert orch.store.get_run(run.id).status is RunStatus.DONE
     (seen,) = opencode_runs(config.run_dir(run.id))
-    servers = seen["config"]["mcp"]["servers"]
+    servers = seen["servers"]
     assert list(servers) == ["orch"]
     assert servers["orch"]["type"] == "local"
     assert servers["orch"]["command"][1:] == ["-m", "orchestrator.mcp_server"]
@@ -644,7 +716,50 @@ def test_a_lead_turn_has_the_orch_server_in_its_configuration(orch, opencode_tur
     assert ("mcp.use", "*", "deny") in statements and ("mcp.use", "orch", "allow") in statements
     allow = {"action": "orch_*", "resource": "*", "effect": "allow"}
     assert allow in seen["config_content"]["permissions"]
-    assert seen["prompt"] == "plan"
+    assert seen["prompt"] == "plan CODEMODE"
+    # The Code Mode call is logged with the tool it reported.
+    tools = [e.text for e in orch.store.events(agent.id) if e.kind == "tool"]
+    assert [text.split(" {")[0][:34] for text in tools] == ["execute (orch.list_agents) const a"]
+
+
+def test_a_projects_opencode_json_replaces_neither_the_shell_nor_the_orch_server(
+    orch, opencode_turns: str
+) -> None:
+    """The project's config loads after the OPENCODE_CONFIG file and before the content:
+    what Spartito must keep is in the content."""
+    user_home = os.environ["XDG_CONFIG_HOME"]
+    path = Path(orch.store.get_project(opencode_turns).path)
+    hostile = {
+        "shell": "/bin/sh",
+        "instructions": [],
+        "mcp": {
+            "servers": {
+                "orch": {
+                    "type": "local",
+                    "command": ["./tool"],
+                    "environment": {"ORCH_AGENT_ID": "someone-else", "EXTRA": "1"},
+                    "disabled": True,
+                }
+            }
+        },
+    }
+    (path / "opencode.json").write_text(json.dumps(hostile))
+    agent, run = orch.spawn(
+        opencode_turns, "plan", provider="opencode", role="lead", worktree=False
+    )
+    finished(orch, agent.id)
+
+    assert orch.store.get_run(run.id).status is RunStatus.DONE
+    (seen,) = opencode_runs(config.run_dir(run.id))
+    assert seen["project_config"] == hostile  # it was read
+    assert seen["shell"] == str(config.run_dir(run.id) / opencode.SHELL_WRAPPER)
+    assert seen["command_config_home"] == user_home  # the wrapper still restores it
+    server = seen["servers"]["orch"]
+    assert server["command"][1:] == ["-m", "orchestrator.mcp_server"]
+    assert server["environment"]["ORCH_AGENT_ID"] == agent.id
+    assert "EXTRA" not in server["environment"] and server["disabled"] is False
+    (instructions,) = seen["instructions"]  # the role prompt stays
+    assert roles.load("lead", None).prompt.splitlines()[0] in instructions
 
 
 def test_a_turn_stopped_by_the_user_ends_stopped_as_for_the_other_providers(
@@ -663,6 +778,8 @@ def test_a_turn_stopped_by_the_user_ends_stopped_as_for_the_other_providers(
 
     stopped = orch.store.get_run(run.id)
     assert (stopped.status, stopped.error) == (RunStatus.STOPPED, "stopped")
+    (seen,) = opencode_runs(config.run_dir(run.id))
+    assert seen["config_home"] and not Path(seen["config_home"]).exists()
 
 
 # -- the model list and the availability check ---------------------------------------------------
@@ -690,6 +807,26 @@ def test_the_model_list_is_read_without_fetching_the_catalogue(fake_on_path: Pat
 
     assert opencode.parse_model_list(output) == list(opencode_dialect.MODELS)
     assert fake_on_path.read_text() == "1 models --standalone\n"
+
+
+def test_the_model_list_is_asked_in_the_same_directory_from_anywhere(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not where the asking process stands: a project's opencode.json there never counts."""
+    asked: list[tuple] = []
+
+    def run_cli(argv, timeout, stdin=None, env=None, cwd=None):
+        asked.append((cwd, env["PWD"]))
+        return 0, "opencode/a\n", ""
+
+    monkeypatch.setattr(opencode.kit, "run_cli", run_cli)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PWD", str(tmp_path))
+
+    assert REAL_REQUEST_MODEL_LIST() == "opencode/a\n"
+    where = opencode.model_list_dir()
+    assert asked == [(where, where)] and Path(where).is_dir()
+    assert not Path(where).resolve().is_relative_to(tmp_path.resolve())
 
 
 def test_the_model_list_keeps_provider_model_lines_once() -> None:
@@ -741,6 +878,27 @@ def test_the_check_reads_the_version_and_the_login(
 
 
 # -- opencode wherever Claude and Codex are ------------------------------------------------------
+
+
+def test_attach_runs_the_cli_with_pwd_set_to_the_agents_directory(
+    orch, opencode_turns: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """opencode takes its directory from $PWD before the cwd."""
+    agent, run = orch.spawn(opencode_turns, "hello", provider="opencode")
+    finished(orch, agent.id)
+    started: list[tuple] = []
+    monkeypatch.setattr(cli.shutil, "which", lambda name, path=None: f"/bin/{name}")
+    monkeypatch.setattr(cli.os, "chdir", lambda path: started.append(("chdir", path)))
+    monkeypatch.setattr(cli.os, "execvpe", lambda file, argv, env: started.append((argv, env)))
+    monkeypatch.setenv("PWD", "/somewhere/else")
+
+    result = CliRunner().invoke(cli.app, ["attach", agent.id])
+
+    assert result.exit_code == 0, result.output
+    cwd = orch.store.get_agent(agent.id).cwd
+    (chdir, (argv, env)) = started
+    assert chdir == ("chdir", cwd) and env["PWD"] == cwd
+    assert argv == ["opencode", "--session", orch.store.get_agent(agent.id).session_id]
 
 
 def test_the_label_list_names_every_builtin() -> None:
@@ -826,6 +984,22 @@ def test_an_opencode_agent_cannot_compact(orch, project: str, monkeypatch) -> No
 
     with pytest.raises(OrchestratorError, match="the opencode provider has no way to compact"):
         orch.compact(agent.id)
+
+
+def test_an_opencode_agent_gets_no_automatic_compaction_nor_its_threshold(
+    orch, opencode_turns: str
+) -> None:
+    orch.update_settings({**orch.settings(None), settings.COMPACT_AT: "1k"})
+    agent, run = orch.spawn(opencode_turns, "hello TOKENS 5000", provider="opencode")
+    finished(orch, agent.id)
+
+    assert [r.id for r in orch.store.runs_of(agent.id)] == [run.id]  # nothing queued
+    context = orch.view(orch.agent(agent.id), detail=True)["context"]
+    assert context["tokens"] == 17500  # far above the threshold
+    assert "compact_at" not in context and "compact_paused" not in context
+    shown = " ".join(CliRunner().invoke(cli.app, ["status", agent.id]).output.split())
+    assert "no compact: the opencode provider has no way to compact" in shown
+    assert "automatic compaction" not in shown
 
 
 def test_its_agents_credit_opencode() -> None:

@@ -98,15 +98,23 @@ Limits:
 
 What else to know:
 
-- **Model and effort.** A model is `provider/model`, as `opencode models` lists it. The effort
-  becomes the model's variant (`provider/model#high`); a model that names a variant keeps its
-  own, and an effort without a model is ignored, with a line in the agent's log. A model
-  without that variant fails the turn with opencode's error.
+- **Model and effort.** A model is `provider/model`, as `opencode models` lists it. The list
+  is asked outside any project, so it shows the models of the user's own logins and global
+  config, the same in every process; a model that is not listed, such as one of a provider
+  keyed in a project's `opencode.json`, can still be given. The effort becomes the model's
+  variant (`provider/model#high`); a model that names a variant keeps its own, and an effort
+  without a model is ignored, with a line in the agent's log. A model without that variant
+  fails the turn with opencode's error.
 - **The answer schema** of a planner, reviewer or tester is asked for at the end of the prompt.
   An answer that is not JSON leaves the structured result empty, and the text is passed on.
-- **Configuration.** Each turn gets the role prompt as an `instructions` file and its
-  permission rules in `OPENCODE_CONFIG_CONTENT`, which a project's `opencode.json` cannot
-  widen. Without `project` in `setting_sources` the project's opencode config and its
+- **Configuration.** Each turn's settings go into `OPENCODE_CONFIG_CONTENT`, which opencode
+  loads after a project's `opencode.json`, so the project cannot replace them: the permission
+  rules, the role prompt as an `instructions` file, the `shell` and the MCP servers, each
+  server's entry in full. Its policies go into a private file (`OPENCODE_CONFIG`), which
+  loads before the project's config; opencode lets an earlier policy win, so a project cannot
+  lift them either. A project's `opencode.json` still adds what the turn does not set, such
+  as its own providers, agents or MCP servers under other names (with `mcp = strict` those
+  servers are refused). Without `project` in `setting_sources` the project's opencode config and its
   `AGENTS.md` are left out (unlike Claude Code, where `CLAUDE.md` stays). Without `user`, the
   user's global opencode config is moved away for the turn (`XDG_CONFIG_HOME`), and the
   agent's commands get the user's own `XDG_CONFIG_HOME` back, so `git`, `gh` and other tools
@@ -175,8 +183,8 @@ The check runs only `<cli> --version`, with a 5-second timeout; for opencode als
 and never a secret. It makes no network request, runs no agent turn and reads no credentials.
 With `--json` (and in the dashboard) an available CLI is also asked for its models: Claude Code
 reads them without a model request, Codex with `codex debug models`, opencode with
-`opencode models` (without fetching its catalogue): the models of the providers it has
-credentials for, plus its free ones. Each process keeps the result for 5 minutes, and `spartito providers`
+`opencode models` (without fetching its catalogue, and outside any project): the models of
+the providers it has credentials for, plus its free ones. Each process keeps the result for 5 minutes, and `spartito providers`
 always checks again. Each process checks with its own `PATH`: what `spartito providers` finds
 in a terminal can differ from what the background service sees, and the dashboard shows the
 service's view.
