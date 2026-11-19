@@ -102,6 +102,12 @@ chosen is in the
   the turn naming the file: a repository could otherwise give its agents every MCP server
   Claude Code would load, with your credentials. It still works from
   `~/.orchestrator/loadout.toml` and the role files in `~/.orchestrator/roles/`.
+- The agent view's header is shorter: it keeps the name, status, role, the provider, model
+  and effort drop-downs, the context bar and the branch. What switching the model or effort
+  does to the prompt cache is behind an info button next to them, shown on hover, focus or a
+  click. **Details** is now **Settings & usage**: the capability choices, the tokens and
+  cost with the recent turns, the agent's facts and its changes, each in a group that folds
+  up and stays as left while the page refreshes.
 
 ### Fixed
 
