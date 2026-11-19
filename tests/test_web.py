@@ -116,7 +116,7 @@ def test_project_and_agent_lifecycle_over_the_api(
     client.post(f"/api/agents/{agent_id}/remove", json={"delete_branch": True}, headers=ORIGIN)
     removed = client.post("/api/projects/demo/remove", json={}, headers=ORIGIN)
 
-    assert refused.status_code == 400 and "still has agents" in refused.json()["error"]
+    assert refused.status_code == 400 and "not archived" in refused.json()["error"]
     assert removed.status_code == 200 and client.get("/api/state").json()["projects"] == []
 
 

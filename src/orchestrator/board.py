@@ -4,10 +4,11 @@ Table `board_items`. Every item belongs to a registered project and is in one st
 `idea` -> `ready` -> `in_progress` -> `done`; `position` orders the items within one state of
 one project (a new item, and one that changes state, goes to the end). An item may name an
 agent and a branch that work on it. The orchestrator and the leads use the MCP tools
-`list_board`, `add_board_item` and `update_board_item`; the owner the dashboard and
-`spartito board`. Nothing is dispatched automatically: `dispatch` (the owner's button or
-`spartito board dispatch`) sends a project's `ready` items to its lead as one user message,
-marks them `in_progress` and links them to the lead.
+`list_board`, `add_board_item`, `update_board_item` and `delete_board_item`; the owner the
+dashboard and `spartito board`. Nothing is dispatched automatically: `dispatch` (the owner's
+button or `spartito board dispatch`) sends a project's `ready` items to its lead as one user
+message, marks them `in_progress` and links them to the lead. Deleting an item (or removing
+its project) deletes it for good, with its history, source and decision links.
 """
 
 from __future__ import annotations
@@ -480,6 +481,41 @@ def move(store: Store, item_id: int, direction: str, actor: Actor = OWNER) -> It
         item = _get(conn, item_id)
     assert item is not None
     return item
+
+
+# -- deleting --------------------------------------------------------------------------
+
+# Every table with rows keyed to an item; deleting the item deletes them too.
+ITEM_TABLES = ("board_history", "board_git", "board_sources", "board_blockers")
+
+
+def _delete(conn: sqlite3.Connection, item_ids: list[int]) -> None:
+    ids = json.dumps(item_ids)
+    for table in (*ITEM_TABLES, "board_items"):
+        key = "id" if table == "board_items" else "item_id"
+        conn.execute(f"DELETE FROM {table} WHERE {key} IN (SELECT value FROM json_each(?))", (ids,))
+
+
+def delete(store: Store, item_id: int) -> Item:
+    """Delete an item for good, with its history, git cache, source and decision links (the
+    decisions themselves stay), in one transaction. Returns the item as it was. Raises
+    ValueError for an unknown id."""
+    with store.transaction() as conn:
+        item = _get(conn, item_id)
+        if item is None:
+            raise ValueError(f"there is no board item #{item_id}")
+        _delete(conn, [item_id])
+    return item
+
+
+def delete_project(store: Store, project: str) -> list[int]:
+    """Delete every item of the project as `delete` does, in one transaction; their ids."""
+    with store.transaction() as conn:
+        rows = conn.execute("SELECT id FROM board_items WHERE project = ?", (project,))
+        ids = [row["id"] for row in rows]
+        if ids:
+            _delete(conn, ids)
+    return ids
 
 
 def message(project: str, items: list[Item], actor: Actor = OWNER) -> str:

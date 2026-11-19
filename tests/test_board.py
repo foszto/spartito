@@ -145,14 +145,126 @@ def test_unknown_project_state_item_and_bad_fields_are_refused(
     assert orch.board_item(item.id).title == "x" and orch.board_item(item.id).agent_id is None
 
 
-def test_a_removed_projects_items_are_kept_but_not_listed(
+def test_a_removed_projects_items_are_deleted(
+    orch: Orchestrator, project: str, other: str, repo: Path
+) -> None:
+    gone = orch.add_board_item(project, "x")
+    kept = orch.add_board_item(other, "y")
+    result = orch.remove_project(project)
+    assert result["board_items"] == [gone.id] and orch.board_items() == [kept]
+    orch.add_project(str(repo), project, "fake")
+    assert orch.board_items(project) == [] and row_counts(orch, gone.id) == dict.fromkeys(TABLES, 0)
+
+
+def test_items_of_a_project_removed_by_an_older_version_are_kept_but_not_listed(
     orch: Orchestrator, project: str, repo: Path
 ) -> None:
     item = orch.add_board_item(project, "x")
-    orch.remove_project(project)
+    orch.store.delete_project(project)  # what older code did: the items stayed
     assert orch.board_items() == []
     orch.add_project(str(repo), project, "fake")
     assert orch.board_items() == [item]
+
+
+# -- deleting an item -----------------------------------------------------------
+
+TABLES = ("board_items", *board.ITEM_TABLES)
+
+
+def row_counts(orch: Orchestrator, item_id: int) -> dict[str, int]:
+    """The rows each board table holds of the item."""
+    with orch.store.connection() as conn:
+        return {
+            table: conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {'id' if table == 'board_items' else 'item_id'} = ?",
+                (item_id,),
+            ).fetchone()[0]
+            for table in TABLES
+        }
+
+
+def with_everything(orch: Orchestrator, project: str, title: str) -> int:
+    """An item with a row in every table keyed to it: history, source, blocker, git cache."""
+    lead_id = lead(orch, project, name=f"lead-{title}")
+    orch.store.add_event(7, lead_id, "text", title)
+    event_id = orch.store.events(lead_id)[-1].id
+    item = orch.add_item_from_message(lead_id, event_id)
+    decision = orch.request_decision(lead_id, "which way?")
+    orch.link_decision(item.id, decision.id)
+    row = dict.fromkeys(orch.store.BOARD_GIT_COLUMNS)
+    row.update(item_id=item.id, branch="feat", base="main", ahead_in_base=0, merged=0)
+    orch.store.save_board_git({**row, "checked_at": "2000"})
+    return item.id
+
+
+def test_deleting_an_item_deletes_every_row_kept_about_it(orch: Orchestrator, project: str) -> None:
+    doomed = with_everything(orch, project, "doomed")
+    kept = with_everything(orch, project, "kept")
+    assert row_counts(orch, doomed) == dict.fromkeys(TABLES, 1) | {"board_history": 2}
+
+    deleted = orch.delete_board_item(doomed)
+
+    assert deleted.id == doomed and deleted.title == "doomed"
+    assert row_counts(orch, doomed) == dict.fromkeys(TABLES, 0)
+    assert row_counts(orch, kept) == dict.fromkeys(TABLES, 1) | {"board_history": 2}
+    assert [item.id for item in orch.board_items(project)] == [kept]
+    assert len(orch.list_decisions()) == 2  # the decisions themselves stay
+    with pytest.raises(OrchestratorError, match=f"no board item #{doomed}"):
+        orch.delete_board_item(doomed)
+    with pytest.raises(OrchestratorError, match="no board item #"):
+        orch.delete_board_item(2**70)
+
+
+def test_mcp_deletes_an_item_and_a_lead_only_its_own_projects(
+    orch: Orchestrator, project: str, other: str, as_agent: Callable
+) -> None:
+    lead_id = lead(orch, project, parent=None)
+    mine = orch.add_board_item(project, "mine")
+    foreign = orch.add_board_item(other, "theirs")
+    as_agent(lead_id)
+
+    with pytest.raises(OrchestratorError, match=f"only act within project '{project}'"):
+        mcp_server.delete_board_item(foreign.id)
+    assert mcp_server.delete_board_item(mine.id) == {
+        "deleted": mine.id,
+        "project": project,
+        "title": "mine",
+    }
+    with pytest.raises(OrchestratorError, match=f"no board item #{mine.id}"):
+        mcp_server.delete_board_item(mine.id)
+    as_agent(None)
+    assert mcp_server.delete_board_item(foreign.id)["deleted"] == foreign.id
+    assert orch.board_items() == []
+
+
+def test_cli_deletes_an_item_after_asking(orch: Orchestrator, project: str) -> None:
+    item = orch.add_board_item(project, "Login page")
+    runner = CliRunner()
+
+    declined = runner.invoke(cli.app, ["board", "rm", str(item.id)], input="n\n")
+    assert declined.exit_code == 1 and orch.board_item(item.id) == item
+    assert f"Delete #{item.id} 'Login page' from {project}?" in declined.output
+    asked = runner.invoke(cli.app, ["board", "rm", str(item.id)], input="y\n")
+    assert asked.exit_code == 0 and f"#{item.id} deleted from {project}" in asked.output
+    again = runner.invoke(cli.app, ["board", "rm", "--yes", str(item.id)])
+    assert again.exit_code == 1 and f"no board item #{item.id}" in again.output
+    other = orch.add_board_item(project, "x")
+    assert runner.invoke(cli.app, ["board", "rm", "-y", str(other.id)]).exit_code == 0
+    assert orch.board_items() == []
+
+
+def test_api_deletes_an_item(orch: Orchestrator, project: str) -> None:
+    client = TestClient(app, base_url="http://localhost")
+    item = orch.add_board_item(project, "x", state="ready")
+
+    deleted = client.post(f"/api/board/{item.id}/delete", json={}, headers=ORIGIN)
+    again = client.post(f"/api/board/{item.id}/delete", json={}, headers=ORIGIN)
+    foreign = client.post(f"/api/board/{item.id}/delete", json={}, headers={"origin": "http://x"})
+
+    assert deleted.status_code == 200 and deleted.json()["deleted"]["title"] == "x"
+    assert again.status_code == 400 and "no board item" in again.json()["error"]
+    assert foreign.status_code == 403
+    assert client.get("/api/board/view").json()["items"] == []
 
 
 def test_links_to_an_agent_and_a_branch_are_set_and_cleared(

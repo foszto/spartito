@@ -3,8 +3,9 @@ conversations.
 
 The orchestrator and the leads record one with the MCP tool `request_decision` (table
 `decisions`); it stays `open` until the owner answers it (dashboard, `spartito decide`), or the
-agent withdraws it (`withdraw_decision`), or the agent is removed. The answer reaches the
-agent as an ordinary user message (Orchestrator.send, sender None):
+agent, the top-level orchestrator or the project's lead withdraws it (`withdraw_decision`),
+or the agent is removed. Removing a project deletes its decisions, open and closed. The
+answer reaches the agent as an ordinary user message (Orchestrator.send, sender None):
 
     Decision #12 — <question>
     Answer: <answer>
@@ -152,14 +153,42 @@ def refusal(decision: Decision | None, decision_id: int) -> str:
     return f"decision #{decision_id} is already {decision.state}"
 
 
-def withdraw(store: Store, decision_id: int, agent_id: str) -> Decision:
-    """Withdraw one of the agent's own open decisions. Raises ValueError."""
+def withdraw(
+    store: Store,
+    decision_id: int,
+    agent_id: str,
+    project: str | None = None,
+    everywhere: bool = False,
+) -> Decision:
+    """Withdraw an open decision on behalf of `agent_id` ("" for the interactive session):
+    its own, any in `project` (a lead's agents), or with `everywhere` any at all (the
+    top-level orchestrator). One withdrawn by another agent keeps who did it in its note.
+    Raises ValueError."""
     decision = get(store, decision_id)
-    if decision is None or decision.agent_id != agent_id:
+    allowed = decision is not None and (
+        everywhere
+        or decision.agent_id == agent_id
+        or (project is not None and decision.project == project)
+    )
+    if decision is None or not allowed:
         raise ValueError(f"you have no decision #{decision_id}")
-    if not _close(store, decision_id, WITHDRAWN, agent_id=agent_id):
+    note = None if decision.agent_id == agent_id else f"withdrawn by {withdrawer(agent_id)}"
+    if not _close(store, decision_id, WITHDRAWN, note=note, agent_id=decision.agent_id):
         raise ValueError(refusal(get(store, decision_id), decision_id))
     return get(store, decision_id) or decision
+
+
+def withdrawer(agent_id: str) -> str:
+    """Who withdrew a decision, as its note and the requester's message name it."""
+    return agent_id or "the owner"
+
+
+def withdrawn_message(decision: Decision, agent_id: str) -> str:
+    """What the requesting agent is told when someone else withdrew its decision."""
+    return (
+        f"Decision #{decision.id} — {decision.question}\n"
+        f"Withdrawn by {withdrawer(agent_id)}: no answer will come."
+    )
 
 
 def withdraw_all(store: Store, agent_id: str, note: str) -> None:
@@ -170,6 +199,21 @@ def withdraw_all(store: Store, agent_id: str, note: str) -> None:
             " WHERE agent_id = ? AND state = ?",
             (WITHDRAWN, note, now(), agent_id, OPEN),
         )
+
+
+def delete_project(store: Store, project: str) -> list[int]:
+    """Delete every decision of the project (recorded with its agents' project), open or
+    closed, with their links to board items, in one transaction (the project is being
+    removed); their ids. Matched by project only: an agent id used again elsewhere keeps its
+    decisions there."""
+    with store.transaction() as conn:
+        rows = conn.execute("SELECT id FROM decisions WHERE project = ?", (project,)).fetchall()
+        ids = json.dumps([row["id"] for row in rows])
+        for table, key in (("board_blockers", "decision_id"), ("decisions", "id")):
+            conn.execute(
+                f"DELETE FROM {table} WHERE {key} IN (SELECT value FROM json_each(?))", (ids,)
+            )
+    return sorted(row["id"] for row in rows)
 
 
 def choose(decision: Decision, answer: Any) -> str:

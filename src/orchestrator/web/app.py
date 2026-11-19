@@ -29,7 +29,13 @@ from starlette.staticfiles import StaticFiles
 
 from .. import __version__, config, roles
 from ..models import Agent, RunStatus
-from ..service import ORCHESTRATOR_ID, NeedsConfirmation, Orchestrator, OrchestratorError
+from ..service import (
+    ORCHESTRATOR_ID,
+    ConfirmAgents,
+    NeedsConfirmation,
+    Orchestrator,
+    OrchestratorError,
+)
 from ..settings import ARCHIVE_AFTER, ARCHIVE_AFTER_DEFAULT, COMPACT_AT, COMPACT_AT_DEFAULT, TIERS
 from . import board_api, code_api
 
@@ -282,8 +288,18 @@ def set_project_provider(orch: Orchestrator, request: Request, body: dict) -> di
 
 
 def remove_project(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
-    orch.remove_project(request.path_params["name"])
-    return {"removed": request.path_params["name"]}
+    """Remove the project with its board; archived agents come back as `confirm` (who they
+    are) and `agents` (their ids) instead, until the request is repeated with `confirm`: those
+    ids (refused again if they changed meanwhile)."""
+    confirm = body.get("confirm")
+    if confirm is not None and not (
+        isinstance(confirm, list) and all(isinstance(i, str) for i in confirm)
+    ):
+        raise OrchestratorError("'confirm' must be the list of agent ids to delete")
+    try:
+        return orch.remove_project(request.path_params["name"], confirm)
+    except ConfirmAgents as exc:
+        return {"confirm": str(exc), "agents": exc.agents}
 
 
 def spawn_agent(orch: Orchestrator, request: Request, body: dict) -> dict[str, Any]:
