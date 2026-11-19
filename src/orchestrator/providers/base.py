@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from ..loadout import Loadout
-from ..models import Agent, Event
+from ..models import Agent, Event, Usage  # noqa: F401 (Usage: for the providers)
 
 # Event kind of a result the CLI produced on its own rather than in answer to the prompt:
 # a background command it had started ended (or, on resume, was found stopped) and it took
@@ -191,6 +191,9 @@ class Provider(Protocol):
     #                                   a command that exits non-zero when not logged in; it
     #                                   must be offline and never prompt. None (default): the
     #                                   login is not checked
+    #   logged_in(output: str) -> bool | None
+    #                                   reads the output of `login_args` too: False: not
+    #                                   logged in; None: it cannot tell (login not checked)
     #   reports_cost: bool | None       whether its turns report a cost; None: not said
     #   role_prompt: str | None         "every_turn" or "first_turn": when it gets the role
     #                                   prompt; None: not said

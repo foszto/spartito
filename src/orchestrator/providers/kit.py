@@ -5,6 +5,7 @@ same for every CLI."""
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -117,6 +118,34 @@ def with_role_prefix(ctx: RunContext) -> str:
     if ctx.system_prompt and not ctx.agent.session_id:
         return f"{ctx.system_prompt}\n\n---\n\n{ctx.prompt}"
     return ctx.prompt
+
+
+# How a CLI without a schema option is asked for a structured answer; extract_json reads it.
+SCHEMA_ASK = (
+    "Answer with a single JSON value that matches this JSON schema, in one ```json code"
+    " block, and write nothing after the block:"
+)
+FENCE = re.compile(r"```[ \t]*(?:json)?[ \t]*\n(.*?)```", re.DOTALL | re.IGNORECASE)
+
+
+def schema_in_prompt(prompt: str, schema: dict[str, Any] | None) -> str:
+    """The prompt for a CLI without a schema option: the answer schema asked for after it
+    (none: the prompt as it is). Nothing enforces it; extract_json reads the answer."""
+    if not schema:
+        return prompt
+    return f"{prompt}\n\n---\n\n{SCHEMA_ASK}\n\n```json\n{json.dumps(schema, indent=2)}\n```\n"
+
+
+def extract_json(text: str) -> Any | None:
+    """The JSON of an answer to schema_in_prompt: the whole text when it is JSON, else the
+    last code block that is; None when there is none (the answer stays text)."""
+    blocks = [match.group(1) for match in FENCE.finditer(text or "")]
+    for candidate in [text or "", *reversed(blocks)]:
+        try:
+            return json.loads(candidate)
+        except ValueError:
+            continue
+    return None
 
 
 # How a commit's Co-Authored-By trailer names Spartito; `{project}` is the project's name.

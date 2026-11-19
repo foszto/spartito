@@ -236,6 +236,33 @@ def test_the_role_prefix_opens_only_a_new_session(tmp_path: Path) -> None:
     assert kit.with_role_prefix(replace(fresh, system_prompt="")) == "do it"
 
 
+def test_the_schema_is_asked_for_after_the_prompt() -> None:
+    schema = {"type": "object", "required": ["ok"]}
+
+    asked = kit.schema_in_prompt("do it", schema)
+
+    assert asked.startswith("do it\n\n---\n\n" + kit.SCHEMA_ASK)
+    assert asked.endswith("```json\n" + json.dumps(schema, indent=2) + "\n```\n")
+    assert kit.schema_in_prompt("do it", None) == "do it"
+
+
+@pytest.mark.parametrize(
+    ("text", "found"),
+    [
+        ('{"ok": true}', {"ok": True}),
+        ('Here it is:\n```json\n{"ok": true}\n```', {"ok": True}),
+        ("```\n[1, 2]\n```", [1, 2]),
+        ('```json\n{"ok": 1}\n```\nthen\n```json\n{"ok": 2}\n```', {"ok": 2}),
+        ('```json\n{"ok": 1}\n```\n```json\nnot json\n```', {"ok": 1}),
+        ("no JSON here", None),
+        ('```json\n{"ok": \n```', None),
+        ("", None),
+    ],
+)
+def test_the_answers_json_is_taken_out_of_a_code_block(text: str, found: object) -> None:
+    assert kit.extract_json(text) == found
+
+
 # -- the providers' attributes ------------------------------------------------------------------
 
 
