@@ -94,9 +94,25 @@ chosen is in the
 - Providers registered with `ORCH_PROVIDERS` can declare more optional attributes:
   `min_version` (an older CLI is listed as `not_installed`), `reports_context`,
   `cache_effect`, `config_env`, `carries_mcp_servers` and `credit` (`docs/providers.md`).
+- Board items can be deleted for good, with their history and decision links: the MCP tool
+  `delete_board_item` (a lead: its own project only), `spartito board rm` and **Delete** in an
+  item's detail on the dashboard.
+- The top-level orchestrator can remove a project with the MCP tool `remove_project`, after
+  you agree to delete the archived agents its first reply names.
 
 ### Changed
 
+- `spartito project rm` and the dashboard's **Remove** no longer require a project without
+  agents. They remove the project with its settings, budget, board items and decisions, and
+  delete its archived agents (worktrees too, branches kept) after a confirmation that names
+  them (`--yes` skips it). Agents that are not archived, and archived ones with unmerged or
+  uncommitted work, still stop the removal, and the refusal names the commands that clear
+  them. A removal that stops part way says what was deleted; running it again completes it.
+  What the deleted agents had spent stays in the cost history under the project's name.
+- `withdraw_decision` is no longer limited to an agent's own decisions: the top-level
+  orchestrator and `spartito chat` may withdraw any open decision, and a lead those of the
+  agents in its project. The decision notes who withdrew it, and its agent gets a message
+  that no answer will come, unless it is archived.
 - **Incompatible:** `spartito mcp` without a subcommand now lists the MCP servers instead of
   running Spartito's own `orch` MCP server on stdio; `spartito mcp serve` runs it. Spartito's
   agents and `spartito chat` never started it through the command and are not affected. If
@@ -134,6 +150,10 @@ chosen is in the
 
 ### Fixed
 
+- A refused MCP tool call (an unknown agent, someone else's decision, a closed one) tells the
+  agent why, instead of a bare `Error executing tool <name>`; an unexpected error keeps its
+  type and message. `spartito chat` is told to ask you directly instead of calling
+  `request_decision`, and that tool's refusal there says who records decisions.
 - A turn whose CLI is missing fails with a clear message that says where it was looked for,
   and the CLIs are also found in the usual install directories when a background service or
   launcher has a shorter `PATH`.

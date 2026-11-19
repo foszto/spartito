@@ -204,7 +204,8 @@ def test_the_orchestrator_session_gets_the_rule(
 
     role = roles.load("orchestrator").prompt
     assert role.startswith("Steer it my way.") == custom
-    assert prompt == f"{role}\n\n{roles.attribution(credit('claude'), bot_coauthor=True)}"
+    rule = roles.attribution(credit("claude"), bot_coauthor=True)
+    assert prompt == f"{role}\n\n{cli.CHAT_NOTE}\n\n{rule}"  # the session's note before it
     assert CLAUDE_LINE in lines(prompt)
     assert CLAUDE_TRAILER in lines(prompt)
     assert OVERRIDE in lines(prompt)
@@ -220,7 +221,7 @@ def test_the_orchestrator_session_without_the_bot_trailer(
     prompt = chat_prompt(monkeypatch)
 
     role = roles.load("orchestrator").prompt
-    assert prompt == f"{role}\n\n{old_section(CLAUDE_LINE, CLAUDE_TRAILER)}"
+    assert prompt == f"{role}\n\n{cli.CHAT_NOTE}\n\n{old_section(CLAUDE_LINE, CLAUDE_TRAILER)}"
 
 
 # -- the setting -------------------------------------------------------------

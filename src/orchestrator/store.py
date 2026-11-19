@@ -292,7 +292,8 @@ CREATE TABLE IF NOT EXISTS board_sources (
     run_id INTEGER
 );
 -- Decisions linked to the board items they block (board.py). A table of its own, unknown to
--- older code; no foreign keys (items and decisions are never deleted).
+-- older code; no foreign keys (board.delete deletes an item's links with it, and
+-- decisions.delete_project those of a removed project's decisions).
 CREATE TABLE IF NOT EXISTS board_blockers (
     item_id INTEGER NOT NULL,
     decision_id INTEGER NOT NULL,
@@ -815,8 +816,10 @@ class Store:
         return [from_row(Project, row) for row in rows]
 
     def delete_project(self, name: str) -> None:
+        """The registration with its settings and its budget."""
         with self._conn() as conn:
             conn.execute("DELETE FROM settings WHERE scope = ?", (name,))
+            conn.execute("DELETE FROM budgets WHERE scope = ?", (name,))
             conn.execute("DELETE FROM projects WHERE name = ?", (name,))
 
     # -- settings ---------------------------------------------------------
