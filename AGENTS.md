@@ -1,7 +1,7 @@
 # Spartito: notes for coding agents
 
-Spartito runs Claude Code and Codex agents headless and in parallel, each in its own git
-worktree, steered through one orchestrator agent from a web dashboard or the command line.
+Spartito runs Claude Code, Codex and OpenCode agents headless and in parallel, each in its own
+git worktree, steered through one orchestrator agent from a web dashboard or the command line.
 The command is `spartito`, and the Python package is `orchestrator` (Python 3.14, uv).
 
 ## Where things are
@@ -9,7 +9,7 @@ The command is `spartito`, and the Python package is `orchestrator` (Python 3.14
 - `src/orchestrator/`: `cli.py` (the command), `mcp_server.py`, `web/` (dashboard), `gui/`
   (`spartito app`, menu bar), `service.py` (the `Orchestrator` facade), `core/` (operations
   behind it), `runner.py` (one turn per process), `store.py` (SQLite schema and queries),
-  `providers/` (Claude, Codex), `roles/` (packaged role prompts).
+  `providers/` (Claude, Codex, opencode), `roles/` (packaged role prompts).
 - Layers: interfaces > runner > core > domain > infra. The interfaces use only the facade
   and never the store. Details: `docs/architecture.md`.
 - `tests/`: one `test_<area>.py` per area; `tests/fakeprovider.py` and `tests/fakecli/` stand

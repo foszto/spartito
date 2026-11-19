@@ -232,6 +232,8 @@ context window.
 - **Codex:** the last `token_count` event in the session's rollout file
   (`$CODEX_HOME/sessions/…/rollout-…-<thread>.jsonl`), read only. With a missing file or an
   unknown format there is no figure.
+- **OpenCode:** the prompt size of the turn's last model step (input + cache read + cache
+  write), without a window: the gauge shows the size alone, such as `120k ctx`.
 
 `spartito ps`, `spartito status`, `list_agents`, `get_agent` (`context` field) and the dashboard show
 it, for example `780k/1M 78%`; above the automatic compaction threshold (or from 80% of the
@@ -269,6 +271,10 @@ default summary; Codex takes no instructions.
 Claude Code also compacts on its own, even mid-turn, when the conversation nears the window
 (window − 33k tokens); the turn's `info` event and usage fields record it.
 
+An OpenCode agent cannot be compacted: the **Compact** button and `spartito compact` refuse
+it. opencode compacts on its own without reporting it, so its context size may drop without a
+line in the log.
+
 ### Automatic compaction
 
 When a turn ends successfully and the context is above `compact_at_tokens` (default 256000),
@@ -279,7 +285,9 @@ counts as working: the parent's notification and `wait_for_agents` wait for it a
 agent's real answer.
 
 No compaction is queued after a compaction, after a failed or stopped turn, while one is
-already queued or running, or when the agent cannot be compacted. The log's `info` event
+already queued or running, or when the agent cannot be compacted. An agent whose provider
+cannot compact at all (OpenCode) has no threshold: `context` has no `compact_at` or
+`compact_paused`, and `spartito status` and the dashboard show none. The log's `info` event
 records it (`automatic compaction: context 301k is above the threshold of 256k`), and
 `last_compaction` has `automatic: true`.
 

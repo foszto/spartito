@@ -161,15 +161,16 @@ logs.
 
 #### More harness integrations
 
-**What it means.** Agents could run on more coding-agent CLIs than Claude Code and Codex,
-chosen per project or per agent as today, including locally hosted models where a harness
-supports them.
+**What it means.** Agents could run on more coding-agent CLIs than Claude Code, Codex and
+OpenCode, chosen per project or per agent as today, including locally hosted models where a
+harness supports them.
 
 **Today.** The plug-in interface exists. Providers implement a small protocol
 (`providers/base.py`) and are registered in the package or with `ORCH_PROVIDERS`
-([providers](docs/configuration.md#providers-and-permissions)). Codex shows what an
-integration with fewer features looks like: no cost, a context size only from its session
-files, and compaction as a separate turn
+([providers](docs/configuration.md#providers-and-permissions)). Codex and OpenCode show
+what an integration with fewer features looks like: Codex with no cost, a context size only
+from its session files and compaction as a separate turn, OpenCode with no compaction and an
+answer schema asked for in the prompt
 ([limitations](docs/architecture.md#platform-support-and-limitations)).
 
 **Open questions.** Which harnesses come first. What a provider must support (structured
@@ -185,7 +186,7 @@ through adapters. That would mean less code per provider, no start-up cost per t
 events as the agent works, and an agent's permission requests answered from the dashboard.
 
 **Today.** Each provider runs one CLI process per turn
-([processes](docs/architecture.md#processes)), and opencode is being designed the same way
+([processes](docs/architecture.md#processes)), and opencode runs the same way
 (see [more harness integrations](#more-harness-integrations)). A provider implements the
 protocol in `providers/base.py` ([other providers](docs/providers.md#other-providers)).
 
@@ -193,7 +194,11 @@ protocol in `providers/base.py` ([other providers](docs/providers.md#other-provi
 and recovering after a crash. The environment, the capabilities and the MCP configuration are
 set per turn today ([what a turn gets](docs/mcp.md#what-the-agents-turn-gets)) and cannot
 change inside a running process. How mature are the adapters? Would it replace the per-turn
-providers, or sit beside them?
+providers, or sit beside them? Google Antigravity (`agy acp`) is a candidate only through
+this provider, and only subject to its terms of use: whether third-party use is allowed on
+consumer plans is the open point ([research](docs/providers-design.md#6-google-antigravity-and-gemini-cli-research-not-built)).
+Before any work with `agy`, also through this provider, a written answer from Google is
+needed for this exact case: a client that is not an editor, with agents running unattended.
 
 #### GitHub automations
 

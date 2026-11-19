@@ -234,6 +234,33 @@ def test_a_declared_login_check_reports_not_logged_in(bare_path: Path) -> None:
     assert found.reason == "found on PATH; not logged in: Not logged in"
 
 
+@pytest.mark.parametrize(
+    ("said", "status", "reason"),
+    [
+        (True, "available", "found on PATH; logged in"),
+        (False, "not_logged_in", "found on PATH; not logged in: `mycli auth list` lists none"),
+        ("none listed here", "unknown", "found on PATH; none listed here"),
+        (None, "available", "found on PATH; login not checked"),
+    ],
+)
+def test_the_login_checks_output_decides_the_status(
+    bare_path: Path, said: bool | str | None, status: str, reason: str
+) -> None:
+    """A text: no login listed, but one the CLI does not list may work: usable, `unknown`."""
+    script(bare_path, "mycli", "echo 9.9.9")
+    outputs: list[str] = []
+
+    def logged_in(output: str) -> bool | str | None:
+        outputs.append(output)
+        return said
+
+    found = locate.probe("mycli", login_args=("auth", "list"), logged_in=logged_in)
+
+    assert (found.status, found.reason) == (status, reason)
+    assert outputs == ["9.9.9\n"]
+    assert (found.status in availability.USABLE) == (status != "not_logged_in")
+
+
 class OldestSupported(FakeProvider):
     """A provider whose CLI is `mycli` and must be 2.2.3 or later."""
 
@@ -349,12 +376,15 @@ def test_the_context_size_flag_is_the_providers_own() -> None:
 
 
 def test_the_builtin_providers_describe_themselves() -> None:
-    assert [cls.name for cls in providers.BUILTIN] == ["claude", "codex"]
-    assert list(providers.PROVIDERS)[:2] == ["claude", "codex"]
+    assert [cls.name for cls in providers.BUILTIN] == ["claude", "codex", "opencode"]
+    assert list(providers.PROVIDERS)[:3] == ["claude", "codex", "opencode"]
     by_name = {cls.name: cls for cls in providers.BUILTIN}
     assert by_name["claude"].label == "Claude Code" and by_name["codex"].label == "Codex"
-    assert by_name["claude"].executable == "claude" and by_name["codex"].executable == "codex"
+    assert by_name["opencode"].label == "OpenCode"
+    for name in ("claude", "codex", "opencode"):
+        assert by_name[name].executable == name
     assert by_name["claude"].login_args is None and by_name["codex"].login_args is None
+    assert by_name["opencode"].login_args == ("auth", "list", "--standalone", "--format", "json")
     assert by_name["claude"].limits == () and len(by_name["codex"].limits) == 4
 
 
@@ -471,13 +501,17 @@ def test_without_waiting_nothing_blocks_and_one_background_check_fills_in(
 def test_models_are_asked_only_of_usable_providers(
     orch: Orchestrator, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    counting_probe(monkeypatch, {"claude": "not_installed", "codex": "not_installed"})
+    counting_probe(
+        monkeypatch,
+        {"claude": "not_installed", "codex": "not_installed", "opencode": "not_installed"},
+    )
 
     def no_list() -> str:
         raise AssertionError("asked a provider that is not installed")
 
     monkeypatch.setattr(codex, "request_model_list", no_list)
     monkeypatch.setattr(providers.claude, "request_model_list", no_list)
+    monkeypatch.setattr(providers.opencode, "request_model_list", no_list)
 
     listed = {entry["name"]: entry for entry in orch.provider_list()}
 
@@ -608,7 +642,7 @@ def test_a_child_of_the_suite_runs_only_the_fake_clis(
 ) -> None:
     """A dashboard a test starts is a process of its own, without this one's patches: its
     check at start and the model lists it asks for reach the suite's fakes, never a real
-    `claude` or `codex` (conftest.fake_provider_clis)."""
+    `claude`, `codex` or `opencode` (conftest.fake_provider_clis)."""
     started, answered = tmp_path / "started.log", tmp_path / "answered.log"
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -636,7 +670,13 @@ def test_a_child_of_the_suite_runs_only_the_fake_clis(
         proc.communicate(timeout=30)
     by_name = {entry["name"]: entry for entry in entries}
     assert by_name["claude"]["version"] == by_name["codex"]["version"] == "0.0.0"
-    clis = [call for call in calls_of(started) if Path(call[0]).name in ("claude", "codex")]
+    # The fake's version is older than opencode's min_version: no login check, no models.
+    assert (by_name["opencode"]["version"], by_name["opencode"]["status"]) == (
+        "0.0.0",
+        "not_installed",
+    )
+    names = ("claude", "codex", "opencode")
+    clis = [call for call in calls_of(started) if Path(call[0]).name in names]
     fakes = calls_of(answered)
     assert {Path(call[0]).parent for call in fakes} == {fake_provider_clis}
     assert sorted([Path(c[0]).name, *c[1:]] for c in clis) == sorted(
@@ -645,6 +685,7 @@ def test_a_child_of_the_suite_runs_only_the_fake_clis(
     assert {(Path(c[0]).name, c[1]) for c in fakes} >= {
         ("claude", "--version"),
         ("codex", "--version"),
+        ("opencode", "--version"),
         ("claude", "-p"),  # the model lists: asked, and refused by the fakes
         ("codex", "debug"),
     }

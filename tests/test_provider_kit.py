@@ -236,10 +236,37 @@ def test_the_role_prefix_opens_only_a_new_session(tmp_path: Path) -> None:
     assert kit.with_role_prefix(replace(fresh, system_prompt="")) == "do it"
 
 
+def test_the_schema_is_asked_for_after_the_prompt() -> None:
+    schema = {"type": "object", "required": ["ok"]}
+
+    asked = kit.schema_in_prompt("do it", schema)
+
+    assert asked.startswith("do it\n\n---\n\n" + kit.SCHEMA_ASK)
+    assert asked.endswith("```json\n" + json.dumps(schema, indent=2) + "\n```\n")
+    assert kit.schema_in_prompt("do it", None) == "do it"
+
+
+@pytest.mark.parametrize(
+    ("text", "found"),
+    [
+        ('{"ok": true}', {"ok": True}),
+        ('Here it is:\n```json\n{"ok": true}\n```', {"ok": True}),
+        ("```\n[1, 2]\n```", [1, 2]),
+        ('```json\n{"ok": 1}\n```\nthen\n```json\n{"ok": 2}\n```', {"ok": 2}),
+        ('```json\n{"ok": 1}\n```\n```json\nnot json\n```', {"ok": 1}),
+        ("no JSON here", None),
+        ('```json\n{"ok": \n```', None),
+        ("", None),
+    ],
+)
+def test_the_answers_json_is_taken_out_of_a_code_block(text: str, found: object) -> None:
+    assert kit.extract_json(text) == found
+
+
 # -- the providers' attributes ------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("name", ["claude", "codex"])
+@pytest.mark.parametrize("name", ["claude", "codex", "opencode"])
 def test_the_provider_attributes_say_what_the_tables_say(name: str) -> None:
     """What the consumers read instead of the tables keyed by name; the attribution texts
     both produce are pinned in test_attribution."""
@@ -249,7 +276,7 @@ def test_the_provider_attributes_say_what_the_tables_say(name: str) -> None:
     assert set(provider.config_env) <= set(runner.MCP_PASSED_ENV) & set(autostart.env_names())
     assert provider.reports_context is isinstance(provider, providers.BUILTIN)
     assert provider.carries_mcp_servers is (name == "claude")  # capabilities.mcp_capability
-    assert not hasattr(provider, "min_version")
+    assert getattr(provider, "min_version", None) == {"opencode": (2, 2, 3)}.get(name)
 
 
 # -- a plugin that knows nothing of the kit -----------------------------------------------------

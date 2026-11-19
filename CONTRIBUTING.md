@@ -60,9 +60,9 @@ GitHub Actions runs them on every push to `master` and every pull request
 linters, the scripts and the link and command-name tests once on Linux.
 
 The suite runs on a fake provider (`tests/fakeprovider.py`) with real git repositories and
-worktrees in temporary directories. Tests of a provider's own command line run Claude's or
-Codex's provider with a fake CLI in its place (`tests/fakecli/`: one engine, one dialect per
-CLI). It never calls `claude` or `codex` and needs no network.
+worktrees in temporary directories. Tests of a provider's own command line run Claude's,
+Codex's or opencode's provider with a fake CLI in its place (`tests/fakecli/`: one engine, one
+dialect per CLI). It never calls `claude`, `codex` or `opencode` and needs no network.
 `tests/conftest.py` sets a temporary `ORCH_HOME` for every test. The suite also replaces an
 inherited `ORCH_HOME` with a temporary one for the whole run and fails a test that reaches a
 real home (`tests/home_guard.py`), so tests must not undo the suite's environment patches.

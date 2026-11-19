@@ -52,9 +52,9 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
     rich_markup_mode=MARKUP,
-    help=f"{config.PROJECT_NAME}: run Claude Code and Codex agents in parallel in git worktrees,"
-    f" steered through one orchestrator agent. Start with `{CLI} project add`, then `{CLI} chat`"
-    f" or `{CLI} web`.",
+    help=f"{config.PROJECT_NAME}: run {providers.builtin_labels()} agents in parallel in git"
+    " worktrees, steered through one orchestrator agent. Start with"
+    f" `{CLI} project add`, then `{CLI} chat` or `{CLI} web`.",
 )
 
 
@@ -1166,7 +1166,10 @@ def spawn(
         list[str] | None, typer.Option(help="Agent or run id to wait for; repeatable.")
     ] = None,
     permission: Annotated[
-        str | None, typer.Option(help="Claude permission mode / Codex sandbox mode.")
+        str | None,
+        typer.Option(
+            help="Claude permission mode / Codex sandbox mode / opencode: default or auto."
+        ),
     ] = None,
     granted: Annotated[
         str | None,
@@ -1641,7 +1644,8 @@ def attach(agent_id: str) -> None:
     if o.active_runs(agent.id):
         raise fail(f"the agent is busy; `{CLI} stop` it first or wait")
     argv = providers.get(agent.provider).attach_command(agent)
-    env = {**os.environ, "PATH": locate.search_path()}
+    # PWD too: a CLI may take its directory from it rather than the cwd (opencode does).
+    env = {**os.environ, "PATH": locate.search_path(), "PWD": agent.cwd}
     if not shutil.which(argv[0], path=env["PATH"]):
         raise fail(
             f"the `{argv[0]}` CLI is not available: {locate.not_found(argv[0])};"
@@ -1660,8 +1664,8 @@ def list_providers(
     """Check which coding-agent CLIs (providers) this machine can run, now.
 
     Each one is looked for on PATH and in the usual install locations, and asked its
-    version (with `--json` also its models, as the dashboard lists them): no agent turn is
-    run and no login is checked. `*` marks the provider a new project gets: the first
+    version (with `--json` also its models, as the dashboard lists them), and the login of
+    a provider with an offline check (opencode): no agent turn is run. `*` marks the provider a new project gets: the first
     available one. CAPABILITIES: the ones it carries (`{cli} capabilities`). When one is not installed, a line below the table says what to do after
     installing it (not with `--json`)."""
     found = orch().provider_list(refresh=True, models=as_json)

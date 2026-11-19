@@ -8,9 +8,10 @@ import os
 from .base import Invocation, McpServer, Provider, RunContext
 from .claude import ClaudeProvider
 from .codex import CodexProvider
+from .opencode import OpencodeProvider
 
 # The supported harnesses, in the order "the first available one" goes by.
-BUILTIN = (ClaudeProvider, CodexProvider)
+BUILTIN = (ClaudeProvider, CodexProvider, OpencodeProvider)
 PROVIDERS: dict[str, Provider] = {cls.name: cls() for cls in BUILTIN}
 
 
@@ -23,6 +24,12 @@ def _load_plugins() -> None:
 
 
 _load_plugins()
+
+
+def builtin_labels() -> str:
+    """The supported harnesses as people read them: `Claude Code, Codex and OpenCode`."""
+    labels = [getattr(cls, "label", None) or cls.name for cls in BUILTIN]
+    return " and ".join([", ".join(labels[:-1]), labels[-1]] if len(labels) > 1 else labels)
 
 
 def get(name: str) -> Provider:

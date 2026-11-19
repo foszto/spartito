@@ -17,8 +17,8 @@ overrides. Every setting can also be changed in the dashboard's **Models and eff
 
 ### Tiers
 
-Model and effort are configured per tier and per provider (`claude`, `codex`), because model
-names and effort levels differ between providers:
+Model and effort are configured per tier and per provider (`claude`, `codex`, `opencode`),
+because model names and effort levels differ between providers:
 
 | tier | agents |
 |---|---|
@@ -31,12 +31,19 @@ spartito config set orchestrator --model opus --effort high
 spartito config set lead --model sonnet --effort medium
 spartito config set worker --model haiku --effort low
 spartito config set worker --provider codex --model gpt-6-luna
+spartito config set worker --provider opencode --model openrouter/openai/gpt-4.1-mini --effort high
 spartito config set worker --model sonnet -p my-app     # only in my-app
 spartito config set worker --model ""                   # clear the global worker model
 ```
 
 Effort levels: Claude `low`, `medium`, `high`, `xhigh`, `max`; Codex `low`, `medium`, `high`,
-`xhigh`.
+`xhigh`; OpenCode `low`, `medium`, `high`, `max`.
+
+An OpenCode model is `provider/model`, as `opencode models` lists it. The effort becomes the
+model's variant: model `openrouter/openai/gpt-4.1-mini` with effort `high` runs as
+`openrouter/openai/gpt-4.1-mini#high`. A model that names a variant of its own keeps it; an
+effort without a model is ignored, with a line in the agent's log; and a model without that
+variant fails the turn with opencode's error.
 
 ### Precedence
 
@@ -66,8 +73,8 @@ spartito model orchestrator --effort high
 
 A running turn keeps its model. In an existing session, a model change starts a new prompt
 cache, so the next turn reads the whole conversation at full price; an effort change keeps the
-cache with Codex and may start a new one with Claude. Codex switches models in a resumed
-session too (`codex exec resume -m`).
+cache with Codex and may start a new one with Claude or OpenCode. Codex switches models in a
+resumed session too (`codex exec resume -m`).
 
 A model name is any single word of at most 200 characters without control characters and not
 starting with `-`.
@@ -248,12 +255,13 @@ shows them.
 
 ## Loadout
 
-Without restrictions every agent would inherit your whole Claude Code or Codex configuration
-(claude.ai connectors, plugins, skills, MCP servers), which multiplies the size of every
-request. Each role therefore declares what its CLI loads besides the role prompt. By default,
-agents load only the `orch` MCP server (leads), the project's own `CLAUDE.md` and `.claude/`
-settings, and a fixed set of built-in tools; skills and slash commands are off and Codex
-ignores `~/.codex/config.toml`. If you rely on `~/.claude/settings.json` or on Codex's
+Without restrictions every agent would inherit your whole Claude Code, Codex or OpenCode
+configuration (claude.ai connectors, plugins, skills, MCP servers), which multiplies the size
+of every request. Each role therefore declares what its CLI loads besides the role prompt. By
+default, agents load only the `orch` MCP server (leads), the project's own `CLAUDE.md` and
+`.claude/` settings, and a fixed set of built-in tools; skills and slash commands are off,
+Codex ignores `~/.codex/config.toml`, and OpenCode leaves out your global opencode config
+([OpenCode](#opencode)). If you rely on `~/.claude/settings.json` or on Codex's
 `model_provider` or profiles, see
 [Authentication and model settings](#overrides-loadouttoml) below.
 
@@ -269,7 +277,8 @@ ignores `~/.codex/config.toml`. If you rely on `~/.claude/settings.json` or on C
 | `memory` | `true` = also `Write` and `Edit`, but only into the session's own memory directory (`~/.claude/projects/<project>/memory/`) | `--settings` (a PreToolUse hook) |
 | `tool_search` | `auto`, `always` or `never`: when Claude Code loads MCP tools on demand ([Tool search](#tool-search)) | `ToolSearch` in `--tools` |
 
-Codex uses only `codex_user_config`; the other keys apply to Claude.
+Codex uses only `codex_user_config`; OpenCode uses `tools`, `mcp`, `setting_sources` and
+`slash_commands` ([OpenCode](#opencode)); the other keys apply to Claude.
 
 ### Defaults
 
@@ -291,6 +300,30 @@ its `tools`.
 A custom role that sets none of the keys gets `tools = default` (including `Skill`),
 `mcp = strict`, `setting_sources = project,local`, `slash_commands = true`,
 `codex_user_config = false`, `tool_search = auto`. An empty value (`tools:`) is an error.
+
+### OpenCode
+
+An OpenCode agent's loadout becomes permission rules and policies in the turn's own opencode
+configuration, which a project's `opencode.json` cannot lift:
+
+| key | on OpenCode |
+|---|---|
+| `tools` | each listed tool allows opencode's counterpart: `Bash` its shell, `Read` read, `Edit`, `Write`, `MultiEdit` and `NotebookEdit` edit, `Glob`, `Grep`, `WebFetch`, `WebSearch`, `Task` or `Agent` its sub-agents, `Skill` skills; the others are denied. `default` denies nothing extra, `none` every built-in tool. A tool without a counterpart (such as `ToolSearch`) is ignored, with a line in the log |
+| `mcp` | `strict`: only the `orch` MCP server (leads); every other server, yours or the project's, is refused. `inherit`: also the MCP servers of the opencode config that applies (yours with `user`, the project's with `project`) |
+| `setting_sources` | without `project`: the project's `opencode.json` and its `AGENTS.md` are left out (unlike Claude Code, where `CLAUDE.md` stays). Without `user`: your global opencode config is left out for the turn: its `opencode.json`, plugins, agents, commands and global `AGENTS.md`, and `~/.claude/CLAUDE.md`, which opencode reads in place of a missing global `AGENTS.md`. A provider whose key is set only in the global `opencode.json` is then not available to agents; a login made with `opencode auth login` and a provider's environment variable still are. The agent's commands get your own `XDG_CONFIG_HOME`, so `git` and `gh` keep their configuration, and run in bash, not your shell |
+| `slash_commands` | `false`: skills are denied |
+| `memory`, `tool_search`, `codex_user_config` | no effect |
+
+Every OpenCode turn also denies opencode's `question` tool (nobody answers), its tools that
+move sessions or manage worktrees (Spartito owns both), and access outside the worktree but
+for the shared `.git`. With the packaged roles' `setting_sources = project,local`, your global
+opencode config does not apply; to bring it back:
+
+```toml
+# ~/.orchestrator/loadout.toml
+[default]
+setting_sources = "user,project,local"   # OpenCode: the global opencode config applies again
+```
 
 ### Overrides: `loadout.toml`
 
@@ -481,7 +514,7 @@ A new agent's provider is, first hit wins: `--provider` (or `provider` in `spawn
 (`spartito project add --provider`, default: the first available provider; changed with
 `spartito project provider`). An explicit provider must be available here
 (`spartito providers`). When the role's or the project's is not, the agent runs on the first available one
-in the order `claude`, `codex`, then the providers of `ORCH_PROVIDERS`; the reply and the
+in the order `claude`, `codex`, `opencode`, then the providers of `ORCH_PROVIDERS`; the reply and the
 agent's log say so. The orchestrator agent uses the provider chosen before its first message
 (`spartito model orchestrator --provider`), else the `provider` of the `orchestrator` role (an
 override in `~/.orchestrator/roles/orchestrator.md`), else the first available one; it is fixed
@@ -492,7 +525,10 @@ over between providers. `spartito chat` always runs Claude Code. All of it, with
 availability check: [providers.md](providers.md).
 
 Claude agents run with `--permission-mode auto`, Codex agents in the `workspace-write`
-sandbox. `spartito spawn --permission <mode>` sets another mode for one agent.
+sandbox. OpenCode agents run in its `default` mode: a request that would ask for approval is
+rejected and the turn goes on; `auto` (`opencode run --auto`) approves such requests instead.
+OpenCode has no sandbox: only its own tools are held back, by the loadout's rules.
+`spartito spawn --permission <mode>` sets another mode for one agent.
 
 A new agent CLI can be added by implementing the `Provider` protocol
 (`src/orchestrator/providers/base.py`) and registering it in `providers/__init__.py`, or from
@@ -515,11 +551,13 @@ no declarative pipeline layer.
 | `ORCH_AGENT_ID` | set by the runner for every command of an agent's turn: its own agent id. A `spartito` command run there acts as that agent ([capabilities.md](capabilities.md#giving-capabilities-from-agents)) |
 | `ORCH_TURN_HOME` | set by the runner for an agent's turn: the home of the instance it belongs to. A process with it that works on another home shows no desktop notification |
 | `CODEX_HOME` | read for Codex rollout files and `config.toml` (Codex's own variable) |
+| `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `OPENCODE_DB` | where opencode finds its config, its data and its database (opencode's own variables); passed on to turns and to the `orch` MCP server of leads |
 | `PYWEBVIEW_GUI` | the pywebview backend of `spartito app` on Linux (pywebview's own variable; default Qt) |
 
 The background service (`spartito service install`) keeps only `PATH`, `LANG`, `LC_*`, `ORCH_*`
 (not `ORCH_AGENT_ID`, `ORCH_TURN`, `ORCH_TURN_HOME` or `ORCH_DESKTOP_NOTIFICATIONS`),
-`CLAUDE_CONFIG_DIR` and `CODEX_HOME` from the shell it is installed from; run the install
+`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `OPENCODE_DB` from the
+shell it is installed from; run the install
 again after changing them. See [desktop.md](desktop.md#background-service).
 
 ## Files
@@ -541,6 +579,7 @@ The main files under `~/.orchestrator/` (or `$ORCH_HOME`):
 | `run/page-notifier` | touched by a dashboard page that shows notifications |
 | `run/app-notifier`, `run/app-notifier.json` | the open native window's pid, start time and notification state |
 | `run/app-notify.json` | the launcher's app that may post notifications |
+| `run/private/` | readable by you only (0700): a turn's MCP configuration while it runs; OpenCode's files per agent (`agents/<agent-id>/`: the role prompt, the moved config home, the shell wrapper), removed with the agent; the directory `opencode models` runs in |
 | `run/notices/` | notices the busy database did not take yet (recorded by the next helper or poll) |
 | `logs/notices.log` | one line per step of each notification (see `spartito notices`) |
 | `run/app-profile/` | the browser profile of `spartito app` in Chromium app mode |

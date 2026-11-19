@@ -83,11 +83,12 @@ for a temporary home therefore never replaces the one for your real home. Every
 **What the service runs.** `<python> -m orchestrator web --host H --port P`, with the Python
 interpreter of the install and `$ORCH_HOME` as working directory. Its environment is fixed at
 install time and holds only these variables of the shell you install from: `PATH`, `LANG`,
-`LC_*`, `ORCH_*` (with `ORCH_HOME` set to the resolved home), `CLAUDE_CONFIG_DIR` and
-`CODEX_HOME`. Consequences:
+`LC_*`, `ORCH_*` (with `ORCH_HOME` set to the resolved home), `CLAUDE_CONFIG_DIR`,
+`CODEX_HOME`, and opencode's `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `OPENCODE_DB`.
+Consequences:
 
 - Run `spartito service install` again after changing `PATH` (for example a new location of
-  `claude` or `codex`), a setting in these variables, or after moving or reinstalling the
+  `claude`, `codex` or `opencode`), a setting in these variables, or after moving or reinstalling the
   Python environment.
 - A provider CLI is looked for on that `PATH`, then in the usual install directories
   (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin` and a few more:

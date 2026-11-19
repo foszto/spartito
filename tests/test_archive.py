@@ -319,6 +319,21 @@ def test_a_deletion_that_fails_halfway_keeps_the_agent_and_records_nothing(
     assert spent_rows(orch) == [] and orch.total_spent() == before
 
 
+def test_a_deleted_agent_takes_its_providers_files_along(orch: Orchestrator, project: str) -> None:
+    gone = orch.create_agent(project, name="gone", worktree=False)
+    kept = orch.create_agent(project, name="kept", worktree=False)
+    for agent in (gone, kept):
+        own = config.agent_files_dir(agent.id)
+        own.mkdir(parents=True)
+        (own / "instructions.md").write_text("role")
+
+    orch.archive(gone.id)
+    orch.remove(gone.id)
+
+    assert not config.agent_files_dir(gone.id).exists()
+    assert (config.agent_files_dir(kept.id) / "instructions.md").is_file()
+
+
 def test_mcp_has_archive_agent_instead_of_remove_agent() -> None:
     assert not hasattr(mcp_server, "remove_agent")
     doc = mcp_server.archive_agent.__doc__ or ""

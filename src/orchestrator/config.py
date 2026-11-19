@@ -72,8 +72,9 @@ PRIVATE_DIR, PRIVATE_DIR_MODE = "private", 0o700
 
 def private_dir() -> Path:
     """Files only the turn's CLI may read, about one live turn: the MCP configuration of a
-    turn with MCP servers (mcp_config_file). Mode PRIVATE_DIR_MODE (made so if it was not);
-    not in the logs, a worktree or a project."""
+    turn with MCP servers (mcp_config_file); and a provider's own files from turn to turn
+    (agent_files_dir, private_work_dir). Mode PRIVATE_DIR_MODE (made so if it was not); not
+    in the logs, a worktree or a project."""
     path = runtime_dir() / PRIVATE_DIR
     path.mkdir(mode=PRIVATE_DIR_MODE, exist_ok=True)
     if path.stat().st_mode & 0o777 != PRIVATE_DIR_MODE:
@@ -86,6 +87,27 @@ def mcp_config_file(run_id: int) -> Path:
     (the runner writes it as the turn starts and removes it when the turn ends). The path
     only: nothing is created here."""
     return runtime_dir() / PRIVATE_DIR / f"mcp-{run_id}.json"
+
+
+def private_work_dir(name: str) -> Path:
+    """A directory of private_dir's (mode PRIVATE_DIR_MODE, made so if it was not) for a
+    command that must not run where someone else can write: what a CLI reads from its
+    working directory and the directories above it then comes from the user alone."""
+    path = private_dir() / name
+    path.mkdir(mode=PRIVATE_DIR_MODE, exist_ok=True)
+    if path.stat().st_mode & 0o777 != PRIVATE_DIR_MODE:
+        path.chmod(PRIVATE_DIR_MODE)
+    return path
+
+
+AGENT_FILES_DIR = "agents"
+
+
+def agent_files_dir(agent_id: str) -> Path:
+    """Files a provider keeps for one agent from turn to turn, at paths that do not change
+    (opencode: the role prompt and its moved configuration home). Removed when the agent is
+    deleted. The path only: nothing is created here."""
+    return runtime_dir() / PRIVATE_DIR / AGENT_FILES_DIR / agent_id
 
 
 def run_dir(run_id: int) -> Path:

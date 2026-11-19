@@ -142,6 +142,7 @@ of the directories and, where needed, `git worktree repair`.
 | worktrees in git | each project's `.git/worktrees/<name>/gitdir` and each worktree's `.git` file point at each other with absolute paths | if `git worktree list` in a project marks them `prunable`, run `git worktree repair <worktree>…` there |
 | Claude Code sessions | `~/.claude/projects/` (or `$CLAUDE_CONFIG_DIR/projects/`), in a directory named after the agent's working directory | copy them; an agent resumes its session (`claude --resume`) only from the same working directory |
 | Codex sessions | `$CODEX_HOME/sessions/<year>/<month>/<day>/rollout-…-<session>.jsonl`, found by the session's id | copy them; `codex exec resume` finds them by id |
+| OpenCode sessions | opencode's database, normally `~/.local/share/opencode/opencode.db` (`$XDG_DATA_HOME/opencode/`, or `$OPENCODE_DB`), shared with your own opencode | copy it, with opencode not running; a session is found by its id |
 | background service, launcher | the service definition and the launcher name the install's Python and keep your environment | remove them before, install them again after |
 
 Spartito does not rewrite the paths it has stored. An agent whose working directory does not
@@ -160,7 +161,7 @@ It does not promise anything for other paths. Then the history can still be read
 (`spartito ps`, `spartito status`, the dashboard), but existing agents cannot continue; to work
 on a project at its new path, register it under another name
 (`spartito project add PATH --name NAME`) and start new agents there. Logins are never moved:
-log in to `claude` and `codex` on the new machine.
+log in to the CLIs you use (`claude`, `codex`, `opencode`) on the new machine.
 
 ### Steps
 
@@ -179,8 +180,8 @@ On the old machine:
 
 On the new machine:
 
-5. Install Spartito and log in to `claude` and `codex`. Set `ORCH_HOME` if the home is not
-   `~/.orchestrator`.
+5. Install Spartito and log in to the CLIs you use (`claude`, `codex`, `opencode`). Set
+   `ORCH_HOME` if the home is not `~/.orchestrator`.
 6. In each project, `git worktree list`; if it marks the agents' worktrees `prunable`, run
    `git worktree repair <worktree>…` in the project.
 7. Check with `spartito project list` and `spartito ps`. If the copied database does not open,

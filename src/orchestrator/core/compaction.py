@@ -174,6 +174,15 @@ def _note_paused(store: Store, run_id: int, agent: Agent, left: int, threshold: 
     )
 
 
+def provider_compacts(agent: Agent) -> bool:
+    """Whether the agent's provider can compact a conversation at all (`compact_prompt`):
+    without it there is no automatic compaction, nor a threshold to show."""
+    try:
+        return hasattr(providers.get(agent.provider), "compact_prompt")
+    except KeyError:
+        return False
+
+
 def compact_refusal(store: Store, agent: Agent) -> str | None:
     """Why the agent's conversation cannot be compacted now; None when it can."""
     try:

@@ -1,12 +1,13 @@
 # Providers
 
 A *provider* is the coding-agent CLI (the harness) that runs an agent's turns. Spartito
-supports two, Claude Code and Codex. It checks which of them this machine can start, and new
-agents and projects get one of those.
+supports three: Claude Code, Codex and OpenCode. It checks which of them this machine can
+start, and new agents and projects get one of those.
 
 - [Supported harnesses](#supported-harnesses)
   - [Claude Code (`claude`)](#claude-code-claude)
   - [Codex (`codex`)](#codex-codex)
+  - [OpenCode (`opencode`)](#opencode-opencode)
 - [Availability](#availability)
   - [Where the CLI is looked for](#where-the-cli-is-looked-for)
   - [When no provider is available](#when-no-provider-is-available)
@@ -22,8 +23,9 @@ agents and projects get one of those.
 |---|---|---|
 | Claude Code | `claude` | `claude` |
 | Codex | `codex` | `codex` |
+| OpenCode | `opencode` | `opencode` |
 
-The registry order (`claude`, then `codex`, then [other providers](#other-providers)) is the
+The registry order (`claude`, `codex`, `opencode`, then [other providers](#other-providers)) is the
 order in which "the first available one" is chosen. Model and effort are set per provider
 ([configuration.md](configuration.md#model-and-effort)).
 
@@ -64,6 +66,85 @@ Limits:
 - compacts without instructions, once its context size is known
 - of the loadout only `codex_user_config` applies: `tools` and `memory` do not restrict it
 
+### OpenCode (`opencode`)
+
+The open source coding agent CLI, run as `opencode run --format json`, each turn with a
+private server of its own (`--standalone`). Spartito supports opencode 2.2.3 or later (the
+2.x line); it was tested with 2.3.2. An older version, such as a 1.x release, is
+`not_installed`.
+
+| | |
+|---|---|
+| efforts | `low`, `medium`, `high`, `max` |
+| cost | reported |
+| role prompt | every turn |
+| compaction | none: the Compact button and `spartito compact` refuse an opencode agent |
+| loadout | `tools`, `mcp`, `setting_sources` and `slash_commands` ([configuration.md](configuration.md#loadout)) |
+| attribution | the OpenCode line, every turn |
+| permissions | `default`: no `--auto`, so every request that would ask is rejected and the turn goes on; `auto`: `--auto` |
+
+Limits:
+
+- asks for an answer schema in the prompt without enforcing it
+- cannot compact: opencode compacts on its own, and that is not reported
+- reports the context size without a window
+- takes no MCP servers added in Spartito (`mcp:<name>`) yet, as Codex; a lead's `orch` server it does
+- of the loadout `memory`, `tool_search` and `codex_user_config` have no effect
+- has no sandbox: only opencode's own tools are held back
+- leaves the user's global opencode config out unless `setting_sources` has `user`: a provider keyed only there is not available to agents
+- without `user` in `setting_sources`, runs the agent's commands in bash, not the user's shell
+- may report no cost for subscription sign-ins, and misses opencode's title and compaction calls
+- starts a lost session anew instead of failing
+
+What else to know:
+
+- **Model and effort.** A model is `provider/model`, as `opencode models` lists it. The list
+  is asked outside any project (in a private directory of Spartito's), so it shows the models of the user's own logins and global
+  config, the same in every process; a model that is not listed, such as one of a provider
+  keyed in a project's `opencode.json`, can still be given. The effort becomes the model's
+  variant (`provider/model#high`); a model that names a variant keeps its own, and an effort
+  without a model is ignored, with a line in the agent's log. A model without that variant
+  fails the turn with opencode's error.
+- **The answer schema** of a planner, reviewer or tester is asked for at the end of the prompt.
+  An answer that is not JSON leaves the structured result empty, and the text is passed on.
+- **Configuration.** Each turn's settings go into `OPENCODE_CONFIG_CONTENT`, which opencode
+  loads after a project's `opencode.json`, so the project cannot replace them: the permission
+  rules, the role prompt as an `instructions` file, the `shell` and the MCP servers, each
+  server's entry in full. Its policies go into a private file (`OPENCODE_CONFIG`), which
+  loads before the project's config; opencode lets an earlier policy win, so a project cannot
+  lift them either. A project's `opencode.json` still adds what the turn does not set, such
+  as its own providers, agents, `instructions` (read before the role prompt) or MCP servers
+  under other names (with `mcp = strict` those servers are refused). It can also add or
+  reconfigure providers for its agents, including where a provider's requests go, as a
+  project's settings can for the other harnesses. Without `project` in `setting_sources` the project's opencode config and its
+  `AGENTS.md` are left out (unlike Claude Code, where `CLAUDE.md` stays). Without `user`, the
+  user's global opencode config is moved away for the turn (`XDG_CONFIG_HOME`), and the
+  agent's commands get the user's own `XDG_CONFIG_HOME` back, so `git`, `gh` and other tools
+  keep their configuration; those commands then run in bash, not the user's shell. Every turn
+  denies `question` (nobody answers), opencode's tools that move sessions or manage worktrees,
+  and access outside the worktree but for the shared `.git`.
+- **The user's global opencode config** does not apply to agents by default
+  (`setting_sources = project,local`, without `user`): neither its `opencode.json` nor its
+  plugins, agents, commands or global `AGENTS.md`, and `~/.claude/CLAUDE.md`, which opencode
+  reads when there is no global `AGENTS.md`, is kept out too. A provider whose key is set only
+  in the global `opencode.json` is therefore not available to agents; a login made with
+  `opencode auth login` (or `/connect`), and a provider's environment variable, still are.
+  `setting_sources = "user,project,local"` in a loadout brings the global config back
+  ([configuration.md](configuration.md#loadout)). Without `user`, the agent's commands run in
+  bash, not the user's shell.
+- **MCP servers** added in Spartito (`mcp:<name>`) are not carried to opencode agents yet, as
+  for Codex; the `orch` MCP server of leads is.
+- **The context gauge** shows the size of the conversation without a window. opencode
+  compacts on its own when the conversation grows; that is not reported, and the gauge may
+  drop without a line in the log.
+- **Cost** is opencode's own, in USD, summed over the turn's model steps. Under a
+  subscription sign-in it may show `$0.00`; opencode's calls that name a session or compact
+  it are not counted, and a stopped turn reports none.
+- **Sessions** are kept in the user's own opencode database: marked archived, but listed by
+  `opencode session list` and visible in opencode's own UI. `spartito attach` opens one with
+  `opencode --session <id>`.
+- **Claude in Chrome** is not available; the capability is skipped with a note.
+
 More on these: [agents.md](agents.md#context-and-compaction),
 [architecture.md](architecture.md#platform-support-and-limitations).
 `spartito providers --json` lists the same limits for each provider.
@@ -93,16 +174,19 @@ is not available a hint says so, with a **Check again** button that checks once 
 | status | meaning | can be chosen |
 |---|---|---|
 | `available` | the CLI was found and answered `--version` | yes |
-| `not_installed` | the CLI was not found, its `#!` interpreter (such as `node`) is missing, it could not be started, or its version is older than the provider's `min_version` (no built-in provider has one) | no |
-| `not_logged_in` | the provider's own login check failed; the built-in providers have none, so they never show it | no |
-| `unknown` | the CLI was found but `--version` failed or did not answer within 5 seconds, the provider names no CLI, or the check has not run yet | yes |
+| `not_installed` | the CLI was not found, its `#!` interpreter (such as `node`) is missing, it could not be started, or its version is older than the provider's `min_version` (opencode: 2.2.3) | no |
+| `not_logged_in` | the provider's own login check failed; only opencode has one, and only a failing `opencode auth list` counts | no |
+| `unknown` | the CLI was found but `--version` failed or did not answer within 5 seconds, the provider names no CLI, opencode's `opencode auth list` lists no login, or the check has not run yet | yes |
 
 `unknown` can be chosen: the check could not tell, and the turn shows whether the CLI works.
 
-The check runs only `<cli> --version`, with a 5-second timeout. It makes no network request,
-runs no agent turn and reads no credentials. With `--json` (and in the dashboard) an available
-CLI is also asked for its models: Claude Code reads them without a model request, Codex with
-`codex debug models`. Each process keeps the result for 5 minutes, and `spartito providers`
+The check runs only `<cli> --version`, with a 5-second timeout; for opencode also
+`opencode auth list --standalone --format json`, which lists the connected providers by name
+and never a secret. It makes no network request, runs no agent turn and reads no credentials.
+With `--json` (and in the dashboard) an available CLI is also asked for its models: Claude Code
+reads them without a model request, Codex with `codex debug models`, opencode with
+`opencode models` (without fetching its catalogue, and outside any project): the models of
+the providers it has credentials for, plus its free ones. Each process keeps the result for 5 minutes, and `spartito providers`
 always checks again. Each process checks with its own `PATH`: what `spartito providers` finds
 in a terminal can differ from what the background service sees, and the dashboard shows the
 service's view.
@@ -139,8 +223,8 @@ refuse with it; these errors, like the refusal of a provider that is not availab
 An error that says no provider is available, or that a provider is not, gives each one's
 status and reason. What to do:
 
-1. Install a CLI (Claude Code or Codex, as its own documentation describes) and log in with
-   it in a terminal.
+1. Install a CLI (Claude Code, Codex or OpenCode, as its own documentation describes) and log
+   in with it in a terminal.
 2. Run `spartito providers`. It should show the CLI as `available`. If it shows
    `not_installed`, put the CLI's directory on `PATH` or install it into one of the
    [usual directories](#where-the-cli-is-looked-for); a `#!` interpreter it names (such as
@@ -152,8 +236,11 @@ status and reason. What to do:
 
 ### What is not checked
 
-The login is not checked: no check is known that is both offline and free of prompts. An
-`available` CLI that is not logged in, has no access to the model or cannot reach its service
+Claude Code's and Codex's login is not checked: no check is known that is both offline and
+free of prompts. opencode's is checked with `opencode auth list`, which lists the providers
+connected with `/connect` in opencode or by an environment variable. It does not see a provider
+whose key is in an opencode config file, and opencode's free models need no login, so a list
+without any login leaves opencode `unknown`, which can be chosen. An `available` CLI that is not logged in, has no access to the model or cannot reach its service
 still fails at its first turn, with the CLI's own error in the agent's log. Log in with the
 CLI itself, in a terminal.
 
@@ -273,6 +360,7 @@ protocol in `src/orchestrator/providers/base.py`. Its self-description is option
 | `executable` | the CLI's command name, for the availability check | not checked: `unknown`, which can be chosen |
 | `version_args` | what the check runs | `--version` |
 | `login_args` | a command that exits non-zero when not logged in; offline, never prompting | the login is not checked |
+| `logged_in` | reads the output of `login_args`: `True` logged in, `False` not, a text: none listed but a login it does not list may work (`unknown`, the text its reason), `None` cannot tell | the exit code alone decides |
 | `reports_cost` | whether its turns report a cost | not said |
 | `role_prompt` | `every_turn` or `first_turn` | not said |
 | `limits` | what it does not support, one phrase each | none listed |

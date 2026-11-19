@@ -15,7 +15,7 @@ import re
 import shutil
 import signal
 import subprocess
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -188,9 +188,13 @@ def probe(
     version_args: tuple[str, ...] = ("--version",),
     login_args: tuple[str, ...] | None = None,
     timeout: float = PROBE_SECONDS,
+    logged_in: Callable[[str], bool | str | None] | None = None,
 ) -> Probe:
     """Whether `executable` is there and answers `version_args`; with `login_args`, whether
-    that command exits 0 (logged in). Runs nothing else."""
+    that command exits 0 (logged in). `logged_in`: reads that command's output as well
+    (False: not logged in; a text: it lists no login, but one it does not see may still
+    work, so the status is `unknown` with that text as the reason; None: it cannot tell,
+    the login counts as not checked). Runs nothing else."""
     path, on_path = find(executable)
     if path is None:
         return Probe(NOT_INSTALLED, None, None, not_found(executable))
@@ -221,5 +225,13 @@ def probe(
     if code:
         said = _last_line(err) or _last_line(out)
         reason = f"{where}; not logged in" + (f": {said}" if said else "")
+        return Probe(NOT_LOGGED_IN, version, str(path), reason)
+    said = True if logged_in is None else logged_in(out)
+    if said is None:
+        return Probe(AVAILABLE, version, str(path), f"{where}; {LOGIN_NOT_CHECKED}")
+    if isinstance(said, str):
+        return Probe(UNKNOWN, version, str(path), f"{where}; {said}")
+    if not said:
+        reason = f"{where}; not logged in: `{' '.join([executable, *login_args])}` lists none"
         return Probe(NOT_LOGGED_IN, version, str(path), reason)
     return Probe(AVAILABLE, version, str(path), f"{where}; logged in")
