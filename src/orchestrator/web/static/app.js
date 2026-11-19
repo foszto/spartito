@@ -534,7 +534,12 @@ function showCacheTip(on) {
   else document.removeEventListener('keydown', cacheTipKey);
 }
 
+// The page's keys while a hint is open. A view rebuilt or replaced under an open hint fires no
+// blur or mouseleave: the listener then goes at the next key, which it leaves alone. Only an
+// Escape that closes a shown hint is taken.
 function cacheTipKey(event) {
+  const tip = $('cacheTip');
+  if (!tip || tip.hidden) { document.removeEventListener('keydown', cacheTipKey); return; }
   if (event.key !== 'Escape') return;
   event.preventDefault();
   showCacheTip(false);

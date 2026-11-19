@@ -25,7 +25,12 @@ store = (key, value) => saved.push([key, JSON.parse(JSON.stringify(value))]);
 const docListeners = new Set();
 document.addEventListener = (type, f) => docListeners.add(f);
 document.removeEventListener = (type, f) => docListeners.delete(f);
-const press = key => { for (const f of [...docListeners]) f({ key, preventDefault() {} }); };
+// Sends a key to the document's listeners: whether one of them prevented its default.
+const press = key => {
+  const event = { key, prevented: false, preventDefault() { this.prevented = true; } };
+  for (const f of [...docListeners]) f(event);
+  return event.prevented;
+};
 node('div', { id: 'view' });
 // The text a user sees: hidden nodes left out.
 const shownText = n => (n.hidden ? '' : n.text + n.children.map(shownText).join(''));
@@ -218,4 +223,27 @@ out({ button: $('detailsButton').hidden, caps: !$('setupCaps').hidden && $('deta
         "about": True,
         "changes": True,
         "cache": True,
+    }
+
+
+def test_a_view_rebuilt_under_an_open_hint_leaves_escape_alone() -> None:
+    result = run_page(
+        """
+buildView(); renderHeader(agent());
+$('cacheInfo').onmouseenter();
+const open = { tip: !$('cacheTip').hidden, listening: docListeners.size };
+buildView(); renderHeader(agent());  // a poll rebuilds the view: no mouseleave, no blur
+const later = press('Escape');
+$('cacheInfo').onmouseenter();
+const again = { tip: !$('cacheTip').hidden, taken: press('Escape'), tip2: !$('cacheTip').hidden };
+out({ open, later, left: docListeners.size, again, after: docListeners.size, other: press('Escape') });
+"""
+    )
+    assert result == {
+        "open": {"tip": True, "listening": 1},
+        "later": False,
+        "left": 0,
+        "again": {"tip": True, "taken": True, "tip2": False},
+        "after": 0,
+        "other": False,
     }
