@@ -66,6 +66,7 @@ def probe(provider: Provider) -> locate.Probe:
         executable,
         tuple(getattr(provider, "version_args", None) or ("--version",)),
         getattr(provider, "login_args", None),
+        logged_in=getattr(provider, "logged_in", None),
     )
     minimum = _version(getattr(provider, "min_version", None))
     version = _version(found.version)

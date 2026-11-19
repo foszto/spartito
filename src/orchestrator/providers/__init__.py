@@ -26,6 +26,12 @@ def _load_plugins() -> None:
 _load_plugins()
 
 
+def builtin_labels() -> str:
+    """The supported harnesses as people read them: `Claude Code, Codex and OpenCode`."""
+    labels = [getattr(cls, "label", None) or cls.name for cls in BUILTIN]
+    return " and ".join([", ".join(labels[:-1]), labels[-1]] if len(labels) > 1 else labels)
+
+
 def get(name: str) -> Provider:
     try:
         return PROVIDERS[name]

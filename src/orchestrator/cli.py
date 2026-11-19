@@ -52,9 +52,9 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
     rich_markup_mode=MARKUP,
-    help=f"{config.PROJECT_NAME}: run Claude Code and Codex agents in parallel in git worktrees,"
-    f" steered through one orchestrator agent. Start with `{CLI} project add`, then `{CLI} chat`"
-    f" or `{CLI} web`.",
+    help=f"{config.PROJECT_NAME}: run {providers.builtin_labels()} agents in parallel in git"
+    " worktrees, steered through one orchestrator agent. Start with"
+    f" `{CLI} project add`, then `{CLI} chat` or `{CLI} web`.",
 )
 
 
@@ -1166,7 +1166,10 @@ def spawn(
         list[str] | None, typer.Option(help="Agent or run id to wait for; repeatable.")
     ] = None,
     permission: Annotated[
-        str | None, typer.Option(help="Claude permission mode / Codex sandbox mode.")
+        str | None,
+        typer.Option(
+            help="Claude permission mode / Codex sandbox mode / opencode: default or auto."
+        ),
     ] = None,
     granted: Annotated[
         str | None,

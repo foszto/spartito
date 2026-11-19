@@ -15,7 +15,7 @@ from typing import Any
 import anyio
 from mcp.server.mcpserver import MCPServer
 
-from . import board, capabilities, roles
+from . import board, capabilities, providers, roles
 from .core.access import Caller
 from .core.delivery import delivery_floor as _delivery_floor  # noqa: F401 (old import path)
 from .core.delivery import wait_for_agents as _wait  # noqa: F401 (old import path)
@@ -33,7 +33,7 @@ MAX_STATUS = 30
 server = MCPServer(
     "orch",
     instructions=(
-        "Tools to run coding agents (Claude Code, Codex) in git worktrees. Flow: "
+        f"Tools to run coding agents ({providers.builtin_labels()}) in git worktrees. Flow: "
         "spawn_agent / send_message (return at once) -> end your turn with a short status -> "
         "an automatic `[orch notification]` turn brings the results when your agents are "
         "done. Use `after` to chain agents that depend on each other."

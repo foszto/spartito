@@ -10,19 +10,30 @@ import json
 import os
 import re
 import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 
+import click
+import fakecli
 import pytest
+from conftest import OPENCODE_MODELS, REAL_PROBE
+from fakecli import opencode as opencode_dialect
 from fakeprovider import FakeOpencode, opencode_runs
+from starlette.testclient import TestClient
+from typer.testing import CliRunner
 
-from orchestrator import config, providers, roles
+from orchestrator import cli, config, mcp_server, providers, roles
+from orchestrator.core import availability, setup
+from orchestrator.errors import OrchestratorError
 from orchestrator.loadout import Loadout
 from orchestrator.models import Agent, RunStatus
 from orchestrator.providers import McpServer, RunContext, opencode
 from orchestrator.providers.base import Wiring
 from orchestrator.providers.opencode import OpencodeProvider
 
+# The real lookup; conftest replaces the module attribute with a recorded answer.
+REAL_REQUEST_MODEL_LIST = opencode.request_model_list
 STRICT = Loadout(strict_mcp=True, setting_sources=("project", "local"))  # as the fallback
 OWN = McpServer(command="python", args=["-m", "orchestrator.mcp_server"], env={"A": "1"})
 DOCS_DB = {"command": "docs-db", "args": ["--db", "${DOCS_DB:-main}"], "env": {"URL": "${DB_URL}"}}
@@ -613,3 +624,172 @@ def test_a_lead_turn_has_the_orch_server_in_its_configuration(orch, opencode_tur
     allow = {"action": "orch_*", "resource": "*", "effect": "allow"}
     assert allow in seen["config_content"]["permissions"]
     assert seen["prompt"] == "plan"
+
+
+# -- the model list and the availability check ---------------------------------------------------
+
+
+@pytest.fixture
+def fake_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """PATH is one directory with `opencode`, the fake CLI's opencode dialect; it notes
+    OPENCODE_DISABLE_MODELS_FETCH and its arguments in the log it returns."""
+    directory, log = tmp_path / "bin", tmp_path / "opencode-calls.log"
+    directory.mkdir()
+    shim = directory / "opencode"
+    shim.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s %s\\n" "${{OPENCODE_DISABLE_MODELS_FETCH-}}" "$*" >> "{log}"\n'
+        f'exec "{sys.executable}" "{fakecli.ENGINE}" opencode "$@"\n'
+    )
+    shim.chmod(0o755)
+    monkeypatch.setenv("PATH", str(directory))
+    return log
+
+
+def test_the_model_list_is_read_without_fetching_the_catalogue(fake_on_path: Path) -> None:
+    output = REAL_REQUEST_MODEL_LIST()
+
+    assert opencode.parse_model_list(output) == list(opencode_dialect.MODELS)
+    assert fake_on_path.read_text() == "1 models --standalone\n"
+
+
+def test_the_model_list_keeps_provider_model_lines_once() -> None:
+    output = "opencode/a\nnot a model\n\nopenrouter/openai/gpt-4.1-mini\nopencode/a\n  x/y z\n"
+
+    assert opencode.parse_model_list(output) == ["opencode/a", "openrouter/openai/gpt-4.1-mini"]
+
+
+def test_a_failing_model_list_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    def failing() -> str:
+        raise subprocess.SubprocessError("exit 1")
+
+    monkeypatch.setattr(opencode, "request_model_list", failing)
+
+    assert OpencodeProvider().models() == []
+
+
+@pytest.mark.parametrize(
+    ("version", "auth", "status", "reason"),
+    [
+        ("2.3.2", None, "available", "found on PATH; logged in"),
+        ("2.2.3", "[]", "not_logged_in", "found on PATH; not logged in: `opencode auth list"
+         " --standalone --format json` lists none"),
+        ("2.3.2", "not json", "available", "found on PATH; login not checked"),
+        ("1.19.0", None, "not_installed", "found on PATH; version 1.19.0 is older than 2.2.3,"
+         " the oldest supported"),
+    ],
+)  # fmt: skip
+def test_the_check_reads_the_version_and_the_login(
+    fake_on_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    version: str,
+    auth: str | None,
+    status: str,
+    reason: str,
+) -> None:
+    monkeypatch.setenv("FAKE_OPENCODE_VERSION", version)
+    if auth is not None:
+        monkeypatch.setenv("FAKE_OPENCODE_AUTH", auth)
+
+    found = REAL_PROBE(OpencodeProvider())
+
+    assert (found.status, found.version, found.reason) == (status, version, reason)
+    # The version of `opencode v2.3.2`, its `v` dropped; the minimum applies after the login.
+    asked = fake_on_path.read_text().splitlines()
+    assert asked == [" --version", " auth list --standalone --format json"]
+
+
+# -- opencode wherever Claude and Codex are ------------------------------------------------------
+
+
+def test_the_label_list_names_every_builtin() -> None:
+    assert providers.builtin_labels() == "Claude Code, Codex and OpenCode"
+    assert "Claude Code, Codex and OpenCode" in mcp_server.server.instructions
+
+
+def test_the_listing_describes_opencode(orch, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = TestClient(cli_app_web(), base_url="http://localhost")
+
+    (entry,) = [e for e in orch.provider_list() if e["name"] == "opencode"]
+    listed = client.get("/api/providers").json()["providers"]
+
+    assert [e["name"] for e in listed][:3] == ["claude", "codex", "opencode"]
+    assert entry["label"] == "OpenCode" and entry["executable"] == "opencode"
+    assert entry["efforts"] == ["low", "medium", "high", "max"]
+    assert [m["value"] for m in entry["models"]] == OPENCODE_MODELS.split()
+    assert entry["features"] == {
+        "cost": True,
+        "compaction": False,
+        "compaction_instructions": False,
+        "context_size": True,
+        "role_prompt": "every_turn",
+        "attribution": True,
+    }
+    assert entry["limits"] == list(OpencodeProvider.limits)
+    assert entry["capabilities"] == [] and entry["usable"] and not entry["default"]
+    assert setup.cache_effect("opencode") == {"model": "restarts", "effort": "may restart"}
+
+
+def cli_app_web():
+    from orchestrator.web.app import app
+
+    return app
+
+
+def plain(result) -> str:
+    """The output as one line, without styles and the borders of help panels."""
+    return " ".join(click.unstyle(result.output).replace("│", " ").split())
+
+
+def test_the_command_line_lists_and_takes_opencode(orch, repo: Path) -> None:
+    listed = CliRunner().invoke(cli.app, ["providers"])
+    spawn_help = CliRunner().invoke(cli.app, ["spawn", "--help"])
+    app_help = CliRunner().invoke(cli.app, ["--help"])
+    added = CliRunner().invoke(cli.app, ["project", "add", str(repo), "--provider", "opencode"])
+
+    assert listed.exit_code == 0 and re.search(r"^\s+opencode\s+available", listed.output, re.M)
+    assert "One of: claude, codex, opencode" in plain(spawn_help)
+    assert "default or auto" in plain(spawn_help)
+    assert "Claude Code, Codex and OpenCode agents" in plain(app_help)
+    assert added.exit_code == 0, added.output
+    assert orch.store.get_project("repo").default_provider == "opencode"
+
+
+def test_a_project_and_an_agent_choose_and_move_to_opencode(
+    orch, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launched: list[int] = []
+    monkeypatch.setattr(type(orch), "_launch", lambda self, run: launched.append(run.id))
+
+    agent, _ = orch.spawn(project, "task", provider="opencode", worktree=False)
+    other, _ = orch.spawn(project, "task", worktree=False)
+    orch.set_default_provider(project, "opencode")
+    later, _ = orch.spawn(project, "task", worktree=False)
+
+    assert agent.provider == "opencode" and other.provider == "fake"
+    assert later.provider == "opencode" and len(launched) == 3
+    assert orch.agent(agent.id).provider == "opencode"
+    reply = mcp_server.spawn_agent("task", project=project, provider="opencode")
+    assert reply["provider"] == "opencode"
+    # An idle agent without a conversation moves without a question.
+    orch.store.finish_run(launched[1], RunStatus.DONE, result="ok")
+    orch.set_provider(other.id, "opencode")
+    assert orch.agent(other.id).provider == "opencode"
+
+
+def test_an_opencode_agent_cannot_compact(orch, project: str, monkeypatch) -> None:
+    monkeypatch.setattr(type(orch), "_launch", lambda self, run: None)
+    agent, run = orch.spawn(project, "task", provider="opencode", worktree=False)
+    orch.store.finish_run(run.id, RunStatus.DONE, result="ok")
+    orch.store.set_session(agent.id, "ses_0123456789abcdef0123456789")
+
+    with pytest.raises(OrchestratorError, match="the opencode provider has no way to compact"):
+        orch.compact(agent.id)
+
+
+def test_its_agents_credit_opencode() -> None:
+    credit = roles.attribution(OpencodeProvider.credit, bot_coauthor=False)
+
+    assert "[OpenCode](https://opencode.ai)" in credit
+    assert "when you add a Co-Authored-By trailer" in credit
+    assert availability.describe(OpencodeProvider())["features"]["attribution"] is True
